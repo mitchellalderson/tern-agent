@@ -2,7 +2,7 @@
 
 Status: draft, 2026-11-03. Not built. This is the next set of tooling after S0–S1, D1 and P0. It was derived from a
 survey of Claude Duet, Grok Bot, Meta Muse, ChatGPT, Google CC, Poke, OpenClaw and its forks
-([research/personal-agents-2026.md](research/personal-agents-2026.md)). Phases are T0–T8 (§12).
+([research/personal-agents-2026.md](research/personal-agents-2026.md)). Phases are T0–T8, with T4 split into T4a and T4b (§12).
 
 Related:
 - [subagents-design.md](subagents-design.md): goals (§6) build on sub-agent runs.
@@ -20,7 +20,7 @@ The category has converged. In late 2026 a personal agent is:
 - with **approvals for anything that writes**.
 
 The hosted players run all of this on a cloud VM per user, at $20–200 a month. We do the same with one static binary,
-SQLite and short Luau scripts. Eight additions get us there; none adds a mandatory dependency:
+SQLite and short Luau scripts. Nine additions get us there; none adds a mandatory dependency:
 
 1. **Routines** (T1). Schedules become routines with more kinds of trigger: cron, connector **watches**, webhooks,
    gateway messages, and system events. A watch is a Luau function that polls with a cursor and returns events.
@@ -42,6 +42,12 @@ SQLite and short Luau scripts. Eight additions get us there; none adds a mandato
    hosted agents don't have it.
 6. **Connector platform v2** (T4).
    - **Credentials are injected at the host boundary**, so scripts never see secret values.
+   - **OAuth first**: when connecting anything, the host checks built-in profiles and `.well-known` metadata (the MCP
+     authorization flow included), and the agent researches the docs only if that finds nothing. Sign-in is the
+     default when it's usable; API keys through `secret_request` stay as the fallback. Endpoints found by research
+     are validated against the service's domain.
+   - **Several accounts per service**: Gmail · work and Gmail · personal are separate **connections** of one
+     connector or MCP server, each with its own tokens, cache, grants and watches. Writes must name the account.
    - An **OAuth helper** (PKCE on a loopback port, refresh handled by the host).
    - Path-level HTTP allowlists and per-connector rate limits.
    - **Gateway connectors**: a new chat channel such as Slack, Discord, ntfy or WhatsApp is a Luau file, not a Rust
@@ -92,6 +98,8 @@ goes in.
 | W6 | **Exposed core** (OpenClaw's 80k+ open gateways, CVE-2026-25253). | D1: TLS, device tokens, pairing, scopes. Loopback/Unix by default. | Webhook endpoints use per-routine secrets and never accept device tokens. Any future WebSocket checks `Origin`. `tern security audit` lists listeners, scopes, tainted-capable routines, legacy `ctx.secret` users and unsigned bundles. | §8.4 |
 | W7 | **Approval fatigue.** The user says "always" to everything, and taint then means nothing. | `Always (<pattern>)` grants. | Grants are scoped (to this routine, this channel, or everywhere) and **never cover tainted runs** of `write`/`destructive` effects. That one rule is not configurable, except by `autonomy = "yolo"`, which `doctor` shows in red. | §5.4 |
 | W8 | **Notification spam**, the way users drop proactive agents (Lenny's "forgot to use it" is the opposite failure). | Every scheduled run is delivered. | Initiative levels, `NO_REPLY`, digests, quiet hours, and a gate model that answers only "worth interrupting? yes/no". Defaults are conservative: routines start at `digest`. | §4 |
+| W10 | **Phishing OAuth endpoint.** A poisoned search result or doc page gives the agent a lookalike authorize URL, and the user "signs in" to an attacker. | Not possible yet (no OAuth). | Discovery prefers built-in profiles and `.well-known` metadata. Researched endpoints must share the API's registrable domain or belong to a known identity provider, and are confirmed against issuer metadata. Unverified plans are labelled as such on the card. The browser leg shows the real URL in the user's own browser. | §6.7.2 |
+| W11 | **Wrong account.** With work and personal Gmail connected, the agent sends a reply from personal. | One account per connector. | Writes with more than one connection must name it explicitly. Channels and routines pin a default. Approval cards and the ledger name the account. Grants are per connection. | §6.8.2 |
 | W9 | **Competitor moves.** Duet adds a desktop app; Grok Bot adds a local mode. | | The moat isn't any single feature. It is **local plus durable plus self-written sandboxed connectors plus small**. Keep the binary small, keep Luau connectors trivial to write, and get to "describe an API, get a working connector in a minute" (§6.6). |  |
 
 ## 3. Routines (T1)
@@ -316,7 +324,8 @@ exfiltration (a `read` tool whose URL encodes data) is closed by the per-connect
 
 ### 6.1 Credentials at the host boundary
 
-- `capabilities.auth = { "GITHUB_TOKEN" }` declares which credentials a connector may *use*.
+- `capabilities.auth = { "GITHUB_TOKEN" }` declares which credentials a connector may *use*. Names resolve against
+  the **connection** the call runs under (§6.8), so the same script serves several accounts.
 - `ctx.http.*` accepts `auth = "GITHUB_TOKEN"` (Bearer by default) or `auth = { secret = "X", header = "X-Api-Key",
   scheme = "" }`. The host adds the header after the allowlist check. The value never enters the VM and is redacted
   from errors.
@@ -333,10 +342,11 @@ capabilities = { oauth = { google = { scopes = { "gmail.readonly", "gmail.send" 
 ```
 
 - Providers are built-in profiles (Google, Microsoft, GitHub, Slack, Notion, Linear, generic) giving authorize and
-  token URLs plus PKCE support.
+  token URLs plus PKCE support. A profile for anything else is produced by auth discovery (§6.7) and approved by the
+  user.
 - The flow runs **from a front end**, never from the agent: `tern auth google`, or a button in the desktop app. It
   opens the browser to the provider and catches the code on a one-shot `127.0.0.1` port, then stores refresh and
-  access tokens as secrets (`oauth/google/...`). The host refreshes on 401 or expiry.
+  access tokens as secrets of that **connection** (`conn/gmail/work/oauth/...`, §6.8). The host refreshes on 401 or expiry.
 - **Client IDs**: the user supplies their own (documented per provider; Google needs a "Desktop app" OAuth client),
   or, on tern Cloud, ours. This is a real onboarding cost. A bundle can ship a setup guide (a skill) that walks
   through it.
@@ -405,6 +415,186 @@ This is the moat: "connectors are just Luau", so make writing one take a minute.
   offline.
 - Grok Bot's "teach a task": for sites without an API, the browser path (§9) records a flow and drafts a skill. That
   waits for T7.
+
+### 6.7 Choosing how to authenticate: OAuth first
+
+When the agent connects tern to something new, by writing a connector or adding an MCP server, its first job is to
+find out **how that service wants to be signed into**. OAuth is preferred whenever it is usable:
+- the user clicks "Sign in" instead of hunting for an API key;
+- scopes are narrower than a personal access token;
+- tokens refresh and can be revoked from the service's own settings;
+- no long-lived key ever passes through the chat.
+
+The current flows stay as the fallback:
+- `secret_request` for keys and tokens ([secret-requests-spec.md](secret-requests-spec.md));
+- `bearer_token_secret` / `header_secrets` for MCP servers ([mcp-management-spec.md](mcp-management-spec.md)).
+
+**The flow** (written into the connector guide in `tools.rs` and the MCP-adding guide, and enforced in part by the
+host):
+
+```
+ 1. identify   what service, which API or MCP URL?
+ 2. discover   auth_discover(service, url?)                  ← host-side, deterministic, no model guessing
+ 3. research   only if discover says "unknown": web search + read the service's developer docs
+ 4. propose    auth_propose(plan)                            ← a card the user answers
+ 5. build      connector with capabilities.oauth (or auth = secret), or MCP server config
+ 6. connect    connection_add(target, method)                ← "Sign in to Notion" card, or secret_request
+ 7. test       connector_test / MCP verify, under that connection
+```
+
+#### 6.7.1 `auth_discover` (host-side)
+
+A read-only tool. The host runs checks in a fixed order, so the common cases need no model reasoning and no web
+search:
+
+| Order | Check | Finds |
+|---|---|---|
+| 1 | **Built-in profiles** (Google, Microsoft, GitHub, Slack, Notion, Linear, Atlassian, Dropbox, …), matched by service name or API host | full profile, including whether tern Cloud has a client ID for it |
+| 2 | **MCP servers**: the MCP authorization flow. Send an unauthenticated request; on 401 read `WWW-Authenticate` → `resource_metadata`, or fetch `/.well-known/oauth-protected-resource` (RFC 9728), then the authorization server's metadata | OAuth 2.1 with PKCE; whether the server allows **dynamic client registration** (RFC 7591) or **client ID metadata documents**, meaning no client ID setup at all |
+| 3 | **Any HTTPS API**: `/.well-known/oauth-authorization-server` (RFC 8414) and `/.well-known/openid-configuration` on the API host and its registrable domain | authorize, token, device and registration endpoints; scopes; PKCE methods |
+| 4 | Nothing found | `{"method": "unknown"}`: go to research |
+
+The result is structured, never prose:
+
+```json
+{ "method": "oauth2", "source": "well_known", "issuer": "https://auth.notion.com",
+  "authorize_url": "...", "token_url": "...", "device_url": null, "pkce": ["S256"],
+  "client": "dynamic_registration",        // | "cimd" | "builtin" | "tern_cloud" | "user_supplied"
+  "scopes_supported": ["read", "write"], "revocation_url": "...", "userinfo_url": "..." }
+```
+
+#### 6.7.2 Research when discovery comes up empty
+
+The agent searches for "<service> API OAuth" and reads the developer docs, then produces the same structured plan
+with an `evidence` list of doc URLs. The search goes through:
+- the model's native web search when the provider has one (Anthropic's server-side web search, for example); or
+- a configured search connector (Brave, Kagi or Tavily as a Luau connector); or
+- `http_fetch` on the docs URL the user gives.
+
+tern doesn't bundle a search engine. `doctor` notes when there is no search source, and the agent then asks the user
+for the docs link.
+
+Search results and docs are **untrusted** (§5.3), and an OAuth endpoint is an ideal phishing target, so the host
+validates any plan that didn't come from a built-in profile or discovery steps 2–3:
+- `https` only.
+- The authorize and token hosts share a **registrable domain** with the API hosts the connector declares (`api.notion.com`
+  ↔ `auth.notion.com`), or are a known identity provider (Google, Microsoft, Okta, Auth0 tenant patterns).
+- Fetching the issuer's metadata must confirm the endpoints. If it can't (some services publish no metadata), the plan
+  is marked **unverified** and the card says so in plain words.
+
+#### 6.7.3 Deciding: when OAuth wins, and when it doesn't
+
+The prompt states the rule; the host enforces the "user decides" part through `auth_propose`.
+
+| Situation | Default |
+|---|---|
+| OAuth with PKCE (or device code), and the client ID comes from dynamic registration, CIMD, a built-in profile or tern Cloud | **OAuth**, and the user is told no setup is needed |
+| OAuth that needs the user to register their own app (most "bring your own client ID" APIs) | **OAuth recommended**, with the setup steps from the docs summarised. API key offered as the quicker alternative. |
+| OAuth only for "apps" that need review or business verification, or tokens that expire inconveniently (for example Google projects in *Testing* status issue refresh tokens that expire after 7 days) | Show both, with the caveat stated. Personal access token or API key first, if the service has one. |
+| OAuth only with a confidential client (needs a client secret that can't live on a desktop) | API key, unless tern Cloud brokers it |
+| No OAuth | the current flow: `secret_request` / MCP header secrets |
+
+`auth_propose(plan, options)` shows a card in the desktop app and TUI, with the same pointer-only behaviour on
+Telegram as secret requests. For example:
+
+> **Connect Notion**
+> **Sign in with Notion** (recommended): no keys to copy; you choose which pages tern can see.
+> Use an integration token instead
+> Cancel
+> *Found via auth.notion.com metadata (verified).* · *Scopes: read, write*
+
+The result is the user's choice. The agent never picks OAuth or a key on the user's behalf when more than one option
+is shown.
+
+#### 6.7.4 Connecting
+
+- `connection_add(target, method, label?)` opens a **"Sign in to X" card** on a front end. That is the only place the
+  browser leg runs (§6.2). The result is `connected {account}`, `skipped` or `timed_out`, the same shape as
+  `secret_request`. The agent never sees a token.
+- For a remote core without a desktop attached: the device-code flow if the service supports it (the card shows the
+  code and URL). Otherwise "Finish signing in from the tern app".
+- The **account label** comes from the userinfo or OIDC `email` claim, or from a connector's optional
+  `whoami(ctx)` function. It is what tells several accounts apart (§6.8).
+- A key-based method calls `secret_request` with the connection-scoped secret name. The prompt shows the target and
+  connection, for example "for GitHub · personal".
+
+#### 6.7.5 MCP servers
+
+Adding a remote MCP server runs the same steps. Discovery step 2 is the MCP spec's own authorization flow, so for
+compliant servers the user just clicks Sign in. This replaces the "OAuth for MCP servers: later" item in
+mcp-management-spec §9. Stdio servers keep using environment secrets, but per connection (§6.8).
+
+### 6.8 Connections: several accounts per connector or MCP server
+
+A **connector** (or MCP server definition) is code and capabilities. A **connection** is one authenticated account
+using it: *Gmail · work (mitch@inngest.com)* and *Gmail · personal (mitch@gmail.com)* are two connections of one
+`gmail` connector. Users can add as many as they like. Each is stored and authorised separately.
+
+#### 6.8.1 Model
+
+| | Belongs to the connector or server | Belongs to each connection |
+|---|---|---|
+| code, tools, declared hosts, scopes requested | ✓ | |
+| credentials (OAuth tokens, keys) | | ✓, as secrets `conn/<target>/<slug>/<NAME>` |
+| account label, status, last error | | ✓ |
+| `ctx.kv` namespace | | ✓ `lua:<connector>:<slug>` (cache, cursors) |
+| watch cursors, routines' triggers | | ✓ (`watch = "gmail@work.new_mail"`) |
+| approval grants ("always allow send") | | ✓: a grant for *work* doesn't cover *personal* |
+| for stdio MCP servers: the process | | ✓, one process per connection, started lazily and stopped after `idle_timeout` (default 10 min) |
+
+Store: `connections(id, kind, target, slug, label, account, auth_method, is_default, status, created_at,
+last_used_at)`. Slugs are `[a-z0-9_-]{1,16}` and unique per target.
+
+Config for MCP servers keeps the server-level fields as the definition. Each connection holds only its own credential
+references:
+
+```toml
+[mcp.servers.linear]
+transport = "http"
+url = "https://mcp.linear.app/mcp"
+
+[mcp.servers.linear.connections.work]      # OAuth: tokens live in secrets under conn/linear/work/
+auth = "oauth"
+
+[mcp.servers.linear.connections.side]
+bearer_token_secret = "LINEAR_SIDE_KEY"
+```
+
+Migration:
+- Every existing MCP server and connector becomes one connection named `default`, with its current secrets.
+- Nothing is renamed, and v1 configs load unchanged.
+
+#### 6.8.2 How the model chooses an account
+
+Tool count must not multiply with accounts, so tools are not duplicated:
+- With one connection, nothing changes.
+- With two or more, the host adds a `connection` parameter (an enum of slugs, each described with its account label)
+  to every tool of that connector or server. It routes the call accordingly: `ctx.connection` (slug, label) in Luau,
+  or the matching MCP client session. A server tool that already has a `connection` parameter gets `tern_connection`
+  instead.
+- The system prompt's Integrations section lists them: `gmail: work (mitch@inngest.com, default), personal
+  (mitch@gmail.com)`.
+
+Defaults and ambiguity:
+- **Read** calls without `connection` use the target's default, or the channel's default (a channel can pin one:
+  `#work` → `gmail@work`, §4.2).
+- **Write and destructive** calls without an explicit `connection`, when there is more than one, are **rejected by
+  the host** with the list of options, so the model has to choose. A routine pins its connection when created.
+- The approval card and the ledger always name the account: **"Send email from mitch@gmail.com (Gmail · personal)"**.
+  That makes a wrong-account send visible before it happens.
+
+#### 6.8.3 Managing connections
+
+- **Desktop**: a Connections view grouped by service. Each service lists its accounts, with
+  - **Add another account**, which reruns §6.7.4 with the same method;
+  - rename, set default, **Reconnect** (when a token is revoked or expired; status `needs_reauth` shows in Tasks and
+    the tray);
+  - **Remove**, which revokes at the provider when a `revocation_url` is known, deletes the connection's secrets, kv
+    and grants, and pauses routines that pinned it, with a notice.
+- **TUI**: `/connections`. **CLI**: `tern connections list|add|remove|default`.
+- **Same account twice**: connecting an account label that already exists for that target offers Reconnect instead of
+  creating a duplicate.
+- Limit: 10 connections per target (configurable). Each stdio MCP connection is a process, so the idle stop matters.
 
 ## 7. Memory and skills (T5)
 
@@ -735,7 +925,8 @@ with one **Start tern** button. Off is always visible as off.
 | **T1** | Routines (migrate schedules), watch triggers, gates, `NO_REPLY`, initiative and gate model, quiet hours, digests, per-routine budgets | tern-core scheduler, store migrations, tern-lua watches | routine list and editor (desktop), `/routines` (TUI) | L |
 | **T2** | Channels, posts, home, reply-to-act, Telegram topics | store (sessions.channel_id), gateway | desktop sidebar, TUI `/channel` | M |
 | **T3** | Taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles | agent loop (new tool-result kind), approval.rs | outbox cards in Telegram and desktop; Tasks view | M |
-| **T4** | Connector v2: host-injected auth, path allowlists, rate limits, OAuth helper, gateway connectors (ntfy and Slack first), bundles with signing, `import openclaw` | tern-lua, new `tern auth`, `tern bundle` | OAuth button; bundle install diff | L |
+| **T4a** | Auth and connections: `auth_discover` (profiles, RFC 9728/8414, OIDC, dynamic registration), research guidance and endpoint validation, `auth_propose`, `connection_add`, OAuth helper (PKCE, device code, refresh, revoke), connections for connectors and MCP servers (migration to `default`, `connection` parameter, per-connection secrets, kv, grants, stdio process per connection) | tern-lua, tern-mcp, store, prompts | Sign-in and choice cards, Connections view, `/connections` | L |
+| **T4b** | Connector v2: host-injected auth, path allowlists, rate limits, gateway connectors (ntfy and Slack first), bundles with signing, `import openclaw` | tern-lua, `tern bundle` | bundle install diff | M |
 | **T5** | Memory flush, capped profiles with consolidation, skill capture | compaction, memory | Memory view | S–M |
 | **T6** | Ledger with hash chain, Tasks, `security audit`, fallback chains, `mcp serve`, recipe bundle, goals | store, rmcp server | Ledger and Tasks views | M |
 | **T7** | Browser: MCP recipe now, native CDP behind a feature later | optional crate | | S / M |
@@ -746,7 +937,9 @@ Order rationale:
 - T1 is the largest user-visible win.
 - T3 must land **before** watches on email or webhooks are enabled by default. Until then, `watch` and `webhook`
   routines force `autonomy = "readonly"` unless the user overrides it.
-- T4's OAuth unblocks Google, which is table stakes for briefs.
+- T4a's OAuth unblocks Google, which is table stakes for briefs. Connections land in T4a, not later, because adding
+  them after people have single-account secrets and grants means a second migration. T4a builds on the
+  secret-requests spec (its `secret_request` is the fallback path) and should follow it.
 - T8 is independent of T1–T7 and can go first, or in parallel. It makes the existing scheduler and Telegram
   approvals visible today. It pays off fully with T1 (routines worth being notified about) and T3 (the outbox
   replaces "deny when nobody is attached").
@@ -756,7 +949,16 @@ Acceptance highlights (each phase also passes clippy `-D warnings` and `cargo te
   and cursor save starts each run exactly once. A `NO_REPLY` run delivers nothing.
 - **T3**: an injected email that asks to send mail produces an outbox item, not a send, even with an "always" grant.
   Approving executes once across a daemon restart.
-- **T4**: a connector using `auth =` never sees the secret: `print` of every ctx field and a deliberate echo endpoint
+- **T4a**:
+  - Discovery against a fixture MCP server with RFC 9728 metadata and dynamic registration yields an OAuth plan with
+    no model call.
+  - A researched plan whose token URL is on another domain is rejected.
+  - Two Gmail-shaped connections with a fake provider:
+    - reads default correctly;
+    - a send without `connection` is rejected with the options;
+    - each connection's tokens, kv and grants are separate;
+    - removing one leaves the other working.
+- **T4b**: a connector using `auth =` never sees the secret: `print` of every ctx field and a deliberate echo endpoint
   in the test server show only redacted values.
 - Binary stays < 25 MB without the `browser` feature. Idle RSS stays < 30 MB with 10 watches registered.
 
@@ -773,6 +975,10 @@ Acceptance highlights (each phase also passes clippy `-D warnings` and `cargo te
 8. **The tray is a separate native process, not the Flutter app hidden.** It keeps a few-MB presence instead of a
    100+ MB one, and leaves `tern daemon` headless and identical on servers. The service manager, not the tray, keeps
    the daemon alive.
+9. **OAuth first, keys as fallback, and the user chooses** whenever there's more than one real option.
+   Discovery is host code, not model guesswork. Research is only for services with no metadata.
+10. **Accounts are connections, not copies of connectors.** One tool set with a host-injected `connection`
+    parameter, rather than duplicating tools per account. That keeps the tool list and prompt size flat.
 
 ## 14. Open questions
 
@@ -787,5 +993,12 @@ Acceptance highlights (each phase also passes clippy `-D warnings` and `cargo te
 - Tray on macOS: is `tray-icon`/`muda` plus hand-written objc2 calls for `UNUserNotificationCenter` and
   `SMAppService` enough, or is a ~200-line Swift helper bundle simpler to maintain? Swift adds a build step but no
   runtime weight. Decide in a T8 spike.
+- **Search source for auth research**: is provider-native web search plus "ask the user for the docs link" enough, or
+  should tern ship a default search connector (which needs an API key for Brave, Kagi or Tavily)?
+- **Our own OAuth client IDs on the local tier**: shipping tern's Google desktop client would make Gmail one click
+  for everyone. But Gmail's restricted scopes need Google verification plus a yearly security assessment. Is that cost
+  worth it, or do we keep "bring your own client" locally and give tern Cloud verified clients?
+- Should a channel be able to restrict which connections it may use at all (not just its default), as a light form of
+  separating work and personal?
 - Pricing line: is "webhooks plus always-on watches" the free/paid boundary on Cloud, or does tier 3 self-hosting make
   that moot, so we sell convenience only (deployment-spec §10.1)?
