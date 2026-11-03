@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:tern_client/tern_client.dart';
 
+import 'notifier.dart';
 import 'transcript.dart';
 
 enum Link { connecting, online, offline }
@@ -12,9 +13,17 @@ enum Link { connecting, online, offline }
 /// The daemon owns all state: this is a cache rebuilt on every (re)connect,
 /// since the event stream has no replay.
 class TernStore extends ChangeNotifier {
-  TernStore(this.client);
+  TernStore(this.client, {Notifier? notifier})
+    : notifier = notifier ?? const SilentNotifier() {
+    this.notifier.onAction = _onNotification;
+  }
 
   final TernClient client;
+  final Notifier notifier;
+
+  /// Whether the window has focus; notifications only go out when it
+  /// doesn't (or when it's showing another conversation).
+  bool appActive = true;
 
   Link link = Link.connecting;
   String? linkError;
@@ -29,7 +38,9 @@ class TernStore extends ChangeNotifier {
   final transcripts = <String, Transcript>{};
   final _runSession = <String, String>{};
   final usage = <String, Usage>{};
+  List<Schedule> schedules = [];
   String? error;
+  var _badge = 0;
 
   StreamSubscription<TernEvent>? _events;
   Timer? _retry;
@@ -97,6 +108,7 @@ class TernStore extends ChangeNotifier {
 
   Future<void> _resync() async {
     sessions = await client.sessions();
+    schedules = await client.schedules();
     final active = await client.activeRuns();
     for (final r in active) {
       _runSession[r.runId] = r.sessionId;
@@ -137,8 +149,9 @@ class TernStore extends ChangeNotifier {
       case RunStarted(:final runId, :final sessionId):
         session = sessionId;
         _runSession[runId] = sessionId;
-      case RunEvent(:final runId):
-        session = _runSession[runId];
+      case RunEvent(:final runId, :final sessionId):
+        session = sessionId ?? _runSession[runId];
+        if (sessionId != null) _runSession[runId] = sessionId;
       case UnknownEvent():
         return;
     }
@@ -148,8 +161,86 @@ class TernStore extends ChangeNotifier {
       return;
     }
     final changed = _transcriptFor(session)!.apply(e);
-    if (e is RunFinished) unawaited(_afterRun(session));
+    if (e is RunFinished) unawaited(_afterRun(session, e));
+    if (e is ApprovalRequested) _notifyApproval(e.approval);
     if (changed) notifyListeners();
+  }
+
+  /// Notify only when the user can't already see it.
+  bool _unseen(String session) => !appActive || selected != session;
+
+  void _notifyApproval(Approval a) {
+    if (!_unseen(a.sessionId)) return;
+    unawaited(
+      notifier.show(
+        id: a.id,
+        title: 'tern wants to run ${a.tool}',
+        body: a.summary,
+        approval: true,
+      ),
+    );
+  }
+
+  void _notifyFinished(String session, RunFinished e) {
+    if (!_unseen(session) || e.status == 'interrupted') return;
+    final title = sessions.where((s) => s.id == session).firstOrNull?.title;
+    final reply = transcripts[session]?.items
+        .whereType<AssistantItem>()
+        .lastOrNull
+        ?.text
+        .trim()
+        .split('\n')
+        .first;
+    unawaited(
+      notifier.show(
+        id: session,
+        title: title ?? 'tern',
+        body: e.status == 'failed'
+            ? 'Failed: ${e.error ?? 'unknown error'}'
+            : reply ?? 'Done',
+      ),
+    );
+  }
+
+  void _onNotification(String id, NotificationAction action) {
+    if (action == NotificationAction.open) {
+      // An approval id opens the conversation it belongs to.
+      final session =
+          transcripts.entries
+              .where(
+                (t) => t.value.items.any(
+                  (i) => i is ApprovalItem && i.approval.id == id,
+                ),
+              )
+              .map((t) => t.key)
+              .firstOrNull ??
+          id;
+      unawaited(open(session));
+      return;
+    }
+    final item = transcripts.values
+        .expand((t) => t.items)
+        .whereType<ApprovalItem>()
+        .where((a) => a.approval.id == id && a.outcome == null)
+        .firstOrNull;
+    if (item != null) {
+      unawaited(
+        answer(
+          item,
+          action == NotificationAction.allow ? Decision.once : Decision.deny,
+        ),
+      );
+    }
+  }
+
+  @override
+  void notifyListeners() {
+    final pending = pendingApprovals;
+    if (pending != _badge) {
+      _badge = pending;
+      unawaited(notifier.badge(pending));
+    }
+    super.notifyListeners();
   }
 
   Future<void> _learnRuns() async {
@@ -164,10 +255,14 @@ class TernStore extends ChangeNotifier {
     }
   }
 
-  Future<void> _afterRun(String session) async {
+  Future<void> _afterRun(String session, RunFinished e) async {
     try {
       sessions = await client.sessions();
       usage[session] = await client.usage(session);
+      if (schedules.any((s) => s.sessionId == session)) {
+        schedules = await client.schedules();
+      }
+      _notifyFinished(session, e);
       notifyListeners();
     } on TernException {
       // Refreshed again on reconnect.
@@ -255,6 +350,76 @@ class TernStore extends ChangeNotifier {
       error = e.message;
     }
     notifyListeners();
+  }
+
+  Future<void> refreshSchedules() async {
+    try {
+      schedules = await client.schedules();
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  /// Create or edit a routine. Returns the daemon's reason on failure.
+  Future<String?> saveSchedule({
+    String? id,
+    required String cron,
+    required String prompt,
+    String? deliverTo,
+  }) async {
+    try {
+      if (id == null) {
+        await client.createSchedule(
+          cron: cron,
+          prompt: prompt,
+          deliverTo: deliverTo,
+        );
+      } else {
+        await client.updateSchedule(
+          id,
+          cron: cron,
+          prompt: prompt,
+          deliverTo: deliverTo ?? 'none',
+        );
+      }
+      await refreshSchedules();
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  Future<void> setScheduleEnabled(Schedule s, bool enabled) async {
+    try {
+      await client.updateSchedule(s.id, enabled: enabled);
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    await refreshSchedules();
+  }
+
+  Future<void> deleteSchedule(Schedule s) async {
+    try {
+      await client.deleteSchedule(s.id);
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    await refreshSchedules();
+  }
+
+  /// Run a routine now and open its conversation.
+  Future<void> runSchedule(Schedule s) async {
+    try {
+      final started = await client.runSchedule(s.id);
+      _runSession[started.runId] = started.sessionId;
+      _transcriptFor(started.sessionId)!.activeRun = started.runId;
+      sessions = await client.sessions();
+      await open(started.sessionId);
+    } on TernException catch (e) {
+      error = e.message;
+      notifyListeners();
+    }
   }
 
   /// Validate and set the model for the open conversation.

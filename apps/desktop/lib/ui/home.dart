@@ -21,6 +21,23 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> {
   var _panel = true;
+  late final AppLifecycleListener _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    // Desktop windows report `resumed` while focused and `inactive` when not.
+    _lifecycle = AppLifecycleListener(
+      onStateChange: (s) =>
+          widget.store.appActive = s == AppLifecycleState.resumed,
+    );
+  }
+
+  @override
+  void dispose() {
+    _lifecycle.dispose();
+    super.dispose();
+  }
 
   void _togglePanel() => setState(() => _panel = !_panel);
 

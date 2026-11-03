@@ -17,7 +17,7 @@ pub mod types;
 
 pub use config::{Config, ConfigError};
 pub use home::TernHome;
-pub use secrets::{SecretError, Secrets};
+pub use secrets::{SecretError, SecretStatus, Secrets};
 
 /// Default contents written by `tern config init`.
 pub mod defaults {

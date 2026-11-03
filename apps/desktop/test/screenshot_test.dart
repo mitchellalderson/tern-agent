@@ -87,6 +87,11 @@ TernStore demoStore() {
       updatedAt: now.subtract(const Duration(days: 9)),
     ),
   ];
+  store.schedules = [
+    Schedule(id: 'a', cron: '0 1 * * *', prompt: 'Overnight sourcing: find new seed-stage fintechs', sessionId: 's2', enabled: true, nextRunAt: DateTime(now.year, now.month, now.day + 1, 1), lastStatus: 'completed'),
+    Schedule(id: 'b', cron: '0 8 * * 1-5', prompt: 'Reply sweep', sessionId: 'x', enabled: true, nextRunAt: DateTime(now.year, now.month, now.day + 1, 8), lastStatus: 'failed'),
+    const Schedule(id: 'c', cron: '0 9 * * 1', prompt: 'Weekly expense report', sessionId: 'y', enabled: false),
+  ];
   store.selected = 's1';
   store.draft = false;
   final t0 = now.subtract(const Duration(seconds: 50));
@@ -163,6 +168,7 @@ TernStore demoStore() {
     t.apply(e, now: t0);
   }
   (t.items.whereType<WorkItem>().first)
+    ..runId = 'r'
     ..started = t0
     ..finished = t0.add(const Duration(seconds: 42));
   t.apply(

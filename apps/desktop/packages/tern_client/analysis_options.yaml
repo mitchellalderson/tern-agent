@@ -1,0 +1,2 @@
+# Its own options, so the parent Flutter app's flutter_lints include
+# (not a dependency here) doesn't apply.

@@ -3128,6 +3128,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "toml_edit",
  "tracing",
  "uuid",
  "webpki-root-certs",

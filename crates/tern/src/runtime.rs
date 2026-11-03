@@ -11,7 +11,7 @@ use tern_core::config::{ModelRef, SandboxBackendKind};
 use tern_core::journal::Journal;
 use tern_core::tool::ToolRegistry;
 use tern_core::types::{Provider, ProviderError};
-use tern_core::{Config, Secrets, TernHome};
+use tern_core::{Config, SecretStatus, Secrets, TernHome};
 use tern_providers::{MockProvider, PROVIDER_ENV};
 use tern_store::Store;
 
@@ -20,6 +20,10 @@ pub struct Runtime {
     pub config: Config,
     pub store: Store,
     pub agent: Agent,
+    /// Shared with providers, connectors and MCP servers: edits through it
+    /// apply on their next use.
+    pub secrets: Secrets,
+    connectors: Arc<tern_lua::Connectors>,
     /// Set when `TERN_PROVIDER=mock:<script>` overrides real providers.
     pub mock: bool,
 }
@@ -74,8 +78,18 @@ impl Runtime {
             config,
             store,
             agent,
+            secrets,
+            connectors,
             mock,
         })
+    }
+
+    /// Every secret in `secrets.toml` or referred to by config or an active
+    /// connector, with what uses it. Never includes values.
+    pub fn secret_statuses(&self) -> Vec<SecretStatus> {
+        let mut uses = self.config.secret_uses();
+        uses.extend(self.connectors.secret_uses());
+        self.secrets.statuses(&uses)
     }
 
     /// `--model`, else the session's model, else `default_model`.

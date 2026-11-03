@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
+import 'inspector.dart';
+import 'routines.dart';
 import 'widgets.dart';
 
 /// What the agent is doing (spec §2.3). Routines, connectors and memory
@@ -96,7 +98,25 @@ class SidePanel extends StatelessWidget {
                       ),
                     ),
                 ],
+                if (store.selected case final session?
+                    when (store.sessions.any(
+                      (s) => s.id == session && s.runs > 0,
+                    )))
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () =>
+                          showInspector(context, store, session: session),
+                      style: TextButton.styleFrom(
+                        foregroundColor: c.muted,
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                      ),
+                      child: const Text('All runs…'),
+                    ),
+                  ),
                 const SizedBox(height: 22),
+                RoutinesSection(store: store),
+                const SizedBox(height: 16),
                 Text('USAGE', style: labels),
                 const SizedBox(height: 8),
                 if (usage == null || usage.total == 0)

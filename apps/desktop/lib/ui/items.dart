@@ -8,6 +8,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
+import 'inspector.dart';
 
 /// One transcript item.
 class ItemView extends StatelessWidget {
@@ -23,7 +24,18 @@ class ItemView extends StatelessWidget {
       text,
       streaming: streaming,
     ),
-    final WorkItem w => WorkCard(work: w),
+    final WorkItem w => WorkCard(
+      work: w,
+      onInspect: switch ((store.selected, w.runId)) {
+        (final String session, final String run) => () => showInspector(
+          context,
+          store,
+          session: session,
+          run: run,
+        ),
+        _ => null,
+      },
+    ),
     final PillItem p => _Pill(p),
     final ApprovalItem a => ApprovalCard(item: a, store: store),
     final RunEndItem r => _RunEnd(r, store: store),
@@ -89,9 +101,10 @@ class _AssistantMessage extends StatelessWidget {
 /// Tool calls between two messages, one line each; click a line for its
 /// output.
 class WorkCard extends StatefulWidget {
-  const WorkCard({super.key, required this.work});
+  const WorkCard({super.key, required this.work, this.onInspect});
 
   final WorkItem work;
+  final VoidCallback? onInspect;
 
   @override
   State<WorkCard> createState() => _WorkCardState();
@@ -122,7 +135,31 @@ class _WorkCardState extends State<WorkCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: TextStyle(fontSize: 12.5, color: c.muted)),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(fontSize: 12.5, color: c.muted),
+                ),
+              ),
+              if (widget.onInspect case final inspect?)
+                InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: inspect,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 2,
+                    ),
+                    child: Text(
+                      'Inspect run',
+                      style: TextStyle(fontSize: 12, color: c.muted),
+                    ),
+                  ),
+                ),
+            ],
+          ),
           const SizedBox(height: 6),
           for (final s in w.steps) ...[
             InkWell(
@@ -432,6 +469,13 @@ class _RunEnd extends StatelessWidget {
             style: TextStyle(fontSize: 12.5, color: failed ? c.error : c.muted),
           ),
         ),
+        if (store.selected case final session?)
+          TextButton(
+            onPressed: () =>
+                showInspector(context, store, session: session, run: end.runId),
+            style: TextButton.styleFrom(foregroundColor: c.muted),
+            child: const Text('Details'),
+          ),
         TextButton(
           onPressed: store.running ? null : () => store.resume(end.runId),
           child: const Text('Resume'),

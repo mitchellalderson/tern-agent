@@ -33,6 +33,10 @@ class ToolStep {
 
 /// Consecutive tool calls, shown as one card.
 class WorkItem extends Item {
+  WorkItem({this.runId});
+
+  /// The run these calls belong to, for the run inspector.
+  String? runId;
   final steps = <ToolStep>[];
   DateTime? started;
   DateTime? finished;
@@ -102,7 +106,7 @@ class Transcript {
               summary: summarize(name, input),
             );
             steps[id] = step;
-            t._work().steps.add(step);
+            t._work(m.runId).steps.add(step);
           case ToolResultBlock(
             :final toolUseId,
             :final content,
@@ -150,7 +154,7 @@ class Transcript {
         }
       case ToolStarted(:final id, :final name, :final summary):
         if (_step(id) != null) return false;
-        final work = _work();
+        final work = _work(e.runId);
         work.started ??= now;
         work.finished = null;
         work.steps.add(
@@ -161,7 +165,7 @@ class Transcript {
         if (step == null) {
           // Started before we were watching (or replayed after a crash).
           step = ToolStep(id: id, name: name, summary: name)..started = now;
-          _work().steps.add(step);
+          _work(e.runId).steps.add(step);
         }
         step
           ..status = isError ? StepStatus.error : StepStatus.ok
@@ -221,12 +225,12 @@ class Transcript {
 
   /// The work card to add steps to: the last one, if only notes follow it
   /// (so a "Saved to memory" note doesn't split a run's tools in two).
-  WorkItem _work() {
+  WorkItem _work([String? runId]) {
     for (final i in items.reversed) {
-      if (i is WorkItem) return i;
+      if (i is WorkItem) return i..runId ??= runId;
       if (i is! PillItem) break;
     }
-    final w = WorkItem();
+    final w = WorkItem(runId: runId);
     items.add(w);
     return w;
   }

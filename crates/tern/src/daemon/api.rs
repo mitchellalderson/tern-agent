@@ -22,7 +22,7 @@
 //!
 //! Agent events on `/v1/events` carry `session_id` as well as `run_id`.
 //! Schedules are in `api_schedules.rs`; session runs and journal steps in
-//! `api_runs.rs`.
+//! `api_runs.rs`; secrets in `api_secrets.rs`.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -153,6 +153,7 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/approvals/{id}", post(approve))
         .merge(super::api_schedules::routes())
         .merge(super::api_runs::routes())
+        .merge(super::api_secrets::routes())
         .with_state(manager)
 }
 

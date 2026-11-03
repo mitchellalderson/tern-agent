@@ -4,6 +4,7 @@
 pub mod api;
 mod api_runs;
 mod api_schedules;
+mod api_secrets;
 pub mod manager;
 
 use std::collections::HashMap;

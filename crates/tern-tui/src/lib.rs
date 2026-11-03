@@ -6,6 +6,7 @@
 mod app;
 mod history;
 mod input;
+mod secrets;
 mod term;
 mod ui;
 mod wrap;
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tern_core::agent::RunOutcome;
 use tern_core::approval::{ApprovalHandler, ApprovalRequest, Decision};
+use tern_core::SecretStatus;
 use tern_core::events::AgentEvent;
 use tern_core::types::{ContentBlock, Role, Usage};
 use tern_store::SessionSummary;
@@ -78,6 +80,18 @@ pub trait Backend: Send + Sync + 'static {
     /// Re-read configuration and rebuild tools and providers.
     fn reload(&self) -> BackendResult<String>;
     fn subscribe(&self) -> broadcast::Receiver<AgentEvent>;
+    /// Every known secret, without values.
+    fn secrets(&self) -> BackendResult<Vec<SecretStatus>> {
+        Err("this backend can't manage secrets".into())
+    }
+    /// Store a secret in `secrets.toml`.
+    fn set_secret(&self, _name: &str, _value: &str) -> BackendResult<()> {
+        Err("this backend can't manage secrets".into())
+    }
+    /// Remove a secret from `secrets.toml`; false if it wasn't there.
+    fn remove_secret(&self, _name: &str) -> BackendResult<bool> {
+        Err("this backend can't manage secrets".into())
+    }
 }
 
 /// An approval the agent is waiting on, answered through `reply`.

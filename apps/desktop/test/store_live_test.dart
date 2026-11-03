@@ -1,11 +1,11 @@
 // TernStore against a real daemon with the mock provider and the demo
 // script. Needs the tern binary; skipped without it:
 //   TERN_BIN=../../target/debug/tern flutter test test/store_live_test.dart
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tern_client/tern_client.dart';
+import 'package:tern_desktop/state/notifier.dart';
 import 'package:tern_desktop/state/store.dart';
 import 'package:tern_desktop/state/transcript.dart';
 
@@ -36,7 +36,9 @@ void main() {
       includeParentEnvironment: false,
     );
     final endpoint = Endpoint.local({'TERN_HOME': home});
-    final store = TernStore(TernClient(endpoint));
+    final notes = FakeNotifier();
+    final store = TernStore(TernClient(endpoint), notifier: notes)
+      ..appActive = false;
     addTearDown(() async {
       store.dispose();
       daemon.kill();
@@ -57,6 +59,10 @@ void main() {
     final card = store.current!.items.whereType<ApprovalItem>().single;
     expect(card.approval.summary, 'shell echo needs-approval');
     expect(store.pendingApprovals, 1);
+    // In the background: an approval notification and a badge.
+    await until(() => notes.shown.isNotEmpty, 'notification');
+    expect(notes.shown.single.approval, isTrue);
+    expect(notes.badges.last, 1);
 
     // A second app attaching now sees the run and the waiting approval.
     final other = TernStore(TernClient(endpoint));
@@ -66,8 +72,15 @@ void main() {
     expect(other.current!.activeRun, isNotNull);
     expect(other.pendingApprovals, 1);
 
-    await store.answer(card, Decision.once);
+    // Allow it from the notification's button.
+    notes.onAction!(card.approval.id, NotificationAction.allow);
     await until(() => store.current!.activeRun == null, 'run to finish');
+    await until(() => notes.shown.length == 2, 'finished notification');
+    expect(
+      notes.shown.last.body,
+      'Done. The command ran after you approved it.',
+    );
+    expect(notes.badges.last, 0);
     final items = store.current!.items;
     expect(items.first, isA<UserItem>());
     expect(
@@ -90,4 +103,23 @@ void main() {
       AssistantItem,
     ]);
   }, skip: bin == null ? 'set TERN_BIN to run' : false);
+}
+
+class FakeNotifier implements Notifier {
+  final shown = <({String id, String title, String body, bool approval})>[];
+  final badges = <int>[];
+
+  @override
+  void Function(String id, NotificationAction action)? onAction;
+
+  @override
+  Future<void> show({
+    required String id,
+    required String title,
+    required String body,
+    bool approval = false,
+  }) async => shown.add((id: id, title: title, body: body, approval: approval));
+
+  @override
+  Future<void> badge(int count) async => badges.add(count);
 }
