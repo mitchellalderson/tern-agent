@@ -128,7 +128,7 @@ Tabs: **Models** (providers, API key secrets, default model, context window), **
 ## 5. Notifications and the menu bar
 
 - Native notification when a run finishes while the app isn't focused on that conversation, and always for approvals. Approval notifications carry Allow once / Deny actions that call the API directly.
-- Menu bar extra: daemon status, count of pending approvals and running runs, quick "New message to…", Open tern.
+- Menu bar extra: superseded by `tern tray`, a separate native process that outlives the app window ([personal-agent-tooling-spec.md](personal-agent-tooling-spec.md) §11, phase T8). The app quits when its window closes and doesn't post notifications while a tray is attached.
 - Dock badge = pending approvals.
 
 ## 6. Connecting to the engine
