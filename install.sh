@@ -3,14 +3,23 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/OWNER/tern/main/install.sh | sh
 #
+# Downloads tern-<target>.tar.gz and its .sha256 from a GitHub release (the
+# assets .github/workflows/release.yml publishes), checks the checksum, and
+# installs the binary. Needs curl or wget, and sha256sum or shasum.
+#
 # Environment:
-#   TERN_REPO         GitHub repo to install from (owner/name)
+#   TERN_REPO         GitHub repo to install from (default: DEFAULT_REPO below)
 #   TERN_VERSION      release tag, e.g. v0.1.0 (default: latest)
 #   TERN_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
 #   TERN_DOWNLOAD_URL download from this base URL instead of GitHub (a mirror)
 set -eu
 
-REPO="${TERN_REPO:-OWNER/tern}"
+# TODO(owner): set this to the public repository, e.g. DEFAULT_REPO="owner/tern",
+# and replace OWNER in the curl line above and in README.md. Until then the
+# script refuses to run unless TERN_REPO or TERN_DOWNLOAD_URL is set.
+DEFAULT_REPO=""
+
+REPO="${TERN_REPO:-$DEFAULT_REPO}"
 VERSION="${TERN_VERSION:-latest}"
 INSTALL_DIR="${TERN_INSTALL_DIR:-$HOME/.local/bin}"
 
@@ -19,7 +28,9 @@ die() { say "error: $*"; exit 1; }
 
 if [ -z "${TERN_DOWNLOAD_URL:-}" ]; then
   case "$REPO" in
-    OWNER/*) die "set TERN_REPO=owner/name (this script hasn't been pointed at a repository yet)" ;;
+    "" | OWNER/*) die "set TERN_REPO=owner/name (this script hasn't been pointed at a repository yet)" ;;
+    */*) ;;
+    *) die "TERN_REPO must look like owner/name, got '$REPO'" ;;
   esac
 fi
 
@@ -33,6 +44,11 @@ case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;
   *) die "unsupported CPU $(uname -m); build from source with cargo" ;;
 esac
+# A shell running under Rosetta reports x86_64 on Apple Silicon; use the native build.
+if [ "$os" = apple-darwin ] && [ "$arch" = x86_64 ] &&
+  [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" = 1 ]; then
+  arch=aarch64
+fi
 target="$arch-$os"
 asset="tern-$target.tar.gz"
 
@@ -82,4 +98,4 @@ case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) say "add $INSTALL_DIR to your PATH, e.g.: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
-say "next: tern config init && tern doctor"
+say "next: tern setup (then tern doctor to check everything)"

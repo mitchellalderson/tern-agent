@@ -1,14 +1,29 @@
 # tern
 
-A personal AI agent shipped as **one static binary**: no Python, no Node, no Docker required. It runs in your terminal and on Telegram, runs scheduled tasks, and survives crashes: every model call and tool result is journaled, so a killed run resumes where it stopped without repeating completed work.
+A personal AI agent you run yourself, shipped as **one static binary**: no Python, no Node, no Docker required. It chats in your terminal and on Telegram (and in a desktop app you build from [apps/desktop](apps/desktop/README.md)), runs scheduled routines, writes its own sandboxed connectors for APIs nobody built one for, and asks before it runs commands. It survives crashes: every model call and tool result is journaled, so a killed run resumes where it stopped without repeating completed work.
+
+<!-- TODO(launch): replace this screenshot with docs/assets/demo.gif, the 90-second demo in docs/launch-plan.md §4.1
+     (routine, Telegram approval, kill -9 and resume, agent-written connector). The screenshot is the desktop app
+     rendered from demo data by apps/desktop/test/screenshot_test.dart. -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/desktop-dark.png">
+  <img alt="The tern desktop app: a conversation that delegated to three sub-agents, an approval card for a shell command, and routines in the side panel" src="docs/assets/desktop-light.png">
+</picture>
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/OWNER/tern/main/install.sh | sh   # TODO(owner): real repo
+tern setup     # paste a model provider key, pick a model
+```
+
+macOS and Linux. Anthropic or any OpenAI-compatible model, including local ones. No telemetry. [FAQ](docs/faq.md) · [Security](SECURITY.md) · [Roadmap](ROADMAP.md)
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/OWNER/tern/main/install.sh | TERN_REPO=OWNER/tern sh
+curl -fsSL https://raw.githubusercontent.com/OWNER/tern/main/install.sh | sh
 ```
 
-The script picks the right build (Linux x86_64/aarch64, static musl; macOS Apple Silicon/Intel), verifies its SHA-256 checksum, and installs to `~/.local/bin` (`TERN_INSTALL_DIR` to change). Or build from source with Rust 1.89+:
+The script picks the right build (Linux x86_64/aarch64, static musl; macOS Apple Silicon/Intel), verifies its SHA-256 checksum, and installs to `~/.local/bin` (`TERN_INSTALL_DIR` to change; `TERN_VERSION=v0.1.0` pins a release, `TERN_REPO=owner/name` installs from a fork). Or build from source with Rust 1.89+:
 
 ```sh
 cargo build --profile dist -p tern    # → target/dist/tern
@@ -301,6 +316,8 @@ docker_image = "debian:stable-slim"
 Commands then run in one long-lived container per workspace, with the workspace mounted at `/workspace` and files owned by you.
 
 ## Security model
+
+The threat model, what isn't covered, and how to report a vulnerability are in [SECURITY.md](SECURITY.md). In short:
 
 - **Secrets** come from the environment or `~/.tern/secrets.toml`, which must be mode 0600. Every secret value tern reads is scrubbed from the journal, conversation history, and connector and MCP server logs, and none reach the shell's environment.
 - **File tools** can't modify `~/.tern` and can't read `secrets.toml` or the database. Reads and writes outside the workspace need approval, and paths that escape the workspace through `..` or symlinks are refused.
