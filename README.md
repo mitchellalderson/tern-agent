@@ -317,6 +317,72 @@ Everything lives in `~/.tern` (`TERN_HOME` to move it): `config.toml`, `secrets.
 
 ## Development
 
+The repo has two halves: the Rust engine (`crates/`, built into the single `tern` binary) and the Flutter desktop app (`apps/desktop`, see [its README](apps/desktop/README.md)). They only meet over the daemon's socket. Neither the app nor `tern` builds the engine for you, and both talk to whichever `tern daemon` is already running.
+
+### After changing Rust code, rebuild and restart the daemon
+
+A running daemon keeps running the binary it started from. Hot reload in `flutter run` only reloads Dart, so after changing anything under `crates/` the app (and a `tern` chat attached to the daemon) keeps seeing the old engine until you restart it:
+
+```sh
+kill $(cat ~/.tern/tern.pid)              # stop the old daemon (SIGTERM)
+cargo build -p tern                       # → target/debug/tern
+target/debug/tern daemon                  # start the new one
+```
+
+The app reconnects on its own (with backoff up to 10 s) and resyncs, so you don't need to restart it. Runs in progress when you stop the daemon are resumed by the new one, so restarting mid-run is safe and is also a quick way to test crash recovery.
+
+`/v1/health` shows the daemon's `pid`, which tells you whether the one you're talking to is the one you just started (`version` stays the same between dev builds):
+
+```sh
+curl -s --unix-socket ~/.tern/tern.sock http://tern/v1/health
+```
+
+Socket paths are limited to about 100 characters. With a long `TERN_HOME`, tern binds a socket in the system temp directory and makes `tern.sock` a symlink to it. tern and the app follow the symlink, but curl doesn't, so use `--unix-socket "$(readlink <TERN_HOME>/tern.sock)"`.
+
+Only one daemon can use a data directory. If `tern daemon` says another is already running, an old one is still up: kill the pid it prints.
+
+### Make sure the app starts your build
+
+When no daemon is running, the app's **Start tern** button looks for a binary in this order: `$TERN_BIN`, your `PATH`, `~/.cargo/bin`, `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`. If you've installed a release `tern`, that is what it starts, not your build. Point the app at your build explicitly:
+
+```sh
+cd apps/desktop
+TERN_BIN=$PWD/../../target/debug/tern flutter run -d macos
+```
+
+Or put your build first on the `PATH` with `cargo install --path crates/tern` (installs into `~/.cargo/bin`; rerun it after each change).
+
+### Keep your real data out of it
+
+Use a throwaway `TERN_HOME` while developing so experiments don't touch `~/.tern`. Every command, the daemon, and the app honour it:
+
+```sh
+apps/desktop/tool/demo_daemon.sh                  # mock provider, temp home, no API key; prints TERN_HOME
+TERN_HOME=<printed path> flutter run -d macos     # in apps/desktop
+TERN_HOME=<printed path> target/debug/tern        # the TUI against the same daemon
+```
+
+`demo_daemon.sh` builds `target/debug/tern` only if it's missing, so run `cargo build -p tern` first after a Rust change. The demo replies with a scripted write-and-read, and a message containing "approve" produces an approval. For a different scenario, point `TERN_PROVIDER=mock:<script.json>` at your own script (see `apps/desktop/tool/demo_script.json` and the end-to-end tests). With a temp home, kill the daemon with `kill $(cat <TERN_HOME>/tern.pid)`.
+
+### Changing the API
+
+The daemon's routes are in `crates/tern/src/daemon/api*.rs`, and the app's client is `apps/desktop/packages/tern_client`. When you add or change a route or a payload, update `tern_client/lib/src/models.dart` and `client.dart` to match, then run the live tests against your build (they start a real daemon):
+
+```sh
+cargo build -p tern
+cd apps/desktop/packages/tern_client && TERN_BIN=../../../../target/debug/tern dart test
+cd apps/desktop && TERN_BIN=../../target/debug/tern flutter test test/store_live_test.dart
+```
+
+### Other tips
+
+- `TERN_LOG=debug` makes `~/.tern/logs/` verbose; `tail -f` it while poking at the daemon.
+- `tern doctor --offline` checks a config without hitting providers; `tern runs show <id>` shows what a run actually did, step by step.
+- `TERN_SCHEDULER_TICK_MS=1000 target/debug/tern daemon` checks for due schedules every second instead of every 30, for testing routines.
+- `cargo build -p tern` (debug) is what everything above assumes. Use `--release` only when measuring performance, and remember the app then needs `TERN_BIN=…/target/release/tern`.
+
+### Tests
+
 ```sh
 cargo test --workspace                          # unit and end-to-end tests (mock model, no network)
 python3 scripts/tui-smoke.py target/debug/tern  # drives the real TUI in a pseudo-terminal
