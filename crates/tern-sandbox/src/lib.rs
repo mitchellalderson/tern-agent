@@ -7,10 +7,12 @@ pub use docker::DockerBackend;
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
@@ -21,13 +23,29 @@ pub enum SandboxError {
     Wait(std::io::Error),
 }
 
+/// Receives output text (stdout and stderr interleaved) while a command runs.
+#[derive(Clone)]
+pub struct OutputSink(pub Arc<dyn Fn(&str) + Send + Sync>);
+
+impl std::fmt::Debug for OutputSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OutputSink")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecOpts {
     pub cwd: PathBuf,
     pub timeout: Duration,
     /// Per-stream cap on captured bytes.
     pub max_output: usize,
+    /// Live output, coalesced to a few calls per second. Everything it
+    /// receives is also in the final `ExecOutput` (up to `max_output`).
+    pub on_output: Option<OutputSink>,
 }
+
+/// Live output is batched for this long before it is handed to the sink.
+const STREAM_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExecOutput {
@@ -124,8 +142,15 @@ where
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let max = opts.max_output;
-    let out_task = tokio::spawn(read_capped(stdout, max));
-    let err_task = tokio::spawn(read_capped(stderr, max));
+    let (tx, forwarder) = match &opts.on_output {
+        Some(sink) => {
+            let (tx, rx) = mpsc::unbounded_channel();
+            (Some(tx), Some(tokio::spawn(forward(rx, sink.clone()))))
+        }
+        None => (None, None),
+    };
+    let mut out_task = tokio::spawn(read_capped(stdout, max, tx.clone()));
+    let mut err_task = tokio::spawn(read_capped(stderr, max, tx));
 
     let mut result = ExecOutput::default();
     tokio::select! {
@@ -146,28 +171,88 @@ where
     }
     // Background processes may hold the pipes open; don't wait forever.
     let grace = Duration::from_secs(2);
-    let (out, out_trunc) = tokio::time::timeout(grace, out_task)
+    let (out, out_trunc) = tokio::time::timeout(grace, &mut out_task)
         .await
         .ok()
         .and_then(Result::ok)
         .unwrap_or_default();
-    let (err, err_trunc) = tokio::time::timeout(grace, err_task)
+    let (err, err_trunc) = tokio::time::timeout(grace, &mut err_task)
         .await
         .ok()
         .and_then(Result::ok)
         .unwrap_or_default();
+    // Drop the readers' senders so the forwarder flushes and ends.
+    out_task.abort();
+    err_task.abort();
+    if let Some(f) = forwarder {
+        let _ = tokio::time::timeout(grace, f).await;
+    }
     result.stdout = out;
     result.stderr = err;
     result.truncated = out_trunc || err_trunc;
     Ok(result)
 }
 
-/// Read everything, keeping at most `max` bytes. Returns (text, truncated).
-async fn read_capped<R: AsyncRead + Unpin>(reader: Option<R>, max: usize) -> (String, bool) {
+/// Batch chunks from the readers and hand them to `sink` at most once per
+/// `STREAM_INTERVAL`. Ends (after a final flush) when every sender is gone.
+async fn forward(mut rx: mpsc::UnboundedReceiver<String>, sink: OutputSink) {
+    while let Some(first) = rx.recv().await {
+        let mut batch = first;
+        let deadline = tokio::time::Instant::now() + STREAM_INTERVAL;
+        loop {
+            tokio::select! {
+                more = rx.recv() => match more {
+                    Some(s) => batch.push_str(&s),
+                    None => break,
+                },
+                () = tokio::time::sleep_until(deadline) => break,
+            }
+        }
+        (sink.0)(&batch);
+    }
+}
+
+/// Split off the longest prefix of `bytes` that is complete UTF-8 (invalid
+/// bytes become U+FFFD); a partial character at the end is left in `bytes`.
+fn take_text(bytes: &mut Vec<u8>) -> String {
+    let mut text = String::new();
+    loop {
+        match std::str::from_utf8(bytes) {
+            Ok(s) => {
+                text.push_str(s);
+                bytes.clear();
+                return text;
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                text.push_str(&String::from_utf8_lossy(&bytes[..valid]));
+                match e.error_len() {
+                    None => {
+                        bytes.drain(..valid);
+                        return text;
+                    }
+                    Some(n) => {
+                        text.push('\u{FFFD}');
+                        bytes.drain(..valid + n);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Read everything, keeping at most `max` bytes (and streaming the kept
+/// part to `live`). Returns (text, truncated).
+async fn read_capped<R: AsyncRead + Unpin>(
+    reader: Option<R>,
+    max: usize,
+    live: Option<mpsc::UnboundedSender<String>>,
+) -> (String, bool) {
     let Some(mut reader) = reader else {
         return (String::new(), false);
     };
     let mut kept = Vec::new();
+    let mut pending = Vec::new();
     let mut truncated = false;
     let mut buf = [0u8; 8192];
     loop {
@@ -175,10 +260,23 @@ async fn read_capped<R: AsyncRead + Unpin>(reader: Option<R>, max: usize) -> (St
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 let room = max.saturating_sub(kept.len());
-                kept.extend_from_slice(&buf[..n.min(room)]);
+                let take = n.min(room);
+                kept.extend_from_slice(&buf[..take]);
                 truncated |= n > room;
+                if let Some(tx) = &live {
+                    pending.extend_from_slice(&buf[..take]);
+                    let text = take_text(&mut pending);
+                    if !text.is_empty() {
+                        let _ = tx.send(text);
+                    }
+                }
             }
         }
+    }
+    if let Some(tx) = &live
+        && !pending.is_empty()
+    {
+        let _ = tx.send(String::from_utf8_lossy(&pending).into_owned());
     }
     (String::from_utf8_lossy(&kept).into_owned(), truncated)
 }
@@ -192,6 +290,7 @@ mod tests {
             cwd: dir.to_path_buf(),
             timeout: Duration::from_secs(10),
             max_output: 1024,
+            on_output: None,
         }
     }
 

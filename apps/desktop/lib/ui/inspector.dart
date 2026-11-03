@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -43,12 +44,27 @@ class _RunInspectorState extends State<RunInspector> {
   List<StepItem>? _steps;
   String? _error;
   final _open = <int>{};
+  Timer? _refresh;
 
   @override
   void initState() {
     super.initState();
     _load();
+    // The journal grows while a run goes; keep up with it.
+    _refresh = Timer.periodic(const Duration(seconds: 2), (_) {
+      final run = _selected;
+      if (run != null && _live(run)) _pick(run, quiet: true);
+    });
   }
+
+  @override
+  void dispose() {
+    _refresh?.cancel();
+    super.dispose();
+  }
+
+  bool _live(String run) =>
+      widget.store.transcripts.values.any((t) => t.activeRun == run);
 
   Future<void> _load() async {
     try {
@@ -61,16 +77,28 @@ class _RunInspectorState extends State<RunInspector> {
     }
   }
 
-  Future<void> _pick(String? run) async {
+  Future<void> _pick(String? run, {bool quiet = false}) async {
     if (run == null) return;
-    setState(() {
-      _selected = run;
-      _steps = null;
-      _open.clear();
-    });
+    if (!quiet) {
+      setState(() {
+        _selected = run;
+        _steps = null;
+        _open.clear();
+      });
+    }
     try {
       final steps = await widget.store.client.steps(run);
-      if (mounted && _selected == run) setState(() => _steps = steps);
+      if (!mounted || _selected != run) return;
+      setState(() {
+        // Open what's in flight, so its input shows without a click.
+        final fresh = _steps == null;
+        _steps = steps;
+        if (fresh) {
+          _open.addAll(
+            steps.where((s) => s.status == 'started').map((s) => s.idx),
+          );
+        }
+      });
     } on TernException catch (e) {
       if (mounted) setState(() => _error = e.message);
     }
@@ -244,6 +272,11 @@ class _RunInspectorState extends State<RunInspector> {
     );
   }
 
+  /// The tool call id of a running tool step (its input is the call).
+  static String? _callId(StepItem s) => s.status == 'started' && s.input is Map
+      ? (s.input as Map)['id'] as String?
+      : null;
+
   Widget _detail(BuildContext context, StepItem s) {
     final c = context.colors;
     String pretty(Object? v) =>
@@ -283,7 +316,22 @@ class _RunInspectorState extends State<RunInspector> {
           ),
           const SizedBox(height: 6),
           block('INPUT', s.input),
-          if (s.output != null) block('OUTPUT', s.output),
+          if (s.output != null)
+            block('OUTPUT', s.output)
+          else if (_callId(s) case final id?)
+            // Not journaled until it ends; show what the daemon streamed.
+            ListenableBuilder(
+              listenable: widget.store,
+              builder: (context, _) {
+                final live = widget.store.transcripts.values
+                    .map((t) => t.liveOutput(id))
+                    .nonNulls
+                    .firstOrNull;
+                return live == null || live.isEmpty
+                    ? const SizedBox.shrink()
+                    : block('OUTPUT SO FAR', live);
+              },
+            ),
           if (s.error case final e?) block('ERROR', e),
         ],
       ),

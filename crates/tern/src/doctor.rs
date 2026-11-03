@@ -4,11 +4,11 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use tern_core::config::{McpTransport, ProviderConfig, ProviderKind, SandboxBackendKind};
 use tern_core::secrets::SecretSource;
 use tern_core::{Config, Secrets, TernHome};
+use tern_providers::ListError;
 use tern_store::Store;
 
 use crate::cli::DoctorArgs;
@@ -192,6 +192,9 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
     r.section("Remote access");
     check_listeners(&mut r, &config);
 
+    r.section("Sub-agents");
+    check_subagents(&mut r, &config);
+
     r.section("Gateways");
     match &config.gateway.telegram {
         Some(t) if t.enabled => {
@@ -293,14 +296,14 @@ fn check_provider(
         }
         None => None,
     };
-    let Some(base) = p.effective_base_url() else {
+    if p.effective_base_url().is_none() {
         r.check(
             Status::Fail,
             format!("{name}: openai_compat needs base_url"),
             None,
         );
         return;
-    };
+    }
     if offline {
         r.check(
             Status::Info,
@@ -309,58 +312,29 @@ fn check_provider(
         );
         return;
     }
-    let (status, msg) = runtime.block_on(probe(p.kind, base, key.as_deref()));
+    let (status, msg) = runtime.block_on(probe(name, p, key.as_deref()));
     r.check(status, format!("{name}: {msg}"), None);
 }
 
 /// List models as a cheap authenticated reachability probe.
-async fn probe(kind: ProviderKind, base: &str, key: Option<&str>) -> (Status, String) {
-    let client = match tern_core::net::http_client()
-        .timeout(Duration::from_secs(5))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return (Status::Fail, format!("http client: {e}")),
-    };
-    let req = match kind {
-        ProviderKind::Anthropic => client
-            .get(format!("{base}/v1/models"))
-            .header("anthropic-version", "2023-06-01")
-            .header("x-api-key", key.unwrap_or_default()),
-        ProviderKind::OpenaiCompat => {
-            let req = client.get(format!("{base}/models"));
-            match key {
-                Some(k) => req.bearer_auth(k),
-                None => req,
+async fn probe(name: &str, p: &ProviderConfig, key: Option<&str>) -> (Status, String) {
+    let base = p.effective_base_url().unwrap_or_default();
+    match tern_providers::list_models(p, key).await {
+        Ok(l) => {
+            let mut msg = format!("reachable ({base}, {} models)", l.models.len());
+            if let Some(url) = l.suggested_base_url {
+                msg.push_str(&format!("; models answered at {url}, set base_url to that"));
             }
+            (Status::Ok, msg)
         }
-    };
-    match req.send().await {
-        Ok(resp) if resp.status().is_success() => (Status::Ok, format!("reachable ({base})")),
-        Ok(resp) if matches!(resp.status().as_u16(), 401 | 403) => (
-            Status::Fail,
-            format!(
-                "{base} rejected the API key (HTTP {})",
-                resp.status().as_u16()
-            ),
-        ),
-        Ok(resp) => (
-            Status::Warn,
-            format!("{base} answered HTTP {}", resp.status().as_u16()),
-        ),
-        Err(e) => (
-            Status::Fail,
-            format!("cannot reach {base}: {}", root_cause(&e)),
-        ),
+        Err(e) => {
+            let status = match e {
+                ListError::RateLimited | ListError::NotFound | ListError::Forbidden => Status::Warn,
+                _ => Status::Fail,
+            };
+            (status, crate::providers::describe(&e, name, Some(base)))
+        }
     }
-}
-
-fn root_cause(e: &(dyn std::error::Error + 'static)) -> String {
-    let mut cur = e;
-    while let Some(next) = cur.source() {
-        cur = next;
-    }
-    cur.to_string()
 }
 
 fn check_database(r: &mut Report, path: &Path) {
@@ -447,6 +421,43 @@ fn check_listeners(r: &mut Report, config: &tern_core::Config) {
             "the API is reachable over TCP and sandbox.backend = \"host\": approved shell commands from paired devices run on this machine",
             Some("Consider sandbox.backend = \"docker\", or pair phones with --scope read."),
         );
+    }
+}
+
+/// `[subagents]`: every model it names must parse and use a configured
+/// provider.
+fn check_subagents(r: &mut Report, config: &tern_core::Config) {
+    let sub = &config.subagents;
+    if !sub.enabled {
+        r.check(Status::Info, "disabled ([subagents] enabled = false)", None);
+        return;
+    }
+    r.check(
+        Status::Ok,
+        format!(
+            "enabled: depth {}, {} at once per run ({} in all), {} per run",
+            sub.max_depth, sub.max_concurrent, sub.max_concurrent_global, sub.max_children
+        ),
+        None,
+    );
+    let named = sub
+        .default_model
+        .iter()
+        .map(|m| ("default_model".to_owned(), m))
+        .chain(sub.models.iter().map(|(k, m)| (format!("models.{k}"), m)));
+    for (key, model) in named {
+        match model.parse::<tern_core::config::ModelRef>() {
+            Err(e) => r.check(Status::Fail, format!("subagents.{key}: {e}"), None),
+            Ok(m) if !config.providers.contains_key(&m.provider) => r.check(
+                Status::Fail,
+                format!(
+                    "subagents.{key} = {m} uses provider {:?}, which is not configured",
+                    m.provider
+                ),
+                None,
+            ),
+            Ok(_) => {}
+        }
     }
 }
 

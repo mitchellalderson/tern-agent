@@ -6,9 +6,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult};
+use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult, progress_sink};
 use tern_core::types::ToolSpec;
-use tern_sandbox::{ExecOpts, SandboxBackend};
+use tern_sandbox::{ExecOpts, OutputSink, SandboxBackend};
 
 use crate::{args, spec};
 
@@ -72,6 +72,7 @@ impl Tool for Shell {
             cwd: ctx.workspace.clone(),
             timeout,
             max_output: 256 * 1024,
+            on_output: progress_sink().map(|sink| OutputSink(Arc::new(move |s| sink(s)))),
         };
         let out = match self
             .backend
@@ -107,5 +108,47 @@ impl Tool for Shell {
             content: text,
             is_error: out.exit_code != Some(0),
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::sync::Mutex;
+
+    use tern_core::tool::{ProgressSink, with_progress};
+    use tern_sandbox::HostBackend;
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn streams_output_while_running_and_still_returns_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolCtx {
+            workspace: tmp.path().into(),
+            run_id: "r".into(),
+            session_id: "s".into(),
+            cancel: CancellationToken::new(),
+        };
+        let shell = Shell::new(Arc::new(HostBackend), Duration::from_secs(10));
+        let chunks = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink: ProgressSink = {
+            let chunks = chunks.clone();
+            Arc::new(move |s| chunks.lock().unwrap().push(s.to_owned()))
+        };
+        let r = with_progress(
+            sink,
+            shell.call(
+                &ctx,
+                json!({"command": "echo first; sleep 0.6; echo second >&2"}),
+            ),
+        )
+        .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("first") && r.content.contains("second"));
+        let chunks = chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 2, "{chunks:?}");
+        assert_eq!(chunks[0], "first\n");
+        assert_eq!(chunks[1], "second\n");
     }
 }

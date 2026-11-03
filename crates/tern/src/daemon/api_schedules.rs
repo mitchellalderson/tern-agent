@@ -25,7 +25,10 @@ pub fn routes() -> Router<Shared> {
     Router::new()
         .route("/v1/schedules", get(list).post(create))
         .route("/v1/schedules/preview", post(preview))
-        .route("/v1/schedules/{id}", axum::routing::patch(update).delete(delete))
+        .route(
+            "/v1/schedules/{id}",
+            axum::routing::patch(update).delete(delete),
+        )
         .route("/v1/schedules/{id}/run", post(run_now))
 }
 
@@ -45,13 +48,12 @@ pub struct Schedule {
 }
 
 fn view(m: &Shared, s: ScheduleRow) -> Schedule {
-    let last_status = m
-        .rt
-        .store
-        .runs_for_session(&s.session_id)
-        .ok()
-        .and_then(|runs| runs.into_iter().last())
-        .map(|r| r.status);
+    let last_status =
+        m.rt.store
+            .runs_for_session(&s.session_id)
+            .ok()
+            .and_then(|runs| runs.into_iter().last())
+            .map(|r| r.status);
     Schedule {
         next_run_at: (s.enabled && s.next_run_at != i64::MAX).then_some(s.next_run_at),
         id: s.id,
@@ -167,12 +169,11 @@ async fn delete(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiRes
 }
 
 async fn run_now(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Value> {
-    let s = m
-        .rt
-        .store
-        .schedule(&id)
-        .map_err(internal)?
-        .ok_or_else(|| not_found("schedule"))?;
+    let s =
+        m.rt.store
+            .schedule(&id)
+            .map_err(internal)?
+            .ok_or_else(|| not_found("schedule"))?;
     let started = m
         .start(
             Some(&s.session_id),

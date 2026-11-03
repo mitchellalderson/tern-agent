@@ -4,6 +4,7 @@
 pub mod api;
 mod api_runs;
 mod api_schedules;
+mod api_providers;
 mod api_secrets;
 pub mod auth;
 pub mod listen;
@@ -98,11 +99,19 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     let _ = routes.gateways.set(gateways);
 
     let manager = Manager::new(rt.clone(), routes.clone());
+    if let Some(h) = &rt.subagents {
+        h.set_driver(Arc::new(manager::ManagerDriver(Arc::downgrade(&manager))));
+    }
 
     // Spec §5.3: resume recent runs a crash cut off; mark older ones interrupted.
+    // Sub-agents are ordinary runs here; a parent that gets to waiting on
+    // one first starts it itself, and `spawn` won't drive a run twice.
     for run in triage_running_runs(&rt.store, RESUME_MAX_AGE)? {
         tracing::info!(run = %run.id, "resuming run after restart");
         manager.spawn(&run.session_id, &run.id, true);
+    }
+    if let Some(h) = &rt.subagents {
+        h.kick();
     }
 
     if let Some(g) = telegram {

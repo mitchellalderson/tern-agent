@@ -75,6 +75,10 @@ pub struct Script {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Conversation {
+    /// Also accepted as `when_task_contains`: a sub-agent's first user
+    /// message is its brief, so one script can drive a parent and its
+    /// children.
+    #[serde(alias = "when_task_contains")]
     pub matches: String,
     pub turns: Vec<Turn>,
 }

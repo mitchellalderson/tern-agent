@@ -4,9 +4,11 @@ mod daemon_repo;
 mod devices_repo;
 mod migrations;
 mod repo;
+mod subagents_repo;
 
 pub use daemon_repo::ScheduleRow;
 pub use devices_repo::{DeviceGrant, DeviceRow};
+pub use subagents_repo::{MailRow, NewMail};
 
 pub use repo::{
     MemoryRow, MessageHit, MessageRow, NewMessage, NewRun, RunRow, SessionRow, SessionSummary,

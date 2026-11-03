@@ -37,6 +37,13 @@ class TernStore extends ChangeNotifier {
   bool draft = true;
   final transcripts = <String, Transcript>{};
   final _runSession = <String, String>{};
+
+  /// Sub-agent run → the run that started it.
+  final _parentOf = <String, String>{};
+
+  /// Run → the conversation its approvals show in (a sub-agent's go to
+  /// the one the user started).
+  final _approvalSession = <String, String>{};
   final usage = <String, Usage>{};
   List<Schedule> schedules = [];
   String? error;
@@ -112,6 +119,7 @@ class TernStore extends ChangeNotifier {
     final active = await client.activeRuns();
     for (final r in active) {
       _runSession[r.runId] = r.sessionId;
+      if (r.parentRunId case final p?) _parentOf[r.runId] = p;
     }
     if (selected case final id?) {
       await _load(id);
@@ -127,7 +135,9 @@ class TernStore extends ChangeNotifier {
   Future<void> _load(String id) async {
     final detail = await client.session(id);
     final previous = transcripts[id];
-    final t = Transcript.fromSession(detail)..activeRun = previous?.activeRun;
+    final t = Transcript.fromSession(detail)
+      ..activeRun = previous?.activeRun
+      ..runSince = previous?.runSince;
     // Keep approval cards: the stored history doesn't contain them.
     for (final a
         in previous?.items.whereType<ApprovalItem>() ?? <ApprovalItem>[]) {
@@ -135,7 +145,59 @@ class TernStore extends ChangeNotifier {
     }
     transcripts[id] = t;
     usage[id] = await client.usage(id);
+    if (t.children.isNotEmpty) {
+      try {
+        final runs = await client.subagents(id);
+        for (final r in runs) {
+          _runSession[r.runId] = r.sessionId;
+          _parentOf[r.runId] = r.parentRunId;
+        }
+        t.mergeChildren(runs);
+      } on TernException {
+        // A daemon without sub-agents: the calls alone will do.
+      }
+    }
   }
+
+  /// Load a sub-agent's conversation, to show inside its parent's.
+  Future<void> loadChild(String session) async {
+    try {
+      await _load(session);
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  /// Stop one sub-agent (and any of its own).
+  Future<void> cancelRun(String run) async {
+    try {
+      await client.cancel(run);
+    } on TernException catch (e) {
+      error = e.message;
+      notifyListeners();
+    }
+  }
+
+  /// Say something to a running sub-agent. Returns the daemon's reason on
+  /// failure.
+  Future<String?> messageRun(String run, String text) async {
+    try {
+      await client.messageRun(run, text);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  /// The transcript holding [run]'s agents card, if [run] is a sub-agent.
+  Transcript? _parentTranscript(String run) => switch (_parentOf[run]) {
+    final p? => switch (_runSession[p]) {
+      final s? => transcripts[s],
+      null => null,
+    },
+    null => null,
+  };
 
   Transcript? _transcriptFor(String session) =>
       transcripts.putIfAbsent(session, Transcript.new);
@@ -144,14 +206,27 @@ class TernStore extends ChangeNotifier {
     String? session;
     switch (e) {
       case ApprovalRequested(:final approval):
-        session = approval.sessionId;
-        _runSession[approval.runId] = session;
+        session = approval.rootSessionId ?? approval.sessionId;
+        _runSession[approval.runId] ??= approval.sessionId;
+        _approvalSession[approval.runId] = session;
       case RunStarted(:final runId, :final sessionId):
         session = sessionId;
         _runSession[runId] = sessionId;
+        if (e.parentRunId case final p?) _parentOf[runId] = p;
+      case SubagentSpawned(
+        :final runId,
+        :final childRunId,
+        :final childSessionId,
+      ):
+        session = e.sessionId ?? _runSession[runId];
+        _runSession[childRunId] = childSessionId;
+        _parentOf[childRunId] = runId;
+      case ApprovalAnswered(:final runId) when _approvalSession[runId] != null:
+        session = _approvalSession[runId];
       case RunEvent(:final runId, :final sessionId):
         session = sessionId ?? _runSession[runId];
         if (sessionId != null) _runSession[runId] = sessionId;
+        if (e.parentRunId case final p?) _parentOf[runId] ??= p;
       case UnknownEvent():
         return;
     }
@@ -160,10 +235,46 @@ class TernStore extends ChangeNotifier {
       unawaited(_learnRuns());
       return;
     }
-    final changed = _transcriptFor(session)!.apply(e);
-    if (e is RunFinished) unawaited(_afterRun(session, e));
+    var changed = _transcriptFor(session)!.apply(e);
+    if (e is RunEvent && _parentOf.containsKey(e.runId)) {
+      changed = _onChildEvent(e, session) || changed;
+    } else if (e is RunFinished) {
+      unawaited(_afterRun(session, e));
+    }
     if (e is ApprovalRequested) _notifyApproval(e.approval);
     if (changed) notifyListeners();
+  }
+
+  /// Reflect a sub-agent's progress on its parent's agents card.
+  bool _onChildEvent(RunEvent e, String session) {
+    final parent = _parentTranscript(e.runId);
+    switch (e) {
+      case RunStarted(:final runId):
+        return parent?.updateChild(runId, status: 'running') ?? false;
+      case RunFinished(:final runId, :final status, :final error):
+        // Its approvals live in the conversation the user started.
+        if (_approvalSession[runId] case final root?) {
+          transcripts[root]?.expireApprovals(runId);
+        }
+        final reply = transcripts[session]?.items
+            .whereType<AssistantItem>()
+            .lastOrNull
+            ?.text;
+        return parent?.updateChild(
+              runId,
+              status: switch (status) {
+                'interrupted' when error != null => 'cancelled',
+                _ => status,
+              },
+              result: reply,
+              error: error,
+              finished: DateTime.now(),
+            ) ??
+            false;
+      default:
+        // Its own transcript changed; the card shows that too.
+        return parent != null;
+    }
   }
 
   /// Notify only when the user can't already see it.
@@ -174,7 +285,7 @@ class TernStore extends ChangeNotifier {
     unawaited(
       notifier.show(
         id: a.id,
-        title: 'tern wants to run ${a.tool}',
+        title: '${a.agentLabel ?? 'tern'} wants to run ${a.tool}',
         body: a.summary,
         approval: true,
       ),

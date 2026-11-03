@@ -1,7 +1,7 @@
 //! Builds the agent from config: store, providers, tools, journal.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -9,17 +9,32 @@ use tern_core::agent::{Agent, AgentConfig, ProviderFactory};
 use tern_core::approval::ApprovalHandler;
 use tern_core::config::{ModelRef, SandboxBackendKind};
 use tern_core::journal::Journal;
+use tern_core::subagent::HostSlot;
 use tern_core::tool::ToolRegistry;
 use tern_core::types::{Provider, ProviderError};
 use tern_core::{Config, SecretStatus, Secrets, TernHome};
 use tern_providers::{MockProvider, PROVIDER_ENV};
 use tern_store::Store;
+use tokio::sync::broadcast;
+
+use crate::providers::{Change, ModelCache};
+
+use crate::subagents::{LocalDriver, Subagents};
 
 pub struct Runtime {
     pub home: TernHome,
+    /// The config as loaded at startup. Providers and `default_model` can
+    /// change while running; read those from [`Runtime::live`].
     pub config: Config,
+    /// The latest `config.toml`, swapped by [`Runtime::reload_providers`].
+    live: Arc<RwLock<Config>>,
+    pub(crate) models: Arc<ModelCache>,
+    pub(crate) changes: broadcast::Sender<Change>,
     pub store: Store,
-    pub agent: Agent,
+    pub agent: Arc<Agent>,
+    /// Set when `[subagents].enabled`. Drives children on local tasks
+    /// until the daemon hands it its `Manager`.
+    pub subagents: Option<Arc<Subagents>>,
     /// Shared with providers, connectors and MCP servers: edits through it
     /// apply on their next use.
     pub secrets: Secrets,
@@ -41,8 +56,15 @@ impl Runtime {
         std::fs::create_dir_all(&workspace)
             .with_context(|| format!("creating workspace {}", workspace.display()))?;
 
-        let (providers, mock) = provider_factory(&config, &secrets)?;
-        let (tools, connectors) = build_tools(home, &config, &store, &secrets)?;
+        let live = Arc::new(RwLock::new(config.clone()));
+        let (providers, mock) = provider_factory(live.clone(), &secrets)?;
+        let changes = broadcast::channel(64).0;
+        let models = Arc::new(ModelCache::load(
+            home.root().join("cache").join("models.json"),
+            changes.clone(),
+        ));
+        let slot = HostSlot::default();
+        let (tools, connectors) = build_tools(home, &config, &store, &secrets, &slot)?;
         let tools = Arc::new(tools);
 
         // Every value in secrets.toml, plus env-provided secrets the config
@@ -57,9 +79,9 @@ impl Runtime {
             .with_crash_after_from_env();
 
         let agent = Agent::new(
-            journal,
+            journal.clone(),
             providers,
-            tools,
+            tools.clone(),
             approvals,
             AgentConfig {
                 workspace: canonical(workspace),
@@ -72,12 +94,36 @@ impl Runtime {
                     .collect(),
                 ..AgentConfig::default()
             },
-        );
+        )
+        .with_subagents(slot.clone());
+        let agent = Arc::new(agent);
+        let subagents = config.subagents.enabled.then(|| {
+            let host = Arc::new(Subagents::new(
+                store.clone(),
+                journal,
+                agent.event_sender(),
+                Arc::downgrade(&tools),
+                &config,
+                mock,
+            ));
+            host.set_driver(Arc::new(LocalDriver::new(&agent)));
+            slot.set(host.clone());
+            host
+        });
+        if let Some(h) = &subagents
+            && let Err(e) = h.reconcile()
+        {
+            tracing::warn!(error = %e, "reconciling sub-agent reports failed");
+        }
         Ok(Self {
             home: home.clone(),
             config,
+            live,
+            models,
+            changes,
             store,
             agent,
+            subagents,
             secrets,
             connectors,
             mock,
@@ -87,21 +133,49 @@ impl Runtime {
     /// Every secret in `secrets.toml` or referred to by config or an active
     /// connector, with what uses it. Never includes values.
     pub fn secret_statuses(&self) -> Vec<SecretStatus> {
-        let mut uses = self.config.secret_uses();
-        uses.extend(self.connectors.secret_uses());
+        let mut uses = self.live().secret_uses();
+        uses.extend(self.connector_secret_uses());
         self.secrets.statuses(&uses)
     }
 
-    /// `--model`, else the session's model, else `default_model`.
+    pub(crate) fn connector_secret_uses(&self) -> Vec<(String, String)> {
+        self.connectors.secret_uses()
+    }
+
+    /// The latest config: providers and `default_model` as they are now.
+    pub fn live(&self) -> Config {
+        match self.live.read() {
+            Ok(g) => g.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    pub(crate) fn set_live(&self, config: Config) {
+        match self.live.write() {
+            Ok(mut g) => *g = config,
+            Err(poisoned) => *poisoned.into_inner() = config,
+        }
+    }
+
+    /// Provider and model-list changes, for `/v1/events`.
+    pub fn subscribe_changes(&self) -> broadcast::Receiver<Change> {
+        self.changes.subscribe()
+    }
+
+    /// `--model` (resolved, so the provider may be left off), else the
+    /// session's model, else `default_model`.
     pub fn pick_model(
         &self,
         flag: Option<&str>,
         session_model: Option<&str>,
     ) -> anyhow::Result<ModelRef> {
-        if let Some(m) = flag.or(session_model) {
+        if let Some(m) = flag {
+            return Ok(self.resolve_model(m)?.model.parse()?);
+        }
+        if let Some(m) = session_model {
             return Ok(m.parse()?);
         }
-        match self.config.default_model_ref() {
+        match self.live().default_model_ref() {
             Some(m) => Ok(m?),
             None if self.mock => Ok("mock:mock".parse()?),
             None => bail!(
@@ -110,13 +184,9 @@ impl Runtime {
         }
     }
 
-    /// Check that `model` parses and names a configured provider.
+    /// Check that `model` resolves to a configured provider.
     pub fn check_model(&self, model: &str) -> anyhow::Result<ModelRef> {
-        let m: ModelRef = model.parse()?;
-        if !self.mock && !self.config.providers.contains_key(&m.provider) {
-            bail!("provider {:?} is not configured in config.toml", m.provider);
-        }
-        Ok(m)
+        Ok(self.resolve_model(model)?.model.parse()?)
     }
 
     /// Record a run of `text`. Uses `session` (or creates one from `source`),
@@ -176,7 +246,12 @@ fn canonical(p: PathBuf) -> PathBuf {
     std::fs::canonicalize(&p).unwrap_or(p)
 }
 
-fn provider_factory(config: &Config, secrets: &Secrets) -> anyhow::Result<(ProviderFactory, bool)> {
+/// Reads providers from `live` on every call, so a reload applies to the
+/// next model call.
+fn provider_factory(
+    live: Arc<RwLock<Config>>,
+    secrets: &Secrets,
+) -> anyhow::Result<(ProviderFactory, bool)> {
     if let Some(spec) = std::env::var(PROVIDER_ENV).ok().filter(|v| !v.is_empty()) {
         let Some(path) = spec.strip_prefix("mock:") else {
             bail!("{PROVIDER_ENV} must be `mock:<script.json>`, got {spec:?}");
@@ -184,15 +259,20 @@ fn provider_factory(config: &Config, secrets: &Secrets) -> anyhow::Result<(Provi
         let mock: Arc<dyn Provider> = Arc::new(MockProvider::from_file(path.as_ref())?);
         return Ok((Arc::new(move |_| Ok(mock.clone())), true));
     }
-    let providers = config.providers.clone();
     let secrets = secrets.clone();
     let factory: ProviderFactory = Arc::new(move |name: &str| {
-        let cfg = providers.get(name).ok_or_else(|| {
+        let cfg = live
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .providers
+            .get(name)
+            .cloned();
+        let cfg = cfg.ok_or_else(|| {
             ProviderError::Config(format!(
                 "provider {name:?} is not configured in config.toml"
             ))
         })?;
-        tern_providers::build(name, cfg, &secrets)
+        tern_providers::build(name, &cfg, &secrets)
     });
     Ok((factory, false))
 }
@@ -202,6 +282,7 @@ fn build_tools(
     config: &Config,
     store: &Store,
     secrets: &Secrets,
+    subagents: &HostSlot,
 ) -> anyhow::Result<(ToolRegistry, Arc<tern_lua::Connectors>)> {
     let sandbox: Arc<dyn tern_sandbox::SandboxBackend> = match config.sandbox.backend {
         SandboxBackendKind::Host => Arc::new(tern_sandbox::HostBackend),
@@ -223,6 +304,9 @@ fn build_tools(
         },
     )
     .map_err(anyhow::Error::msg)?;
+    if config.subagents.enabled && config.subagents.max_depth >= 1 {
+        tern_tools::agents::register(&mut registry, subagents.clone());
+    }
 
     let lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
     let dirs = tern_lua::tools::Dirs {

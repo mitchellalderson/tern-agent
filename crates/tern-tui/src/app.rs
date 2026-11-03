@@ -569,7 +569,10 @@ impl App {
                 self.notice("summarized earlier messages to fit the context window")
             }
             AgentEvent::Usage { usage, .. } => self.last_usage = Some(usage),
-            AgentEvent::RunStarted { .. } | AgentEvent::RunFinished { .. } => {}
+            AgentEvent::RunStarted { .. }
+            | AgentEvent::RunFinished { .. }
+            | AgentEvent::ToolOutput { .. }
+            | AgentEvent::SubagentSpawned { .. } => {}
         }
     }
 

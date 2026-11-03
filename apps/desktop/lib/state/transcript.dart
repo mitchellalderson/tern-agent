@@ -47,6 +47,39 @@ class WorkItem extends Item {
       : finished!.difference(started!);
 }
 
+/// One sub-agent, as its parent's agents card shows it.
+class AgentChild {
+  AgentChild({required this.callId, required this.label, this.task = ''});
+
+  /// The `agent_spawn` call that started it.
+  final String callId;
+  String label;
+  String task;
+  String? runId;
+  String? sessionId;
+  String? model;
+
+  /// The daemon's word: `starting` (spawn in flight), `queued`, `running`,
+  /// `question`, `completed`, `failed`, `cancelled`, `stopped`,
+  /// `interrupted`.
+  String status = 'starting';
+  String? result;
+  String? error;
+  String? question;
+  DateTime? started;
+  DateTime? finished;
+
+  bool get active =>
+      const {'starting', 'queued', 'running', 'question'}.contains(status);
+}
+
+/// The sub-agents a run started in one go, shown as one card.
+class AgentsItem extends Item {
+  AgentsItem({this.runId});
+  String? runId;
+  final children = <AgentChild>[];
+}
+
 enum PillKind { routine, connector, memory, compacted, retrying }
 
 /// A quiet one-line note: something the agent made, or the engine did.
@@ -73,17 +106,94 @@ class RunEndItem extends Item {
   final String? error;
 }
 
+/// What a run is busy with: waiting on the model, streaming a reply, or
+/// running a tool.
+class RunPhase {
+  const RunPhase.thinking() : tool = null, writing = false, agents = null;
+  const RunPhase.writing() : tool = null, writing = true, agents = null;
+  const RunPhase.tool(String this.tool) : writing = false, agents = null;
+  const RunPhase.waiting(int running, int done)
+    : agents = (running: running, done: done),
+      tool = null,
+      writing = false;
+
+  final String? tool;
+  final bool writing;
+
+  /// Set while the run waits on its sub-agents.
+  final ({int running, int done})? agents;
+
+  String get label => switch ((tool, agents)) {
+    (final String t, _) => 'Running $t',
+    (_, (:final running, :final done)) =>
+      'Waiting on $running agent${running == 1 ? '' : 's'}'
+          '${done > 0 ? ' · $done done' : ''}',
+    _ => writing ? 'Writing' : 'Thinking',
+  };
+}
+
+/// Parent-side sub-agent tools: the agents card stands in for them.
+const _agentTools = {
+  'agent_spawn',
+  'agent_wait',
+  'agent_send',
+  'agent_cancel',
+  'agent_status',
+};
+
 class Transcript {
   final items = <Item>[];
 
   /// The run in progress here, if any.
-  String? activeRun;
+  String? get activeRun => _activeRun;
+  set activeRun(String? run) {
+    if (run != _activeRun) runSince = run == null ? null : DateTime.now();
+    _activeRun = run;
+  }
+
+  String? _activeRun;
+
+  /// When this app first saw [activeRun] (not necessarily when it began:
+  /// the daemon doesn't say).
+  DateTime? runSince;
+
+  /// What the run in progress is doing, for the activity line. Null when
+  /// nothing runs, or the run is waiting on an approval (its card says so).
+  RunPhase? get phase {
+    if (activeRun == null) return null;
+    final last = items.lastWhere(
+      (i) => i is! PillItem,
+      orElse: () => UserItem(''),
+    );
+    final phase = switch (last) {
+      ApprovalItem(outcome: null) => null,
+      WorkItem(:final steps) when last.running => RunPhase.tool(
+        steps.lastWhere((s) => s.status == StepStatus.running).name,
+      ),
+      AssistantItem(streaming: true) => const RunPhase.writing(),
+      _ => const RunPhase.thinking(),
+    };
+    // Between model calls with sub-agents out, the run is waiting on them
+    // (an approval card, though, is what it's really waiting on).
+    if (phase != null && phase.tool == null && !phase.writing) {
+      final kids = [
+        for (final a in items.whereType<AgentsItem>())
+          if (a.runId == null || a.runId == activeRun) ...a.children,
+      ];
+      final running = kids.where((k) => k.active).length;
+      if (running > 0) {
+        return RunPhase.waiting(running, kids.length - running);
+      }
+    }
+    return phase;
+  }
 
   /// Rebuild from stored history (the daemon's view, after compaction
   /// summaries and tool results).
   static Transcript fromSession(SessionDetail s) {
     final t = Transcript();
     final steps = <String, ToolStep>{};
+    final agentCalls = <String, String>{};
     for (final m in s.messages) {
       if (m.summary) {
         t.items.add(
@@ -99,6 +209,24 @@ class Transcript {
             );
           case TextBlock():
             break;
+          case ToolUseBlock(:final id, :final name, :final input)
+              when _agentTools.contains(name):
+            agentCalls[id] = name;
+            if (name == 'agent_spawn' && input is Map) {
+              t
+                  ._agents(m.runId)
+                  .children
+                  .add(
+                    AgentChild(
+                      callId: id,
+                      label: input['label'] as String? ?? 'agent',
+                      task: input['task'] as String? ?? '',
+                    ),
+                  );
+            }
+          case ToolResultBlock(:final toolUseId, :final content, :final isError)
+              when agentCalls.containsKey(toolUseId):
+            t._agentResult(agentCalls[toolUseId]!, toolUseId, content, isError);
           case ToolUseBlock(:final id, :final name, :final input):
             final step = ToolStep(
               id: id,
@@ -152,6 +280,51 @@ class Transcript {
             when text.trim().isEmpty) {
           items.removeLast();
         }
+      case ToolStarted(:final id, :final name, :final summary)
+          when _agentTools.contains(name):
+        if (_agentCalls.containsKey(id)) return false;
+        _agentCalls[id] = name;
+        if (name == 'agent_spawn' && _child(id) == null) {
+          final label = summary.replaceFirst('agent_spawn', '').trim();
+          _agents(e.runId).children.add(
+            AgentChild(
+              callId: id,
+              label: label.isEmpty ? 'agent' : label.split(' ').first,
+            )..started = now,
+          );
+        }
+      case ToolFinished(:final id, :final name, :final isError, :final output)
+          when _agentTools.contains(name):
+        _agentCalls.remove(id);
+        _agentResult(name, id, output, isError, now: now);
+      case SubagentSpawned(
+        :final callId,
+        :final childRunId,
+        :final childSessionId,
+        :final label,
+        :final task,
+        :final model,
+        :final status,
+      ):
+        var child = _child(callId);
+        if (child == null) {
+          child = AgentChild(callId: callId, label: label)..started = now;
+          _agents(e.runId).children.add(child);
+        }
+        child
+          ..label = label
+          ..task = task
+          ..runId = childRunId
+          ..sessionId = childSessionId
+          ..model = model
+          ..status = status;
+      case SubagentMessage(:final kind, :final text, :final runId):
+        // A question from one of ours.
+        final child = children.where((c) => c.runId == runId).firstOrNull;
+        if (child == null || kind != 'question') return false;
+        child
+          ..status = 'question'
+          ..question = text;
       case ToolStarted(:final id, :final name, :final summary):
         if (_step(id) != null) return false;
         final work = _work(e.runId);
@@ -160,6 +333,14 @@ class Transcript {
         work.steps.add(
           ToolStep(id: id, name: name, summary: summary)..started = now,
         );
+      case ToolOutput(:final id, :final chunk):
+        final step = _step(id);
+        if (step == null || step.status != StepStatus.running) return false;
+        step.output += chunk;
+        // Live output is for watching; the full result comes when it ends.
+        if (step.output.length > _liveCap) {
+          step.output = step.output.substring(step.output.length - _liveCap);
+        }
       case ToolFinished(:final id, :final name, :final isError, :final output):
         var step = _step(id);
         if (step == null) {
@@ -200,13 +381,10 @@ class Transcript {
         items.add(PillItem(PillKind.compacted, 'Earlier messages summarized'));
       case RunFinished(:final runId, :final status, :final error):
         if (activeRun == runId) activeRun = null;
+        _agentCalls.clear();
+        expireApprovals(runId);
         for (final i in items) {
           if (i is AssistantItem) i.streaming = false;
-          if (i is ApprovalItem &&
-              i.outcome == null &&
-              i.approval.runId == runId) {
-            i.outcome = 'expired';
-          }
           if (i is WorkItem) {
             for (final s in i.steps) {
               if (s.status == StepStatus.running) s.status = StepStatus.error;
@@ -221,6 +399,128 @@ class Transcript {
         return false;
     }
     return true;
+  }
+
+  /// Close [run]'s unanswered approvals: it ended without them.
+  void expireApprovals(String run) {
+    for (final a in items.whereType<ApprovalItem>()) {
+      if (a.outcome == null && a.approval.runId == run) a.outcome = 'expired';
+    }
+  }
+
+  /// Sub-agent tool calls in flight, id → name.
+  final _agentCalls = <String, String>{};
+
+  /// Every sub-agent this conversation has started.
+  Iterable<AgentChild> get children =>
+      items.whereType<AgentsItem>().expand((a) => a.children);
+
+  /// Update a sub-agent from outside: its own run's events, or the
+  /// daemon's list. Returns false if it isn't one of ours.
+  bool updateChild(
+    String runId, {
+    String? status,
+    String? result,
+    String? error,
+    DateTime? finished,
+  }) {
+    final child = children.where((c) => c.runId == runId).firstOrNull;
+    if (child == null) return false;
+    if (status != null) child.status = status;
+    if (status != 'question') child.question = null;
+    child
+      ..result = result ?? child.result
+      ..error = error ?? child.error
+      ..finished = finished ?? child.finished;
+    return true;
+  }
+
+  /// Fill in sub-agents from the daemon's list (after a reload, the history
+  /// knows only the calls).
+  void mergeChildren(List<ChildRun> runs) {
+    for (final r in runs) {
+      final child =
+          _child(r.callId) ??
+          children.where((c) => c.runId == r.runId).firstOrNull;
+      if (child == null) continue;
+      child
+        ..label = r.label
+        ..runId = r.runId
+        ..sessionId = r.sessionId
+        ..model = r.model
+        ..status = r.status
+        ..error = r.error
+        ..question = r.pendingQuestion
+        ..started = r.startedAt
+        ..finished = r.finishedAt
+        ..result = child.result ?? r.resultPreview;
+      if (child.task.isEmpty) child.task = r.task;
+    }
+  }
+
+  AgentChild? _child(String callId) =>
+      children.where((c) => c.callId == callId).firstOrNull;
+
+  /// The agents card to add to: the last item, notes aside.
+  AgentsItem _agents([String? runId]) {
+    for (final i in items.reversed) {
+      if (i is AgentsItem) return i..runId ??= runId;
+      if (i is! PillItem) break;
+    }
+    final a = AgentsItem(runId: runId);
+    items.add(a);
+    return a;
+  }
+
+  /// What a sub-agent tool's result says about the children.
+  void _agentResult(
+    String name,
+    String callId,
+    String output,
+    bool isError, {
+    DateTime? now,
+  }) {
+    Object? json;
+    try {
+      json = jsonDecode(output);
+    } on FormatException {
+      json = null;
+    }
+    switch ((name, json)) {
+      case ('agent_spawn', _) when isError:
+        _child(callId)
+          ?..status = 'failed'
+          ..error = output
+          ..finished = now;
+      case ('agent_spawn', {'run_id': final String run}):
+        final child = _child(callId);
+        if (child == null) return;
+        child.runId ??= run;
+        if (json case {'status': final String st}
+            when child.status == 'starting') {
+          child.status = st;
+        }
+        if (json case {'model': final String model}) child.model ??= model;
+      case ('agent_wait' || 'agent_status', {'agents': final List agents}):
+        for (final a in agents.whereType<Map>()) {
+          final child = children
+              .where((c) => c.runId == a['run_id'] || c.label == a['agent'])
+              .lastOrNull;
+          if (child == null) continue;
+          if (a['status'] case final String st) child.status = st;
+          if (a['result'] case final String r) child.result = r;
+          if (a['question'] case final String q) child.question = q;
+          if (!child.active) child.finished ??= now;
+        }
+    }
+  }
+
+  static const _liveCap = 64 * 1024;
+
+  /// The output so far of tool call [id], while it runs.
+  String? liveOutput(String id) {
+    final step = _step(id);
+    return step?.status == StepStatus.running ? step!.output : null;
   }
 
   /// The work card to add steps to: the last one, if only notes follow it

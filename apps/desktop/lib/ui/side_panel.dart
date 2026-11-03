@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
+import 'agents.dart';
 import 'inspector.dart';
 import 'routines.dart';
+import 'tools.dart';
 import 'widgets.dart';
 
 /// What the agent is doing (spec §2.3). Routines, connectors and memory
@@ -21,7 +23,6 @@ class SidePanel extends StatelessWidget {
     final t = store.current;
     final work = t?.items.whereType<WorkItem>().lastOrNull;
     final usage = store.selected == null ? null : store.usage[store.selected];
-    final tools = store.info?.tools ?? const [];
     final labels = Theme.of(context).textTheme.labelSmall;
     return Container(
       color: c.sidebar,
@@ -68,33 +69,90 @@ class SidePanel extends StatelessWidget {
                   ),
                   const SizedBox(height: 6),
                   for (final s in work?.steps ?? const <ToolStep>[])
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 3),
-                      child: Row(
-                        children: [
-                          Icon(
-                            switch (s.status) {
-                              StepStatus.ok => Icons.check,
-                              StepStatus.error => Icons.close,
-                              StepStatus.running => Icons.more_horiz,
-                            },
-                            size: 14,
-                            color: switch (s.status) {
-                              StepStatus.ok => c.ok,
-                              StepStatus.error => c.error,
-                              StepStatus.running => c.muted,
-                            },
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      // Into the run's journal: full input, output, timing.
+                      onTap: switch ((store.selected, work?.runId)) {
+                        (final String session, final String run) =>
+                          () => showInspector(
+                            context,
+                            store,
+                            session: session,
+                            run: run,
                           ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              s.summary,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 12.5),
+                        _ => null,
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 3),
+                        child: Row(
+                          children: [
+                            Icon(
+                              switch (s.status) {
+                                StepStatus.ok => Icons.check,
+                                StepStatus.error => Icons.close,
+                                StepStatus.running => Icons.more_horiz,
+                              },
+                              size: 14,
+                              color: switch (s.status) {
+                                StepStatus.ok => c.ok,
+                                StepStatus.error => c.error,
+                                StepStatus.running => c.muted,
+                              },
                             ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                s.summary,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 12.5),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+                if ((t?.items.whereType<AgentsItem>().lastOrNull?.children ??
+                        const <AgentChild>[])
+                    case final kids when kids.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    'Agents',
+                    style: TextStyle(fontSize: 12.5, color: c.muted),
+                  ),
+                  const SizedBox(height: 4),
+                  for (final k in kids)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: switch ((store.selected, k.runId)) {
+                        (final String session, final String run) =>
+                          () => showInspector(
+                            context,
+                            store,
+                            session: session,
+                            run: run,
                           ),
-                        ],
+                        _ => null,
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 3),
+                        child: Row(
+                          children: [
+                            SizedBox(width: 16, child: AgentGlyph(k.status)),
+                            const SizedBox(width: 6),
+                            Text(k.label, style: mono.copyWith(fontSize: 12)),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                agentActivity(k, store),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(fontSize: 12, color: c.muted),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                 ],
@@ -131,33 +189,7 @@ class SidePanel extends StatelessWidget {
                     _Stat('Cache read', formatTokens(usage.cacheReadTokens)),
                 ],
                 const SizedBox(height: 22),
-                Text('TOOLS · ${tools.length}', style: labels),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    for (final tool in tools)
-                      Tooltip(
-                        message: tool.description,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 3,
-                          ),
-                          decoration: BoxDecoration(
-                            color: c.background,
-                            border: Border.all(color: c.hairline),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            tool.name,
-                            style: mono.copyWith(fontSize: 11, color: c.muted),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
+                ToolsSection(store: store),
               ],
             ),
           ),

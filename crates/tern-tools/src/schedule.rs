@@ -44,7 +44,9 @@ pub fn create_schedule(
     prompt: &str,
     deliver_to: Option<String>,
 ) -> Result<ScheduleRow, String> {
-    let cron: Cron = cron.parse().map_err(|e: tern_core::cron::CronError| e.to_string())?;
+    let cron: Cron = cron
+        .parse()
+        .map_err(|e: tern_core::cron::CronError| e.to_string())?;
     if prompt.trim().is_empty() {
         return Err("prompt is empty".into());
     }

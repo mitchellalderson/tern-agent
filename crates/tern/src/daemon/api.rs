@@ -5,6 +5,7 @@
 //! |---|---|---|
 //! | GET | `/v1/health` | pid, version, and capabilities (see `auth::health`) |
 //! | GET | `/v1/info` | default model and tools |
+//! | GET | `/v1/tools` | full tool specs: `[{name, description, input_schema}]` |
 //! | POST | `/v1/models/check` | validate `{model}` |
 //! | POST | `/v1/runs` | send a message: `{text, session_id?, model?}` |
 //! | GET | `/v1/runs/active` | runs in progress: `[{run_id, session_id}]` |
@@ -22,7 +23,8 @@
 //!
 //! Agent events on `/v1/events` carry `session_id` as well as `run_id`.
 //! Schedules are in `api_schedules.rs`; session runs and journal steps in
-//! `api_runs.rs`; secrets in `api_secrets.rs`.
+//! `api_runs.rs`; secrets in `api_secrets.rs`; providers, model lists and
+//! the default model in `api_providers.rs`.
 //! Pairing, devices and uploads are in `auth.rs` and `uploads.rs`. TCP
 //! listeners (`listen.rs`) serve this same router behind device-token auth.
 
@@ -51,7 +53,7 @@ use super::manager::{ApiApproval, Manager};
 
 pub(super) type Shared = Arc<Manager>;
 
-pub(super) struct ApiError(StatusCode, String);
+pub(super) struct ApiError(pub(super) StatusCode, pub(super) String);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -139,6 +141,7 @@ pub fn router(manager: Shared) -> Router {
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/info", get(info))
+        .route("/v1/tools", get(tools))
         .route("/v1/models/check", post(check_model))
         .route("/v1/runs", post(start_run))
         .route("/v1/runs/active", get(active_runs))
@@ -156,6 +159,7 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_schedules::routes())
         .merge(super::api_runs::routes())
         .merge(super::api_secrets::routes())
+        .merge(super::api_providers::routes())
         .merge(super::auth::routes())
         .with_state(manager)
 }
@@ -167,12 +171,16 @@ async fn health(auth: Option<axum::Extension<super::auth::Auth>>) -> Json<Value>
 #[derive(Serialize, Deserialize)]
 pub struct Info {
     pub default_model: Option<String>,
+    /// No usable model yet: clients should offer provider setup.
+    #[serde(default)]
+    pub setup_needed: bool,
     pub tools: Vec<(String, String)>,
 }
 
 async fn info(State(m): State<Shared>) -> Json<Info> {
     Json(Info {
         default_model: m.rt.pick_model(None, None).ok().map(|x| x.to_string()),
+        setup_needed: m.rt.setup_needed(),
         tools: m
             .rt
             .agent
@@ -184,14 +192,20 @@ async fn info(State(m): State<Shared>) -> Json<Info> {
     })
 }
 
+async fn tools(State(m): State<Shared>) -> Json<Vec<tern_core::types::ToolSpec>> {
+    Json(m.rt.agent.tools().specs())
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ModelBody {
     pub model: String,
 }
 
 async fn check_model(State(m): State<Shared>, Json(b): Json<ModelBody>) -> ApiResult<Value> {
-    m.rt.check_model(&b.model).map_err(bad)?;
-    Ok(Json(json!({ "ok": true })))
+    let r = m.rt.resolve_model(&b.model).map_err(bad)?;
+    Ok(Json(
+        json!({ "ok": true, "resolved": r.model, "warning": r.warning }),
+    ))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -270,7 +284,7 @@ async fn wait_run(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiR
                 .run(&id)
                 .map_err(internal)?
                 .ok_or_else(|| not_found("run"))?;
-        if run.status != "running" && !m.is_active(&id) {
+        if run.status != "running" && run.status != "queued" && !m.is_active(&id) {
             let messages =
                 m.rt.store
                     .session_messages(&run.session_id)
@@ -413,11 +427,13 @@ async fn set_model(
     UrlPath(id): UrlPath<String>,
     Json(b): Json<ModelBody>,
 ) -> ApiResult<Value> {
-    m.rt.check_model(&b.model).map_err(bad)?;
+    let r = m.rt.resolve_model(&b.model).map_err(bad)?;
     m.rt.store
-        .set_session_model(&id, &b.model)
+        .set_session_model(&id, &r.model)
         .map_err(internal)?;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(
+        json!({ "ok": true, "resolved": r.model, "warning": r.warning }),
+    ))
 }
 
 async fn usage(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Usage> {
@@ -436,15 +452,17 @@ async fn usage(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResu
 #[serde(untagged)]
 pub enum ApiEvent {
     Approval { approval_requested: ApiApproval },
+    Change(crate::providers::Change),
     Agent(tern_core::events::AgentEvent),
 }
 
 async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let agent = m.rt.agent.subscribe();
     let approvals = m.routes.api.subscribe();
+    let changes = m.rt.subscribe_changes();
     let stream = futures::stream::unfold(
-        (agent, approvals, m, HashMap::<String, String>::new()),
-        |(mut agent, mut approvals, m, mut sessions)| async move {
+        (agent, approvals, changes, m, HashMap::<String, String>::new()),
+        |(mut agent, mut approvals, mut changes, m, mut sessions)| async move {
             loop {
                 let ev = tokio::select! {
                     e = agent.recv() => match e {
@@ -457,6 +475,11 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
                         Err(RecvError::Lagged(_)) => continue,
                         Err(RecvError::Closed) => return None,
                     },
+                    c = changes.recv() => match c {
+                        Ok(c) => ApiEvent::Change(c),
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => return None,
+                    },
                 };
                 let mut data = serde_json::to_value(&ev).unwrap_or_default();
                 if let ApiEvent::Agent(_) = ev {
@@ -465,7 +488,7 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
                 let data = serde_json::to_string(&data).unwrap_or_default();
                 return Some((
                     Ok(Event::default().data(data)),
-                    (agent, approvals, m, sessions),
+                    (agent, approvals, changes, m, sessions),
                 ));
             }
         },

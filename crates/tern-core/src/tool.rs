@@ -28,6 +28,66 @@ pub struct ToolCtx {
     pub cancel: CancellationToken,
 }
 
+/// Where a running tool sends output as it is produced.
+pub type ProgressSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+tokio::task_local! {
+    static PROGRESS: ProgressSink;
+}
+
+/// Run `fut` (a tool call) with `sink` as its live-output sink. The agent
+/// loop wraps each call with the sink for that call's `tool_output` events.
+pub async fn with_progress<F: std::future::Future>(sink: ProgressSink, fut: F) -> F::Output {
+    PROGRESS.scope(sink, fut).await
+}
+
+/// The live-output sink of the tool call being run, if anyone is listening.
+/// Informational only: the model sees the tool's `ToolResult`, not this.
+pub fn progress_sink() -> Option<ProgressSink> {
+    PROGRESS.try_with(Arc::clone).ok()
+}
+
+/// What the agent loop knows about the call being run, beyond `ToolCtx`.
+struct CallScope {
+    id: String,
+    consumes: std::sync::Mutex<Vec<i64>>,
+}
+
+tokio::task_local! {
+    static CALL: Arc<CallScope>;
+}
+
+/// Run `fut` (a tool call) as call `id`. Returns its output and the agent
+/// mail it asked to consume (see [`consume_mail`]).
+pub async fn with_call<F: std::future::Future>(id: &str, fut: F) -> (F::Output, Vec<i64>) {
+    let scope = Arc::new(CallScope {
+        id: id.to_owned(),
+        consumes: std::sync::Mutex::new(Vec::new()),
+    });
+    let out = CALL.scope(scope.clone(), fut).await;
+    let consumes = scope
+        .consumes
+        .lock()
+        .map(|mut c| std::mem::take(&mut *c))
+        .unwrap_or_default();
+    (out, consumes)
+}
+
+/// The id of the tool call being run (the model's `tool_use` id).
+pub fn current_call_id() -> Option<String> {
+    CALL.try_with(|c| c.id.clone()).ok()
+}
+
+/// Mark agent mail as consumed by the running tool call. Takes effect when
+/// its journal step completes, in the same transaction.
+pub fn consume_mail(ids: &[i64]) {
+    let _ = CALL.try_with(|c| {
+        if let Ok(mut v) = c.consumes.lock() {
+            v.extend_from_slice(ids);
+        }
+    });
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolResult {
     pub content: String,
@@ -145,6 +205,15 @@ impl ToolRegistry {
         self.all().values().map(|t| t.spec()).collect()
     }
 
+    /// [`ToolRegistry::specs`] limited to `scope` (tool names; `None` = all).
+    pub fn specs_for(&self, scope: Option<&[String]>) -> Vec<ToolSpec> {
+        self.all()
+            .into_iter()
+            .filter(|(name, _)| in_scope(scope, name))
+            .map(|(_, t)| t.spec())
+            .collect()
+    }
+
     pub fn allow_always(&self, call: &ToolCall) -> bool {
         self.get(&call.name).is_none_or(|t| t.allow_always())
     }
@@ -167,6 +236,23 @@ impl ToolRegistry {
     }
 
     pub async fn call(&self, ctx: &ToolCtx, call: &ToolCall) -> ToolResult {
+        self.call_in(None, ctx, call).await
+    }
+
+    /// Call a tool for a run limited to `scope`. A name outside it is an
+    /// error result, so a hallucinated call can't escape the scope.
+    pub async fn call_in(
+        &self,
+        scope: Option<&[String]>,
+        ctx: &ToolCtx,
+        call: &ToolCall,
+    ) -> ToolResult {
+        if !in_scope(scope, &call.name) {
+            return ToolResult::error(format!(
+                "tool {:?} is not available to this agent",
+                call.name
+            ));
+        }
         let Some(tool) = self.get(&call.name) else {
             return ToolResult::error(format!("unknown tool {:?}", call.name));
         };
@@ -174,6 +260,11 @@ impl ToolRegistry {
         result.content = truncate_middle(&result.content, MAX_TOOL_OUTPUT);
         result
     }
+}
+
+/// Whether `name` is allowed by `scope` (`None` = every tool).
+pub fn in_scope(scope: Option<&[String]>, name: &str) -> bool {
+    scope.is_none_or(|s| s.iter().any(|n| n == name))
 }
 
 /// Keep the head and tail of `s` within `max` bytes, marking the cut.

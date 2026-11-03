@@ -17,15 +17,17 @@ In the demo, any message runs a scripted write-and-read with a Markdown reply. A
 
 The macOS app runs outside the App Sandbox (see `macos/Runner/*.entitlements`). It has to reach the socket under `~/.tern` and start `tern daemon`.
 
-## What's in the MVP (gui-spec G0–G1)
+## What's in it (gui-spec G0–G2)
 
 - Window: transparent title bar with content under the traffic lights, drag and double-click zoom through a `tern/window` method channel, native menu bar (⌘N new conversation, ⌘⌥I activity panel). Light theme, dark following the system.
 - Connection: connect, reconnect with backoff (0.5 s doubling to 10 s), resync after every reconnect, an offline screen with **Start tern**.
 - Sidebar: one agent ("tern") and its conversations grouped Today / This week / Older, with a source icon (cron, Telegram), search by title, running and waiting-for-approval markers, and daemon status.
 - Conversation: streaming Markdown replies, work cards (one line per tool call, click for output), notes (routine created, memory saved, compaction, retries), approval cards (Allow once / Always / Deny, ⏎ and ⎋), stop, resume after a failure or interruption, and a per-conversation model picker validated by the daemon.
-- Activity panel: the current run's steps, token usage, available tools.
+- Activity panel: the current run's steps, **routines** (each schedule in words, paused or failed state, and a menu for Run now, Edit, Pause/Resume and Delete; "New routine" opens a sheet with presets, a cron field with a live preview of the next three runs from the daemon, and Telegram delivery), token usage, available tools.
+- Run inspector: a conversation's runs and each run's journal steps (model calls, tools, approvals, compaction) with input, output, tokens and timing. It opens from "Inspect run" on a work card, "Details" on a stopped or failed run, or "All runs…" in the panel.
+- Notifications: when the window doesn't have focus, or you're in another conversation, a finished run and an approval each post a system notification. Approvals have **Allow once** and **Deny** buttons that answer straight from the notification. The dock badge counts pending approvals. On macOS this uses `UserNotifications` through the `tern/window` channel; on Linux, `notify-send` (no buttons).
 
-Not yet: agent profiles, channels, connectors/MCP/skills/memory views, routines, run inspector, notifications, menu bar extra, packaging. Those need the engine APIs in gui-spec §7.1, and the phases are in §10.
+Not yet: agent profiles, channels, connectors/MCP/skills/memory views, menu bar extra, packaging. Those need the engine APIs in gui-spec §7.1, and the phases are in §10.
 
 ## Layout
 

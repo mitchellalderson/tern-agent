@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
 
+pub mod keys;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
     #[error("reading {path}: {source}")]

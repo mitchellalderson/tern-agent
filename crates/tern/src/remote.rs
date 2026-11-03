@@ -122,6 +122,8 @@ async fn pump(
                 Ok(ApiEvent::Agent(ev)) => {
                     let _ = remote.events.send(ev);
                 }
+                // The TUI re-reads providers and models when it needs them.
+                Ok(ApiEvent::Change(_)) => {}
                 Ok(ApiEvent::Approval {
                     approval_requested: a,
                 }) => {
@@ -355,7 +357,8 @@ impl Backend for Remote {
     }
 
     fn reload(&self) -> BackendResult<String> {
-        Err("attached to the daemon: restart `tern daemon` to reload its configuration".into())
+        self.send_json::<Value>(reqwest::Method::POST, "/v1/config/reload", json!({}))?;
+        Ok("reloaded providers and default model; restart `tern daemon` for other settings".into())
     }
 
     fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {

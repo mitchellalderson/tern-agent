@@ -20,6 +20,7 @@ fn setup() -> (Store, Journal) {
                 trigger: "user",
                 model: "mock:m",
                 system_prompt: "sys",
+                ..NewRun::default()
             },
             &NewMessage {
                 role: "user".into(),

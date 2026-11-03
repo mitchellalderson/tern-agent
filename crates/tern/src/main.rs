@@ -8,10 +8,12 @@ mod doctor;
 mod gateway_cmd;
 mod inspect;
 mod logging;
+mod providers;
 mod remote;
 mod report_cmd;
 mod run_cmd;
 mod runtime;
+mod subagents;
 mod tui_backend;
 
 use std::process::ExitCode;

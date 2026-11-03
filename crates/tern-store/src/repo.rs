@@ -38,6 +38,18 @@ pub struct RunRow {
     pub updated_at: i64,
     pub finished_at: Option<i64>,
     pub error: Option<String>,
+    /// Set on sub-agent runs: the run whose `agent_spawn` call started it.
+    pub parent_run_id: Option<String>,
+    pub parent_call_id: Option<String>,
+    pub label: Option<String>,
+    /// 0 for top-level runs, parent's depth + 1 for sub-agents.
+    pub depth: u32,
+    /// JSON array of the tool names this run may use; `None` = all.
+    pub tool_scope: Option<String>,
+    /// Token budget (input + output + cache); `None` = unlimited.
+    pub budget_tokens: Option<u64>,
+    /// Overrides the configured `max_iterations`.
+    pub max_iterations: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,18 +115,29 @@ pub struct SessionSummary {
 }
 
 /// Values for a new run row.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NewRun<'a> {
     pub id: &'a str,
     pub session_id: &'a str,
     pub trigger: &'a str,
     pub model: &'a str,
     pub system_prompt: &'a str,
+    pub parent_run_id: Option<&'a str>,
+    pub parent_call_id: Option<&'a str>,
+    pub label: Option<&'a str>,
+    pub depth: u32,
+    /// JSON array of tool names.
+    pub tool_scope: Option<&'a str>,
+    pub budget_tokens: Option<u64>,
+    pub max_iterations: Option<u32>,
+    /// Create the run `queued` (recorded, not yet driven) instead of `running`.
+    pub queued: bool,
 }
 
 const SESSION_COLS: &str = "id, title, source, external_ref, model, created_at, updated_at";
-const RUN_COLS: &str = "id, session_id, status, trigger, model, system_prompt, input_message_id, \
-                        started_at, updated_at, finished_at, error";
+pub(crate) const RUN_COLS: &str = "id, session_id, status, trigger, model, system_prompt, \
+    input_message_id, started_at, updated_at, finished_at, error, parent_run_id, parent_call_id, \
+    label, depth, tool_scope, budget_tokens, max_iterations";
 const STEP_COLS: &str = "run_id, idx, kind, input_hash, input_json, output_json, status, \
                          usage_json, error, started_at, finished_at";
 const MESSAGE_COLS: &str =
@@ -132,7 +155,7 @@ fn session_row(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
     })
 }
 
-fn run_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
+pub(crate) fn run_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
     Ok(RunRow {
         id: r.get(0)?,
         session_id: r.get(1)?,
@@ -145,6 +168,13 @@ fn run_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         updated_at: r.get(8)?,
         finished_at: r.get(9)?,
         error: r.get(10)?,
+        parent_run_id: r.get(11)?,
+        parent_call_id: r.get(12)?,
+        label: r.get(13)?,
+        depth: r.get(14)?,
+        tool_scope: r.get(15)?,
+        budget_tokens: r.get::<_, Option<i64>>(16)?.map(|v| v.max(0) as u64),
+        max_iterations: r.get(17)?,
     })
 }
 
@@ -218,15 +248,32 @@ impl Store {
 
     // ---- runs ----
 
-    /// Create a running run and its input message atomically.
+    /// Create a running (or queued) run and its input message atomically.
     pub fn create_run(&self, run: &NewRun<'_>, input: &NewMessage) -> Result<RunRow> {
         let now = now_ms();
+        let status = if run.queued { "queued" } else { "running" };
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO runs (id, session_id, status, trigger, model, system_prompt, started_at, updated_at)
-             VALUES (?1, ?2, 'running', ?3, ?4, ?5, ?6, ?6)",
-            params![run.id, run.session_id, run.trigger, run.model, run.system_prompt, now],
+            "INSERT INTO runs (id, session_id, status, trigger, model, system_prompt, started_at, updated_at,
+               parent_run_id, parent_call_id, label, depth, tool_scope, budget_tokens, max_iterations)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                run.id,
+                run.session_id,
+                status,
+                run.trigger,
+                run.model,
+                run.system_prompt,
+                now,
+                run.parent_run_id,
+                run.parent_call_id,
+                run.label,
+                run.depth,
+                run.tool_scope,
+                run.budget_tokens.map(|b| b.min(i64::MAX as u64) as i64),
+                run.max_iterations,
+            ],
         )?;
         tx.execute(
             "INSERT INTO messages (session_id, run_id, step_idx, role, content_json, text, created_at)
@@ -273,7 +320,7 @@ impl Store {
     /// Set a run's status. Terminal statuses also set `finished_at`.
     pub fn set_run_status(&self, id: &str, status: &str, error: Option<&str>) -> Result<()> {
         let now = now_ms();
-        let finished = (status != "running").then_some(now);
+        let finished = (status != "running" && status != "queued").then_some(now);
         self.conn()?.execute(
             "UPDATE runs SET status = ?2, error = ?3, updated_at = ?4, finished_at = ?5 WHERE id = ?1",
             params![id, status, error, now, finished],
@@ -336,6 +383,20 @@ impl Store {
         usage_json: Option<&str>,
         messages: &[NewMessage],
     ) -> Result<()> {
+        self.complete_step_consuming(run_id, idx, output_json, usage_json, messages, &[])
+    }
+
+    /// [`Store::complete_step`] that also marks `consumes` (agent mail ids)
+    /// consumed by this step, in the same transaction.
+    pub fn complete_step_consuming(
+        &self,
+        run_id: &str,
+        idx: u32,
+        output_json: &str,
+        usage_json: Option<&str>,
+        messages: &[NewMessage],
+        consumes: &[i64],
+    ) -> Result<()> {
         let now = now_ms();
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
@@ -356,6 +417,13 @@ impl Store {
                 params![session_id, run_id, idx, m.role, m.content_json, m.text, now, m.summary_of],
             )?;
         }
+        for id in consumes {
+            tx.execute(
+                "UPDATE agent_mail SET consumed_run_id = ?2, consumed_step = ?3
+                 WHERE id = ?1 AND consumed_step IS NULL",
+                params![id, run_id, idx],
+            )?;
+        }
         tx.execute(
             "UPDATE runs SET updated_at = ?2 WHERE id = ?1",
             params![run_id, now],
@@ -373,10 +441,16 @@ impl Store {
         Ok(())
     }
 
-    /// Delete steps `idx..` of a run and the messages they appended.
+    /// Delete steps `idx..` of a run and the messages they appended, and
+    /// return the agent mail they consumed to the inbox.
     pub fn truncate_steps(&self, run_id: &str, idx: u32) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE agent_mail SET consumed_run_id = NULL, consumed_step = NULL
+             WHERE consumed_run_id = ?1 AND consumed_step >= ?2",
+            params![run_id, idx],
+        )?;
         tx.execute(
             "DELETE FROM messages WHERE run_id = ?1 AND step_idx >= ?2",
             params![run_id, idx],
@@ -636,6 +710,7 @@ mod tests {
                     trigger: "user",
                     model: "mock:m",
                     system_prompt: "sys",
+                    ..NewRun::default()
                 },
                 &msg("hello"),
             )
@@ -706,6 +781,7 @@ mod tests {
                 trigger: "user",
                 model: "mock:m",
                 system_prompt: "sys",
+                ..NewRun::default()
             },
             &msg("second"),
         )

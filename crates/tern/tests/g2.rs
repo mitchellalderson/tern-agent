@@ -63,7 +63,12 @@ struct Api(reqwest::Client);
 
 impl Api {
     fn new(d: &Daemon) -> Self {
-        Self(reqwest::Client::builder().unix_socket(d.socket.clone()).build().unwrap())
+        Self(
+            reqwest::Client::builder()
+                .unix_socket(d.socket.clone())
+                .build()
+                .unwrap(),
+        )
     }
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> (u16, Value) {
@@ -90,12 +95,20 @@ async fn routines_crud_preview_and_run_now() {
     use reqwest::Method;
 
     let (status, v) = api
-        .call(Method::POST, "/v1/schedules/preview", Some(json!({ "cron": "0 8 * * mon-fri" })))
+        .call(
+            Method::POST,
+            "/v1/schedules/preview",
+            Some(json!({ "cron": "0 8 * * mon-fri" })),
+        )
         .await;
     assert_eq!(status, 200);
     assert_eq!(v["next"].as_array().unwrap().len(), 3);
     let (status, v) = api
-        .call(Method::POST, "/v1/schedules/preview", Some(json!({ "cron": "nope" })))
+        .call(
+            Method::POST,
+            "/v1/schedules/preview",
+            Some(json!({ "cron": "nope" })),
+        )
         .await;
     assert_eq!(status, 400);
     assert!(v["error"].as_str().unwrap().contains("invalid cron"));
@@ -147,10 +160,14 @@ async fn routines_crud_preview_and_run_now() {
     assert_eq!(list[0]["last_status"], "completed");
     assert_eq!(list[0]["prompt"], "summarize my inbox briefly");
 
-    let (status, _) = api.call(Method::DELETE, &format!("/v1/schedules/{id}"), None).await;
+    let (status, _) = api
+        .call(Method::DELETE, &format!("/v1/schedules/{id}"), None)
+        .await;
     assert_eq!(status, 200);
     assert_eq!(api.get("/v1/schedules").await, json!([]));
-    let (status, _) = api.call(Method::DELETE, &format!("/v1/schedules/{id}"), None).await;
+    let (status, _) = api
+        .call(Method::DELETE, &format!("/v1/schedules/{id}"), None)
+        .await;
     assert_eq!(status, 404);
 }
 
@@ -211,8 +228,17 @@ async fn runs_steps_and_event_sessions() {
         .iter()
         .map(|s| s["kind"].as_str().unwrap())
         .collect();
-    assert!(kinds.contains(&"llm") && kinds.contains(&"tool"), "{kinds:?}");
-    assert!(steps.as_array().unwrap().iter().all(|s| s["status"] == "completed"));
+    assert!(
+        kinds.contains(&"llm") && kinds.contains(&"tool"),
+        "{kinds:?}"
+    );
+    assert!(
+        steps
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["status"] == "completed")
+    );
 
     let detail = api.get(&format!("/v1/sessions/{session}")).await;
     let assistant = detail["messages"]
@@ -223,6 +249,8 @@ async fn runs_steps_and_event_sessions() {
         .unwrap();
     assert_eq!(assistant["run_id"], run.as_str());
 
-    let (status, _) = api.call(reqwest::Method::GET, "/v1/runs/nope/steps", None).await;
+    let (status, _) = api
+        .call(reqwest::Method::GET, "/v1/runs/nope/steps", None)
+        .await;
     assert_eq!(status, 404);
 }

@@ -13,6 +13,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003_compaction.sql"),
     include_str!("../migrations/0004_daemon.sql"),
     include_str!("../migrations/0005_devices.sql"),
+    include_str!("../migrations/0006_subagents.sql"),
 ];
 
 pub const LATEST_VERSION: u32 = MIGRATIONS.len() as u32;

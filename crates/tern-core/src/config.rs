@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::home::expand_tilde;
 
+pub mod edit;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("reading {path}: {source}")]
@@ -38,6 +40,7 @@ pub struct Config {
     pub gateway: GatewayConfig,
     pub mcp: McpConfig,
     pub api: ApiConfig,
+    pub subagents: SubagentsConfig,
 }
 
 impl Default for Config {
@@ -52,6 +55,7 @@ impl Default for Config {
             gateway: GatewayConfig::default(),
             mcp: McpConfig::default(),
             api: ApiConfig::default(),
+            subagents: SubagentsConfig::default(),
         }
     }
 }
@@ -230,6 +234,51 @@ pub enum TlsMode {
     Off,
 }
 
+/// `[subagents]`: delegation to child runs (docs/subagents-design.md §1.6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SubagentsConfig {
+    /// Registers the `agent_*` tools. Off until the prompt work (S5) lands.
+    pub enabled: bool,
+    /// Model for sub-agents when `agent_spawn` doesn't name one, as
+    /// `provider:model`. Unset = the parent's model.
+    pub default_model: Option<String>,
+    /// Aliases the parent can pass as `model`, e.g. `fast = "anthropic:…"`.
+    pub models: BTreeMap<String, String>,
+    /// 1 = children can't spawn; 2 = one level of grandchildren.
+    pub max_depth: u32,
+    /// Running children per parent run; more are queued.
+    pub max_concurrent: u32,
+    /// Children per parent run, in total.
+    pub max_children: u32,
+    /// Running sub-agents across the process; more are queued.
+    pub max_concurrent_global: u32,
+    /// Per child, unless `agent_spawn` asks for fewer.
+    pub max_iterations: u32,
+    /// Per child (input + output + cache tokens), unless `agent_spawn` asks
+    /// for fewer.
+    pub budget_tokens: u64,
+    /// How long `agent_ask_parent` waits for an answer.
+    pub ask_parent_timeout_secs: u64,
+}
+
+impl Default for SubagentsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_model: None,
+            models: BTreeMap::new(),
+            max_depth: 1,
+            max_concurrent: 4,
+            max_children: 12,
+            max_concurrent_global: 8,
+            max_iterations: 30,
+            budget_tokens: 400_000,
+            ask_parent_timeout_secs: 900,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct McpConfig {
@@ -347,6 +396,32 @@ env_secrets = ["GITHUB_TOKEN"]
     fn shipped_example_parses() {
         let c = Config::parse(crate::defaults::CONFIG_TOML, Path::new("x")).unwrap();
         assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn subagents_table_parses_and_defaults_off() {
+        assert!(!Config::default().subagents.enabled);
+        let c = Config::parse(
+            r#"
+[subagents]
+enabled = true
+default_model = "anthropic:claude-sonnet-4-5"
+models = { fast = "anthropic:claude-haiku-4-5", strong = "anthropic:claude-opus-4-1" }
+max_depth = 1
+max_concurrent = 4
+max_children = 12
+max_concurrent_global = 8
+max_iterations = 30
+budget_tokens = 400000
+ask_parent_timeout_secs = 900
+"#,
+            Path::new("c.toml"),
+        )
+        .unwrap();
+        assert!(c.subagents.enabled);
+        assert_eq!(c.subagents.models["fast"], "anthropic:claude-haiku-4-5");
+        let err = Config::parse("[subagents]\nmax_dept = 2", Path::new("c.toml")).unwrap_err();
+        assert!(err.to_string().contains("max_dept"), "{err}");
     }
 
     #[test]

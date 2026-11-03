@@ -12,6 +12,7 @@ pub mod net;
 pub mod prompt;
 pub mod secrets;
 pub mod skills;
+pub mod subagent;
 pub mod tool;
 pub mod types;
 

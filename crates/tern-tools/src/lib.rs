@@ -1,5 +1,6 @@
 //! Built-in tools (spec §8.1).
 
+pub mod agents;
 pub mod fs;
 pub mod http;
 pub mod memory;

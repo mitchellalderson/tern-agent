@@ -37,6 +37,9 @@ class _ConversationViewState extends State<ConversationView> {
     final store = widget.store;
     final t = store.current;
     final items = t?.items ?? const <Item>[];
+    final phase = t?.phase;
+    // The activity line sits below the newest item (index 0, reversed).
+    final extra = phase == null ? 0 : 1;
     final title =
         store.sessions
             .where((s) => s.id == store.selected)
@@ -61,9 +64,11 @@ class _ConversationViewState extends State<ConversationView> {
                   controller: _scroll,
                   reverse: true,
                   padding: const EdgeInsets.symmetric(vertical: 20),
-                  itemCount: items.length,
+                  itemCount: items.length + extra,
                   itemBuilder: (context, i) {
-                    final item = items[items.length - 1 - i];
+                    final item = i < extra
+                        ? null
+                        : items[items.length - 1 - (i - extra)];
                     return Center(
                       child: ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 760),
@@ -74,7 +79,12 @@ class _ConversationViewState extends State<ConversationView> {
                           ),
                           child: SizedBox(
                             width: double.infinity,
-                            child: ItemView(item: item, store: store),
+                            child: item == null
+                                ? ActivityLine(
+                                    phase: phase!,
+                                    since: t!.runSince,
+                                  )
+                                : ItemView(item: item, store: store),
                           ),
                         ),
                       ),

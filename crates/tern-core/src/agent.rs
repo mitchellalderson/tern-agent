@@ -19,7 +19,8 @@ use crate::compaction;
 use crate::config::ModelRef;
 use crate::events::AgentEvent;
 use crate::journal::{InFlight, Journal, StepError, StepKind, StepOutput};
-use crate::tool::{ToolCtx, ToolRegistry, ToolResult};
+use crate::subagent::{HostSlot, InboxEntry, InboxOutput};
+use crate::tool::{ProgressSink, ToolCtx, ToolRegistry, ToolResult, with_call, with_progress};
 use crate::types::{
     AssistantTurn, ChatRequest, ContentBlock, Message, Provider, ProviderError, Role, StreamEvent,
     ToolCall, Usage,
@@ -27,6 +28,8 @@ use crate::types::{
 
 pub const MAX_LLM_ATTEMPTS: u32 = 5;
 pub const INTERRUPTED_TOOL_MESSAGE: &str = "interrupted: this call may have partially executed before a crash; verify state before retrying";
+/// Starts the note appended to the final text of a run stopped by a limit.
+pub const STOPPED_MARKER: &str = "[stopped: ";
 
 /// Resolves the provider half of a `provider:model` reference.
 pub type ProviderFactory =
@@ -125,6 +128,7 @@ pub struct Agent {
     approvals: Arc<dyn ApprovalHandler>,
     events: broadcast::Sender<AgentEvent>,
     cfg: AgentConfig,
+    subagents: HostSlot,
 }
 
 /// What the journal stores as an `llm` step's input: a digest of the full
@@ -154,13 +158,25 @@ impl Agent {
             approvals,
             events,
             cfg,
+            subagents: HostSlot::default(),
         }
+    }
+
+    /// Deliver sub-agent mail and report run ends through `slot`'s host.
+    pub fn with_subagents(mut self, slot: HostSlot) -> Self {
+        self.subagents = slot;
+        self
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
         self.events.subscribe()
     }
 
+    /// The event bus, for components that emit on a run's behalf (the
+    /// sub-agent host announcing a spawn).
+    pub fn event_sender(&self) -> broadcast::Sender<AgentEvent> {
+        self.events.clone()
+    }
     pub fn tools(&self) -> &ToolRegistry {
         &self.tools
     }
@@ -191,6 +207,7 @@ impl Agent {
                 trigger,
                 model: &model.to_string(),
                 system_prompt,
+                ..tern_store::NewRun::default()
             },
             &input,
         )?)
@@ -228,6 +245,7 @@ impl Agent {
         self.emit(AgentEvent::RunStarted {
             run_id: run.id.clone(),
             session_id: run.session_id.clone(),
+            parent_run_id: run.parent_run_id.clone(),
         });
 
         let mut outcome = RunOutcome {
@@ -245,8 +263,15 @@ impl Agent {
                 outcome.error = Some(e.to_string());
             }
         }
+        let host = self.subagents.get();
+        if outcome.status == RunStatus::Interrupted && outcome.error.is_none() {
+            outcome.error = host.and_then(|h| h.interrupt_reason(&run));
+        }
         self.store
             .set_run_status(&run.id, outcome.status.as_str(), outcome.error.as_deref())?;
+        if let Some(h) = host {
+            h.run_ended(&run, &outcome).await;
+        }
         match &outcome.error {
             Some(e) => {
                 tracing::warn!(run = %run.id, status = outcome.status.as_str(), error = %self.journal.redact_text(e), "run finished")
@@ -282,7 +307,16 @@ impl Agent {
         };
 
         self.tools.prepare().await;
-        let tools = self.tools.specs();
+        // Sub-agents run with the scope, limits and budget frozen on their row.
+        let scope: Option<Vec<String>> = run
+            .tool_scope
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| AgentError::Corrupt(format!("run {} tool_scope: {e}", run.id)))?;
+        let scope = scope.as_deref();
+        let tools = self.tools.specs_for(scope);
+        let max_iterations = run.max_iterations.unwrap_or(self.cfg.max_iterations);
         let window = self.cfg.context_window(&model.provider);
         let mut idx: u32 = 0;
         let mut iterations: u32 = 0;
@@ -293,6 +327,13 @@ impl Agent {
         loop {
             if cancel.is_cancelled() {
                 return Ok(RunStatus::Interrupted);
+            }
+            if self.inbox_due(run, idx, false)? {
+                match self.inbox_step(run, idx, false, cancel).await {
+                    Ok(_) => idx += 1,
+                    Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
+                    Err(e) => return Err(e.into()),
+                }
             }
             let mut messages = self.context(run, idx)?;
             let estimate = compaction::estimate_tokens(&system, &messages, &tools);
@@ -370,10 +411,36 @@ impl Agent {
 
             let calls: Vec<ToolCall> = turn.value.message.tool_uses().collect();
             if calls.is_empty() {
-                return Ok(RunStatus::Completed);
+                // No finishing with live children: wait for their reports
+                // and give them to the model before the run may complete.
+                if !self.inbox_due(run, idx, true)? {
+                    return Ok(RunStatus::Completed);
+                }
+                if let Some(note) = limit_note(run, iterations, max_iterations, &outcome.usage) {
+                    outcome.final_text.push_str(&note);
+                    return Ok(RunStatus::Completed);
+                }
+                match self.inbox_step(run, idx, true, cancel).await {
+                    Ok(0) => return Ok(RunStatus::Completed),
+                    Ok(_) => {
+                        idx += 1;
+                        continue;
+                    }
+                    Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
+                    Err(e) => return Err(e.into()),
+                }
             }
             for call in calls {
-                let policy = self.tools.policy(&ctx, &call);
+                let in_scope = crate::tool::in_scope(scope, &call.name);
+                let policy = if in_scope {
+                    self.tools.policy(&ctx, &call)
+                } else {
+                    // Refused without running; nothing to approve or redo.
+                    crate::tool::ToolPolicy {
+                        idempotent: true,
+                        requires_approval: false,
+                    }
+                };
                 if policy.requires_approval {
                     let decision = self.approval_step(run, idx, &call, cancel).await;
                     idx += 1;
@@ -402,9 +469,26 @@ impl Agent {
                 let result = self
                     .journal
                     .step_with(&run.id, idx, StepKind::Tool, &call, in_flight, || async {
-                        let r = self.tools.call(&ctx, &call).await;
+                        let sink: ProgressSink = {
+                            let (events, run_id, id) =
+                                (self.events.clone(), run.id.clone(), call.id.clone());
+                            Arc::new(move |chunk: &str| {
+                                let _ = events.send(AgentEvent::ToolOutput {
+                                    run_id: run_id.clone(),
+                                    id: id.clone(),
+                                    chunk: chunk.to_owned(),
+                                });
+                            })
+                        };
+                        let (r, consumes) = with_call(
+                            &call.id,
+                            with_progress(sink, self.tools.call_in(scope, &ctx, &call)),
+                        )
+                        .await;
                         let msg = tool_result(&call, &r);
-                        Ok(StepOutput::new(r).with_messages(vec![msg]))
+                        Ok(StepOutput::new(r)
+                            .with_messages(vec![msg])
+                            .with_consumes(consumes))
                     })
                     .await?;
                 idx += 1;
@@ -429,14 +513,89 @@ impl Agent {
                 }
             }
 
-            if iterations >= self.cfg.max_iterations {
-                outcome.final_text.push_str(&format!(
-                    "\n\n[stopped: reached max_iterations ({})]",
-                    self.cfg.max_iterations
-                ));
+            if let Some(note) = limit_note(run, iterations, max_iterations, &outcome.usage) {
+                outcome.final_text.push_str(&note);
                 return Ok(RunStatus::Completed);
             }
         }
+    }
+
+    /// Whether step `idx` is an inbox step: on replay, exactly when one was
+    /// recorded there; on the live frontier, when the run has mail (or, at
+    /// the end of a turn, children that haven't reported). Replay never
+    /// consults live mail, so it can't diverge from the original run.
+    fn inbox_due(&self, run: &RunRow, idx: u32, at_turn_end: bool) -> Result<bool, AgentError> {
+        match self.journal.peek(&run.id, idx)? {
+            Some(kind) => Ok(kind == StepKind::Inbox),
+            None => match self.subagents.get() {
+                Some(h) => Ok(h.inbox_due(&run.id, at_turn_end)?),
+                None => Ok(false),
+            },
+        }
+    }
+
+    /// Deliver pending mail as one user message, consuming it in the same
+    /// transaction. `wait` blocks until there is mail (the end-of-turn
+    /// inbox). Returns how many pieces were delivered.
+    async fn inbox_step(
+        &self,
+        run: &RunRow,
+        idx: u32,
+        wait: bool,
+        cancel: &CancellationToken,
+    ) -> Result<usize, StepError> {
+        let out = self
+            .journal
+            .step_with(
+                &run.id,
+                idx,
+                StepKind::Inbox,
+                &json!({ "wait": wait }),
+                InFlight::Retry,
+                || async {
+                    let mail = match self.subagents.get() {
+                        Some(h) => h.take_mail(&run.id, wait, cancel).await?,
+                        None => Vec::new(),
+                    };
+                    let text = mail
+                        .iter()
+                        .map(crate::subagent::render_mail)
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    let entries: Vec<InboxEntry> = mail
+                        .iter()
+                        .map(|m| {
+                            let body: Value = serde_json::from_str(&m.body).unwrap_or(Value::Null);
+                            let field =
+                                |k: &str| body.get(k).and_then(Value::as_str).map(Into::into);
+                            InboxEntry {
+                                id: m.id,
+                                kind: m.kind.clone(),
+                                from_run_id: m.from_run_id.clone(),
+                                agent: field("agent"),
+                                status: field("status"),
+                            }
+                        })
+                        .collect();
+                    let consumes = mail.iter().map(|m| m.id).collect();
+                    let messages = if text.is_empty() {
+                        vec![]
+                    } else {
+                        vec![Message::user_text(&text)]
+                    };
+                    Ok(StepOutput::new(InboxOutput {
+                        mail: entries,
+                        waited: wait,
+                    })
+                    .with_messages(messages)
+                    .with_consumes(consumes))
+                },
+            )
+            .await?;
+        if !out.replayed && !out.value.mail.is_empty() {
+            tracing::info!(run = %run.id, idx, mail = out.value.mail.len(), "delivered agent mail");
+        }
+        Ok(out.value.mail.len())
     }
 
     async fn approval_step(
@@ -710,6 +869,26 @@ pub fn triage_running_runs(store: &Store, max_age: Duration) -> Result<Vec<RunRo
 /// Time-ordered unique id (UUIDv7, hex without dashes).
 pub fn new_id() -> String {
     uuid::Uuid::now_v7().simple().to_string()
+}
+
+/// The note for a run that reached its iteration limit or token budget, if
+/// it has. Both come from journaled values, so replay decides the same.
+fn limit_note(run: &RunRow, iterations: u32, max: u32, usage: &Usage) -> Option<String> {
+    if iterations >= max {
+        return Some(format!(
+            "\n\n{STOPPED_MARKER}reached max_iterations ({max})]"
+        ));
+    }
+    let used = usage.input_tokens
+        + usage.output_tokens
+        + usage.cache_read_tokens
+        + usage.cache_write_tokens;
+    match run.budget_tokens {
+        Some(budget) if used >= budget => Some(format!(
+            "\n\n{STOPPED_MARKER}token budget ({used} of {budget} tokens)]"
+        )),
+        _ => None,
+    }
 }
 
 fn add_usage(total: &mut Usage, u: &Usage) {

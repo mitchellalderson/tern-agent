@@ -8,3 +8,5 @@ export 'src/client.dart';
 export 'src/endpoint.dart';
 export 'src/models.dart';
 export 'src/sse.dart';
+export 'src/subagents.dart';
+export 'src/tools.dart';

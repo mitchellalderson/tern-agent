@@ -3,6 +3,7 @@
 pub mod anthropic;
 mod http;
 pub mod mock;
+pub mod models;
 pub mod openai_compat;
 mod sse;
 
@@ -14,6 +15,7 @@ use tern_core::types::{Provider, ProviderError};
 
 pub use anthropic::Anthropic;
 pub use mock::MockProvider;
+pub use models::{ListError, Listing, ModelInfo, list_models};
 pub use openai_compat::OpenAiCompat;
 
 /// Env var selecting the mock provider: `TERN_PROVIDER=mock:<script.json>`.

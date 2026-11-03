@@ -2,7 +2,8 @@
 
 use std::path::Path;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
+use tern_core::config::edit::ConfigFile;
 use tern_core::{Config, TernHome, defaults};
 
 pub fn init(home: &TernHome, force: bool) -> anyhow::Result<()> {
@@ -59,40 +60,10 @@ pub fn get(home: &TernHome, key: Option<&str>) -> anyhow::Result<()> {
 
 pub fn set(home: &TernHome, key: &str, raw: &str) -> anyhow::Result<()> {
     let path = home.config_path();
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
-    let mut doc: toml_edit::DocumentMut = text
-        .parse()
-        .with_context(|| format!("parsing {}", path.display()))?;
-
-    let value: toml_edit::Value = raw.parse().unwrap_or_else(|_| raw.into());
-    let parts: Vec<&str> = key.split('.').collect();
-    let Some((leaf, tables)) = parts.split_last() else {
-        bail!("empty key");
-    };
-    if parts.iter().any(|p| p.is_empty()) {
-        bail!("invalid key {key:?}");
-    }
-    let mut table = doc.as_table_mut();
-    for part in tables {
-        let entry = table
-            .entry(part)
-            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
-        table = entry
-            .as_table_mut()
-            .with_context(|| format!("{part:?} in {key:?} is not a table"))?;
-    }
-    table.insert(leaf, toml_edit::value(value));
-
-    let updated = doc.to_string();
-    Config::parse(&updated, &path).context("refusing to write an invalid config")?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    write_atomic(&path, &updated)
+    let mut file = ConfigFile::open(&path)?;
+    file.set(key, raw)?;
+    file.save().context("refusing to write an invalid config")?;
+    Ok(())
 }
 
 fn write_atomic(path: &Path, body: &str) -> anyhow::Result<()> {

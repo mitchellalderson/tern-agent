@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
+import 'agents.dart';
 import 'inspector.dart';
 
 /// One transcript item.
@@ -36,6 +38,7 @@ class ItemView extends StatelessWidget {
         _ => null,
       },
     ),
+    final AgentsItem a => AgentsCard(agents: a, store: store),
     final PillItem p => _Pill(p),
     final ApprovalItem a => ApprovalCard(item: a, store: store),
     final RunEndItem r => _RunEnd(r, store: store),
@@ -121,7 +124,7 @@ class _WorkCardState extends State<WorkCard> {
     final title = w.running
         ? 'Working…'
         : elapsed != null && elapsed.inSeconds >= 1
-        ? 'Worked for ${_duration(elapsed)}'
+        ? 'Worked for ${formatDuration(elapsed)}'
         : w.steps.length == 1
         ? 'Used 1 tool'
         : 'Used ${w.steps.length} tools';
@@ -206,7 +209,10 @@ class _WorkCardState extends State<WorkCard> {
                 ),
               ),
             ),
-            if (_open.contains(s.id)) _Output(s.output),
+            if (_open.contains(s.id))
+              _Output(s.output)
+            else if (s.status == StepStatus.running && s.output.isNotEmpty)
+              _Tail(s.output),
           ],
         ],
       ),
@@ -222,10 +228,6 @@ class _WorkCardState extends State<WorkCard> {
         ? (s.status == StepStatus.running ? 'running' : 'done')
         : t;
   }
-
-  static String _duration(Duration d) => d.inMinutes >= 1
-      ? '${d.inMinutes}m ${d.inSeconds % 60}s'
-      : '${d.inSeconds}s';
 }
 
 class _StepIcon extends StatelessWidget {
@@ -269,8 +271,32 @@ class _Output extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: SingleChildScrollView(
+        // Pinned to the end, so live output stays in view as it grows.
+        reverse: true,
         padding: const EdgeInsets.all(10),
         child: SelectableText(text, style: mono.copyWith(color: c.text)),
+      ),
+    );
+  }
+}
+
+/// The last few lines of a running tool's output, under its step.
+class _Tail extends StatelessWidget {
+  const _Tail(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = text.trimRight().split('\n');
+    final tail = lines.skip(lines.length > 4 ? lines.length - 4 : 0);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 0, 0, 4),
+      child: Text(
+        tail.join('\n'),
+        maxLines: 4,
+        overflow: TextOverflow.ellipsis,
+        style: mono.copyWith(fontSize: 11.5, color: context.colors.muted),
       ),
     );
   }
@@ -373,7 +399,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
                 Icon(Icons.front_hand_outlined, size: 16, color: c.warn),
                 const SizedBox(width: 8),
                 Text(
-                  'tern wants to run ${a.tool}',
+                  '${a.agentLabel ?? 'tern'} wants to run ${a.tool}',
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
@@ -415,21 +441,23 @@ class _ApprovalCardState extends State<ApprovalCard> {
                   ),
                   child: const Text('Allow once'),
                 ),
-                const SizedBox(width: 8),
-                Tooltip(
-                  message: 'Adds “${a.pattern}” to the allowlist',
-                  child: OutlinedButton(
-                    onPressed: _busy ? null : () => _answer(Decision.always),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: c.text,
-                      side: BorderSide(color: c.hairline),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
+                if (a.pattern case final pattern?) ...[
+                  const SizedBox(width: 8),
+                  Tooltip(
+                    message: 'Adds “$pattern” to the allowlist',
+                    child: OutlinedButton(
+                      onPressed: _busy ? null : () => _answer(Decision.always),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: c.text,
+                        side: BorderSide(color: c.hairline),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
                       ),
+                      child: const Text('Always allow'),
                     ),
-                    child: const Text('Always allow'),
                   ),
-                ),
+                ],
                 const SizedBox(width: 4),
                 TextButton(
                   onPressed: _busy ? null : () => _answer(Decision.deny),
@@ -484,3 +512,76 @@ class _RunEnd extends StatelessWidget {
     );
   }
 }
+
+/// The line under the newest item while a run is going: what it's doing
+/// and for how long, so a quiet stretch doesn't look like a hang.
+class ActivityLine extends StatefulWidget {
+  const ActivityLine({super.key, required this.phase, this.since});
+
+  final RunPhase phase;
+  final DateTime? since;
+
+  @override
+  State<ActivityLine> createState() => _ActivityLineState();
+}
+
+class _ActivityLineState extends State<ActivityLine>
+    with SingleTickerProviderStateMixin {
+  late final _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..repeat(reverse: true);
+  late final Timer _tick;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _tick.cancel();
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final since = widget.since;
+    final elapsed = since == null ? null : DateTime.now().difference(since);
+    return Padding(
+      padding: const EdgeInsets.only(left: 2),
+      child: Row(
+        children: [
+          FadeTransition(
+            opacity: Tween(begin: 0.25, end: 1.0).animate(_pulse),
+            child: Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: c.accent,
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            '${widget.phase.label}…',
+            style: TextStyle(fontSize: 12.5, color: c.muted),
+          ),
+          if (elapsed != null && elapsed.inSeconds >= 1)
+            Text(
+              ' · ${formatDuration(elapsed)}',
+              style: TextStyle(fontSize: 12.5, color: c.muted),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+String formatDuration(Duration d) => d.inMinutes >= 1
+    ? '${d.inMinutes}m ${d.inSeconds % 60}s'
+    : '${d.inSeconds}s';

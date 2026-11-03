@@ -153,6 +153,54 @@ TernStore demoStore() {
       output: 'wrote 18 drafts',
       replayed: false,
     ),
+    const ToolStarted(
+      runId: 'r',
+      id: 'sp0',
+      name: 'agent_spawn',
+      summary: 'agent_spawn pricing-research',
+    ),
+    const SubagentSpawned(
+      runId: 'r',
+      callId: 'sp0',
+      childRunId: 'cr0',
+      childSessionId: 'cs0',
+      label: 'pricing-research',
+      task: 'Find seed-stage pricing pages',
+      model: 'anthropic:claude-haiku-5-5',
+      status: 'running',
+    ),
+    const ToolStarted(
+      runId: 'r',
+      id: 'sp1',
+      name: 'agent_spawn',
+      summary: 'agent_spawn competitor-scan',
+    ),
+    const SubagentSpawned(
+      runId: 'r',
+      callId: 'sp1',
+      childRunId: 'cr1',
+      childSessionId: 'cs1',
+      label: 'competitor-scan',
+      task: 'Scan competitor launches',
+      model: 'anthropic:claude-haiku-5-5',
+      status: 'running',
+    ),
+    const ToolStarted(
+      runId: 'r',
+      id: 'sp2',
+      name: 'agent_spawn',
+      summary: 'agent_spawn docs-review',
+    ),
+    const SubagentSpawned(
+      runId: 'r',
+      callId: 'sp2',
+      childRunId: 'cr2',
+      childSessionId: 'cs2',
+      label: 'docs-review',
+      task: 'Review the intro drafts',
+      model: 'anthropic:claude-haiku-5-5',
+      status: 'running',
+    ),
     const AssistantMessage(
       runId: 'r',
       text: 'Researched **40 accounts**, 22 with a live signal. Two raised last week, so those drafts lead with the round:\n\n- **Helix Pay**: seed, \$4M, hiring a first AE\n- **Ledgerly**: seed, \$6M, new CFO\n\nDrafts are in `drafts/intros.md`.',
@@ -184,6 +232,35 @@ TernStore demoStore() {
       ),
     ),
   );
+  final card = t.items.whereType<AgentsItem>().single;
+  for (final (i, k) in card.children.indexed) {
+    k.started = t0.subtract(Duration(seconds: 70 - i * 9));
+  }
+  t
+    ..updateChild(
+      'cr0',
+      status: 'completed',
+      result: '12 pricing pages; 9 list a free tier',
+      finished: t0.subtract(const Duration(seconds: 8)),
+    )
+    ..apply(
+      const SubagentMessage(
+        runId: 'cr2',
+        toRunId: 'r',
+        kind: 'question',
+        text: 'Include the two drafts marked WIP?',
+      ),
+    );
+  store.transcripts['cs1'] = Transcript()
+    ..apply(const RunStarted(runId: 'cr1', sessionId: 'cs1'))
+    ..apply(
+      const ToolStarted(
+        runId: 'cr1',
+        id: 'x',
+        name: 'http_fetch',
+        summary: 'http_fetch news.ycombinator.com',
+      ),
+    );
   store.transcripts['s1'] = t;
   store.transcripts['s3'] = Transcript()
     ..apply(

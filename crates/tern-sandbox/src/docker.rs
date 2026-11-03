@@ -279,6 +279,7 @@ esac
             cwd: cwd.to_path_buf(),
             timeout: Duration::from_secs(secs),
             max_output: 4096,
+            on_output: None,
         }
     }
 

@@ -1,6 +1,6 @@
 # tern desktop: Flutter GUI spec
 
-Status: draft, 2026-11-03. An MVP of G0–G1 is in `apps/desktop/` (see its README for what's in and out).
+Status: draft, 2026-11-03. G0–G2 are built in `apps/desktop/` (see its README for what's in and out).
 
 A desktop app for tern that attaches to the daemon (`tern daemon`) over its local socket API. It's a front end, like the TUI and the Telegram gateway: the engine owns all state, runs, approvals and scheduling. The app can be closed at any time without losing anything.
 
@@ -164,10 +164,10 @@ The daemon serves JSON over HTTP on `~/.tern/tern.sock` (mode 0600), possibly a 
 |---|---|---|
 | GET | `/v1/runs/active` | running runs with their session ids (resync) |
 | GET | `/v1/approvals` | pending approvals (resync; today a late-attaching client never sees them) |
-| GET | `/v1/runs/{id}/steps` | journal steps for the inspector |
+| GET | `/v1/runs/{id}/steps` | journal steps for the inspector (built, with `GET /v1/sessions/{id}/runs`) |
 | GET | `/v1/sessions?source=&q=` | filter by source; full-text search |
 | PATCH / DELETE | `/v1/sessions/{id}` | rename, archive |
-| GET / POST / PATCH / DELETE | `/v1/schedules[/{id}]` | routines CRUD, enable toggle, last result |
+| GET / POST / PATCH / DELETE | `/v1/schedules[/{id}]` | routines CRUD, enable toggle, last result (built, plus `POST /v1/schedules/preview` and `/{id}/run`) |
 | GET | `/v1/connectors` | active and drafts, capabilities, missing secrets, errors |
 | GET | `/v1/connectors/{name}/source` | Luau source |
 | POST | `/v1/connectors/{name}/test` | run a tool (routes through approvals) |
@@ -183,8 +183,8 @@ The daemon serves JSON over HTTP on `~/.tern/tern.sock` (mode 0600), possibly a 
 | GET | `/v1/doctor` (P1) | doctor results as JSON |
 
 Event changes:
-- Add `session_id` to every `AgentEvent`, so a client that attaches mid-run can place events without a lookup.
-- New events: `session_updated` (title, model), `schedule_changed`, `connector_changed`, `memory_changed`, `approval_resolved` (so a second client, or Telegram, answering clears the card everywhere).
+- Add `session_id` to every `AgentEvent`, so a client that attaches mid-run can place events without a lookup. (Built: the SSE layer adds it, so `AgentEvent` itself is unchanged.)
+- New events: `session_updated` (title, model), `schedule_changed`, `connector_changed`, `memory_changed`. `approval_resolved` turned out to be unneeded: the existing `approval` agent event fires whoever answers, and clients close the card on it.
 - Add an `id` to each SSE event, ready for `Last-Event-ID` replay later.
 
 ### 7.2 Agents (P1, design separately)

@@ -39,3 +39,15 @@ docker_image = "debian:stable-slim"
 # command = "github-mcp-server"
 # args = ["stdio"]
 # env_secrets = ["GITHUB_TOKEN"]
+
+# Sub-agents: the agent_spawn / agent_wait / agent_cancel / agent_status tools.
+# [subagents]
+# enabled = false
+# default_model = "anthropic:claude-sonnet-4-5"   # unset = the parent's model
+# models = { fast = "anthropic:claude-haiku-4-5" } # aliases for agent_spawn's `model`
+# max_depth = 1               # 1 = sub-agents can't start their own
+# max_concurrent = 4          # running per parent; more are queued
+# max_children = 12           # per parent run, in total
+# max_concurrent_global = 8   # running across tern; more are queued
+# max_iterations = 30         # per sub-agent
+# budget_tokens = 400000      # per sub-agent: input + output + cache tokens

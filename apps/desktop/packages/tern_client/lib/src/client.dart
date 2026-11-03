@@ -5,6 +5,8 @@ import 'dart:io';
 import 'endpoint.dart';
 import 'models.dart';
 import 'sse.dart';
+import 'subagents.dart';
+import 'tools.dart';
 
 /// An error response from the daemon (`{"error": "..."}`) or a failure to
 /// reach it.
@@ -98,6 +100,12 @@ class TernClient {
 
   Future<Info> info() async => Info.fromJson(await _json('GET', '/v1/info'));
 
+  /// Every tool the agent has, with its argument schema.
+  Future<List<ToolSpec>> tools() async => [
+    for (final t in await _json('GET', '/v1/tools') as List)
+      ToolSpec.fromJson(t as Json),
+  ];
+
   /// Throws [TernException] with the daemon's reason if `model` is unusable.
   Future<void> checkModel(String model) =>
       _json('POST', '/v1/models/check', {'model': model});
@@ -131,6 +139,17 @@ class TernClient {
       (await _json('POST', '/v1/runs/$run/cancel'))['cancelled'] as bool;
 
   Future<void> resume(String run) => _json('POST', '/v1/runs/$run/resume');
+
+  /// Every sub-agent started from this conversation's runs.
+  Future<List<ChildRun>> subagents(String session) async => [
+    for (final r
+        in await _json('GET', '/v1/sessions/$session/subagents') as List)
+      ChildRun.fromJson(r as Json),
+  ];
+
+  /// Tell a running sub-agent something, as the user.
+  Future<void> messageRun(String run, String text) =>
+      _json('POST', '/v1/runs/$run/message', {'text': text});
 
   Future<List<ActiveRun>> activeRuns() async => [
     for (final r in await _json('GET', '/v1/runs/active') as List)

@@ -6,7 +6,7 @@ use tokio::sync::Notify;
 
 use super::*;
 use crate::approval::{AutoApprove, AutoDeny};
-use crate::tool::{Tool, ToolPolicy};
+use crate::tool::{Tool, ToolPolicy, progress_sink};
 use crate::types::{EventStream, StopReason, ToolSpec};
 
 // ---- test doubles ----
@@ -192,6 +192,32 @@ impl Tool for Counter {
     }
 }
 
+/// Reports progress through the sink before returning.
+struct Chatty;
+
+#[async_trait]
+impl Tool for Chatty {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "chatty".into(),
+            description: "chatty".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+        ToolPolicy {
+            idempotent: false,
+            requires_approval: false,
+        }
+    }
+    async fn call(&self, _: &ToolCtx, _: Value) -> ToolResult {
+        let sink = progress_sink().expect("agent sets a sink");
+        sink("one\n");
+        sink("two\n");
+        ToolResult::ok("final")
+    }
+}
+
 struct Harness {
     store: Store,
     session: String,
@@ -322,6 +348,45 @@ async fn tool_loop_feeds_results_back() {
     assert_eq!(last_tool_result(second), Some(("count=1".into(), false)));
     assert_eq!(second.system, "system");
     assert_eq!(second.tools[0].name, "count");
+}
+
+#[tokio::test]
+async fn tool_output_streams_before_finish_and_is_not_journaled() {
+    let h = Harness::new();
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("chatty", json!({})),
+        Reply::Text("done"),
+    ]));
+    let agent = h.agent(script, vec![Arc::new(Chatty)], Arc::new(AutoApprove));
+    let mut events = agent.subscribe();
+    let run = h.start(&agent, "go");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    let mut seen = Vec::new();
+    while let Ok(ev) = events.try_recv() {
+        match ev {
+            AgentEvent::ToolStarted { id, .. } => seen.push(format!("started {id}")),
+            AgentEvent::ToolOutput { id, chunk, .. } => seen.push(format!("output {id} {chunk:?}")),
+            AgentEvent::ToolFinished { id, output, .. } => {
+                seen.push(format!("finished {id} {output}"))
+            }
+            _ => {}
+        }
+    }
+    let id = seen[0].strip_prefix("started ").unwrap().to_owned();
+    assert_eq!(
+        seen[1..],
+        [
+            format!("output {id} \"one\\n\""),
+            format!("output {id} \"two\\n\""),
+            format!("finished {id} final"),
+        ]
+    );
+    // Only the tool's final result reaches the journal.
+    assert_eq!(
+        h.kinds(&run),
+        ["llm:completed", "tool:completed", "llm:completed"]
+    );
 }
 
 #[tokio::test]
@@ -872,4 +937,314 @@ fn assembler_keeps_block_order_and_tolerates_bad_json() {
 
     let incomplete = Assembler::default();
     assert!(incomplete.finish().unwrap_err().is_retryable());
+}
+
+// ---- sub-agents (docs/subagents-design.md, S0) ----
+
+/// A sub-agent run as the host would create it, with scope and limits.
+fn start_limited(
+    h: &Harness,
+    agent: &Agent,
+    scope: Option<&[&str]>,
+    budget: Option<u64>,
+    max_iterations: Option<u32>,
+) -> String {
+    let scope = scope.map(|s| serde_json::to_string(s).unwrap());
+    let input = agent.journal.to_row(&Message::user_text("task")).unwrap();
+    h.store
+        .create_run(
+            &tern_store::NewRun {
+                id: "child",
+                session_id: &h.session,
+                trigger: "subagent",
+                model: "script:m",
+                system_prompt: "system",
+                tool_scope: scope.as_deref(),
+                budget_tokens: budget,
+                max_iterations,
+                ..tern_store::NewRun::default()
+            },
+            &input,
+        )
+        .unwrap()
+        .id
+}
+
+/// Serves mail from the real `agent_mail` table. `live` children are
+/// outstanding until the first blocking take, which "finishes" one.
+struct FakeHost {
+    store: Store,
+    live: std::sync::atomic::AtomicBool,
+    takes: AtomicU32,
+    due_checks: AtomicU32,
+    /// Fail the test if mail is read (replay must not consult it).
+    forbid_take: bool,
+}
+
+impl FakeHost {
+    fn new(store: &Store, live: bool, forbid_take: bool) -> Arc<Self> {
+        Arc::new(Self {
+            store: store.clone(),
+            live: live.into(),
+            takes: AtomicU32::new(0),
+            due_checks: AtomicU32::new(0),
+            forbid_take,
+        })
+    }
+
+    fn post_finished(&self, to: &str, child: &str, report: &str) {
+        let body = crate::subagent::Finished {
+            agent: child.into(),
+            run_id: child.into(),
+            status: "completed".into(),
+            result: Some(report.into()),
+            error: None,
+            iterations: 1,
+            tokens: 1,
+        };
+        self.store
+            .post_mail(&tern_store::NewMail {
+                to_run_id: to,
+                from_run_id: Some(to),
+                kind: "finished",
+                body: &serde_json::to_string(&body).unwrap(),
+                dedupe_key: &format!("finished:{child}"),
+            })
+            .unwrap();
+    }
+}
+
+#[async_trait]
+impl crate::subagent::SubagentHost for FakeHost {
+    async fn spawn(
+        &self,
+        _: &ToolCtx,
+        _: &str,
+        _: crate::subagent::SpawnRequest,
+    ) -> Result<Value, String> {
+        unreachable!()
+    }
+    async fn wait(&self, _: &ToolCtx, _: crate::subagent::WaitRequest) -> Result<Value, String> {
+        unreachable!()
+    }
+    async fn cancel(
+        &self,
+        _: &ToolCtx,
+        _: crate::subagent::CancelRequest,
+    ) -> Result<Value, String> {
+        unreachable!()
+    }
+    async fn status(&self, _: &ToolCtx) -> Result<Value, String> {
+        unreachable!()
+    }
+    fn inbox_due(&self, run_id: &str, or_live: bool) -> Result<bool, StepError> {
+        self.due_checks.fetch_add(1, Ordering::SeqCst);
+        Ok(!self.store.pending_mail(run_id)?.is_empty()
+            || (or_live && self.live.load(Ordering::SeqCst)))
+    }
+    async fn take_mail(
+        &self,
+        run_id: &str,
+        wait: bool,
+        _: &CancellationToken,
+    ) -> Result<Vec<tern_store::MailRow>, StepError> {
+        assert!(!self.forbid_take, "replay consulted the mailbox");
+        self.takes.fetch_add(1, Ordering::SeqCst);
+        if wait && self.live.swap(false, Ordering::SeqCst) {
+            self.post_finished(run_id, "helper", "the helper's report");
+        }
+        Ok(self.store.pending_mail(run_id)?)
+    }
+    fn interrupt_reason(&self, _: &RunRow) -> Option<String> {
+        None
+    }
+    async fn run_ended(&self, _: &RunRow, _: &RunOutcome) {}
+}
+
+fn slot(host: Arc<FakeHost>) -> HostSlot {
+    let slot = HostSlot::default();
+    slot.set(host);
+    slot
+}
+
+fn tool_names(req: &ChatRequest) -> Vec<String> {
+    req.tools.iter().map(|t| t.name.clone()).collect()
+}
+
+#[tokio::test]
+async fn child_run_sees_and_may_call_only_its_scoped_tools() {
+    let h = Harness::new();
+    let allowed = Arc::new(Counter::new("count", true, false));
+    let hidden = Arc::new(Counter::new("secret", false, true));
+    let hidden_calls = hidden.calls.clone();
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("secret", json!({})),
+        Reply::Text("done"),
+    ]));
+    let agent = h.agent(script.clone(), vec![allowed, hidden], Arc::new(AutoApprove));
+    let run = start_limited(&h, &agent, Some(&["count"]), None, None);
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    let seen = script.seen.lock().unwrap().clone();
+    assert_eq!(tool_names(&seen[0]), ["count"]);
+    // The out-of-scope call is refused without an approval or a run.
+    assert_eq!(hidden_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        h.kinds(&run),
+        ["llm:completed", "tool:completed", "llm:completed"]
+    );
+    let (text, is_error) = last_tool_result(&seen[1]).unwrap();
+    assert!(
+        is_error && text.contains("not available to this agent"),
+        "{text}"
+    );
+
+    // Top-level runs (no scope) see everything.
+    let top = h.start(&agent, "hi");
+    agent.drive(&top, CancellationToken::new()).await.unwrap();
+    assert_eq!(
+        tool_names(script.seen.lock().unwrap().last().unwrap()),
+        ["count", "secret"]
+    );
+}
+
+#[tokio::test]
+async fn budget_and_iteration_limits_stop_the_run_and_replay_the_same() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", true, false));
+    let calls = tool.calls.clone();
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("count", json!({})),
+        Reply::Tool("count", json!({})),
+        Reply::Text("done"),
+    ]));
+    let agent = h.agent(script.clone(), vec![tool], Arc::new(AutoApprove));
+    // Any model call spends more than one token.
+    let run = start_limited(&h, &agent, None, Some(1), None);
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    assert!(
+        out.final_text.contains("[stopped: token budget"),
+        "{}",
+        out.final_text
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let model_calls = script.seen.lock().unwrap().len();
+
+    // Driving it again (as after a crash) replays to the same decision
+    // without calling the model or the tool.
+    h.store.set_run_status(&run, "running", None).unwrap();
+    let again = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(again.final_text, out.final_text);
+    assert_eq!(script.seen.lock().unwrap().len(), model_calls);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(h.kinds(&run), ["llm:completed", "tool:completed"]);
+
+    // The run's own max_iterations overrides the config's.
+    h.store.create_session("s2", "cli", None).unwrap();
+    let h2 = Harness {
+        store: h.store.clone(),
+        session: "s2".into(),
+    };
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("count", json!({})),
+        Reply::Tool("count", json!({})),
+        Reply::Text("done"),
+    ]));
+    let agent = h2.agent(
+        script,
+        vec![Arc::new(Counter::new("count", true, false))],
+        Arc::new(AutoApprove),
+    );
+    let input = agent.journal.to_row(&Message::user_text("task")).unwrap();
+    let run = h2
+        .store
+        .create_run(
+            &tern_store::NewRun {
+                id: "limited",
+                session_id: "s2",
+                trigger: "subagent",
+                model: "script:m",
+                system_prompt: "system",
+                max_iterations: Some(1),
+                ..tern_store::NewRun::default()
+            },
+            &input,
+        )
+        .unwrap();
+    let out = agent
+        .drive(&run.id, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        out.final_text
+            .contains("[stopped: reached max_iterations (1)]"),
+        "{}",
+        out.final_text
+    );
+}
+
+#[tokio::test]
+async fn inbox_step_delivers_mail_and_replays_without_consulting_it() {
+    let h = Harness::new();
+    let script = Arc::new(Script::new(vec![Reply::Text("thanks")]));
+    let host = FakeHost::new(&h.store, false, false);
+    let agent = h
+        .agent(script.clone(), vec![], Arc::new(AutoApprove))
+        .with_subagents(slot(host.clone()));
+    let run = h.start(&agent, "go");
+    host.post_finished(&run, "research-1", "found three");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    assert_eq!(h.kinds(&run), ["inbox:completed", "llm:completed"]);
+    let seen = script.seen.lock().unwrap().clone();
+    let last = seen[0].messages.last().unwrap().text();
+    assert!(
+        last.contains("[sub-agent research-1 completed]\nfound three"),
+        "{last}"
+    );
+    assert!(h.store.pending_mail(&run).unwrap().is_empty(), "consumed");
+
+    // Replay with a host that must not be asked for mail at step 0.
+    let strict = FakeHost::new(&h.store, false, true);
+    let agent = h
+        .agent(script.clone(), vec![], Arc::new(AutoApprove))
+        .with_subagents(slot(strict.clone()));
+    h.store.set_run_status(&run, "running", None).unwrap();
+    let again = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(again.final_text, "thanks");
+    assert_eq!(h.kinds(&run), ["inbox:completed", "llm:completed"]);
+    assert_eq!(script.seen.lock().unwrap().len(), 1);
+    // Only the live frontier (after the last step) was checked.
+    assert_eq!(strict.due_checks.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_run_with_live_children_waits_for_them_before_finishing() {
+    let h = Harness::new();
+    let script = Arc::new(Script::new(vec![
+        Reply::Text("started them"),
+        Reply::Text("all reported"),
+    ]));
+    let host = FakeHost::new(&h.store, true, false);
+    let agent = h
+        .agent(script.clone(), vec![], Arc::new(AutoApprove))
+        .with_subagents(slot(host.clone()));
+    let run = h.start(&agent, "go");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    assert_eq!(out.final_text, "all reported");
+    assert_eq!(
+        h.kinds(&run),
+        ["llm:completed", "inbox:completed", "llm:completed"]
+    );
+    let seen = script.seen.lock().unwrap();
+    let last = seen[1].messages.last().unwrap().text();
+    assert!(last.contains("the helper's report"), "{last}");
+    let inbox = h.store.step(&run, 1).unwrap().unwrap();
+    assert!(
+        inbox.input_json.contains("\"wait\":true"),
+        "{}",
+        inbox.input_json
+    );
 }

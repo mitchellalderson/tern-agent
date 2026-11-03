@@ -91,7 +91,7 @@ pub enum Auth {
 }
 
 /// Paths only the owner may touch, whatever the method.
-const OWNER_ONLY: &[&str] = &["/v1/devices", "/v1/config", "/v1/secrets"];
+const OWNER_ONLY: &[&str] = &["/v1/devices", "/v1/config", "/v1/secrets", "/v1/providers"];
 
 /// Paths a `chat` device may change. Any other non-GET route is owner-only,
 /// so a new endpoint is safe until it's listed here.

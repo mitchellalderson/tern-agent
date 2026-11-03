@@ -11,6 +11,25 @@ pub enum AgentEvent {
     RunStarted {
         run_id: String,
         session_id: String,
+        /// Set for sub-agent runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_run_id: Option<String>,
+    },
+    /// Emitted on the parent's run when `agent_spawn` creates (not finds
+    /// again after a crash) a child run.
+    SubagentSpawned {
+        /// The parent run.
+        run_id: String,
+        /// The `agent_spawn` tool call, matching its `tool_started`.
+        call_id: String,
+        child_run_id: String,
+        child_session_id: String,
+        label: String,
+        /// The first 500 characters of the brief.
+        task: String,
+        model: String,
+        /// `running` or `queued`.
+        status: String,
     },
     /// Streaming text from a live model call.
     TextDelta {
@@ -29,6 +48,15 @@ pub enum AgentEvent {
         id: String,
         name: String,
         summary: String,
+    },
+    /// Output produced by a running tool, before it finishes. Live only:
+    /// never journaled or replayed (the full output arrives in
+    /// `ToolFinished`).
+    ToolOutput {
+        run_id: String,
+        /// The tool call id, matching `ToolStarted`.
+        id: String,
+        chunk: String,
     },
     ToolFinished {
         run_id: String,

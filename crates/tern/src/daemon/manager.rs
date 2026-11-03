@@ -2,7 +2,7 @@
 //! delivery of results, and routing approvals to whoever can answer.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -97,17 +97,18 @@ pub struct Routes {
     pub api: ApiApprovals,
 }
 
-/// Sends each approval to the chat the run reports to, else to API clients.
+/// Sends each approval to the chat the run's tree reports to, else to API
+/// clients. A sub-agent asks where its root run would.
 pub struct Router(pub Arc<Routes>);
 
 #[async_trait]
 impl ApprovalHandler for Router {
     async fn ask(&self, req: &ApprovalRequest) -> Decision {
         let routes = &self.0;
-        let target = routes
-            .store
-            .get()
-            .and_then(|s| s.run_deliver_to(&req.run_id).ok().flatten());
+        let target = routes.store.get().and_then(|s| {
+            let root = s.root_run(&req.run_id).ok()?;
+            s.run_deliver_to(&root).ok().flatten()
+        });
         if let Some((gateway, chat)) = target.as_deref().and_then(|t| t.split_once(':'))
             && let Some(g) = routes.gateways.get().and_then(|gs| gs.get(gateway))
         {
@@ -162,11 +163,15 @@ impl Manager {
         Ok(started)
     }
 
-    /// Drive `run_id` on a background task, then deliver its result.
-    pub fn spawn(self: &Arc<Self>, session_id: &str, run_id: &str, resume: bool) {
+    /// Drive `run_id` on a background task, then deliver its result. False
+    /// (and nothing happens) if it is already being driven.
+    pub fn spawn(self: &Arc<Self>, session_id: &str, run_id: &str, resume: bool) -> bool {
         let cancel = CancellationToken::new();
         let (done_tx, done_rx) = watch::channel(false);
         if let Ok(mut a) = self.active.lock() {
+            if a.values().any(|x| x.run_id == run_id) {
+                return false;
+            }
             a.insert(
                 session_id.to_owned(),
                 Active {
@@ -195,9 +200,16 @@ impl Manager {
                 Err(e) => tracing::error!(run = %run_id, error = %e, "run could not be driven"),
             }
         });
+        true
     }
 
     async fn deliver(&self, outcome: &RunOutcome) {
+        // Sub-agents report to their parent, never to a chat.
+        if let Ok(Some(run)) = self.rt.store.run(&outcome.run_id)
+            && run.parent_run_id.is_some()
+        {
+            return;
+        }
         let Ok(Some(target)) = self.rt.store.run_deliver_to(&outcome.run_id) else {
             return;
         };
@@ -239,7 +251,18 @@ impl Manager {
         true
     }
 
+    /// Cancel a run. A sub-agent is cancelled with its subtree (even while
+    /// queued); a parent's children are cancelled when its drive ends.
     pub fn cancel_run(&self, run_id: &str) -> bool {
+        if let Some(h) = &self.rt.subagents
+            && h.cancel_run(run_id, "cancelled by the user")
+        {
+            return true;
+        }
+        self.cancel_active(run_id)
+    }
+
+    fn cancel_active(&self, run_id: &str) -> bool {
         let Ok(a) = self.active.lock() else {
             return false;
         };
@@ -280,6 +303,30 @@ impl Manager {
             chat,
             None,
         )?)
+    }
+}
+
+/// The manager as the sub-agent host's driver: children are ordinary
+/// daemon runs, so they show in `/v1/runs/active` and obey cancel.
+pub struct ManagerDriver(pub Weak<Manager>);
+
+impl crate::subagents::RunDriver for ManagerDriver {
+    fn drive(&self, run_id: &str, resume: bool) -> bool {
+        let Some(m) = self.0.upgrade() else {
+            return false;
+        };
+        match m.rt.store.run(run_id) {
+            Ok(Some(run)) => m.spawn(&run.session_id, run_id, resume),
+            _ => false,
+        }
+    }
+
+    fn cancel(&self, run_id: &str) -> bool {
+        self.0.upgrade().is_some_and(|m| m.cancel_active(run_id))
+    }
+
+    fn is_active(&self, run_id: &str) -> bool {
+        self.0.upgrade().is_some_and(|m| m.is_active(run_id))
     }
 }
 

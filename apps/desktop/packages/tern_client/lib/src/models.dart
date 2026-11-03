@@ -156,15 +156,26 @@ class Started {
 }
 
 class ActiveRun {
-  const ActiveRun({required this.runId, required this.sessionId});
+  const ActiveRun({
+    required this.runId,
+    required this.sessionId,
+    this.parentRunId,
+    this.label,
+  });
 
   factory ActiveRun.fromJson(Json j) => ActiveRun(
     runId: j['run_id'] as String,
     sessionId: j['session_id'] as String,
+    parentRunId: j['parent_run_id'] as String?,
+    label: j['label'] as String?,
   );
 
   final String runId;
   final String sessionId;
+
+  /// Set for sub-agents.
+  final String? parentRunId;
+  final String? label;
 }
 
 class SessionItem {
@@ -335,6 +346,9 @@ class Approval {
     required this.input,
     required this.summary,
     required this.pattern,
+    this.parentRunId,
+    this.agentLabel,
+    this.rootSessionId,
   });
 
   factory Approval.fromJson(Json j) => Approval(
@@ -344,18 +358,28 @@ class Approval {
     tool: j['tool'] as String,
     input: j['input'],
     summary: j['summary'] as String,
-    pattern: j['pattern'] as String,
+    pattern: j['pattern'] as String?,
+    parentRunId: j['parent_run_id'] as String?,
+    agentLabel: j['agent_label'] as String?,
+    rootSessionId: j['root_session_id'] as String?,
   );
 
   final String id;
   final String runId;
   final String sessionId;
+
+  /// Set when a sub-agent asks: its parent run, its label, and the
+  /// conversation the user started (where the card belongs).
+  final String? parentRunId;
+  final String? agentLabel;
+  final String? rootSessionId;
   final String tool;
   final Object? input;
   final String summary;
 
-  /// What "always allow" adds to the allowlist.
-  final String pattern;
+  /// What "always allow" adds to the allowlist, or null if this call
+  /// can't be always-allowed (hide the option).
+  final String? pattern;
 }
 
 enum Decision {
@@ -378,6 +402,8 @@ sealed class TernEvent {
     final event = _agentEvent(j, run);
     if (event is RunEvent) {
       if (j['session_id'] case final String s) _sessions[event] = s;
+      if (j['parent_run_id'] case final String p) _parents[event] = p;
+      if (j['root_session_id'] case final String r) _roots[event] = r;
     }
     return event;
   }
@@ -387,6 +413,23 @@ sealed class TernEvent {
       'run_started' => RunStarted(
         runId: run,
         sessionId: j['session_id'] as String,
+        parentRunId: j['parent_run_id'] as String?,
+      ),
+      'subagent_spawned' => SubagentSpawned(
+        runId: run,
+        callId: j['call_id'] as String,
+        childRunId: j['child_run_id'] as String,
+        childSessionId: j['child_session_id'] as String,
+        label: j['label'] as String,
+        task: j['task'] as String? ?? '',
+        model: j['model'] as String? ?? '',
+        status: j['status'] as String? ?? 'running',
+      ),
+      'subagent_message' => SubagentMessage(
+        runId: run,
+        toRunId: j['to_run_id'] as String,
+        kind: j['kind'] as String,
+        text: j['text'] as String? ?? '',
       ),
       'text_delta' => TextDelta(runId: run, text: j['text'] as String),
       'assistant_message' => AssistantMessage(
@@ -399,6 +442,11 @@ sealed class TernEvent {
         id: j['id'] as String,
         name: j['name'] as String,
         summary: j['summary'] as String,
+      ),
+      'tool_output' => ToolOutput(
+        runId: run,
+        id: j['id'] as String,
+        chunk: j['chunk'] as String? ?? '',
       ),
       'tool_finished' => ToolFinished(
         runId: run,
@@ -441,16 +489,74 @@ sealed class RunEvent extends TernEvent {
   /// The run's session, which the daemon adds to every event it sends.
   /// Null for events built by hand.
   String? get sessionId => _sessions[this];
+
+  /// For a sub-agent's run: the run that started it, and the conversation
+  /// at the root of the tree. The daemon adds both.
+  String? get parentRunId => _parents[this];
+  String? get rootSessionId => _roots[this];
 }
 
 // Kept beside the event rather than in every constructor, so events can
 // stay const for tests and hand-built values.
 final _sessions = Expando<String>('session_id');
+final _parents = Expando<String>('parent_run_id');
+final _roots = Expando<String>('root_session_id');
 
 class RunStarted extends RunEvent {
-  const RunStarted({required String runId, required this.sessionId})
-    : super(runId);
+  const RunStarted({
+    required String runId,
+    required this.sessionId,
+    String? parentRunId,
+  }) : _parentRunId = parentRunId,
+       super(runId);
   final String sessionId;
+  final String? _parentRunId;
+
+  @override
+  String? get parentRunId => _parentRunId ?? super.parentRunId;
+}
+
+/// A run (the parent) started a sub-agent with `agent_spawn`.
+class SubagentSpawned extends RunEvent {
+  const SubagentSpawned({
+    required String runId,
+    required this.callId,
+    required this.childRunId,
+    required this.childSessionId,
+    required this.label,
+    required this.task,
+    required this.model,
+    required this.status,
+  }) : super(runId);
+
+  /// The `agent_spawn` tool call.
+  final String callId;
+  final String childRunId;
+  final String childSessionId;
+  final String label;
+
+  /// The start of the brief.
+  final String task;
+  final String model;
+
+  /// `running` or `queued`.
+  final String status;
+}
+
+/// A question, answer or steering message between runs of one tree.
+/// [runId] sent it.
+class SubagentMessage extends RunEvent {
+  const SubagentMessage({
+    required String runId,
+    required this.toRunId,
+    required this.kind,
+    required this.text,
+  }) : super(runId);
+  final String toRunId;
+
+  /// `question`, `answer` or `message`.
+  final String kind;
+  final String text;
 }
 
 class TextDelta extends RunEvent {
@@ -478,6 +584,18 @@ class ToolStarted extends RunEvent {
   final String id;
   final String name;
   final String summary;
+}
+
+/// Live output of a running tool call; never replayed. The full output
+/// still arrives in [ToolFinished].
+class ToolOutput extends RunEvent {
+  const ToolOutput({
+    required String runId,
+    required this.id,
+    required this.chunk,
+  }) : super(runId);
+  final String id;
+  final String chunk;
 }
 
 class ToolFinished extends RunEvent {

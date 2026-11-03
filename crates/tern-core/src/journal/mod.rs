@@ -26,6 +26,8 @@ pub enum StepKind {
     Tool,
     Approval,
     Compaction,
+    /// Delivers mail from other runs of the tree (sub-agent reports).
+    Inbox,
 }
 
 impl StepKind {
@@ -35,7 +37,19 @@ impl StepKind {
             StepKind::Tool => "tool",
             StepKind::Approval => "approval",
             StepKind::Compaction => "compaction",
+            StepKind::Inbox => "inbox",
         }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "llm" => StepKind::Llm,
+            "tool" => StepKind::Tool,
+            "approval" => StepKind::Approval,
+            "compaction" => StepKind::Compaction,
+            "inbox" => StepKind::Inbox,
+            _ => return None,
+        })
     }
 }
 
@@ -57,6 +71,9 @@ pub struct StepOutput<O> {
     /// Marks the appended messages as a compaction summary replacing every
     /// message with id <= this value.
     pub summary_of: Option<i64>,
+    /// Agent mail ids this step consumes, marked in the completing
+    /// transaction (so a crash before completion leaves them pending).
+    pub consumes: Vec<i64>,
 }
 
 impl<O> StepOutput<O> {
@@ -66,7 +83,13 @@ impl<O> StepOutput<O> {
             usage: None,
             messages: Vec::new(),
             summary_of: None,
+            consumes: Vec::new(),
         }
+    }
+
+    pub fn with_consumes(mut self, ids: Vec<i64>) -> Self {
+        self.consumes = ids;
+        self
     }
 
     pub fn with_summary_of(mut self, cover_through: i64) -> Self {
@@ -159,6 +182,16 @@ impl Journal {
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    /// The kind of step `idx` if one is recorded (in any status). Lets the
+    /// loop replay a step that only exists on the live frontier (an inbox)
+    /// without consulting live state.
+    pub fn peek(&self, run: &str, idx: u32) -> Result<Option<StepKind>, StepError> {
+        Ok(self
+            .store
+            .step(run, idx)?
+            .and_then(|row| StepKind::parse(&row.kind)))
     }
 
     /// Execute `f` as step `idx` of `run`, or return its memoized output.
@@ -298,12 +331,13 @@ impl Journal {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.store.complete_step(
+        self.store.complete_step_consuming(
             run,
             idx,
             &serde_json::to_string(&output)?,
             usage.as_deref(),
             &messages,
+            &out.consumes,
         )?;
         Ok(())
     }
