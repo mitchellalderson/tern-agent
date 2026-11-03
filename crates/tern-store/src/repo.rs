@@ -60,6 +60,8 @@ pub struct NewMessage {
     pub role: String,
     pub content_json: String,
     pub text: String,
+    /// Set on compaction summaries: the highest message id they replace.
+    pub summary_of: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +74,32 @@ pub struct MessageRow {
     pub content_json: String,
     pub text: String,
     pub created_at: i64,
+    pub summary_of: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryRow {
+    pub id: i64,
+    pub content: String,
+    pub tags: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageHit {
+    pub message_id: i64,
+    pub session_id: String,
+    pub session_title: Option<String>,
+    pub role: String,
+    pub created_at: i64,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSummary {
+    pub session: SessionRow,
+    pub messages: i64,
+    pub runs: i64,
 }
 
 /// Values for a new run row.
@@ -89,7 +117,8 @@ const RUN_COLS: &str = "id, session_id, status, trigger, model, system_prompt, i
                         started_at, updated_at, finished_at, error";
 const STEP_COLS: &str = "run_id, idx, kind, input_hash, input_json, output_json, status, \
                          usage_json, error, started_at, finished_at";
-const MESSAGE_COLS: &str = "id, session_id, run_id, step_idx, role, content_json, text, created_at";
+const MESSAGE_COLS: &str =
+    "id, session_id, run_id, step_idx, role, content_json, text, created_at, summary_of";
 
 fn session_row(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
     Ok(SessionRow {
@@ -145,6 +174,7 @@ fn message_row(r: &Row<'_>) -> rusqlite::Result<MessageRow> {
         content_json: r.get(5)?,
         text: r.get(6)?,
         created_at: r.get(7)?,
+        summary_of: r.get(8)?,
     })
 }
 
@@ -208,9 +238,10 @@ impl Store {
             "UPDATE runs SET input_message_id = ?2 WHERE id = ?1",
             params![run.id, msg_id],
         )?;
+        let title: String = input.text.chars().take(80).collect();
         tx.execute(
-            "UPDATE sessions SET updated_at = ?2 WHERE id = ?1",
-            params![run.session_id, now],
+            "UPDATE sessions SET updated_at = ?2, title = COALESCE(title, ?3) WHERE id = ?1",
+            params![run.session_id, now, title.trim()],
         )?;
         let sql = format!("SELECT {RUN_COLS} FROM runs WHERE id = ?1");
         let row = tx.query_row(&sql, [run.id], run_row)?;
@@ -228,6 +259,14 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([status], run_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn recent_runs(&self, limit: usize) -> Result<Vec<RunRow>> {
+        let sql = format!("SELECT {RUN_COLS} FROM runs ORDER BY started_at DESC LIMIT ?1");
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([limit as i64], run_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -312,9 +351,9 @@ impl Store {
             })?;
         for m in messages {
             tx.execute(
-                "INSERT INTO messages (session_id, run_id, step_idx, role, content_json, text, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![session_id, run_id, idx, m.role, m.content_json, m.text, now],
+                "INSERT INTO messages (session_id, run_id, step_idx, role, content_json, text, created_at, summary_of)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![session_id, run_id, idx, m.role, m.content_json, m.text, now, m.summary_of],
             )?;
         }
         tx.execute(
@@ -376,6 +415,106 @@ impl Store {
         Ok(())
     }
 
+    pub fn list_sessions(&self, limit: usize) -> Result<Vec<SessionSummary>> {
+        let sql = format!(
+            "SELECT {cols},
+               (SELECT count(*) FROM messages m WHERE m.session_id = s.id),
+               (SELECT count(*) FROM runs r WHERE r.session_id = s.id)
+             FROM sessions s ORDER BY updated_at DESC LIMIT ?1",
+            cols = SESSION_COLS
+                .split(", ")
+                .map(|c| format!("s.{c}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            Ok(SessionSummary {
+                session: session_row(r)?,
+                messages: r.get(7)?,
+                runs: r.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn runs_for_session(&self, session_id: &str) -> Result<Vec<RunRow>> {
+        let sql = format!("SELECT {RUN_COLS} FROM runs WHERE session_id = ?1 ORDER BY started_at");
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([session_id], run_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    // ---- memories ----
+
+    pub fn save_memory(&self, content: &str, tags: &[String]) -> Result<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO memories (content, tags, created_at) VALUES (?1, ?2, ?3)",
+            params![content, tags.join(" "), now_ms()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// BM25-ranked full-text search. Returns nothing for queries with no
+    /// searchable words.
+    pub fn search_memories(&self, query: &str, limit: usize) -> Result<Vec<MemoryRow>> {
+        let Some(q) = fts_query(query) else {
+            return Ok(Vec::new());
+        };
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.content, COALESCE(m.tags, ''), m.created_at
+             FROM memories_fts f JOIN memories m ON m.id = f.rowid
+             WHERE memories_fts MATCH ?1
+             ORDER BY bm25(memories_fts) LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![q, limit as i64], |r| {
+            Ok(MemoryRow {
+                id: r.get(0)?,
+                content: r.get(1)?,
+                tags: r.get(2)?,
+                created_at: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Search messages in every session except `exclude_session`.
+    pub fn search_messages(
+        &self,
+        query: &str,
+        limit: usize,
+        exclude_session: Option<&str>,
+    ) -> Result<Vec<MessageHit>> {
+        let Some(q) = fts_query(query) else {
+            return Ok(Vec::new());
+        };
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.session_id, s.title, m.role, m.created_at,
+                    snippet(messages_fts, 0, '[', ']', ' … ', 24)
+             FROM messages_fts f
+             JOIN messages m ON m.id = f.rowid
+             JOIN sessions s ON s.id = m.session_id
+             WHERE messages_fts MATCH ?1 AND m.session_id IS NOT ?3
+             ORDER BY bm25(messages_fts) LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![q, limit as i64, exclude_session], |r| {
+            Ok(MessageHit {
+                message_id: r.get(0)?,
+                session_id: r.get(1)?,
+                session_title: r.get(2)?,
+                role: r.get(3)?,
+                created_at: r.get(4)?,
+                snippet: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     // ---- messages ----
 
     /// The conversation as step `before_idx` of `run` saw it: every earlier
@@ -407,6 +546,17 @@ impl Store {
     }
 }
 
+/// Turn free text into a safe FTS5 query: each word quoted, OR-ed together
+/// (BM25 ranks documents matching more words higher).
+pub fn fts_query(text: &str) -> Option<String> {
+    let terms: Vec<String> = text
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .map(|w| format!("\"{w}\""))
+        .collect();
+    (!terms.is_empty()).then(|| terms.join(" OR "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +566,7 @@ mod tests {
             role: "user".into(),
             content_json: "[]".into(),
             text: text.into(),
+            summary_of: None,
         }
     }
 
@@ -506,6 +657,50 @@ mod tests {
         .unwrap();
         let ctx = s.run_context(&run, 10).unwrap();
         assert_eq!(ctx.len(), 1);
+    }
+
+    #[test]
+    fn memory_search_ranks_and_tolerates_syntax() {
+        let (s, _) = setup();
+        s.save_memory("User prefers dark roast coffee", &["prefs".into()])
+            .unwrap();
+        s.save_memory("User's dog is named Biscuit", &["pets".into()])
+            .unwrap();
+        s.save_memory("coffee coffee shop on 5th street", &[])
+            .unwrap();
+        let hits = s
+            .search_memories("what coffee does the user like?", 10)
+            .unwrap();
+        assert_eq!(hits[0].content, "User prefers dark roast coffee");
+        assert_eq!(
+            hits.len(),
+            3,
+            "OR semantics: 'user' matches the dog memory too"
+        );
+        assert_eq!(
+            s.search_memories("pets", 10).unwrap()[0].content,
+            "User's dog is named Biscuit"
+        );
+        assert!(s.search_memories("\"(*^", 10).unwrap().is_empty());
+        assert!(s.search_memories("NEAR AND OR", 10).is_ok());
+    }
+
+    #[test]
+    fn message_search_returns_snippets() {
+        let (s, _) = setup();
+        assert!(s.search_messages("hello", 5, Some("s")).unwrap().is_empty());
+        let hits = s.search_messages("hello", 5, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, "s");
+        assert!(hits[0].snippet.contains("[hello]"), "{}", hits[0].snippet);
+        assert_eq!(hits[0].session_title.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn sessions_are_listed_with_counts() {
+        let (s, _) = setup();
+        let list = s.list_sessions(10).unwrap();
+        assert_eq!((list[0].messages, list[0].runs), (1, 1));
     }
 
     #[test]

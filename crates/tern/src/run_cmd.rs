@@ -47,8 +47,8 @@ pub fn run(home: &TernHome, args: RunArgs<'_>) -> anyhow::Result<ExitCode> {
     let run = rt
         .agent
         .start_run(&session.id, args.prompt, &model, &system, "user")?;
-    eprintln!("run {} (session {}, {model})", run.id, session.id);
-    drive(&rt, &run.id, false)
+    let banner = format!("run {} (session {}, {model})", run.id, session.id);
+    drive(&rt, &run.id, false, &banner)
 }
 
 pub fn resume(home: &TernHome, run_id: &str, yes: bool) -> anyhow::Result<ExitCode> {
@@ -56,17 +56,21 @@ pub fn resume(home: &TernHome, run_id: &str, yes: bool) -> anyhow::Result<ExitCo
     let Some(run) = rt.store.run(run_id)? else {
         bail!("run {run_id} not found");
     };
-    eprintln!("resuming run {} ({})", run.id, run.status);
-    drive(&rt, run_id, true)
+    let banner = format!("resuming run {} ({})", run.id, run.status);
+    drive(&rt, run_id, true, &banner)
 }
 
-fn drive(rt: &Runtime, run_id: &str, resume: bool) -> anyhow::Result<ExitCode> {
+/// Prints `banner` once Ctrl+C handling is in place, so anything that reacts
+/// to it (a user, a test) can't interrupt before cancellation works.
+fn drive(rt: &Runtime, run_id: &str, resume: bool, banner: &str) -> anyhow::Result<ExitCode> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     let outcome: RunOutcome = runtime.block_on(async {
         let cancel = CancellationToken::new();
-        tokio::spawn(watch_ctrl_c(cancel.clone()));
+        let interrupts = Interrupts::register()?;
+        eprintln!("{banner}");
+        tokio::spawn(watch_interrupts(interrupts, cancel.clone()));
         let printer = tokio::spawn(print_progress(rt.agent.subscribe()));
         let result = if resume {
             rt.agent.resume(run_id, cancel).await
@@ -74,7 +78,7 @@ fn drive(rt: &Runtime, run_id: &str, resume: bool) -> anyhow::Result<ExitCode> {
             rt.agent.drive(run_id, cancel).await
         };
         printer.abort();
-        result
+        anyhow::Ok(result?)
     })?;
     match outcome.status {
         RunStatus::Completed => {
@@ -99,12 +103,34 @@ fn drive(rt: &Runtime, run_id: &str, resume: bool) -> anyhow::Result<ExitCode> {
     }
 }
 
+/// SIGINT listener. On unix it is registered when created, not on first poll.
+struct Interrupts {
+    #[cfg(unix)]
+    sig: tokio::signal::unix::Signal,
+}
+
+impl Interrupts {
+    fn register() -> std::io::Result<Self> {
+        Ok(Self {
+            #[cfg(unix)]
+            sig: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?,
+        })
+    }
+
+    async fn recv(&mut self) -> bool {
+        #[cfg(unix)]
+        return self.sig.recv().await.is_some();
+        #[cfg(not(unix))]
+        return tokio::signal::ctrl_c().await.is_ok();
+    }
+}
+
 /// First Ctrl+C cancels the run; a second one exits immediately.
-async fn watch_ctrl_c(cancel: CancellationToken) {
-    if tokio::signal::ctrl_c().await.is_ok() {
+async fn watch_interrupts(mut interrupts: Interrupts, cancel: CancellationToken) {
+    if interrupts.recv().await {
         eprintln!("\ncancelling... (Ctrl+C again to quit)");
         cancel.cancel();
-        if tokio::signal::ctrl_c().await.is_ok() {
+        if interrupts.recv().await {
             std::process::exit(130);
         }
     }

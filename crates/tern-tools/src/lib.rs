@@ -2,6 +2,7 @@
 
 pub mod fs;
 pub mod http;
+pub mod memory;
 pub mod paths;
 pub mod shell;
 
@@ -15,11 +16,12 @@ use tern_core::types::ToolSpec;
 use tern_sandbox::SandboxBackend;
 
 pub struct BuiltinOptions {
+    pub store: tern_store::Store,
     pub sandbox: Arc<dyn SandboxBackend>,
     pub shell_timeout: Duration,
 }
 
-/// Register the M1 built-ins: file, shell, and http tools.
+/// Register the built-ins: file, shell, http, memory, and session search.
 pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> Result<(), String> {
     registry.register(Arc::new(fs::ReadFile));
     registry.register(Arc::new(fs::ListDir));
@@ -31,6 +33,9 @@ pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> R
         opts.shell_timeout,
     )));
     registry.register(Arc::new(http::HttpFetch::new().map_err(|e| e.to_string())?));
+    registry.register(Arc::new(memory::MemorySave::new(opts.store.clone())));
+    registry.register(Arc::new(memory::MemorySearch::new(opts.store.clone())));
+    registry.register(Arc::new(memory::SessionSearch::new(opts.store)));
     Ok(())
 }
 

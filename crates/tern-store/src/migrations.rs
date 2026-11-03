@@ -10,6 +10,7 @@ use crate::{Result, StoreError};
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_run_context.sql"),
+    include_str!("../migrations/0003_compaction.sql"),
 ];
 
 pub const LATEST_VERSION: u32 = MIGRATIONS.len() as u32;

@@ -31,6 +31,8 @@ pub struct Config {
     pub default_model: Option<String>,
     pub workspace: String,
     pub max_iterations: u32,
+    /// Default model context window in tokens; providers can override it.
+    pub context_window: u64,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub sandbox: SandboxConfig,
     pub gateway: GatewayConfig,
@@ -43,6 +45,7 @@ impl Default for Config {
             default_model: None,
             workspace: "~/tern-workspace".into(),
             max_iterations: 40,
+            context_window: 128_000,
             providers: BTreeMap::new(),
             sandbox: SandboxConfig::default(),
             gateway: GatewayConfig::default(),
@@ -105,6 +108,8 @@ pub struct ProviderConfig {
     pub kind: ProviderKind,
     pub base_url: Option<String>,
     pub api_key_secret: Option<String>,
+    /// Context window in tokens for this provider's models.
+    pub context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -11,6 +11,9 @@ workspace = true
 [dependencies]
 tern-core.workspace = true
 tern-sandbox.workspace = true
+tern-store.workspace = true
+
+chrono.workspace = true
 
 async-trait.workspace = true
 futures.workspace = true

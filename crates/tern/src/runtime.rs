@@ -38,7 +38,7 @@ impl Runtime {
             .with_context(|| format!("creating workspace {}", workspace.display()))?;
 
         let (providers, mock) = provider_factory(&config, &secrets)?;
-        let tools = Arc::new(build_tools(&config)?);
+        let tools = Arc::new(build_tools(&config, &store)?);
 
         let redactions = config
             .secret_names()
@@ -57,6 +57,12 @@ impl Runtime {
             AgentConfig {
                 workspace: canonical(workspace),
                 max_iterations: config.max_iterations,
+                default_context_window: config.context_window,
+                context_windows: config
+                    .providers
+                    .iter()
+                    .filter_map(|(name, p)| p.context_window.map(|w| (name.clone(), w)))
+                    .collect(),
                 ..AgentConfig::default()
             },
         );
@@ -113,7 +119,7 @@ fn provider_factory(config: &Config, secrets: &Secrets) -> anyhow::Result<(Provi
     Ok((factory, false))
 }
 
-fn build_tools(config: &Config) -> anyhow::Result<ToolRegistry> {
+fn build_tools(config: &Config, store: &Store) -> anyhow::Result<ToolRegistry> {
     if config.sandbox.backend == SandboxBackendKind::Docker {
         bail!("sandbox.backend = \"docker\" is not implemented yet (milestone M6); use \"host\"");
     }
@@ -121,6 +127,7 @@ fn build_tools(config: &Config) -> anyhow::Result<ToolRegistry> {
     tern_tools::register_builtins(
         &mut registry,
         tern_tools::BuiltinOptions {
+            store: store.clone(),
             sandbox: Arc::new(tern_sandbox::HostBackend),
             shell_timeout: Duration::from_secs(config.sandbox.shell_timeout_secs),
         },

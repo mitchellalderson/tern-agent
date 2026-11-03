@@ -2,7 +2,7 @@
 
 A personal AI agent shipped as one static native binary. See `DECISIONS.md` for implementation notes.
 
-Status: **M1 (agent loop)**: Anthropic and OpenAI-compatible providers, the crash-safe step journal, built-in file/shell/http tools, `tern run`, `tern resume`.
+Status: **M2 (durability and memory)**: crash-safe step journal with resume, cancellation, context compaction, long-term memory and session search, and `tern runs` / `tern sessions` for inspection. Providers: Anthropic and OpenAI-compatible.
 
 ```sh
 cargo build --release

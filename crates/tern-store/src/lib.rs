@@ -3,7 +3,10 @@
 mod migrations;
 mod repo;
 
-pub use repo::{MessageRow, NewMessage, NewRun, RunRow, SessionRow, StepRow, now_ms};
+pub use repo::{
+    MemoryRow, MessageHit, MessageRow, NewMessage, NewRun, RunRow, SessionRow, SessionSummary,
+    StepRow, fts_query, now_ms,
+};
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};

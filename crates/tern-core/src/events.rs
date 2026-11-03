@@ -50,6 +50,11 @@ pub enum AgentEvent {
         delay_ms: u64,
         error: String,
     },
+    /// Old messages (ids <= `cover_through`) were summarized.
+    Compacted {
+        run_id: String,
+        cover_through: i64,
+    },
     Usage {
         run_id: String,
         usage: Usage,

@@ -25,6 +25,7 @@ fn setup() -> (Store, Journal) {
                 role: "user".into(),
                 content_json: "[]".into(),
                 text: "hi".into(),
+                summary_of: None,
             },
         )
         .unwrap();

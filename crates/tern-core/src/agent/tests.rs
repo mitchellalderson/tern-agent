@@ -24,6 +24,20 @@ struct Script {
     fail_status: u16,
     delay: Duration,
     seen: Mutex<Vec<ChatRequest>>,
+    summaries: AtomicU32,
+}
+
+fn turns_in(text: &str) -> usize {
+    text.split("turns=")
+        .skip(1)
+        .filter_map(|r| {
+            r.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse::<usize>()
+                .ok()
+        })
+        .sum()
 }
 
 impl Script {
@@ -34,6 +48,7 @@ impl Script {
             fail_status: 500,
             delay: Duration::ZERO,
             seen: Mutex::new(Vec::new()),
+            summaries: AtomicU32::new(0),
         }
     }
 }
@@ -64,11 +79,31 @@ impl Provider for Script {
                 () = cancel.cancelled() => return Err(ProviderError::Cancelled),
             }
         }
+        if req.system == crate::compaction::SYSTEM_PROMPT {
+            self.summaries.fetch_add(1, Ordering::SeqCst);
+            let text: String = req.messages.iter().map(|m| m.text()).collect();
+            let n = text.matches("### assistant").count() + turns_in(&text);
+            let evs = vec![
+                Ok(StreamEvent::TextDelta(format!("summary turns={n}"))),
+                Ok(StreamEvent::MessageStop {
+                    usage: Usage::default(),
+                    stop_reason: StopReason::EndTurn,
+                }),
+            ];
+            return Ok(Box::pin(futures::stream::iter(evs)));
+        }
+        // Count assistant turns, including ones folded into a summary.
         let n = req
             .messages
             .iter()
             .filter(|m| m.role == Role::Assistant)
-            .count();
+            .count()
+            + req
+                .messages
+                .iter()
+                .filter(|m| m.role == Role::User)
+                .map(|m| turns_in(&m.text()))
+                .sum::<usize>();
         let reply = self
             .replies
             .get(n)
@@ -95,7 +130,11 @@ impl Provider for Script {
         };
         evs.push(Ok(StreamEvent::MessageStop {
             usage: Usage {
-                input_tokens: 10,
+                input_tokens: crate::compaction::estimate_tokens(
+                    &req.system,
+                    &req.messages,
+                    &req.tools,
+                ),
                 output_tokens: 2,
                 ..Usage::default()
             },
@@ -174,6 +213,16 @@ impl Harness {
         tools: Vec<Arc<dyn Tool>>,
         approvals: Arc<dyn ApprovalHandler>,
     ) -> Agent {
+        self.agent_with_window(provider, tools, approvals, 128_000)
+    }
+
+    fn agent_with_window(
+        &self,
+        provider: Arc<Script>,
+        tools: Vec<Arc<dyn Tool>>,
+        approvals: Arc<dyn ApprovalHandler>,
+        window: u64,
+    ) -> Agent {
         let mut reg = ToolRegistry::new();
         for t in tools {
             reg.register(t);
@@ -187,6 +236,7 @@ impl Harness {
             AgentConfig {
                 retry_base: Duration::from_millis(1),
                 max_iterations: 10,
+                default_context_window: window,
                 ..AgentConfig::default()
             },
         )
@@ -592,6 +642,193 @@ async fn completed_runs_are_not_resumable() {
         agent.resume(&run, CancellationToken::new()).await,
         Err(AgentError::NotResumable(..))
     ));
+}
+
+fn eight_tool_turns() -> Vec<Reply> {
+    let mut r: Vec<Reply> = (0..8).map(|_| Reply::Tool("count", json!({}))).collect();
+    r.push(Reply::Text("finished"));
+    r
+}
+
+/// Small enough that a few turns exceed 75% of it.
+const TINY_WINDOW: u64 = 40;
+
+#[tokio::test]
+async fn compaction_summarizes_old_context_and_keeps_going() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", true, false));
+    let script = Arc::new(Script::new(eight_tool_turns()));
+    let agent = h.agent_with_window(
+        script.clone(),
+        vec![tool.clone()],
+        Arc::new(AutoApprove),
+        TINY_WINDOW,
+    );
+    let mut events = agent.subscribe();
+    let run = h.start(&agent, "go");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(
+        (out.status, out.final_text.as_str()),
+        (RunStatus::Completed, "finished")
+    );
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 8);
+    let kinds = h.kinds(&run);
+    let compactions = kinds
+        .iter()
+        .filter(|k| *k == "compaction:completed")
+        .count();
+    assert!(compactions >= 1, "{kinds:?}");
+    assert_eq!(compactions as u32, script.summaries.load(Ordering::SeqCst));
+
+    let seen = script.seen.lock().unwrap();
+    let last = seen.iter().rev().find(|r| r.system == "system").unwrap();
+    assert!(
+        last.messages[0]
+            .text()
+            .starts_with(crate::compaction::SUMMARY_PREFIX),
+        "{:?}",
+        last.messages[0]
+    );
+    // Every tool result in the request has its tool call in the request too.
+    let uses: Vec<&str> = last
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    for b in last.messages.iter().flat_map(|m| m.content.iter()) {
+        if let ContentBlock::ToolResult { tool_use_id, .. } = b {
+            assert!(
+                uses.contains(&tool_use_id.as_str()),
+                "orphaned result {tool_use_id}"
+            );
+        }
+    }
+    drop(seen);
+
+    let mut saw = false;
+    while let Ok(ev) = events.try_recv() {
+        saw |= matches!(ev, AgentEvent::Compacted { .. });
+        if let AgentEvent::TextDelta { text, .. } = &ev {
+            assert!(
+                !text.contains("summary"),
+                "summaries must not stream as assistant text"
+            );
+        }
+    }
+    assert!(saw);
+}
+
+#[tokio::test]
+async fn compaction_replays_after_resume() {
+    struct FailAt(Arc<Script>, AtomicU32, u32);
+    #[async_trait]
+    impl Provider for FailAt {
+        fn id(&self) -> &str {
+            "f"
+        }
+        async fn stream(
+            &self,
+            r: ChatRequest,
+            c: CancellationToken,
+        ) -> Result<EventStream, ProviderError> {
+            if r.system == "system" && self.1.fetch_add(1, Ordering::SeqCst) + 1 == self.2 {
+                return Err(ProviderError::Http {
+                    status: 400,
+                    body: "bad".into(),
+                    retry_after: None,
+                });
+            }
+            self.0.stream(r, c).await
+        }
+    }
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", true, false));
+    // The first attempt fails permanently on its 7th agent model call.
+    let first = Arc::new(Script::new(eight_tool_turns()));
+    let fp: Arc<dyn Provider> = Arc::new(FailAt(first.clone(), AtomicU32::new(0), 7));
+    let mut reg = ToolRegistry::new();
+    reg.register(tool.clone());
+    let a = Agent::new(
+        Journal::new(h.store.clone()),
+        Arc::new(move |_| Ok(fp.clone())),
+        Arc::new(reg),
+        Arc::new(AutoApprove),
+        AgentConfig {
+            retry_base: Duration::from_millis(1),
+            default_context_window: TINY_WINDOW,
+            ..AgentConfig::default()
+        },
+    );
+    let run = h.start(&a, "go");
+    assert_eq!(
+        a.drive(&run, CancellationToken::new())
+            .await
+            .unwrap()
+            .status,
+        RunStatus::Failed
+    );
+    let summaries_before = first.summaries.load(Ordering::SeqCst);
+    assert!(summaries_before >= 1, "{:?}", h.kinds(&run));
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 6);
+
+    let second = Arc::new(Script::new(eight_tool_turns()));
+    let agent = h.agent_with_window(
+        second.clone(),
+        vec![tool.clone()],
+        Arc::new(AutoApprove),
+        TINY_WINDOW,
+    );
+    let out = agent.resume(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(
+        (out.status, out.final_text.as_str()),
+        (RunStatus::Completed, "finished")
+    );
+    assert_eq!(
+        tool.calls.load(Ordering::SeqCst),
+        8,
+        "replayed tools did not re-run"
+    );
+    // Earlier compactions replayed from the journal; only later ones ran.
+    let total = h
+        .kinds(&run)
+        .iter()
+        .filter(|k| *k == "compaction:completed")
+        .count() as u32;
+    assert_eq!(
+        summaries_before + second.summaries.load(Ordering::SeqCst),
+        total
+    );
+}
+
+#[test]
+fn triage_resumes_recent_and_interrupts_stale_runs() {
+    let h = Harness::new();
+    let agent = h.agent(Arc::new(Script::new(vec![])), vec![], Arc::new(AutoApprove));
+    let recent = h.start(&agent, "recent");
+    let stale = h.start(&agent, "stale");
+    let done = h.start(&agent, "done");
+    h.store.set_run_status(&done, "completed", None).unwrap();
+    let old = tern_store::now_ms() - 25 * 60 * 60 * 1000;
+    h.store
+        .conn()
+        .unwrap()
+        .execute(
+            "UPDATE runs SET updated_at = ?1 WHERE id = ?2",
+            (old, stale.clone()),
+        )
+        .unwrap();
+
+    let resumable = triage_running_runs(&h.store, RESUME_MAX_AGE).unwrap();
+    assert_eq!(
+        resumable.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        [recent.as_str()]
+    );
+    assert_eq!(h.store.run(&stale).unwrap().unwrap().status, "interrupted");
+    assert_eq!(h.store.run(&done).unwrap().unwrap().status, "completed");
 }
 
 #[test]

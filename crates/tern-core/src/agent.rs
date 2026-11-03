@@ -15,6 +15,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use crate::approval::{self, ApprovalHandler, ApprovalOutcome, ApprovalRequest, Decision};
+use crate::compaction;
 use crate::config::ModelRef;
 use crate::events::AgentEvent;
 use crate::journal::{InFlight, Journal, StepError, StepKind, StepOutput};
@@ -39,6 +40,10 @@ pub struct AgentConfig {
     pub approval_timeout: Duration,
     /// Base delay for LLM retry backoff (doubles per attempt, with jitter).
     pub retry_base: Duration,
+    /// Context window in tokens, by provider name.
+    pub context_windows: std::collections::BTreeMap<String, u64>,
+    /// Context window for providers not in `context_windows`.
+    pub default_context_window: u64,
 }
 
 impl Default for AgentConfig {
@@ -49,7 +54,18 @@ impl Default for AgentConfig {
             max_tokens: 8192,
             approval_timeout: Duration::from_secs(600),
             retry_base: Duration::from_secs(1),
+            context_windows: std::collections::BTreeMap::new(),
+            default_context_window: 128_000,
         }
+    }
+}
+
+impl AgentConfig {
+    pub fn context_window(&self, provider: &str) -> u64 {
+        self.context_windows
+            .get(provider)
+            .copied()
+            .unwrap_or(self.default_context_window)
     }
 }
 
@@ -257,17 +273,37 @@ impl Agent {
             cancel: cancel.clone(),
         };
 
+        let tools = self.tools.specs();
+        let window = self.cfg.context_window(&model.provider);
         let mut idx: u32 = 0;
         let mut iterations: u32 = 0;
+        // Provider-reported tokens / our estimate for the last request; used
+        // to correct the chars/4 estimate. Derived from journaled usage, so
+        // replay makes the same compaction decisions.
+        let mut correction = 1.0_f64;
         loop {
             if cancel.is_cancelled() {
                 return Ok(RunStatus::Interrupted);
             }
+            let mut messages = self.context(run, idx)?;
+            let estimate = compaction::estimate_tokens(&system, &messages, &tools);
+            if (estimate as f64 * correction) > window as f64 * compaction::THRESHOLD {
+                match self.compact(run, idx, &model, &provider, cancel).await {
+                    Ok(true) => {
+                        idx += 1;
+                        messages = self.context(run, idx)?;
+                    }
+                    Ok(false) => {}
+                    Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            let estimate = compaction::estimate_tokens(&system, &messages, &tools);
             let req = ChatRequest {
                 model: model.model.clone(),
                 system: system.clone(),
-                messages: self.context(run, idx)?,
-                tools: self.tools.specs(),
+                messages,
+                tools: tools.clone(),
                 max_tokens: self.cfg.max_tokens,
             };
             let step_input = LlmStepInput {
@@ -287,7 +323,7 @@ impl Agent {
                     || {
                         let req = req.clone();
                         async {
-                            let turn = self.call_llm(&run.id, &provider, req, cancel).await?;
+                            let turn = self.call_llm(&run.id, &provider, req, cancel, true).await?;
                             let usage = turn.usage;
                             let messages = vec![turn.message.clone()];
                             Ok(StepOutput::new(turn)
@@ -304,6 +340,11 @@ impl Agent {
             };
             idx += 1;
             iterations += 1;
+            let u = &turn.value.usage;
+            let reported = u.input_tokens + u.cache_read_tokens + u.cache_write_tokens;
+            if reported > 0 && estimate > 0 {
+                correction = reported as f64 / estimate as f64;
+            }
             add_usage(&mut outcome.usage, &turn.value.usage);
             outcome.final_text = turn.value.message.text();
             self.emit(AgentEvent::AssistantMessage {
@@ -465,11 +506,12 @@ impl Agent {
         provider: &Arc<dyn Provider>,
         req: ChatRequest,
         cancel: &CancellationToken,
+        emit_text: bool,
     ) -> Result<AssistantTurn, StepError> {
         let mut attempt = 1;
         loop {
             let err = match self
-                .stream_once(run_id, provider, req.clone(), cancel)
+                .stream_once(run_id, provider, req.clone(), cancel, emit_text)
                 .await
             {
                 Ok(turn) => return Ok(turn),
@@ -503,6 +545,7 @@ impl Agent {
         provider: &Arc<dyn Provider>,
         req: ChatRequest,
         cancel: &CancellationToken,
+        emit_text: bool,
     ) -> Result<AssistantTurn, ProviderError> {
         let mut stream = provider.stream(req, cancel.clone()).await?;
         let mut asm = Assembler::default();
@@ -515,7 +558,7 @@ impl Agent {
                 None => break,
                 Some(Err(e)) => return Err(e),
                 Some(Ok(ev)) => {
-                    if let StreamEvent::TextDelta(t) = &ev {
+                    if let (true, StreamEvent::TextDelta(t)) = (emit_text, &ev) {
                         self.emit(AgentEvent::TextDelta {
                             run_id: run_id.into(),
                             text: t.clone(),
@@ -533,28 +576,110 @@ impl Agent {
     /// Conversation as step `idx` sees it, with consecutive same-role
     /// messages merged (tool results from sequential tool steps).
     fn context(&self, run: &RunRow, idx: u32) -> Result<Vec<Message>, AgentError> {
-        let rows = self.store.run_context(run, idx)?;
-        let mut out: Vec<Message> = Vec::with_capacity(rows.len());
-        for row in rows {
-            let role = match row.role.as_str() {
-                "user" => Role::User,
-                "assistant" => Role::Assistant,
-                other => {
-                    return Err(AgentError::Corrupt(format!(
-                        "message {} has role {other:?}",
-                        row.id
-                    )));
-                }
-            };
-            let content: Vec<ContentBlock> = serde_json::from_str(&row.content_json)
-                .map_err(|e| AgentError::Corrupt(format!("message {}: {e}", row.id)))?;
-            match out.last_mut() {
-                Some(prev) if prev.role == role => prev.content.extend(content),
-                _ => out.push(Message { role, content }),
-            }
-        }
-        Ok(out)
+        let rows = compaction::effective(self.store.run_context(run, idx)?);
+        to_messages(rows)
     }
+
+    /// Summarize old context as step `idx`. Returns false if there was
+    /// nothing to compact (no step recorded).
+    async fn compact(
+        &self,
+        run: &RunRow,
+        idx: u32,
+        model: &ModelRef,
+        provider: &Arc<dyn Provider>,
+        cancel: &CancellationToken,
+    ) -> Result<bool, StepError> {
+        let rows = compaction::effective(self.store.run_context(run, idx)?);
+        let Some(plan) = compaction::plan(&rows) else {
+            return Ok(false);
+        };
+        let old = to_messages(rows[..plan.split].to_vec())
+            .map_err(|e| StepError::Failed(e.to_string()))?;
+        let transcript = compaction::transcript(&old);
+        let input = compaction::StepInput {
+            cover_through: plan.cover_through,
+            transcript_digest: blake3::hash(transcript.as_bytes()).to_hex().to_string(),
+        };
+        tracing::info!(run = %run.id, idx, cover_through = plan.cover_through, "compacting context");
+        let req = ChatRequest {
+            model: model.model.clone(),
+            system: compaction::SYSTEM_PROMPT.into(),
+            messages: vec![compaction::summary_request(&transcript)],
+            tools: vec![],
+            max_tokens: compaction::SUMMARY_MAX_TOKENS,
+        };
+        self.journal
+            .step_with(
+                &run.id,
+                idx,
+                StepKind::Compaction,
+                &input,
+                InFlight::Retry,
+                || async {
+                    let turn = self.call_llm(&run.id, provider, req, cancel, false).await?;
+                    let summary = turn.message.text();
+                    let usage = turn.usage;
+                    Ok(StepOutput::new(summary.clone())
+                        .with_usage(usage)
+                        .with_messages(vec![compaction::summary_message(&summary)])
+                        .with_summary_of(plan.cover_through))
+                },
+            )
+            .await?;
+        self.emit(AgentEvent::Compacted {
+            run_id: run.id.clone(),
+            cover_through: plan.cover_through,
+        });
+        Ok(true)
+    }
+}
+
+fn to_messages(rows: Vec<tern_store::MessageRow>) -> Result<Vec<Message>, AgentError> {
+    let mut out: Vec<Message> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let role = match row.role.as_str() {
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
+            other => {
+                return Err(AgentError::Corrupt(format!(
+                    "message {} has role {other:?}",
+                    row.id
+                )));
+            }
+        };
+        let content: Vec<ContentBlock> = serde_json::from_str(&row.content_json)
+            .map_err(|e| AgentError::Corrupt(format!("message {}: {e}", row.id)))?;
+        match out.last_mut() {
+            Some(prev) if prev.role == role => prev.content.extend(content),
+            _ => out.push(Message { role, content }),
+        }
+    }
+    Ok(out)
+}
+
+/// How recently a crashed run must have made progress to be auto-resumed.
+pub const RESUME_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Startup recovery (spec §5.3). Runs still marked `running` were cut off by
+/// a crash. Those updated within `max_age` are returned to be resumed; older
+/// ones are marked `interrupted` and left for `tern resume`.
+pub fn triage_running_runs(store: &Store, max_age: Duration) -> Result<Vec<RunRow>, AgentError> {
+    let cutoff = tern_store::now_ms() - max_age.as_millis() as i64;
+    let mut resumable = Vec::new();
+    for run in store.runs_with_status(RunStatus::Running.as_str())? {
+        if run.updated_at >= cutoff {
+            resumable.push(run);
+        } else {
+            tracing::info!(run = %run.id, "marking stale running run as interrupted");
+            store.set_run_status(
+                &run.id,
+                RunStatus::Interrupted.as_str(),
+                Some("interrupted by a crash more than 24 hours before restart"),
+            )?;
+        }
+    }
+    Ok(resumable)
 }
 
 /// Time-ordered unique id (UUIDv7, hex without dashes).

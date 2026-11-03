@@ -74,6 +74,8 @@ pub enum SessionsCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RunsCommand {
+    /// List the 20 most recent runs.
+    List,
     /// Print a run's step journal.
     Show { run_id: String },
 }

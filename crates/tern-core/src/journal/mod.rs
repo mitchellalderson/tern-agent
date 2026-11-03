@@ -56,6 +56,9 @@ pub struct StepOutput<O> {
     pub usage: Option<Usage>,
     /// Conversation messages this step appends, committed with the step.
     pub messages: Vec<Message>,
+    /// Marks the appended messages as a compaction summary replacing every
+    /// message with id <= this value.
+    pub summary_of: Option<i64>,
 }
 
 impl<O> StepOutput<O> {
@@ -64,7 +67,13 @@ impl<O> StepOutput<O> {
             output,
             usage: None,
             messages: Vec::new(),
+            summary_of: None,
         }
+    }
+
+    pub fn with_summary_of(mut self, cover_through: i64) -> Self {
+        self.summary_of = Some(cover_through);
+        self
     }
 
     pub fn with_usage(mut self, usage: Usage) -> Self {
@@ -264,7 +273,12 @@ impl Journal {
         let messages = out
             .messages
             .iter()
-            .map(|m| self.to_row(m))
+            .map(|m| {
+                self.to_row(m).map(|mut row| {
+                    row.summary_of = out.summary_of;
+                    row
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
         self.store.complete_step(
             run,
@@ -284,6 +298,7 @@ impl Journal {
             role: m.role.as_str().to_owned(),
             content_json: serde_json::to_string(&content)?,
             text: self.redact_str(&m.search_text()),
+            summary_of: None,
         })
     }
 

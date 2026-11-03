@@ -42,3 +42,17 @@ Choices made where the spec was ambiguous or silent. Newest at the bottom of eac
 - **Host shell kills only the direct child** on timeout/cancel. Grandchildren started in the background can outlive it. Killing the whole process group needs `unsafe` or another crate; revisit with the sandbox work in M6.
 - **The mock provider picks its reply by the number of assistant turns** in the request, not by call count, so a resumed process continues the script where the crashed one stopped.
 - **No real-provider run yet.** The M1 acceptance prompt runs against the mock in `tests/m1.rs`. The real-provider version is `#[ignore]`d and documented in the test.
+
+## M2
+
+- **Compaction summaries are messages, not deletions.** A summary is a user message with `messages.summary_of = N` (migration 3), appended by a `compaction` step. When building context, the latest summary goes first and every non-summary message with `id <= N` is dropped; full history stays in the database for `sessions show` and `session_search`. A later summary folds in the earlier one. `N` is the highest *non-summary* id being summarized; using the summary row's own id would drop kept messages that are older than the previous summary.
+- **The compaction split never orphans a tool result**: the kept tail is moved back until it doesn't start with a `tool_result` message.
+- **Token estimate** = chars/4 over system prompt, messages, and tool schemas, scaled by the ratio of provider-reported input tokens (including cache reads/writes) to our estimate for the previous request. The ratio comes from journaled usage, so replay makes the same compaction decisions.
+- **Context window is configurable**: top-level `context_window` (default 128 000), overridable per provider. There is no per-model table yet.
+- **Summarization uses the run's own model** with a fixed system prompt and no tools. Its text isn't streamed as assistant output.
+- **`session_search` excludes the current session**, which is already in context and would otherwise match its own query.
+- **FTS queries are built from words only**: each word quoted and OR-ed, so user text can't inject FTS5 syntax and BM25 ranks documents matching more terms higher.
+- **Sessions get a title from their first message** (first 80 chars), set when the first run is created.
+- **Startup recovery is `agent::triage_running_runs`**: runs still `running` that were updated in the last 24 h are returned for resumption; older ones are marked `interrupted`. The daemon (M5) will call it at startup; nothing calls it automatically yet.
+- **Added `tern runs list`** (not in §12.1): `runs show` needs a run id, and there was no other way to find one.
+- **Ctrl+C is registered before the run banner is printed**, using a unix signal listener that's active from creation, so an interrupt can't arrive before cancellation works.

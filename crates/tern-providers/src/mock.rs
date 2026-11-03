@@ -2,7 +2,8 @@
 //!
 //! The reply is chosen by how many assistant turns the request already
 //! contains, not by call count, so a resumed process picks up where the
-//! crashed one left off.
+//! crashed one left off. Compaction requests get a summary that records how
+//! many turns it replaced (`mock-turns=N`), so counting survives compaction.
 //!
 //! ```json
 //! { "turns": [
@@ -21,6 +22,46 @@ use tern_core::types::{
     ChatRequest, EventStream, Provider, ProviderError, Role, StopReason, StreamEvent, Usage,
 };
 use tokio_util::sync::CancellationToken;
+
+/// Assistant turns in the request, including ones folded into summaries.
+pub fn turns_so_far(req: &ChatRequest) -> usize {
+    let live = req
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .count();
+    let summarized: usize = req
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .map(|m| summarized_turns(&m.text()))
+        .sum();
+    live + summarized
+}
+
+fn summarized_turns(text: &str) -> usize {
+    text.split("mock-turns=")
+        .skip(1)
+        .filter_map(|rest| {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<usize>().ok()
+        })
+        .sum()
+}
+
+fn text_stream(text: String) -> EventStream {
+    let usage = Usage {
+        output_tokens: text.len() as u64 / 4,
+        ..Usage::default()
+    };
+    Box::pin(futures::stream::iter(vec![
+        Ok(StreamEvent::TextDelta(text)),
+        Ok(StreamEvent::MessageStop {
+            usage,
+            stop_reason: StopReason::EndTurn,
+        }),
+    ]))
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Script {
@@ -74,11 +115,12 @@ impl Provider for MockProvider {
         req: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<EventStream, ProviderError> {
-        let n = req
-            .messages
-            .iter()
-            .filter(|m| m.role == Role::Assistant)
-            .count();
+        if req.system == tern_core::compaction::SYSTEM_PROMPT {
+            let text = req.messages.iter().map(|m| m.text()).collect::<String>();
+            let n = text.matches("### assistant").count() + summarized_turns(&text);
+            return Ok(text_stream(format!("mock summary mock-turns={n}")));
+        }
+        let n = turns_so_far(&req);
         let turn = self.script.turns.get(n).cloned().unwrap_or_else(|| Turn {
             text: "(mock script exhausted)".into(),
             ..Turn::default()
@@ -105,10 +147,13 @@ impl Provider for MockProvider {
                 partial_json: call.input.to_string(),
             }));
         }
-        let input_chars: usize = req.messages.iter().map(|m| m.search_text().len()).sum();
         events.push(Ok(StreamEvent::MessageStop {
             usage: Usage {
-                input_tokens: (req.system.len() + input_chars) as u64 / 4,
+                input_tokens: tern_core::compaction::estimate_tokens(
+                    &req.system,
+                    &req.messages,
+                    &req.tools,
+                ),
                 output_tokens: turn.text.len() as u64 / 4,
                 ..Usage::default()
             },

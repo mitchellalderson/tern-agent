@@ -5,6 +5,9 @@
 
 workspace = "~/tern-workspace"
 max_iterations = 40
+# Model context window in tokens; old messages are summarized past 75%.
+# Override per provider with `context_window` in its [providers.*] table.
+context_window = 128000
 
 # Secrets (API keys, tokens) are read from environment variables first,
 # then from secrets.toml next to this file (which must be mode 0600).

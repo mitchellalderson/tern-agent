@@ -1,6 +1,7 @@
 mod cli;
 mod config_cmd;
 mod doctor;
+mod inspect;
 mod logging;
 mod run_cmd;
 mod runtime;
@@ -10,7 +11,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use tern_core::TernHome;
 
-use cli::{Cli, Command, ConfigCommand};
+use cli::{Cli, Command, ConfigCommand, RunsCommand, SessionsCommand};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -66,8 +67,20 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Resume { run_id, yes }) => run_cmd::resume(&home, &run_id, yes),
         Some(Command::Daemon) => not_yet("`tern daemon`", "M5"),
         Some(Command::Gateway { .. }) => not_yet("`tern gateway`", "M5"),
-        Some(Command::Sessions { .. }) => not_yet("`tern sessions`", "M2"),
-        Some(Command::Runs { .. }) => not_yet("`tern runs`", "M2"),
+        Some(Command::Sessions { command }) => {
+            match command.unwrap_or(SessionsCommand::List) {
+                SessionsCommand::List => inspect::sessions_list(&home)?,
+                SessionsCommand::Show { id } => inspect::sessions_show(&home, &id)?,
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(Command::Runs { command }) => {
+            match command {
+                RunsCommand::List => inspect::runs_list(&home)?,
+                RunsCommand::Show { run_id } => inspect::runs_show(&home, &run_id)?,
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Some(Command::Connectors { .. }) => not_yet("`tern connectors`", "M4"),
     }
 }
