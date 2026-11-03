@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use rmcp::service::{RoleClient, RunningService, ServiceError};
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};
 use serde_json::Value;
 use tern_core::Secrets;
@@ -204,11 +205,11 @@ impl McpServer {
                     .spawn()
                     .map_err(|e| format!("spawning `{command}`: {e}"))?;
                 if let Some(stderr) = stderr {
-                    let name = self.name.clone();
+                    let (name, secrets) = (self.name.clone(), self.secrets.clone());
                     tokio::spawn(async move {
                         let mut lines = BufReader::new(stderr).lines();
                         while let Ok(Some(line)) = lines.next_line().await {
-                            tracing::debug!(server = %name, "stderr: {line}");
+                            tracing::debug!(server = %name, "stderr: {}", secrets.redact(&line));
                         }
                     });
                 }
@@ -220,7 +221,13 @@ impl McpServer {
                     .url
                     .as_deref()
                     .ok_or("http transport needs `url`")?;
-                let transport = StreamableHttpClientTransport::from_uri(url.to_owned());
+                let client = tern_core::net::http_client()
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                let transport = StreamableHttpClientTransport::with_client(
+                    client,
+                    StreamableHttpClientTransportConfig::with_uri(url.to_owned()),
+                );
                 ().serve(transport).await.map_err(|e| e.to_string())?
             }
         };

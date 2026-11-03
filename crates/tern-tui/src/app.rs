@@ -137,7 +137,14 @@ impl App {
         if self.approval.is_some() {
             let decision = match key.code {
                 KeyCode::Char('y' | 'Y') => Decision::AllowOnce,
-                KeyCode::Char('a' | 'A') => Decision::AlwaysAllow,
+                KeyCode::Char('a' | 'A')
+                    if self
+                        .approval
+                        .as_ref()
+                        .is_some_and(|p| p.request.pattern.is_some()) =>
+                {
+                    Decision::AlwaysAllow
+                }
                 KeyCode::Char('n' | 'N') | KeyCode::Esc => Decision::Deny,
                 _ => return vec![],
             };

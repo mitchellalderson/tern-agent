@@ -85,12 +85,18 @@ impl TernHome {
 
     /// The path clients should connect to: the symlink's target if
     /// `tern.sock` itself is too long to use.
-    pub fn socket_connect_path(&self) -> PathBuf {
+    ///
+    /// A symlinked socket is only followed if it and its directory belong
+    /// to us (see [`verify_private_socket`]).
+    pub fn socket_connect_path(&self) -> Result<PathBuf, String> {
         let p = self.socket_path();
         if p.as_os_str().len() <= MAX_SOCKET_PATH {
-            return p;
+            return Ok(p);
         }
-        std::fs::read_link(&p).unwrap_or(p)
+        let target = std::fs::read_link(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        #[cfg(unix)]
+        verify_private_socket(&target)?;
+        Ok(target)
     }
     pub fn pid_path(&self) -> PathBuf {
         self.root.join("tern.pid")
@@ -113,14 +119,80 @@ impl TernHome {
 /// Longest socket path we bind directly (below both platforms' limits).
 const MAX_SOCKET_PATH: usize = 100;
 
+/// A private directory for the socket when the data directory's path is too
+/// long: the per-user runtime dir (Linux), the per-user `$TMPDIR` (macOS),
+/// or `/tmp/tern-<uid>` (created 0700 and checked before use).
 #[cfg(unix)]
 fn short_socket_dir() -> PathBuf {
+    for var in ["XDG_RUNTIME_DIR", "TMPDIR"] {
+        if let Some(dir) = std::env::var_os(var)
+            .map(PathBuf::from)
+            .filter(|d| d.is_absolute())
+        {
+            let dir = dir.join("tern");
+            // Room for "/<16 hex>.sock".
+            if dir.as_os_str().len() + 22 <= MAX_SOCKET_PATH && is_private_dir_or_creatable(&dir) {
+                return dir;
+            }
+        }
+    }
+    PathBuf::from(format!("/tmp/tern-{}", current_uid().unwrap_or(0)))
+}
+
+/// A per-user parent (mode 0700 or owned by us) under which `dir` can live.
+#[cfg(unix)]
+fn is_private_dir_or_creatable(dir: &Path) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let Some(parent) = dir.parent() else {
+        return false;
+    };
+    let Ok(meta) = std::fs::metadata(parent) else {
+        return false;
+    };
+    Some(meta.uid()) == current_uid() && meta.permissions().mode() & 0o077 == 0
+}
+
+/// The effective uid of this process, without libc: the owner of a file we
+/// just created.
+#[cfg(unix)]
+pub fn current_uid() -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
-    // Owner uid of the user's home, without libc: the daemon runs as them.
-    let uid = user_home()
-        .and_then(|h| std::fs::metadata(h).ok())
-        .map_or(0, |m| m.uid());
-    PathBuf::from(format!("/tmp/tern-{uid}"))
+    let probe = std::env::temp_dir().join(format!(
+        ".tern-uid-{}-{}",
+        std::process::id(),
+        crate::agent::new_id()
+    ));
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .ok()?;
+    let uid = file.metadata().ok().map(|m| m.uid());
+    drop(file);
+    let _ = std::fs::remove_file(&probe);
+    uid
+}
+
+/// Check that a socket and its directory belong to us and that the
+/// directory is private, so we never talk to (or approve things for) a
+/// socket another local user planted.
+#[cfg(unix)]
+pub fn verify_private_socket(socket: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let me = current_uid().ok_or("cannot determine the current user")?;
+    let dir = socket.parent().ok_or("socket has no directory")?;
+    let d = std::fs::symlink_metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !d.is_dir() || d.uid() != me || d.permissions().mode() & 0o077 != 0 {
+        return Err(format!(
+            "{} must be a directory owned by you with mode 0700",
+            dir.display()
+        ));
+    }
+    let f = std::fs::symlink_metadata(socket).map_err(|e| format!("{}: {e}", socket.display()))?;
+    if f.uid() != me {
+        return Err(format!("{} is not owned by you", socket.display()));
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -184,6 +256,26 @@ mod tests {
             bind,
             TernHome::new(format!("/{}/.tern", "e".repeat(120))).socket_bind_path()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn foreign_or_open_socket_dirs_are_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("sock");
+        std::fs::create_dir(&dir).unwrap();
+        let sock = dir.join("x.sock");
+        std::fs::write(&sock, "").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            verify_private_socket(&sock)
+                .unwrap_err()
+                .contains("mode 0700")
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(verify_private_socket(&sock).is_ok());
+        assert!(current_uid().is_some());
     }
 
     #[test]

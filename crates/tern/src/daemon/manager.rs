@@ -31,13 +31,13 @@ pub struct ApiApproval {
     pub tool: String,
     pub input: serde_json::Value,
     pub summary: String,
-    pub pattern: String,
+    pub pattern: Option<String>,
 }
 
 /// Approvals for API clients: published on a channel, answered over HTTP.
 #[derive(Default)]
 pub struct ApiApprovals {
-    pending: Mutex<HashMap<String, oneshot::Sender<Decision>>>,
+    pending: Mutex<HashMap<String, (ApiApproval, oneshot::Sender<Decision>)>>,
     tx: OnceLock<broadcast::Sender<ApiApproval>>,
 }
 
@@ -53,9 +53,6 @@ impl ApiApprovals {
     /// Ask attached clients; deny at once if none is listening.
     async fn ask(&self, req: &ApprovalRequest) -> Decision {
         let (tx, rx) = oneshot::channel();
-        if let Ok(mut p) = self.pending.lock() {
-            p.insert(req.id.clone(), tx);
-        }
         let msg = ApiApproval {
             id: req.id.clone(),
             run_id: req.run_id.clone(),
@@ -65,6 +62,9 @@ impl ApiApprovals {
             summary: req.summary.clone(),
             pattern: req.pattern.clone(),
         };
+        if let Ok(mut p) = self.pending.lock() {
+            p.insert(req.id.clone(), (msg.clone(), tx));
+        }
         if self.tx().send(msg).is_err() {
             if let Ok(mut p) = self.pending.lock() {
                 p.remove(&req.id);
@@ -76,7 +76,15 @@ impl ApiApprovals {
 
     pub fn answer(&self, id: &str, decision: Decision) -> bool {
         let tx = self.pending.lock().ok().and_then(|mut p| p.remove(id));
-        tx.is_some_and(|tx| tx.send(decision).is_ok())
+        tx.is_some_and(|(_, tx)| tx.send(decision).is_ok())
+    }
+
+    /// Approvals still waiting for an answer, for clients that attach late.
+    pub fn pending(&self) -> Vec<ApiApproval> {
+        self.pending
+            .lock()
+            .map(|p| p.values().map(|(a, _)| a.clone()).collect())
+            .unwrap_or_default()
     }
 }
 
@@ -242,6 +250,18 @@ impl Manager {
             }
             None => false,
         }
+    }
+
+    /// `(session_id, run_id)` for every run in progress.
+    pub fn active_runs(&self) -> Vec<(String, String)> {
+        self.active
+            .lock()
+            .map(|a| {
+                a.iter()
+                    .map(|(s, x)| (s.clone(), x.run_id.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn is_active(&self, run_id: &str) -> bool {

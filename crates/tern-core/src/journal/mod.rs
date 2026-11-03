@@ -20,8 +20,6 @@ mod tests;
 /// Env var: abort the process right after step `n` is marked `started`.
 pub const CRASH_AFTER_ENV: &str = "TERN_CRASH_AFTER_STEP";
 
-const REDACTED: &str = "[REDACTED]";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepKind {
     Llm,
@@ -110,6 +108,8 @@ pub enum StepError {
 pub struct Journal {
     store: Store,
     redactions: Arc<Vec<String>>,
+    /// Live secret values, merged with `redactions` at write time.
+    secrets: Option<crate::Secrets>,
     crash_after: Option<u32>,
 }
 
@@ -118,6 +118,7 @@ impl Journal {
         Self {
             store,
             redactions: Arc::new(Vec::new()),
+            secrets: None,
             crash_after: None,
         }
     }
@@ -137,6 +138,23 @@ impl Journal {
         v.sort_by_key(|s| std::cmp::Reverse(s.len()));
         self.redactions = Arc::new(v);
         self
+    }
+
+    /// Also redact every value `secrets` hands out, including ones first
+    /// read after the journal was built.
+    pub fn with_secrets(mut self, secrets: crate::Secrets) -> Self {
+        self.secrets = Some(secrets);
+        self
+    }
+
+    fn redaction_values(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.redactions.iter().cloned().collect();
+        if let Some(s) = &self.secrets {
+            v.extend(s.redaction_values());
+        }
+        v.sort_by_key(|s| std::cmp::Reverse(s.len()));
+        v.dedup();
+        v
     }
 
     pub fn store(&self) -> &Store {
@@ -303,29 +321,27 @@ impl Journal {
     }
 
     fn redact(&self, v: &mut Value) {
-        if self.redactions.is_empty() {
-            return;
-        }
-        match v {
-            Value::String(s) => {
-                if self.redactions.iter().any(|r| s.contains(r.as_str())) {
-                    *s = self.redact_str(s);
-                }
-            }
-            Value::Array(a) => a.iter_mut().for_each(|v| self.redact(v)),
-            Value::Object(o) => o.values_mut().for_each(|v| self.redact(v)),
-            _ => {}
+        let values = self.redaction_values();
+        if !values.is_empty() {
+            redact_value(&values, v);
         }
     }
 
     fn redact_str(&self, s: &str) -> String {
-        let mut out = s.to_owned();
-        for r in self.redactions.iter() {
-            if out.contains(r.as_str()) {
-                out = out.replace(r.as_str(), REDACTED);
+        crate::secrets::redact_with(&self.redaction_values(), s)
+    }
+}
+
+fn redact_value(values: &[String], v: &mut Value) {
+    match v {
+        Value::String(s) => {
+            if values.iter().any(|r| s.contains(r.as_str())) {
+                *s = crate::secrets::redact_with(values, s);
             }
         }
-        out
+        Value::Array(a) => a.iter_mut().for_each(|v| redact_value(values, v)),
+        Value::Object(o) => o.values_mut().for_each(|v| redact_value(values, v)),
+        _ => {}
     }
 }
 

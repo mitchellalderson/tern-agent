@@ -13,6 +13,7 @@ tern-core.workspace = true
 tern-store.workspace = true
 
 async-trait.workspace = true
+blake3.workspace = true
 futures.workspace = true
 mlua.workspace = true
 reqwest.workspace = true

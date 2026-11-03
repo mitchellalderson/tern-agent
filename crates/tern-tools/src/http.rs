@@ -1,5 +1,6 @@
 //! `http_fetch`: GET a URL, converting HTML to text.
 
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -13,17 +14,93 @@ use crate::{args, spec};
 
 const DEFAULT_MAX_BYTES: usize = 2 * 1024 * 1024;
 
+const MAX_REDIRECTS: usize = 5;
+
 pub struct HttpFetch {
-    client: reqwest::Client,
+    /// Tests fetch from a local mock server; only loopback is let through.
+    allow_loopback: bool,
 }
 
 impl HttpFetch {
     pub fn new() -> Result<Self, reqwest::Error> {
-        let client = reqwest::Client::builder()
+        Ok(Self {
+            allow_loopback: false,
+        })
+    }
+
+    #[cfg(test)]
+    fn allowing_loopback() -> Self {
+        Self {
+            allow_loopback: true,
+        }
+    }
+
+    /// Resolve `url`'s host, refusing non-public addresses, and return a
+    /// client pinned to exactly those addresses (no DNS rebinding between
+    /// the check and the connection) that doesn't follow redirects itself.
+    async fn client_for(&self, url: &reqwest::Url) -> Result<reqwest::Client, String> {
+        let host = url.host_str().ok_or("url has no host")?.to_owned();
+        let port = url.port_or_known_default().unwrap_or(80);
+        let lookup_host = host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_owned();
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((lookup_host.as_str(), port))
+            .await
+            .map_err(|e| format!("resolving {host}: {e}"))?
+            .collect();
+        if addrs.is_empty() {
+            return Err(format!("{host} did not resolve"));
+        }
+        if let Some(bad) = addrs
+            .iter()
+            .find(|a| !is_public(a.ip()) && !(self.allow_loopback && a.ip().is_loopback()))
+        {
+            return Err(format!(
+                "refusing to fetch {host} ({}): loopback, private, and link-local addresses aren't allowed",
+                bad.ip()
+            ));
+        }
+        let mut builder = tern_core::net::http_client()
             .timeout(Duration::from_secs(30))
-            .user_agent(concat!("tern/", env!("CARGO_PKG_VERSION")))
-            .build()?;
-        Ok(Self { client })
+            .redirect(reqwest::redirect::Policy::none());
+        // Pin hostnames to the checked addresses; IP literals need no pinning.
+        if lookup_host.parse::<IpAddr>().is_err() {
+            builder = builder.resolve_to_addrs(&host, &addrs);
+        }
+        builder.build().map_err(|e| e.to_string())
+    }
+}
+
+/// Whether an address is on the public internet.
+pub fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || o[0] == 0
+                || (o[0] == 100 && (o[1] & 0xc0) == 64) // 100.64/10 shared (CGNAT)
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0/24
+                || (o[0] == 198 && (o[1] & 0xfe) == 18) // 198.18/15 benchmarking
+                || o[0] >= 240)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public(IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg[0] & 0xfe00) == 0xfc00 // unique local
+                || (seg[0] & 0xffc0) == 0xfe80) // link local
+        }
     }
 }
 
@@ -72,12 +149,40 @@ impl Tool for HttpFetch {
             .unwrap_or(DEFAULT_MAX_BYTES)
             .min(DEFAULT_MAX_BYTES * 4);
         let fetch = async {
-            let resp = self
-                .client
-                .get(url)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
+            // Follow redirects by hand so every hop is checked.
+            let mut url = url;
+            let mut hops = 0;
+            let resp = loop {
+                let client = self.client_for(&url).await?;
+                let resp = client
+                    .get(url.clone())
+                    .send()
+                    .await
+                    .map_err(|e| e.without_url().to_string())?;
+                let location = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                match location {
+                    Some(loc) if resp.status().is_redirection() => {
+                        hops += 1;
+                        if hops > MAX_REDIRECTS {
+                            return Err(format!("more than {MAX_REDIRECTS} redirects"));
+                        }
+                        url = url
+                            .join(&loc)
+                            .map_err(|e| format!("bad redirect {loc:?}: {e}"))?;
+                        if !matches!(url.scheme(), "http" | "https") {
+                            return Err(format!(
+                                "redirect to unsupported scheme {:?}",
+                                url.scheme()
+                            ));
+                        }
+                    }
+                    _ => break resp,
+                }
+            };
             let status = resp.status();
             let is_html = resp
                 .headers()
@@ -148,8 +253,7 @@ mod tests {
             session_id: "s".into(),
             cancel: CancellationToken::new(),
         };
-        let r = HttpFetch::new()
-            .unwrap()
+        let r = HttpFetch::allowing_loopback()
             .call(&ctx, json!({"url": server.uri()}))
             .await;
         assert!(!r.is_error, "{}", r.content);
@@ -166,5 +270,69 @@ mod tests {
             .call(&ctx, json!({"url": "file:///etc/passwd"}))
             .await;
         assert!(bad.is_error);
+
+        // Without the test override, local and metadata addresses are refused.
+        let fetch = HttpFetch::new().unwrap();
+        for url in [
+            server.uri(),
+            "http://169.254.169.254/latest/meta-data/".into(),
+            "http://[::1]:9/".into(),
+            "http://10.0.0.1/".into(),
+        ] {
+            let r = fetch.call(&ctx, json!({ "url": url })).await;
+            assert!(
+                r.is_error && r.content.contains("refusing to fetch"),
+                "{url}: {}",
+                r.content
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn redirects_are_checked_hop_by_hop() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/go"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "/final"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/final"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("landed"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/meta"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "http://169.254.169.254/x"),
+            )
+            .mount(&server)
+            .await;
+        let ctx = ToolCtx {
+            workspace: std::env::temp_dir(),
+            run_id: "r".into(),
+            session_id: "s".into(),
+            cancel: CancellationToken::new(),
+        };
+        let fetch = HttpFetch::allowing_loopback();
+        let ok = fetch
+            .call(&ctx, json!({"url": format!("{}/go", server.uri())}))
+            .await;
+        assert!(ok.content.ends_with("landed"), "{}", ok.content);
+        // The first host is allowed, but its redirect to the metadata address isn't.
+        let meta = fetch
+            .call(&ctx, json!({"url": format!("{}/meta", server.uri())}))
+            .await;
+        assert!(
+            meta.is_error && meta.content.contains("169.254.169.254"),
+            "{}",
+            meta.content
+        );
+        assert!(!is_public("169.254.169.254".parse().unwrap()));
+        assert!(!is_public("100.100.1.1".parse().unwrap()));
+        assert!(!is_public("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!is_public("fd00::1".parse().unwrap()));
+        assert!(is_public("1.1.1.1".parse().unwrap()));
+        assert!(is_public("2606:4700::1111".parse().unwrap()));
     }
 }

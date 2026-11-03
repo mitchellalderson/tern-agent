@@ -12,8 +12,12 @@ const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 pub fn pair(home: &TernHome) -> anyhow::Result<ExitCode> {
     let (config, _) = Config::load(&home.config_path())?;
     let store = Store::open(&home.db_path())?;
-    let code: String = (0..8)
-        .map(|_| ALPHABET[fastrand::usize(..ALPHABET.len())] as char)
+    // UUIDv4 bytes come from the OS's CSPRNG; 32 symbols divide 256 evenly,
+    // so taking each byte mod 32 is unbiased.
+    let bytes = *uuid::Uuid::new_v4().as_bytes();
+    let code: String = bytes[..8]
+        .iter()
+        .map(|b| ALPHABET[usize::from(*b) % ALPHABET.len()] as char)
         .collect();
     store.create_pairing_code(&code, CODE_TTL_MS)?;
     println!("{code}");

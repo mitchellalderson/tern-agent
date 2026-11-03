@@ -5,10 +5,9 @@ use std::time::Duration;
 use tern_core::types::ProviderError;
 
 pub fn client() -> Result<reqwest::Client, ProviderError> {
-    reqwest::Client::builder()
+    tern_core::net::http_client()
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(300))
-        .user_agent(concat!("tern/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| ProviderError::Config(format!("http client: {e}")))
 }

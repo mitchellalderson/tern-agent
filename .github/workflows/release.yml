@@ -1,0 +1,73 @@
+name: release
+
+# Push a tag like v0.1.0 to build every target and publish a GitHub release
+# with `tern-<target>.tar.gz` archives and their `.sha256` checksums (the
+# names `install.sh` downloads).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, zig: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, zig: true }
+          - { target: aarch64-apple-darwin, os: macos-latest, zig: false }
+          - { target: x86_64-apple-darwin, os: macos-latest, zig: false }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - if: matrix.zig
+        uses: mlugg/setup-zig@v2
+      - if: matrix.zig
+        run: cargo install cargo-zigbuild --locked
+      - name: Build
+        run: |
+          if [ "${{ matrix.zig }}" = "true" ]; then
+            cargo zigbuild --profile dist --locked -p tern --target ${{ matrix.target }}
+          else
+            cargo build --profile dist --locked -p tern --target ${{ matrix.target }}
+          fi
+      - name: Check the Linux binary is static
+        if: matrix.zig
+        run: file target/${{ matrix.target }}/dist/tern | tee /dev/stderr | grep -q 'statically linked'
+      - name: Package
+        run: |
+          mkdir -p out
+          tar -C target/${{ matrix.target }}/dist -czf out/tern-${{ matrix.target }}.tar.gz tern
+          cd out
+          if command -v sha256sum >/dev/null; then sha256sum tern-${{ matrix.target }}.tar.gz; else shasum -a 256 tern-${{ matrix.target }}.tar.gz; fi > tern-${{ matrix.target }}.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tern-${{ matrix.target }}
+          path: out/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" out/* --title "tern ${GITHUB_REF_NAME}" --generate-notes

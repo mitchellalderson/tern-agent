@@ -19,8 +19,55 @@ pub use spec::{Capabilities, ConnectorSpec, ToolDef, check_schema, valid_ident};
 
 pub const EXTENSION: &str = "luau";
 
-/// Load one connector file.
-pub fn load_file(host: &Host, path: &Path) -> Result<Vm, LoadError> {
+/// kv namespace recording what the user approved at activation.
+pub const APPROVALS_NS: &str = "lua:approved";
+
+/// What a connector is, for approval purposes: its exact source and the
+/// capabilities it declared when loaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fingerprint {
+    pub hash: String,
+    pub capabilities: Capabilities,
+}
+
+impl Fingerprint {
+    fn to_json(&self) -> String {
+        serde_json::json!({
+            "hash": self.hash,
+            "http": self.capabilities.http,
+            "secrets": self.capabilities.secrets,
+        })
+        .to_string()
+    }
+
+    fn from_json(s: &str) -> Option<Self> {
+        let v: serde_json::Value = serde_json::from_str(s).ok()?;
+        let list = |k: &str| -> Option<Vec<String>> {
+            v[k].as_array()?
+                .iter()
+                .map(|x| x.as_str().map(str::to_owned))
+                .collect()
+        };
+        Some(Self {
+            hash: v["hash"].as_str()?.to_owned(),
+            capabilities: Capabilities {
+                http: list("http")?,
+                secrets: list("secrets")?,
+            },
+        })
+    }
+}
+
+/// A loaded connector together with the exact bytes it was loaded from.
+pub struct Loaded {
+    pub vm: Vm,
+    pub fingerprint: Fingerprint,
+    pub source: String,
+}
+
+/// Load one connector file, reading it once so the fingerprint describes
+/// exactly what was loaded.
+pub fn load_fingerprinted(host: &Host, path: &Path) -> Result<Loaded, LoadError> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| LoadError::Lua(format!("reading {}: {e}", path.display())))?;
     let chunk = path
@@ -38,7 +85,50 @@ pub fn load_file(host: &Host, path: &Path) -> Result<Vm, LoadError> {
             vm.spec.name
         )));
     }
-    Ok(vm)
+    let fingerprint = Fingerprint {
+        hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
+        capabilities: vm.spec.capabilities.clone(),
+    };
+    Ok(Loaded {
+        vm,
+        fingerprint,
+        source,
+    })
+}
+
+/// Load one connector file.
+pub fn load_file(host: &Host, path: &Path) -> Result<Vm, LoadError> {
+    load_fingerprinted(host, path).map(|l| l.vm)
+}
+
+/// Load an active connector. One activated by `connector_activate` must
+/// still be exactly what the user approved: same file, same capabilities
+/// (capabilities computed by code, e.g. from the time, would differ).
+/// Connectors the user installed by hand have no record and load as-is.
+pub fn load_active(host: &Host, path: &Path) -> Result<Vm, LoadError> {
+    let loaded = load_fingerprinted(host, path)?;
+    let name = &loaded.vm.spec.name;
+    let record = host
+        .store
+        .kv_get(APPROVALS_NS, name)
+        .ok()
+        .flatten()
+        .and_then(|r| Fingerprint::from_json(&r));
+    if let Some(approved) = record
+        && approved != loaded.fingerprint
+    {
+        return Err(LoadError::Invalid(format!(
+            "{name} changed since you approved it (its file or declared capabilities differ); activate it again or remove it"
+        )));
+    }
+    Ok(loaded.vm)
+}
+
+/// Remember what the user approved for `name`.
+pub fn record_approval(host: &Host, name: &str, fp: &Fingerprint) -> Result<(), String> {
+    host.store
+        .kv_set(APPROVALS_NS, name, &fp.to_json())
+        .map_err(|e| e.to_string())
 }
 
 /// A Luau connector tool exposed to the agent as `lua__<connector>__<tool>`.
@@ -80,7 +170,7 @@ impl Tool for LuaTool {
 }
 
 #[derive(Default)]
-struct Loaded {
+struct LoadedSet {
     fingerprint: Vec<(PathBuf, Option<SystemTime>)>,
     vms: Vec<Arc<Vm>>,
     errors: Vec<(PathBuf, String)>,
@@ -92,7 +182,7 @@ struct Loaded {
 pub struct Connectors {
     host: Host,
     dir: PathBuf,
-    state: RwLock<Loaded>,
+    state: RwLock<LoadedSet>,
 }
 
 impl Connectors {
@@ -100,7 +190,7 @@ impl Connectors {
         let c = Self {
             host,
             dir,
-            state: RwLock::new(Loaded::default()),
+            state: RwLock::new(LoadedSet::default()),
         };
         c.reload_if_changed();
         c
@@ -128,12 +218,12 @@ impl Connectors {
         if self.state.read().is_ok_and(|s| s.fingerprint == fp) && !fp.is_empty() {
             return false;
         }
-        let mut loaded = Loaded {
+        let mut loaded = LoadedSet {
             fingerprint: fp.clone(),
-            ..Loaded::default()
+            ..LoadedSet::default()
         };
         for (path, _) in &fp {
-            match load_file(&self.host, path) {
+            match load_active(&self.host, path) {
                 Ok(vm) => loaded.vms.push(Arc::new(vm)),
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "failed to load connector");

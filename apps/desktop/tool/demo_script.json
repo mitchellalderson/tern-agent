@@ -1,0 +1,26 @@
+{
+  "conversations": [
+    {
+      "matches": "approve",
+      "turns": [
+        { "text": "I'll check the git status first.", "tool_calls": [{ "name": "shell", "input": { "command": "echo needs-approval" } }] },
+        { "text": "Done. The command ran after you approved it." }
+      ]
+    }
+  ],
+  "turns": [
+    {
+      "delay_ms": 400,
+      "text": "Let me draft that and read it back.",
+      "tool_calls": [
+        { "name": "write_file", "input": { "path": "notes/plan.md", "content": "# Plan\n\n- research\n- draft\n- review\n" } },
+        { "name": "read_file", "input": { "path": "notes/plan.md" } }
+      ]
+    },
+    {
+      "delay_ms": 300,
+      "text": "Here's the plan I saved to `notes/plan.md`:\n\n## Plan\n\n1. **Research** the accounts\n2. **Draft** follow-ups\n3. **Review** before sending\n\n```sh\ncat notes/plan.md\n```\n\nSay *approve* in a new conversation to see an approval card."
+    },
+    { "text": "That's the end of the demo script." }
+  ]
+}

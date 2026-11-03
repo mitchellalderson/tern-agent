@@ -177,10 +177,11 @@ struct TerminalApprover;
 #[async_trait]
 impl ApprovalHandler for TerminalApprover {
     async fn ask(&self, req: &ApprovalRequest) -> Decision {
-        let prompt = format!(
-            "Allow {}? [y]es / [a]lways ({} {}) / [N]o: ",
-            req.summary, req.call.name, req.pattern
-        );
+        let always = match &req.pattern {
+            Some(p) => format!(" / [a]lways ({} {p})", req.call.name),
+            None => String::new(),
+        };
+        let prompt = format!("Allow {}? [y]es{always} / [N]o: ", req.summary);
         tokio::task::spawn_blocking(move || {
             let mut stderr = std::io::stderr();
             let _ = write!(stderr, "{prompt}");

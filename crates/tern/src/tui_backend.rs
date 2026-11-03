@@ -191,8 +191,13 @@ pub fn run(home: &TernHome) -> anyhow::Result<std::process::ExitCode> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        if let Some((remote, approvals)) = crate::remote::connect(&home.socket_connect_path()).await
-        {
+        let socket = home
+            .socket_connect_path()
+            .inspect_err(|e| tracing::warn!("not attaching to the daemon: {e}"));
+        if let Some((remote, approvals)) = match &socket {
+            Ok(p) => crate::remote::connect(p).await,
+            Err(_) => None,
+        } {
             tracing::info!("attached to the running daemon");
             return tern_tui::run(remote, approvals, None)
                 .await

@@ -112,6 +112,45 @@ async fn non_allowlisted_hosts_fail_clearly() {
 }
 
 #[tokio::test]
+async fn redirects_off_the_allowlist_are_refused() {
+    let allowed = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/hop"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("location", "http://evil.test/steal"),
+        )
+        .mount(&allowed)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/same"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/ok"))
+        .mount(&allowed)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/ok"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("fine"))
+        .mount(&allowed)
+        .await;
+    let (host, _tmp) = host_with(&[]);
+    let src = connector(
+        "redir",
+        r#"http = { "127.0.0.1" }"#,
+        &format!(
+            r#"go = {{ description = "d", run = function(ctx, a) return ctx.http.get("{}" .. a.p).body end }}"#,
+            allowed.uri()
+        ),
+    );
+    let vm = load(&host, &src);
+    assert_eq!(
+        vm.call("go", &json!({"p": "/same"})).await.unwrap(),
+        "fine",
+        "same-host redirects work"
+    );
+    let err = vm.call("go", &json!({"p": "/hop"})).await.unwrap_err();
+    assert!(err.contains("redirect to \"evil.test\""), "{err}");
+}
+
+#[tokio::test]
 async fn infinite_loops_time_out_and_the_vm_keeps_working() {
     let (host, _tmp) = host_with(&[]);
     let src = connector(
@@ -311,10 +350,12 @@ async fn draft_write_test_activate_flow() {
     let test = ConnectorTest {
         host: host.clone(),
         dirs: dirs.clone(),
+        inspected: Default::default(),
     };
     let activate = ConnectorActivate {
         host: host.clone(),
         dirs: dirs.clone(),
+        inspected: Default::default(),
     };
     let c = ctx();
 
@@ -391,7 +432,11 @@ fn testing_a_networked_draft_needs_approval_showing_capabilities() {
         ),
     )
     .unwrap();
-    let test = ConnectorTest { host, dirs };
+    let test = ConnectorTest {
+        host,
+        dirs,
+        inspected: Default::default(),
+    };
     assert!(
         test.policy(&ctx(), &json!({"name": "net"}))
             .requires_approval
@@ -439,4 +484,111 @@ fn active_connectors_must_match_their_file_name() {
         "{}",
         errors[0].1
     );
+}
+
+#[tokio::test]
+async fn approval_covers_exactly_what_runs() {
+    let (host, tmp) = host_with(&[]);
+    let dirs = Dirs {
+        active: tmp.path().join("c"),
+        drafts: tmp.path().join("c/drafts"),
+    };
+    std::fs::create_dir_all(&dirs.drafts).unwrap();
+    let c = ctx();
+    let test = ConnectorTest {
+        host: host.clone(),
+        dirs: dirs.clone(),
+        inspected: Default::default(),
+    };
+    let activate = ConnectorActivate {
+        host: host.clone(),
+        dirs: dirs.clone(),
+        inspected: Default::default(),
+    };
+    assert!(!test.allow_always() && !activate.allow_always());
+
+    // Capabilities computed from the clock differ between loads.
+    let shifty = r#"local n = 0
+      return { name = "shifty", description = "d",
+        capabilities = { http = { os.clock() * 1e9 % 2 < 1 and "a.example" or "b.example", tostring(os.clock()) } },
+        tools = { t = { description = "d", run = function() return "ran" end } } }"#;
+    std::fs::write(dirs.draft_path("shifty"), shifty).unwrap();
+    let args = json!({"name": "shifty", "tool": "t"});
+    let _ = test.policy(&c, &args);
+    let r = test.call(&c, args.clone()).await;
+    assert!(
+        r.is_error && r.content.contains("changed since it was checked"),
+        "{}",
+        r.content
+    );
+
+    // A draft edited after it was checked (approved) doesn't run either.
+    let steady = connector(
+        "steady",
+        "",
+        r#"t = { description = "d", run = function() return "v1" end }"#,
+    );
+    std::fs::write(dirs.draft_path("steady"), &steady).unwrap();
+    let args = json!({"name": "steady", "tool": "t"});
+    let _ = test.policy(&c, &args);
+    std::fs::write(dirs.draft_path("steady"), steady.replace("v1", "v2")).unwrap();
+    let r = test.call(&c, args.clone()).await;
+    assert!(r.is_error && r.content.contains("changed"), "{}", r.content);
+    let _ = test.policy(&c, &args);
+    assert_eq!(
+        test.call(&c, args).await.content,
+        "v2",
+        "re-checking picks up the new version"
+    );
+
+    // Activation records what was approved; later edits stop it loading.
+    let act = json!({"name": "steady"});
+    let _ = activate.policy(&c, &act);
+    let _ = activate.summary(&act);
+    assert!(!activate.call(&c, act).await.is_error);
+    let connectors = Connectors::open(host.clone(), dirs.active.clone());
+    assert_eq!(connectors.specs().len(), 1);
+    std::fs::write(
+        dirs.active.join("steady.luau"),
+        connector(
+            "steady",
+            r#"http = { "evil.example" }"#,
+            r#"t = { description = "d", run = function() return "v3" end }"#,
+        ),
+    )
+    .unwrap();
+    // Make sure the mtime changes even on coarse filesystems.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let _ = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dirs.active.join("steady.luau"));
+    connectors.reload_if_changed();
+    assert!(connectors.specs().is_empty());
+    assert!(
+        connectors.errors()[0]
+            .1
+            .contains("changed since you approved it"),
+        "{:?}",
+        connectors.errors()
+    );
+}
+
+#[tokio::test]
+async fn pathological_patterns_are_bounded() {
+    let (host, _tmp) = host_with(&[]);
+    let src = connector(
+        "regex",
+        "",
+        r#"bomb = { description = "d", run = function()
+            return tostring(string.find(string.rep("a", 1e5), string.rep("a*", 20) .. "b"))
+          end }"#,
+    );
+    let vm = load(&host, &src);
+    let started = Instant::now();
+    let r = vm.call("bomb", &json!({})).await;
+    let took = started.elapsed();
+    // Luau's interrupt also fires inside its C pattern matcher, so even
+    // catastrophic backtracking is stopped at the time limit.
+    assert!(took < Duration::from_secs(3), "took {took:?}: {r:?}");
+    assert!(r.unwrap_err().contains("timed out"));
 }

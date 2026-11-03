@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult};
 use tern_core::types::ToolSpec;
 
-use crate::paths::resolve;
+use std::sync::Arc;
+
+use crate::paths::{Guard, resolve};
 use crate::{args, spec};
 
 const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
@@ -14,14 +16,22 @@ const MAX_LIST_ENTRIES: usize = 1000;
 const MAX_SEARCH_MATCHES: usize = 200;
 const MAX_SEARCH_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
-const READ_ONLY: ToolPolicy = ToolPolicy {
-    idempotent: true,
-    requires_approval: false,
-};
+/// Reads inside the workspace are free; anywhere else needs approval, so
+/// a prompt-injected model can't quietly read `~/.ssh` and send it out.
+fn read_policy(ctx: &ToolCtx, args: &Value, default: &str) -> ToolPolicy {
+    let raw = args.get("path").and_then(Value::as_str).unwrap_or(default);
+    let outside = resolve(&ctx.workspace, raw).is_ok_and(|r| !r.inside_workspace);
+    ToolPolicy {
+        idempotent: true,
+        requires_approval: outside,
+    }
+}
 
 // ---- read_file ----
 
-pub struct ReadFile;
+pub struct ReadFile {
+    pub guard: Arc<Guard>,
+}
 
 #[derive(Deserialize)]
 struct ReadArgs {
@@ -49,8 +59,8 @@ impl Tool for ReadFile {
         )
     }
 
-    fn policy(&self, _ctx: &ToolCtx, _args: &Value) -> ToolPolicy {
-        READ_ONLY
+    fn policy(&self, ctx: &ToolCtx, args: &Value) -> ToolPolicy {
+        read_policy(ctx, args, "")
     }
 
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
@@ -58,8 +68,10 @@ impl Tool for ReadFile {
             Ok(a) => a,
             Err(e) => return e,
         };
-        let path = match resolve(&ctx.workspace, &a.path) {
-            Ok(r) => r.path,
+        let path = match resolve(&ctx.workspace, &a.path)
+            .and_then(|r| self.guard.check_read(&r).map(|()| r.path))
+        {
+            Ok(p) => p,
             Err(e) => return ToolResult::error(e),
         };
         match tokio::fs::metadata(&path).await {
@@ -99,7 +111,9 @@ impl Tool for ReadFile {
 
 // ---- list_dir ----
 
-pub struct ListDir;
+pub struct ListDir {
+    pub guard: Arc<Guard>,
+}
 
 #[derive(Deserialize)]
 struct ListArgs {
@@ -121,8 +135,8 @@ impl Tool for ListDir {
         )
     }
 
-    fn policy(&self, _ctx: &ToolCtx, _args: &Value) -> ToolPolicy {
-        READ_ONLY
+    fn policy(&self, ctx: &ToolCtx, args: &Value) -> ToolPolicy {
+        read_policy(ctx, args, ".")
     }
 
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
@@ -130,8 +144,10 @@ impl Tool for ListDir {
             Ok(a) => a,
             Err(e) => return e,
         };
-        let path = match resolve(&ctx.workspace, &a.path) {
-            Ok(r) => r.path,
+        let path = match resolve(&ctx.workspace, &a.path)
+            .and_then(|r| self.guard.check_read(&r).map(|()| r.path))
+        {
+            Ok(p) => p,
             Err(e) => return ToolResult::error(e),
         };
         let mut rd = match tokio::fs::read_dir(&path).await {
@@ -165,7 +181,9 @@ impl Tool for ListDir {
 
 // ---- search_files ----
 
-pub struct SearchFiles;
+pub struct SearchFiles {
+    pub guard: Arc<Guard>,
+}
 
 #[derive(Deserialize)]
 struct SearchArgs {
@@ -193,8 +211,8 @@ impl Tool for SearchFiles {
         )
     }
 
-    fn policy(&self, _ctx: &ToolCtx, _args: &Value) -> ToolPolicy {
-        READ_ONLY
+    fn policy(&self, ctx: &ToolCtx, args: &Value) -> ToolPolicy {
+        read_policy(ctx, args, ".")
     }
 
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
@@ -202,8 +220,10 @@ impl Tool for SearchFiles {
             Ok(a) => a,
             Err(e) => return e,
         };
-        let root = match resolve(&ctx.workspace, &a.path) {
-            Ok(r) => r.path,
+        let root = match resolve(&ctx.workspace, &a.path)
+            .and_then(|r| self.guard.check_read(&r).map(|()| r.path))
+        {
+            Ok(p) => p,
             Err(e) => return ToolResult::error(e),
         };
         let re = match regex::Regex::new(&a.pattern) {
@@ -269,7 +289,9 @@ fn search(root: &std::path::Path, re: &regex::Regex, glob: Option<&str>) -> Resu
 
 // ---- write_file ----
 
-pub struct WriteFile;
+pub struct WriteFile {
+    pub guard: Arc<Guard>,
+}
 
 #[derive(Deserialize)]
 struct WriteArgs {
@@ -312,8 +334,10 @@ impl Tool for WriteFile {
             Ok(a) => a,
             Err(e) => return e,
         };
-        let path = match resolve(&ctx.workspace, &a.path) {
-            Ok(r) => r.path,
+        let path = match resolve(&ctx.workspace, &a.path)
+            .and_then(|r| self.guard.check_write(&r).map(|()| r.path))
+        {
+            Ok(p) => p,
             Err(e) => return ToolResult::error(e),
         };
         if let Some(parent) = path.parent()
@@ -330,7 +354,9 @@ impl Tool for WriteFile {
 
 // ---- edit_file ----
 
-pub struct EditFile;
+pub struct EditFile {
+    pub guard: Arc<Guard>,
+}
 
 #[derive(Deserialize)]
 struct EditArgs {
@@ -372,8 +398,10 @@ impl Tool for EditFile {
         if a.old_string.is_empty() {
             return ToolResult::error("old_string must not be empty");
         }
-        let path = match resolve(&ctx.workspace, &a.path) {
-            Ok(r) => r.path,
+        let path = match resolve(&ctx.workspace, &a.path)
+            .and_then(|r| self.guard.check_write(&r).map(|()| r.path))
+        {
+            Ok(p) => p,
             Err(e) => return ToolResult::error(e),
         };
         let text = match tokio::fs::read_to_string(&path).await {
@@ -403,6 +431,10 @@ mod tests {
     use super::*;
     use tokio_util::sync::CancellationToken;
 
+    fn g() -> Arc<Guard> {
+        Arc::new(Guard::default())
+    }
+
     fn ctx(dir: &std::path::Path) -> ToolCtx {
         ToolCtx {
             workspace: dir.to_path_buf(),
@@ -416,21 +448,23 @@ mod tests {
     async fn write_read_edit_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let c = ctx(tmp.path());
-        let w = WriteFile
+        let w = WriteFile { guard: g() }
             .call(
                 &c,
                 json!({"path": "d/hello.txt", "content": "hi\nthere\nhi"}),
             )
             .await;
         assert!(!w.is_error, "{}", w.content);
-        let r = ReadFile.call(&c, json!({"path": "d/hello.txt"})).await;
+        let r = ReadFile { guard: g() }
+            .call(&c, json!({"path": "d/hello.txt"}))
+            .await;
         assert_eq!(r.content, "hi\nthere\nhi");
-        let r = ReadFile
+        let r = ReadFile { guard: g() }
             .call(&c, json!({"path": "d/hello.txt", "offset": 2, "limit": 1}))
             .await;
         assert_eq!(r.content, "there");
 
-        let dup = EditFile
+        let dup = EditFile { guard: g() }
             .call(
                 &c,
                 json!({"path": "d/hello.txt", "old_string": "hi", "new_string": "yo"}),
@@ -441,14 +475,14 @@ mod tests {
             "{}",
             dup.content
         );
-        let ok = EditFile
+        let ok = EditFile { guard: g() }
             .call(
                 &c,
                 json!({"path": "d/hello.txt", "old_string": "there", "new_string": "you"}),
             )
             .await;
         assert!(!ok.is_error);
-        let all = EditFile
+        let all = EditFile { guard: g() }
             .call(&c, json!({"path": "d/hello.txt", "old_string": "hi", "new_string": "yo", "replace_all": true}))
             .await;
         assert!(!all.is_error);
@@ -465,19 +499,24 @@ mod tests {
         std::fs::write(tmp.path().join("a.rs"), "fn main() {}\n").unwrap();
         std::fs::write(tmp.path().join("sub/b.txt"), "main idea\n").unwrap();
         let c = ctx(tmp.path());
-        assert_eq!(ListDir.call(&c, json!({})).await.content, "a.rs\nsub/");
-        let all = SearchFiles
+        assert_eq!(
+            ListDir { guard: g() }.call(&c, json!({})).await.content,
+            "a.rs\nsub/"
+        );
+        let all = SearchFiles { guard: g() }
             .call(&c, json!({"pattern": "main"}))
             .await
             .content;
         assert!(all.contains("a.rs:1: fn main() {}"), "{all}");
         assert!(all.contains("b.txt:1: main idea"), "{all}");
-        let rs = SearchFiles
+        let rs = SearchFiles { guard: g() }
             .call(&c, json!({"pattern": "main", "glob": "*.rs"}))
             .await
             .content;
         assert!(!rs.contains("b.txt"), "{rs}");
-        let bad = SearchFiles.call(&c, json!({"pattern": "("})).await;
+        let bad = SearchFiles { guard: g() }
+            .call(&c, json!({"pattern": "("}))
+            .await;
         assert!(bad.is_error);
     }
 
@@ -485,8 +524,13 @@ mod tests {
     async fn rejects_escapes_and_bad_args() {
         let tmp = tempfile::tempdir().unwrap();
         let c = ctx(tmp.path());
-        assert!(ReadFile.call(&c, json!({"path": "../x"})).await.is_error);
-        let bad = WriteFile.call(&c, json!({"path": 3})).await;
+        assert!(
+            ReadFile { guard: g() }
+                .call(&c, json!({"path": "../x"}))
+                .await
+                .is_error
+        );
+        let bad = WriteFile { guard: g() }.call(&c, json!({"path": 3})).await;
         assert!(
             bad.is_error && bad.content.contains("invalid arguments"),
             "{}",
@@ -495,25 +539,30 @@ mod tests {
     }
 
     #[test]
-    fn writes_outside_workspace_need_approval() {
+    fn reads_and_writes_outside_workspace_need_approval() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("ws");
         std::fs::create_dir(&ws).unwrap();
         let c = ctx(&ws);
         assert!(
-            !WriteFile
+            !WriteFile { guard: g() }
                 .policy(&c, &json!({"path": "in.txt"}))
                 .requires_approval
         );
         let outside = tmp.path().join("out.txt");
         assert!(
-            WriteFile
+            WriteFile { guard: g() }
                 .policy(&c, &json!({"path": outside}))
                 .requires_approval
         );
         assert!(
-            !ReadFile
+            ReadFile { guard: g() }
                 .policy(&c, &json!({"path": outside}))
+                .requires_approval
+        );
+        assert!(
+            !ReadFile { guard: g() }
+                .policy(&c, &json!({"path": "in.txt"}))
                 .requires_approval
         );
     }

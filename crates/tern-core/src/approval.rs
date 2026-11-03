@@ -32,7 +32,9 @@ pub struct ApprovalRequest {
     /// One-line description of what the call does.
     pub summary: String,
     /// What "always allow" would add to the allowlist.
-    pub pattern: String,
+    /// What "always allow" would add to the allowlist, or `None` if this
+    /// call can't be always-allowed (front ends then hide the option).
+    pub pattern: Option<String>,
 }
 
 #[async_trait]
@@ -73,12 +75,26 @@ pub fn subject(call: &ToolCall) -> String {
     }
 }
 
-/// Pattern "always allow" records: for `shell`, the first word plus ` *`.
-pub fn pattern_for(call: &ToolCall) -> String {
+/// Commands that run other commands: `bash *` or `env *` would approve
+/// anything, so they're never offered for "always".
+const WRAPPERS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "env", "sudo", "doas", "su", "xargs", "nohup",
+    "exec", "eval", "command", "builtin", "time", "timeout", "nice", "watch", "find", "python",
+    "python3", "node", "perl", "ruby", "php", "deno", "bun", "npx", "uvx", "ssh", "docker",
+    "kubectl",
+];
+
+/// Pattern "always allow" would record: for `shell`, the first word plus
+/// ` *`; `*` for other tools. `None` for commands that wrap others.
+pub fn pattern_for(call: &ToolCall) -> Option<String> {
     let subject = subject(call);
     match subject.split_whitespace().next() {
-        Some(first) if call.name == "shell" => format!("{first} *"),
-        _ => "*".to_owned(),
+        Some(first) if call.name == "shell" => {
+            let base = first.rsplit('/').next().unwrap_or(first);
+            (!WRAPPERS.contains(&base)).then(|| format!("{first} *"))
+        }
+        Some(_) | None if call.name == "shell" => None,
+        _ => Some("*".to_owned()),
     }
 }
 
@@ -141,7 +157,20 @@ mod tests {
 
     #[test]
     fn shell_patterns() {
-        assert_eq!(pattern_for(&shell("  git status --short")), "git *");
+        assert_eq!(
+            pattern_for(&shell("  git status --short")).as_deref(),
+            Some("git *")
+        );
+        for wrapper in [
+            "bash -c 'rm -rf ~'",
+            "env X=1 rm -rf /",
+            "sudo ls",
+            "/usr/bin/env ls",
+            "find . -exec rm {} +",
+            "",
+        ] {
+            assert_eq!(pattern_for(&shell(wrapper)), None, "{wrapper:?}");
+        }
         let pats = vec!["git *".to_owned()];
         assert!(allowed_by(&pats, &shell("git log")));
         assert!(allowed_by(&pats, &shell("git")));
@@ -157,7 +186,7 @@ mod tests {
             name: "write_file".into(),
             input: json!({}),
         };
-        assert_eq!(pattern_for(&call), "*");
+        assert_eq!(pattern_for(&call).as_deref(), Some("*"));
         assert!(allowed_by(&["*".to_owned()], &call));
         assert!(!allowed_by(&[], &call));
     }

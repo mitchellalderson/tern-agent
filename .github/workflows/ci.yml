@@ -27,6 +27,9 @@ jobs:
       - run: cargo test --workspace
       - name: TUI smoke test (real binary in a pty)
         run: cargo build -p tern && python3 scripts/tui-smoke.py target/debug/tern
+      - name: Docker sandbox against a real daemon
+        if: runner.os == 'Linux'
+        run: cargo test -p tern-sandbox -- --ignored real_docker
 
   build-linux:
     name: build ${{ matrix.target }}
@@ -46,13 +49,13 @@ jobs:
           key: ${{ matrix.target }}
       - uses: mlugg/setup-zig@v2
       - run: cargo install cargo-zigbuild --locked
-      - run: cargo zigbuild --release --locked -p tern --target ${{ matrix.target }}
+      - run: cargo zigbuild --profile dist --locked -p tern --target ${{ matrix.target }}
       - name: Check binary is static
-        run: file target/${{ matrix.target }}/release/tern | tee /dev/stderr | grep -q 'statically linked'
+        run: file target/${{ matrix.target }}/dist/tern | tee /dev/stderr | grep -q 'statically linked'
       - uses: actions/upload-artifact@v4
         with:
           name: tern-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/tern
+          path: target/${{ matrix.target }}/dist/tern
 
   build-macos:
     name: build ${{ matrix.target }}
@@ -70,8 +73,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - run: cargo build --release --locked -p tern --target ${{ matrix.target }}
+      - run: cargo build --profile dist --locked -p tern --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: tern-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/tern
+          path: target/${{ matrix.target }}/dist/tern

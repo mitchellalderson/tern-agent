@@ -48,20 +48,15 @@ pub enum LoadError {
 pub struct Host {
     pub store: Store,
     pub secrets: Arc<Secrets>,
-    pub http: reqwest::Client,
     pub timeout: Duration,
     pub memory: usize,
 }
 
 impl Host {
     pub fn new(store: Store, secrets: Secrets) -> Result<Self, reqwest::Error> {
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("tern/", env!("CARGO_PKG_VERSION")))
-            .build()?;
         Ok(Self {
             store,
             secrets: Arc::new(secrets),
-            http,
             timeout: DEFAULT_TIMEOUT,
             memory: DEFAULT_MEMORY,
         })
@@ -75,6 +70,8 @@ pub struct Vm {
     runs: Vec<(String, Function)>,
     deadline: Arc<Mutex<Option<Instant>>>,
     host: Host,
+    /// This connector's HTTP client: redirects are checked against its allowlist.
+    http: reqwest::Client,
     /// One call at a time per VM (the deadline is per VM).
     busy: tokio::sync::Mutex<()>,
 }
@@ -99,7 +96,7 @@ impl Vm {
             }
             Ok(VmState::Continue)
         });
-        install_globals(&lua, chunk).map_err(lua_err)?;
+        install_globals(&lua, chunk, host.secrets.clone()).map_err(lua_err)?;
         lua.sandbox(true).map_err(lua_err)?;
 
         set_deadline(&deadline, Some(host.timeout));
@@ -112,12 +109,14 @@ impl Vm {
             return Err(LoadError::Invalid("the file must `return` a table".into()));
         };
         let (spec, runs) = crate::spec::parse(&lua, &table)?;
+        let http = connector_client(&spec.capabilities)?;
         Ok(Self {
             spec,
             lua,
             runs,
             deadline,
             host: host.clone(),
+            http,
             busy: tokio::sync::Mutex::new(()),
         })
     }
@@ -129,7 +128,7 @@ impl Vm {
             return Err(format!("connector {} has no tool {name:?}", self.spec.name));
         };
         let _guard = self.busy.lock().await;
-        let ctx = make_ctx(&self.lua, &self.host, &self.spec)
+        let ctx = make_ctx(&self.lua, &self.host, &self.http, &self.spec)
             .map_err(|e| format!("building ctx: {e}"))?;
         let lua_args = self
             .lua
@@ -202,7 +201,7 @@ pub fn clean_error(e: &mlua::Error) -> String {
     }
 }
 
-fn install_globals(lua: &Lua, chunk: &str) -> mlua::Result<()> {
+fn install_globals(lua: &Lua, chunk: &str, secrets: Arc<Secrets>) -> mlua::Result<()> {
     let g = lua.globals();
     for name in REMOVED_GLOBALS {
         g.raw_set(*name, Value::Nil)?;
@@ -216,7 +215,7 @@ fn install_globals(lua: &Lua, chunk: &str) -> mlua::Result<()> {
                 .iter()
                 .map(|v| v.to_string().unwrap_or_default())
                 .collect();
-            tracing::info!(connector = %chunk_name, "{}", parts.join("\t"));
+            tracing::info!(connector = %chunk_name, "{}", secrets.redact(&parts.join("\t")));
             Ok(())
         })?,
     )?;
@@ -240,14 +239,19 @@ fn install_globals(lua: &Lua, chunk: &str) -> mlua::Result<()> {
 }
 
 /// Build the `ctx` table for one call, bound to this connector's capabilities.
-fn make_ctx(lua: &Lua, host: &Host, spec: &ConnectorSpec) -> mlua::Result<Table> {
+fn make_ctx(
+    lua: &Lua,
+    host: &Host,
+    client: &reqwest::Client,
+    spec: &ConnectorSpec,
+) -> mlua::Result<Table> {
     let ctx = lua.create_table()?;
     let caps = Arc::new(spec.capabilities.clone());
     let name = spec.name.clone();
 
     let http = lua.create_table()?;
     {
-        let (caps, client) = (caps.clone(), host.http.clone());
+        let (caps, client) = (caps.clone(), client.clone());
         http.raw_set(
             "request",
             lua.create_async_function(move |lua, opts: Table| {
@@ -257,7 +261,7 @@ fn make_ctx(lua: &Lua, host: &Host, spec: &ConnectorSpec) -> mlua::Result<Table>
         )?;
     }
     for method in ["get", "post", "put", "patch", "delete"] {
-        let (caps, client) = (caps.clone(), host.http.clone());
+        let (caps, client) = (caps.clone(), client.clone());
         http.raw_set(
             method,
             lua.create_async_function(move |lua, (url, opts): (String, Option<Table>)| {
@@ -328,10 +332,11 @@ fn make_ctx(lua: &Lua, host: &Host, spec: &ConnectorSpec) -> mlua::Result<Table>
     }
     ctx.raw_set("kv", kv)?;
 
-    let log_name = name.clone();
+    let (log_name, log_secrets) = (name.clone(), host.secrets.clone());
     ctx.raw_set(
         "log",
         lua.create_function(move |_, (level, msg): (String, String)| {
+            let msg = log_secrets.redact(&msg);
             match level.as_str() {
                 "error" => tracing::error!(connector = %log_name, "{msg}"),
                 "warn" => tracing::warn!(connector = %log_name, "{msg}"),
@@ -346,6 +351,43 @@ fn make_ctx(lua: &Lua, host: &Host, spec: &ConnectorSpec) -> mlua::Result<Table>
         lua.create_function(|_, ()| Ok(tern_store::now_ms()))?,
     )?;
     Ok(ctx)
+}
+
+/// An error and its causes on one line (reqwest hides the reason a redirect
+/// was refused in the source chain).
+fn error_chain(e: &reqwest::Error) -> String {
+    let mut msg = e.to_string();
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
+    while let Some(c) = cur {
+        msg = format!("{msg}: {c}");
+        cur = c.source();
+    }
+    msg
+}
+
+/// An HTTP client that follows a redirect only if its target is also on the
+/// connector's allowlist (reqwest's default would follow anywhere, carrying
+/// custom headers like `X-Api-Key` along).
+fn connector_client(caps: &Capabilities) -> Result<reqwest::Client, LoadError> {
+    let allowed = caps.http.clone();
+    let policy = reqwest::redirect::Policy::custom(move |attempt| {
+        let host = attempt.url().host_str().unwrap_or_default().to_owned();
+        if attempt.previous().len() >= 5 {
+            attempt.error("too many redirects")
+        } else if !matches!(attempt.url().scheme(), "http" | "https")
+            || !host_allowed(&allowed, &host)
+        {
+            attempt.error(format!(
+                "redirect to {host:?}, which is not in this connector's capabilities.http"
+            ))
+        } else {
+            attempt.follow()
+        }
+    });
+    tern_core::net::http_client()
+        .redirect(policy)
+        .build()
+        .map_err(|e| LoadError::Lua(format!("http client: {e}")))
 }
 
 /// `true` if `host` is allowed by an entry like `api.example.com` or `*.example.com`.
@@ -411,10 +453,12 @@ async fn http_request(
         req = req.timeout(Duration::from_secs_f64(secs.clamp(0.1, 300.0)));
     }
 
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| mlua::Error::runtime(format!("http: request to {host} failed: {e}")))?;
+    let resp = req.send().await.map_err(|e| {
+        mlua::Error::runtime(format!(
+            "http: request to {host} failed: {}",
+            error_chain(&e)
+        ))
+    })?;
     let status = resp.status().as_u16();
     let headers = lua.create_table()?;
     for (k, v) in resp.headers() {

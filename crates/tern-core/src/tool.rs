@@ -61,6 +61,11 @@ pub trait Tool: Send + Sync {
     fn summary(&self, _args: &Value) -> Option<String> {
         None
     }
+    /// Whether "always allow" may be offered. Tools whose every call deserves
+    /// a fresh look (activating agent-written code) return false.
+    fn allow_always(&self) -> bool {
+        true
+    }
 }
 
 /// Tools that come from somewhere that has to be started first (an MCP
@@ -138,6 +143,10 @@ impl ToolRegistry {
     /// Specs sorted by name, so requests (and their journal hashes) are stable.
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.all().values().map(|t| t.spec()).collect()
+    }
+
+    pub fn allow_always(&self, call: &ToolCall) -> bool {
+        self.get(&call.name).is_none_or(|t| t.allow_always())
     }
 
     pub fn summarize(&self, call: &ToolCall) -> String {

@@ -95,7 +95,7 @@ pub type Buttons = Vec<(String, String)>;
 
 impl Api {
     pub fn new(api_url: &str, token: &str) -> Result<Self, reqwest::Error> {
-        let client = reqwest::Client::builder()
+        let client = tern_core::net::http_client()
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(90))
             .build()?;

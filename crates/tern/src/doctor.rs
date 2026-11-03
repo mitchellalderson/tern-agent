@@ -312,9 +312,8 @@ fn check_provider(
 
 /// List models as a cheap authenticated reachability probe.
 async fn probe(kind: ProviderKind, base: &str, key: Option<&str>) -> (Status, String) {
-    let client = match reqwest::Client::builder()
+    let client = match tern_core::net::http_client()
         .timeout(Duration::from_secs(5))
-        .user_agent(concat!("tern/", env!("CARGO_PKG_VERSION")))
         .build()
     {
         Ok(c) => c,

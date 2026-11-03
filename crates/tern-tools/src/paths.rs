@@ -15,6 +15,49 @@ pub struct Resolved {
     pub inside_workspace: bool,
 }
 
+/// Paths the file tools must never touch, whatever the approval.
+#[derive(Debug, Clone, Default)]
+pub struct Guard {
+    /// No writes anywhere under these (tern's own data directory).
+    pub no_write: Vec<PathBuf>,
+    /// No reads of these files (secrets, the database).
+    pub no_read: Vec<PathBuf>,
+}
+
+impl Guard {
+    /// For a data directory: protect all of it from writes, and its
+    /// secrets and database from reads.
+    pub fn for_data_dir(dir: &Path) -> Self {
+        let dir = canonicalize_lenient(dir);
+        let no_read = ["secrets.toml", "tern.db", "tern.db-wal", "tern.db-shm"]
+            .iter()
+            .map(|f| dir.join(f))
+            .collect();
+        Self {
+            no_write: vec![dir],
+            no_read,
+        }
+    }
+
+    pub fn check_read(&self, r: &Resolved) -> Result<(), String> {
+        if self.no_read.contains(&r.path) {
+            return Err(format!("{} is off limits to file tools", r.path.display()));
+        }
+        Ok(())
+    }
+
+    pub fn check_write(&self, r: &Resolved) -> Result<(), String> {
+        if let Some(p) = self.no_write.iter().find(|p| r.path.starts_with(p)) {
+            return Err(format!(
+                "{} is inside tern's data directory ({}), which file tools can't modify",
+                r.path.display(),
+                p.display()
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub fn resolve(workspace: &Path, raw: &str) -> Result<Resolved, String> {
     if raw.is_empty() {
         return Err("path is empty".into());
@@ -26,6 +69,15 @@ pub fn resolve(workspace: &Path, raw: &str) -> Result<Resolved, String> {
     let normalized = normalize(&joined);
     if relative && !normalized.starts_with(&ws) {
         return Err(format!("{raw:?} escapes the workspace"));
+    }
+    // A dangling symlink would look like a new file inside the workspace,
+    // but writing to it creates its target, wherever that is.
+    if std::fs::symlink_metadata(&normalized).is_ok_and(|m| m.file_type().is_symlink())
+        && std::fs::metadata(&normalized).is_err()
+    {
+        return Err(format!(
+            "{raw:?} is a symlink to a path that doesn't exist; refusing to follow it"
+        ));
     }
     let path = canonicalize_lenient(&normalized);
     let inside_workspace = path.starts_with(&ws);
@@ -104,6 +156,39 @@ mod tests {
         assert!(inside.inside_workspace);
         let outside = resolve(&ws, tmp.path().join("other").to_str().unwrap()).unwrap();
         assert!(!outside.inside_workspace);
+    }
+
+    #[test]
+    fn guard_protects_the_data_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join(".tern");
+        std::fs::create_dir(&data).unwrap();
+        let g = Guard::for_data_dir(&data);
+        let ws = tmp.path();
+        let secrets = resolve(ws, data.join("secrets.toml").to_str().unwrap()).unwrap();
+        assert!(g.check_read(&secrets).is_err());
+        let skill = resolve(ws, data.join("skills/x/SKILL.md").to_str().unwrap()).unwrap();
+        assert!(g.check_read(&skill).is_ok(), "skills stay readable");
+        assert!(g.check_write(&skill).is_err());
+        let connector = resolve(ws, data.join("connectors/x.luau").to_str().unwrap()).unwrap();
+        assert!(
+            g.check_write(&connector)
+                .unwrap_err()
+                .contains("data directory")
+        );
+        assert!(g.check_write(&resolve(ws, "ok.txt").unwrap()).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlinks_are_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir(&ws).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("outside/new.txt"), ws.join("x")).unwrap();
+        let err = resolve(&ws, "x").unwrap_err();
+        assert!(err.contains("doesn't exist"), "{err}");
+        assert!(resolve(&ws, ws.join("x").to_str().unwrap()).is_err());
     }
 
     #[cfg(unix)]

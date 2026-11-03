@@ -44,8 +44,8 @@ pub struct TelegramGateway {
     poll_timeout_secs: u64,
     /// Live replies by run id.
     streams: Mutex<HashMap<String, Stream>>,
-    /// Pending approvals by callback id.
-    approvals: Mutex<HashMap<String, oneshot::Sender<Decision>>>,
+    /// Pending approvals by callback id, with the chat they were sent to.
+    approvals: Mutex<HashMap<String, (i64, oneshot::Sender<Decision>)>>,
 }
 
 impl TelegramGateway {
@@ -164,10 +164,16 @@ impl TelegramGateway {
             Decision::AlwaysAllow => "Always allowed",
             Decision::Deny => "Denied",
         };
-        let answered = match self.approvals.lock().await.remove(id) {
-            Some(tx) => tx.send(decision).is_ok(),
-            None => false,
+        // Only a tap in the chat the request was sent to counts.
+        let chat = cb.message.as_ref().map(|m| m.chat.id);
+        let pending = {
+            let mut approvals = self.approvals.lock().await;
+            match approvals.get(id) {
+                Some((target, _)) if Some(*target) == chat => approvals.remove(id),
+                _ => None,
+            }
         };
+        let answered = pending.is_some_and(|(_, tx)| tx.send(decision).is_ok());
         let _ = self
             .api
             .answer_callback(&cb.id, if answered { label } else { "Expired" })
@@ -398,15 +404,12 @@ impl Gateway for TelegramGateway {
             .rev()
             .collect();
         let (tx, rx) = oneshot::channel();
-        self.approvals.lock().await.insert(id.clone(), tx);
-        let buttons: Buttons = vec![
-            ("Allow once".into(), format!("ap:{id}:once")),
-            (
-                format!("Always ({})", req.pattern),
-                format!("ap:{id}:always"),
-            ),
-            ("Deny".into(), format!("ap:{id}:deny")),
-        ];
+        self.approvals.lock().await.insert(id.clone(), (chat, tx));
+        let mut buttons: Buttons = vec![("Allow once".into(), format!("ap:{id}:once"))];
+        if let Some(pattern) = &req.pattern {
+            buttons.push((format!("Always ({pattern})"), format!("ap:{id}:always")));
+        }
+        buttons.push(("Deny".into(), format!("ap:{id}:deny")));
         if let Err(e) = self
             .api
             .send_message(chat, &format!("Allow {}?", req.summary), Some(&buttons))

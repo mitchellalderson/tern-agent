@@ -2,14 +2,19 @@
 //! validates, `connector_test` runs a draft's tool, `connector_activate`
 //! promotes a draft after the user approves its capabilities.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult};
 use tern_core::types::ToolSpec;
 
-use crate::{EXTENSION, Host, Vm, load_file, tool_name, valid_ident};
+use crate::{
+    EXTENSION, Fingerprint, Host, Loaded, Vm, load_fingerprinted, record_approval, tool_name,
+    valid_ident,
+};
 
 #[derive(Clone)]
 pub struct Dirs {
@@ -45,14 +50,54 @@ fn name_arg(args: &Value) -> Result<&str, ToolResult> {
     Ok(name)
 }
 
-fn load_draft(host: &Host, dirs: &Dirs, name: &str) -> Result<Vm, String> {
+fn load_draft_full(host: &Host, dirs: &Dirs, name: &str) -> Result<Loaded, String> {
     let path = dirs.draft(name);
     if !path.exists() {
         return Err(format!(
             "no draft named {name:?}; write one with connector_write"
         ));
     }
-    load_file(host, &path).map_err(|e| e.to_string())
+    load_fingerprinted(host, &path).map_err(|e| e.to_string())
+}
+
+fn load_draft(host: &Host, dirs: &Dirs, name: &str) -> Result<Vm, String> {
+    load_draft_full(host, dirs, name).map(|l| l.vm)
+}
+
+/// What a tool's policy and summary saw, by draft name. `call` runs only if
+/// the draft it loads has the same source and capabilities, so the user
+/// approves exactly what runs (a draft can't change between the check and
+/// the call, or compute different capabilities on each load).
+#[derive(Default)]
+pub struct Inspected(Mutex<HashMap<String, Fingerprint>>);
+
+impl Inspected {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn inspect(&self, host: &Host, dirs: &Dirs, name: &str) -> Result<Loaded, String> {
+        let loaded = load_draft_full(host, dirs, name)?;
+        if let Ok(mut m) = self.0.lock() {
+            m.insert(name.to_owned(), loaded.fingerprint.clone());
+        }
+        Ok(loaded)
+    }
+
+    /// Load for running: refuse unless it matches what was inspected.
+    fn verify(&self, host: &Host, dirs: &Dirs, name: &str) -> Result<Loaded, String> {
+        let loaded = load_draft_full(host, dirs, name)?;
+        let seen = self.0.lock().ok().and_then(|m| m.get(name).cloned());
+        match seen {
+            Some(fp) if fp == loaded.fingerprint => Ok(loaded),
+            Some(_) => Err(format!(
+                "draft {name} changed since it was checked (its source or declared capabilities differ); nothing was run"
+            )),
+            None => Err(format!(
+                "draft {name} wasn't checked before running; nothing was run"
+            )),
+        }
+    }
 }
 
 fn describe(vm: &Vm) -> String {
@@ -127,6 +172,7 @@ impl Tool for ConnectorWrite {
 pub struct ConnectorTest {
     pub host: Host,
     pub dirs: Dirs,
+    pub inspected: Inspected,
 }
 
 #[async_trait]
@@ -154,9 +200,10 @@ impl Tool for ConnectorTest {
     fn policy(&self, _: &ToolCtx, args: &Value) -> ToolPolicy {
         let risky = name_arg(args)
             .ok()
-            .and_then(|n| load_draft(&self.host, &self.dirs, n).ok())
-            .is_some_and(|vm| {
-                !vm.spec.capabilities.http.is_empty() || !vm.spec.capabilities.secrets.is_empty()
+            .and_then(|n| self.inspected.inspect(&self.host, &self.dirs, n).ok())
+            .is_some_and(|l| {
+                !l.fingerprint.capabilities.http.is_empty()
+                    || !l.fingerprint.capabilities.secrets.is_empty()
             });
         ToolPolicy {
             idempotent: false,
@@ -164,11 +211,17 @@ impl Tool for ConnectorTest {
         }
     }
 
+    fn allow_always(&self) -> bool {
+        false
+    }
+
     fn summary(&self, args: &Value) -> Option<String> {
         let name = name_arg(args).ok()?;
         let tool = args.get("tool").and_then(Value::as_str).unwrap_or("?");
-        let caps = load_draft(&self.host, &self.dirs, name)
-            .map(|vm| vm.spec.capability_summary())
+        let caps = self
+            .inspected
+            .inspect(&self.host, &self.dirs, name)
+            .map(|l| l.vm.spec.capability_summary())
             .unwrap_or_else(|e| format!("invalid draft: {e}"));
         Some(format!("connector_test draft {name}.{tool} ({caps})"))
     }
@@ -178,8 +231,8 @@ impl Tool for ConnectorTest {
             (Ok(n), Ok(t)) => (n, t),
             (Err(e), _) | (_, Err(e)) => return e,
         };
-        let vm = match load_draft(&self.host, &self.dirs, name) {
-            Ok(vm) => vm,
+        let vm = match self.inspected.verify(&self.host, &self.dirs, name) {
+            Ok(l) => l.vm,
             Err(e) => return ToolResult::error(e),
         };
         let tool_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
@@ -195,6 +248,7 @@ impl Tool for ConnectorTest {
 pub struct ConnectorActivate {
     pub host: Host,
     pub dirs: Dirs,
+    pub inspected: Inspected,
 }
 
 #[async_trait]
@@ -211,11 +265,19 @@ impl Tool for ConnectorActivate {
         }
     }
 
-    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+    fn policy(&self, _: &ToolCtx, args: &Value) -> ToolPolicy {
+        if let Ok(name) = name_arg(args) {
+            let _ = self.inspected.inspect(&self.host, &self.dirs, name);
+        }
         ToolPolicy {
             idempotent: false,
             requires_approval: true,
         }
+    }
+
+    /// Each activation is a fresh decision: never "always allow".
+    fn allow_always(&self) -> bool {
+        false
     }
 
     /// The approval prompt shows exactly what the connector may access.
@@ -226,10 +288,10 @@ impl Tool for ConnectorActivate {
         } else {
             ""
         };
-        Some(match load_draft(&self.host, &self.dirs, name) {
-            Ok(vm) => format!(
+        Some(match self.inspected.inspect(&self.host, &self.dirs, name) {
+            Ok(l) => format!(
                 "activate Luau connector {name}{replacing} — {}",
-                vm.spec.capability_summary()
+                l.vm.spec.capability_summary()
             ),
             Err(e) => format!("activate Luau connector {name} — invalid draft: {e}"),
         })
@@ -240,16 +302,27 @@ impl Tool for ConnectorActivate {
             Ok(n) => n,
             Err(e) => return e,
         };
-        let vm = match load_draft(&self.host, &self.dirs, name) {
-            Ok(vm) => vm,
+        let Loaded {
+            vm,
+            fingerprint,
+            source,
+        } = match self.inspected.verify(&self.host, &self.dirs, name) {
+            Ok(l) => l,
             Err(e) => return ToolResult::error(e),
         };
         if let Err(e) = std::fs::create_dir_all(&self.dirs.active) {
             return ToolResult::error(format!("creating connectors directory: {e}"));
         }
-        if let Err(e) = std::fs::rename(self.dirs.draft(name), self.dirs.active(name)) {
+        // Write the exact bytes that were approved, then record them, so the
+        // loader refuses the connector if it changes later.
+        if let Err(e) = std::fs::write(self.dirs.active(name), &source) {
             return ToolResult::error(format!("activating: {e}"));
         }
+        if let Err(e) = record_approval(&self.host, name, &fingerprint) {
+            let _ = std::fs::remove_file(self.dirs.active(name));
+            return ToolResult::error(format!("recording approval: {e}"));
+        }
+        let _ = std::fs::remove_file(self.dirs.draft(name));
         let tools: Vec<String> = vm
             .spec
             .tools

@@ -49,6 +49,7 @@ impl Runtime {
         redactions.extend(names.iter().filter_map(|n| secrets.get(n)));
         let journal = Journal::new(store.clone())
             .with_redactions(redactions)
+            .with_secrets(secrets.clone())
             .with_crash_after_from_env();
 
         let agent = Agent::new(
@@ -188,16 +189,22 @@ fn build_tools(
     store: &Store,
     secrets: &Secrets,
 ) -> anyhow::Result<(ToolRegistry, Arc<tern_lua::Connectors>)> {
-    if config.sandbox.backend == SandboxBackendKind::Docker {
-        bail!("sandbox.backend = \"docker\" is not implemented yet (milestone M6); use \"host\"");
-    }
+    let sandbox: Arc<dyn tern_sandbox::SandboxBackend> = match config.sandbox.backend {
+        SandboxBackendKind::Host => Arc::new(tern_sandbox::HostBackend),
+        SandboxBackendKind::Docker => Arc::new(tern_sandbox::DockerBackend::new(
+            "docker",
+            &config.sandbox.docker_image,
+            &config.workspace_dir(),
+        )),
+    };
     let mut registry = ToolRegistry::new();
     tern_tools::register_builtins(
         &mut registry,
         tern_tools::BuiltinOptions {
             store: store.clone(),
+            guard: tern_tools::paths::Guard::for_data_dir(home.root()),
             skills_dir: home.skills_dir(),
-            sandbox: Arc::new(tern_sandbox::HostBackend),
+            sandbox,
             shell_timeout: Duration::from_secs(config.sandbox.shell_timeout_secs),
         },
     )
@@ -217,10 +224,12 @@ fn build_tools(
     registry.register(Arc::new(tern_lua::tools::ConnectorTest {
         host: lua.clone(),
         dirs: dirs.clone(),
+        inspected: Default::default(),
     }));
     registry.register(Arc::new(tern_lua::tools::ConnectorActivate {
         host: lua,
         dirs,
+        inspected: Default::default(),
     }));
 
     registry.add_source(Arc::new(tern_mcp::McpServers::from_config(

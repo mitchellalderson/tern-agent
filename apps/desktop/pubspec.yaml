@@ -1,0 +1,22 @@
+name: tern_desktop
+description: Desktop app for the tern agent.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_markdown_plus: ^1.0.12
+  tern_client:
+    path: packages/tern_client
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

@@ -3,9 +3,10 @@
 //! Secret values never appear in `Debug` output. `secrets.toml` must not be
 //! readable by group or others; loading refuses looser permissions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
@@ -29,6 +30,10 @@ pub enum SecretSource {
 #[derive(Default, Clone)]
 pub struct Secrets {
     file: BTreeMap<String, String>,
+    /// Every value handed out by [`Secrets::get`], shared by all clones, so
+    /// redaction covers secrets first used after startup (env-only ones a
+    /// connector or MCP server reads later).
+    seen: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl fmt::Debug for Secrets {
@@ -76,11 +81,37 @@ impl Secrets {
                 }
             }
         }
-        Ok(Self { file })
+        Ok(Self {
+            file,
+            seen: Arc::default(),
+        })
     }
 
     pub fn get(&self, name: &str) -> Option<String> {
-        self.lookup(name).map(|(v, _)| v)
+        let value = self.lookup(name).map(|(v, _)| v)?;
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.insert(value.clone());
+        }
+        Some(value)
+    }
+
+    /// Values to scrub from anything persisted or logged: everything in
+    /// `secrets.toml` plus every secret read so far. Longest first, so a
+    /// secret containing another is replaced whole. Very short values are
+    /// skipped to avoid redacting common substrings.
+    pub fn redaction_values(&self) -> Vec<String> {
+        let mut all: BTreeSet<String> = self.file.values().cloned().collect();
+        if let Ok(seen) = self.seen.lock() {
+            all.extend(seen.iter().cloned());
+        }
+        let mut v: Vec<String> = all.into_iter().filter(|s| s.len() >= 4).collect();
+        v.sort_by_key(|s| std::cmp::Reverse(s.len()));
+        v
+    }
+
+    /// `text` with every known secret value replaced by `[REDACTED]`.
+    pub fn redact(&self, text: &str) -> String {
+        redact_with(&self.redaction_values(), text)
     }
 
     /// Every value in `secrets.toml` (for redaction).
@@ -98,6 +129,19 @@ impl Secrets {
         }
         self.file.get(name).map(|v| (v.clone(), SecretSource::File))
     }
+}
+
+pub const REDACTED: &str = "[REDACTED]";
+
+/// Replace each of `values` (longest first) in `text`.
+pub fn redact_with(values: &[String], text: &str) -> String {
+    let mut out = text.to_owned();
+    for v in values {
+        if out.contains(v.as_str()) {
+            out = out.replace(v.as_str(), REDACTED);
+        }
+    }
+    out
 }
 
 #[cfg(unix)]
@@ -132,6 +176,24 @@ mod tests {
         }
         let _ = mode;
         p
+    }
+
+    #[test]
+    fn values_read_later_are_redacted_by_every_clone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = write(tmp.path(), "FILE_ONE = \"file-secret-1\"\n", 0o600);
+        let s = Secrets::load(&p).unwrap();
+        let clone = s.clone();
+        assert_eq!(
+            s.redact("x file-secret-1 y"),
+            "x [REDACTED] y",
+            "file values always"
+        );
+        // An env-only secret becomes known to every clone once read.
+        let path_value = std::env::var("PATH").unwrap();
+        assert!(!clone.redact(&path_value).contains("[REDACTED]"));
+        assert_eq!(s.get("PATH").as_deref(), Some(path_value.as_str()));
+        assert_eq!(clone.redact(&format!("p={path_value}")), "p=[REDACTED]");
     }
 
     #[test]

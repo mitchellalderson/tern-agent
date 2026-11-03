@@ -482,6 +482,25 @@ async fn socket_api_runs_streams_and_approves() {
             break ev["approval_requested"]["id"].as_str().unwrap().to_owned();
         }
     };
+    // A client attaching now can find the run and the waiting approval.
+    let pending: Value = http
+        .get("http://tern/v1/approvals")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(pending[0]["id"], approval_id.as_str());
+    let active: Value = http
+        .get("http://tern/v1/runs/active")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(active[0]["run_id"], run_id.as_str());
     let ok = http
         .post(format!("http://tern/v1/approvals/{approval_id}"))
         .json(&json!({ "decision": "once" }))

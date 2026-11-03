@@ -8,6 +8,7 @@ pub mod cron;
 pub mod events;
 pub mod home;
 pub mod journal;
+pub mod net;
 pub mod prompt;
 pub mod secrets;
 pub mod skills;

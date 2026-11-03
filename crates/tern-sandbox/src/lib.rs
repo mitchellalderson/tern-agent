@@ -1,4 +1,9 @@
-//! Where `shell` commands run: the `SandboxBackend` trait and the host backend.
+//! Where `shell` commands run: the `SandboxBackend` trait, the host
+//! backend, and the docker backend.
+
+mod docker;
+
+pub use docker::DockerBackend;
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -87,57 +92,74 @@ impl SandboxBackend for HostBackend {
             c.arg("-c").arg(cmd);
             c
         };
-        command
-            .current_dir(&opts.cwd)
-            .env_clear()
-            .envs(
-                PASSTHROUGH_ENV
-                    .iter()
-                    .filter_map(|k| std::env::var_os(k).map(|v| (k, v))),
-            )
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = command.spawn().map_err(SandboxError::Spawn)?;
-
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        let max = opts.max_output;
-        let out_task = tokio::spawn(read_capped(stdout, max));
-        let err_task = tokio::spawn(read_capped(stderr, max));
-
-        let mut result = ExecOutput::default();
-        tokio::select! {
-            status = child.wait() => {
-                result.exit_code = status.map_err(SandboxError::Wait)?.code();
-            }
-            () = tokio::time::sleep(opts.timeout) => {
-                result.timed_out = true;
-                let _ = child.kill().await;
-            }
-            () = cancel.cancelled() => {
-                result.cancelled = true;
-                let _ = child.kill().await;
-            }
-        }
-        // Background processes may hold the pipes open; don't wait forever.
-        let grace = Duration::from_secs(2);
-        let (out, out_trunc) = tokio::time::timeout(grace, out_task)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default();
-        let (err, err_trunc) = tokio::time::timeout(grace, err_task)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default();
-        result.stdout = out;
-        result.stderr = err;
-        result.truncated = out_trunc || err_trunc;
-        Ok(result)
+        command.current_dir(&opts.cwd).env_clear().envs(
+            PASSTHROUGH_ENV
+                .iter()
+                .filter_map(|k| std::env::var_os(k).map(|v| (k, v))),
+        );
+        run_captured(command, &opts, &cancel, || async {}).await
     }
+}
+
+/// Spawn `command`, capture its output, and enforce the timeout and
+/// cancellation. `on_stop` runs after the child is killed (the docker
+/// backend uses it to stop the process inside the container).
+pub(crate) async fn run_captured<F, Fut>(
+    mut command: tokio::process::Command,
+    opts: &ExecOpts,
+    cancel: &CancellationToken,
+    on_stop: F,
+) -> Result<ExecOutput, SandboxError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn().map_err(SandboxError::Spawn)?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let max = opts.max_output;
+    let out_task = tokio::spawn(read_capped(stdout, max));
+    let err_task = tokio::spawn(read_capped(stderr, max));
+
+    let mut result = ExecOutput::default();
+    tokio::select! {
+        status = child.wait() => {
+            result.exit_code = status.map_err(SandboxError::Wait)?.code();
+        }
+        () = tokio::time::sleep(opts.timeout) => {
+            result.timed_out = true;
+            let _ = child.kill().await;
+        }
+        () = cancel.cancelled() => {
+            result.cancelled = true;
+            let _ = child.kill().await;
+        }
+    }
+    if result.timed_out || result.cancelled {
+        on_stop().await;
+    }
+    // Background processes may hold the pipes open; don't wait forever.
+    let grace = Duration::from_secs(2);
+    let (out, out_trunc) = tokio::time::timeout(grace, out_task)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    let (err, err_trunc) = tokio::time::timeout(grace, err_task)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    result.stdout = out;
+    result.stderr = err;
+    result.truncated = out_trunc || err_trunc;
+    Ok(result)
 }
 
 /// Read everything, keeping at most `max` bytes. Returns (text, truncated).

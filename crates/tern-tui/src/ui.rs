@@ -140,17 +140,16 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         for l in wrap(&format!("Allow {}?", p.request.summary), width) {
             out.push(Line::from(Span::styled(l, warn)));
         }
-        out.push(Line::from(vec![
-            Span::styled("[y]", warn),
-            Span::raw(" yes once   "),
-            Span::styled("[a]", warn),
-            Span::raw(format!(
-                " always ({} {})   ",
-                p.request.call.name, p.request.pattern
-            )),
-            Span::styled("[n]", warn),
-            Span::raw(" no"),
-        ]));
+        let mut options = vec![Span::styled("[y]", warn), Span::raw(" yes once   ")];
+        if let Some(pattern) = &p.request.pattern {
+            options.push(Span::styled("[a]", warn));
+            options.push(Span::raw(format!(
+                " always ({} {pattern})   ",
+                p.request.call.name
+            )));
+        }
+        options.extend([Span::styled("[n]", warn), Span::raw(" no")]);
+        out.push(Line::from(options));
     }
     out
 }

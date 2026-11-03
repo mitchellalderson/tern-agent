@@ -304,7 +304,7 @@ fn approvals_are_answered_inline() {
                 input: json!({"command": "git push"}),
             },
             summary: "shell git push".into(),
-            pattern: "git *".into(),
+            pattern: Some("git *".into()),
         },
         reply: tx,
     });
@@ -359,7 +359,7 @@ fn ctrl_c_denies_a_pending_approval() {
                 input: json!({}),
             },
             summary: "shell".into(),
-            pattern: "*".into(),
+            pattern: Some("*".into()),
         },
         reply: tx,
     });

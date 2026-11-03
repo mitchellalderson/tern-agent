@@ -7,6 +7,7 @@
 //! | GET | `/v1/info` | default model and tools |
 //! | POST | `/v1/models/check` | validate `{model}` |
 //! | POST | `/v1/runs` | send a message: `{text, session_id?, model?}` |
+//! | GET | `/v1/runs/active` | runs in progress: `[{run_id, session_id}]` |
 //! | POST | `/v1/runs/{id}/resume` | resume an interrupted run |
 //! | POST | `/v1/runs/{id}/cancel` | cancel a run |
 //! | GET | `/v1/runs/{id}/wait` | block until the run finishes |
@@ -16,6 +17,7 @@
 //! | PUT | `/v1/sessions/{id}/model` | set `{model}` |
 //! | GET | `/v1/sessions/{id}/usage` | token usage |
 //! | GET | `/v1/events` | Server-Sent Events: agent events and approval requests |
+//! | GET | `/v1/approvals` | approvals waiting for an API client |
 //! | POST | `/v1/approvals/{id}` | answer `{decision: "once" \| "always" \| "deny"}` |
 
 use std::convert::Infallible;
@@ -113,9 +115,7 @@ fn prepare_private_dir(dir: &Path) -> anyhow::Result<()> {
             std::fs::DirBuilder::new().mode(0o700).create(dir)?;
         }
         let meta = std::fs::symlink_metadata(dir)?;
-        let ours = std::fs::metadata(tern_core::home::user_home().unwrap_or_default())
-            .map(|m| m.uid())
-            .ok();
+        let ours = tern_core::home::current_uid();
         if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 || Some(meta.uid()) != ours {
             anyhow::bail!(
                 "{} must be a directory owned by you with mode 0700",
@@ -134,6 +134,7 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/info", get(info))
         .route("/v1/models/check", post(check_model))
         .route("/v1/runs", post(start_run))
+        .route("/v1/runs/active", get(active_runs))
         .route("/v1/runs/{id}/resume", post(resume_run))
         .route("/v1/runs/{id}/cancel", post(cancel_run))
         .route("/v1/runs/{id}/wait", get(wait_run))
@@ -143,6 +144,7 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/sessions/{id}/model", put(set_model))
         .route("/v1/sessions/{id}/usage", get(usage))
         .route("/v1/events", get(events))
+        .route("/v1/approvals", get(pending_approvals))
         .route("/v1/approvals/{id}", post(approve))
         .with_state(manager)
 }
@@ -212,6 +214,21 @@ async fn start_run(State(m): State<Shared>, Json(b): Json<StartBody>) -> ApiResu
         run_id: s.run_id,
         model: s.model.to_string(),
     }))
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ActiveRun {
+    pub run_id: String,
+    pub session_id: String,
+}
+
+async fn active_runs(State(m): State<Shared>) -> Json<Vec<ActiveRun>> {
+    Json(
+        m.active_runs()
+            .into_iter()
+            .map(|(session_id, run_id)| ActiveRun { run_id, session_id })
+            .collect(),
+    )
 }
 
 async fn resume_run(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Value> {
@@ -434,6 +451,10 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
         },
     );
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+async fn pending_approvals(State(m): State<Shared>) -> Json<Vec<ApiApproval>> {
+    Json(m.routes.api.pending())
 }
 
 #[derive(Serialize, Deserialize)]
