@@ -4,7 +4,7 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use async_trait::async_trait;
 use tern_core::TernHome;
 use tern_core::agent::{RunOutcome, RunStatus};
@@ -25,30 +25,12 @@ pub struct RunArgs<'a> {
 
 pub fn run(home: &TernHome, args: RunArgs<'_>) -> anyhow::Result<ExitCode> {
     let rt = Runtime::open(home, approvals(args.yes))?;
-    let session = match args.session {
-        Some(id) => rt
-            .store
-            .session(id)?
-            .with_context(|| format!("session {id} not found"))?,
-        None => rt
-            .store
-            .create_session(&tern_core::agent::new_id(), "cli", None)?,
-    };
-    let model = rt.pick_model(args.model, session.model.as_deref())?;
-    if session.model.as_deref() != Some(&model.to_string()) {
-        rt.store
-            .set_session_model(&session.id, &model.to_string())?;
-    }
-    let system = tern_core::prompt::system_prompt(&tern_core::prompt::PromptInputs {
-        home: &rt.home,
-        now: chrono::Local::now(),
-        workspace: &rt.config.workspace_dir(),
-    });
-    let run = rt
-        .agent
-        .start_run(&session.id, args.prompt, &model, &system, "user")?;
-    let banner = format!("run {} (session {}, {model})", run.id, session.id);
-    drive(&rt, &run.id, false, &banner)
+    let run = rt.start_run(args.session, args.model, args.prompt, "cli")?;
+    let banner = format!(
+        "run {} (session {}, {})",
+        run.run_id, run.session_id, run.model
+    );
+    drive(&rt, &run.run_id, false, &banner)
 }
 
 pub fn resume(home: &TernHome, run_id: &str, yes: bool) -> anyhow::Result<ExitCode> {

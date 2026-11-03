@@ -15,6 +15,7 @@ tern-store.workspace = true
 tern-providers.workspace = true
 tern-sandbox.workspace = true
 tern-tools.workspace = true
+tern-tui.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true

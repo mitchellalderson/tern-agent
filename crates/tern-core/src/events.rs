@@ -36,6 +36,8 @@ pub enum AgentEvent {
         name: String,
         is_error: bool,
         preview: String,
+        /// Full (already truncated to 32 KB) tool output.
+        output: String,
         replayed: bool,
     },
     Approval {

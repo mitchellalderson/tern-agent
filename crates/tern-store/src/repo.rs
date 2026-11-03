@@ -447,6 +447,31 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Token usage summed over every journaled step in a session:
+    /// (input, output, cache_read, cache_write).
+    pub fn session_usage(&self, session_id: &str) -> Result<(u64, u64, u64, u64)> {
+        let conn = self.conn()?;
+        let row = conn.query_row(
+            "SELECT
+               COALESCE(SUM(json_extract(s.usage_json, '$.input_tokens')), 0),
+               COALESCE(SUM(json_extract(s.usage_json, '$.output_tokens')), 0),
+               COALESCE(SUM(json_extract(s.usage_json, '$.cache_read_tokens')), 0),
+               COALESCE(SUM(json_extract(s.usage_json, '$.cache_write_tokens')), 0)
+             FROM steps s JOIN runs r ON r.id = s.run_id
+             WHERE r.session_id = ?1 AND s.usage_json IS NOT NULL",
+            [session_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            },
+        )?;
+        Ok((row.0 as u64, row.1 as u64, row.2 as u64, row.3 as u64))
+    }
+
     // ---- memories ----
 
     pub fn save_memory(&self, content: &str, tags: &[String]) -> Result<i64> {
@@ -694,6 +719,24 @@ mod tests {
         assert_eq!(hits[0].session_id, "s");
         assert!(hits[0].snippet.contains("[hello]"), "{}", hits[0].snippet);
         assert_eq!(hits[0].session_title.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn usage_is_summed_per_session() {
+        let (s, _) = setup();
+        s.start_step("r", 0, "llm", "h", "{}").unwrap();
+        s.complete_step("r", 0, "null", Some(r#"{"input_tokens":10,"output_tokens":3,"cache_read_tokens":0,"cache_write_tokens":0}"#), &[]).unwrap();
+        s.start_step("r", 1, "llm", "h", "{}").unwrap();
+        s.complete_step(
+            "r",
+            1,
+            "null",
+            Some(r#"{"input_tokens":5,"output_tokens":1}"#),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(s.session_usage("s").unwrap(), (15, 4, 0, 0));
+        assert_eq!(s.session_usage("nope").unwrap(), (0, 0, 0, 0));
     }
 
     #[test]

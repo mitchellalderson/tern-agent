@@ -25,6 +25,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: TUI smoke test (real binary in a pty)
+        run: cargo build -p tern && python3 scripts/tui-smoke.py target/debug/tern
 
   build-linux:
     name: build ${{ matrix.target }}

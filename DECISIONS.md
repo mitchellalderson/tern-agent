@@ -56,3 +56,20 @@ Choices made where the spec was ambiguous or silent. Newest at the bottom of eac
 - **Startup recovery is `agent::triage_running_runs`**: runs still `running` that were updated in the last 24 h are returned for resumption; older ones are marked `interrupted`. The daemon (M5) will call it at startup; nothing calls it automatically yet.
 - **Added `tern runs list`** (not in §12.1): `runs show` needs a run id, and there was no other way to find one.
 - **Ctrl+C is registered before the run banner is printed**, using a unix signal listener that's active from creation, so an interrupt can't arrive before cancellation works.
+
+## M3
+
+- **The TUI talks to a `Backend` trait** (`tern-tui/src/lib.rs`), not to `Agent`/`Store` directly. The binary implements it over the embedded runtime (`tui_backend.rs`); M5 can add one over the daemon socket without touching the UI. Backend errors are plain `String`s, since the UI only displays them.
+- **`App` is a plain state machine**: keys, agent events, approvals, and run completion go in; entries and `Effect`s (`Drive`, `Cancel`, `Quit`, `Resubscribe`) come out. The async loop in `term.rs` does all I/O. That's why most TUI behaviour is unit-tested with a fake backend and ratatui's `TestBackend`.
+- **Approvals reach the UI through a channel**: `TuiApprover` sends the request plus a oneshot reply; the prompt renders inline at the bottom of the transcript and takes `y`/`a`/`n` (`Esc` = no). Ctrl+C or a finished run denies any pending prompt.
+- **Ctrl+C**: cancels a running run (and denies a pending approval); when idle it clears the input. A second press within 1 s quits from any state. Quitting mid-run cancels and waits up to 3 s so the run is recorded as `interrupted`.
+- **A new message while a run is in progress** cancels the run, then sends the message once it has stopped (spec §6). No "resume" hint is shown for the replaced run.
+- **Newlines**: Shift+Enter (on terminals that report it; keyboard enhancement is requested when supported), Alt+Enter, and Ctrl+J. Bracketed paste keeps pasted newlines.
+- **Tool calls collapse to one line** (icon, summary, first line of output). Ctrl+O toggles full output (up to 40 lines per tool) and compaction summaries for the whole transcript, rather than per-row toggles.
+- **`/resume <id>` takes a session id or a run id.** A session id opens that conversation; a run id opens its session and resumes the run.
+- **`/reload` rebuilds the whole runtime** (config, providers, tools) and re-subscribes to the new event bus. Refused while a run is in progress, like `/new` and `/resume`.
+- **`/usage`** sums the journaled token usage of every step in the session. The status bar shows the last turn's tokens.
+- **No markdown rendering yet**; assistant text is word-wrapped plain text.
+- **Sessions are created lazily** on the first message, so opening and quitting the TUI leaves no empty session.
+- **`tern` without a terminal** (stdin or stdout not a TTY) refuses and points to `tern run`.
+- **`scripts/tui-smoke.py`** drives the real binary in a pty with the mock provider (chat, approval, `/usage`, double Ctrl+C, cancel and `/resume`), using a minimal VT100 screen model. It runs in CI after the unit tests. Standard library only, Unix only.

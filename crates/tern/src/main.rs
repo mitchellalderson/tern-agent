@@ -5,6 +5,7 @@ mod inspect;
 mod logging;
 mod run_cmd;
 mod runtime;
+mod tui_backend;
 
 use std::process::ExitCode;
 
@@ -49,7 +50,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        None => not_yet("the TUI", "M3"),
+        None => tui_backend::run(&home),
         Some(Command::Run {
             prompt,
             session,

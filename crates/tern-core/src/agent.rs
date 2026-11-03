@@ -405,6 +405,7 @@ impl Agent {
                     name: call.name.clone(),
                     is_error: result.value.is_error,
                     preview: preview(&result.value.content),
+                    output: result.value.content.clone(),
                     replayed: result.replayed,
                 });
                 if cancel.is_cancelled() {
@@ -727,7 +728,8 @@ pub fn summarize(call: &ToolCall) -> String {
     format!("{} {}", call.name, detail)
 }
 
-fn preview(s: &str) -> String {
+/// First line of a tool result, shortened for one-line displays.
+pub fn preview(s: &str) -> String {
     let first = s.lines().next().unwrap_or_default();
     first.chars().take(120).collect()
 }

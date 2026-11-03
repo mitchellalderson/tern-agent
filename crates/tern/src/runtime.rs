@@ -92,6 +92,59 @@ impl Runtime {
             ),
         }
     }
+
+    /// Check that `model` parses and names a configured provider.
+    pub fn check_model(&self, model: &str) -> anyhow::Result<ModelRef> {
+        let m: ModelRef = model.parse()?;
+        if !self.mock && !self.config.providers.contains_key(&m.provider) {
+            bail!("provider {:?} is not configured in config.toml", m.provider);
+        }
+        Ok(m)
+    }
+
+    /// Record a run of `text`. Uses `session` (or creates one from `source`),
+    /// picks the model, and freezes the system prompt on the run.
+    pub fn start_run(
+        &self,
+        session: Option<&str>,
+        model: Option<&str>,
+        text: &str,
+        source: &str,
+    ) -> anyhow::Result<StartedRun> {
+        let session = match session {
+            Some(id) => self
+                .store
+                .session(id)?
+                .with_context(|| format!("session {id} not found"))?,
+            None => self
+                .store
+                .create_session(&tern_core::agent::new_id(), source, None)?,
+        };
+        let model = self.pick_model(model, session.model.as_deref())?;
+        if session.model.as_deref() != Some(&model.to_string()) {
+            self.store
+                .set_session_model(&session.id, &model.to_string())?;
+        }
+        let system = tern_core::prompt::system_prompt(&tern_core::prompt::PromptInputs {
+            home: &self.home,
+            now: chrono::Local::now(),
+            workspace: &self.config.workspace_dir(),
+        });
+        let run = self
+            .agent
+            .start_run(&session.id, text, &model, &system, "user")?;
+        Ok(StartedRun {
+            session_id: session.id,
+            run_id: run.id,
+            model,
+        })
+    }
+}
+
+pub struct StartedRun {
+    pub session_id: String,
+    pub run_id: String,
+    pub model: ModelRef,
 }
 
 fn canonical(p: PathBuf) -> PathBuf {
