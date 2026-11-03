@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::{AgentLine, AgentState, App, Entry, Overlay, ToolState};
+use crate::secret_prompt::SecretPrompt;
 use crate::secrets::{Mode, SecretsPanel};
 use crate::wrap::wrap;
 
@@ -253,7 +254,96 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         options.extend([Span::styled("[n]", warn), Span::raw(" no")]);
         out.push(Line::from(options));
     }
+    if let Some(p) = &app.secret_prompt {
+        secret_prompt_lines(p, width, &mut out);
+    }
     out
+}
+
+/// The agent's request for secrets: who asks and why (in the agent's own
+/// words, marked as such), what would read each secret, and masked fields.
+fn secret_prompt_lines(p: &SecretPrompt, width: usize, out: &mut Vec<Line<'static>>) {
+    let req = &p.pending.request;
+    let head = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let key = Style::new().fg(Color::Cyan);
+    let dim = Style::new().fg(Color::DarkGray);
+    out.push(Line::default());
+    let who = match &req.agent_label {
+        Some(l) => format!("Sub-agent {l} is"),
+        None => "The agent is".to_owned(),
+    };
+    let what = if req.asks.len() == 1 {
+        "a secret"
+    } else {
+        "secrets"
+    };
+    out.push(Line::from(Span::styled(
+        format!("🔑 {who} asking for {what}"),
+        head,
+    )));
+    for l in wrap(
+        &format!("The agent says: \"{}\"", req.reason),
+        width.saturating_sub(3),
+    ) {
+        out.push(Line::from(vec![
+            Span::raw("   "),
+            Span::styled(l, Style::new().italic()),
+        ]));
+    }
+    for (i, (ask, value)) in req.asks.iter().zip(&p.values).enumerate() {
+        let current = i == p.field;
+        let state = match (ask.in_env, ask.in_file) {
+            (true, _) => "set in the environment, which wins over a saved value",
+            (false, true) => "saved in secrets.toml; this replaces it",
+            _ => "not set",
+        };
+        let used = if ask.used_by.is_empty() {
+            "nothing uses this secret yet".to_owned()
+        } else {
+            format!("used by {}", ask.used_by.join("; "))
+        };
+        out.push(Line::from(vec![
+            Span::raw(if current { " ▸ " } else { "   " }),
+            Span::styled(ask.name.clone(), if current { head } else { key }),
+            Span::styled(format!("  {state}"), dim),
+        ]));
+        for l in wrap(&used, width.saturating_sub(5)) {
+            out.push(Line::from(vec![Span::raw("     "), Span::styled(l, dim)]));
+        }
+        let shown = if !p.armed {
+            Span::styled("press Enter to type or paste the value", dim)
+        } else if value.is_empty() {
+            Span::styled("type or paste the value", dim)
+        } else {
+            Span::raw(format!(
+                "{}  ({} characters)",
+                tern_core::secrets::keys::mask_key(value),
+                value.chars().count()
+            ))
+        };
+        let mut field = vec![Span::raw("     "), shown];
+        if current && p.armed {
+            field.push(Span::raw("▌"));
+        }
+        out.push(Line::from(field));
+    }
+    let next = if !p.armed {
+        " start   "
+    } else if p.field + 1 < p.values.len() {
+        " next   "
+    } else {
+        " save   "
+    };
+    let mut keys = vec![Span::styled("   [Enter]", key), Span::styled(next, dim)];
+    if p.values.len() > 1 {
+        keys.extend([Span::styled("[Tab]", key), Span::styled(" field   ", dim)]);
+    }
+    keys.extend([
+        Span::styled("[Esc]", key),
+        Span::styled(" skip   ", dim),
+        Span::styled("only tern sees the value", dim),
+    ]);
+    out.push(Line::from(keys));
 }
 
 /// `0:42`, `12:03`.
@@ -415,7 +505,9 @@ fn draw_input(
     cursor: (usize, usize),
     shown: usize,
 ) {
-    let title = if app.approval.is_some() {
+    let title = if app.secret_prompt.is_some() {
+        " enter the secret above · Esc skips "
+    } else if app.approval.is_some() {
         " answer the approval above: y / a / n "
     } else if app.is_running() {
         " message (Enter stops the run and sends) "
@@ -437,7 +529,11 @@ fn draw_input(
         .map(|r| Line::from(r.clone()))
         .collect();
     frame.render_widget(Paragraph::new(visible), inner);
-    if app.approval.is_none() && app.secrets.is_none() && app.overlay.is_none() {
+    if app.approval.is_none()
+        && app.secret_prompt.is_none()
+        && app.secrets.is_none()
+        && app.overlay.is_none()
+    {
         let x = inner.x + (cursor.1 as u16).min(inner.width.saturating_sub(1));
         let y = inner.y + (cursor.0 - first) as u16;
         frame.set_cursor_position(Position::new(x, y));
@@ -455,6 +551,8 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let left = format!(" tern · {model} · {session}");
     let right = if let Some(h) = &app.hint {
         h.clone()
+    } else if app.secret_prompt.is_some() {
+        "secret needed".into()
     } else if app.approval.is_some() {
         "approval needed".into()
     } else if let Some(r) = &app.running {

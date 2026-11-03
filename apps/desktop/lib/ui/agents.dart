@@ -174,6 +174,14 @@ String agentActivity(AgentChild child, TernStore store) {
       )) {
     return 'Waiting for your approval';
   }
+  if (run != null &&
+      store.transcripts.values.any(
+        (t) => t.items.any(
+          (i) => i is SecretRequestItem && i.open && i.request.runId == run,
+        ),
+      )) {
+    return 'Waiting for a secret';
+  }
   String firstLine(String s) => s.trim().split('\n').first;
   return switch (child.status) {
     'starting' => 'Starting',

@@ -15,12 +15,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::app::{App, Effect};
-use crate::{Backend, PendingApproval, ui};
+use crate::{Backend, UserPrompt, ui};
 
 /// Run the TUI until the user quits. Restores the terminal on exit and on panic.
 pub async fn run(
     backend: Arc<dyn Backend>,
-    mut approvals: mpsc::Receiver<PendingApproval>,
+    mut prompts: mpsc::Receiver<UserPrompt>,
     open: Option<String>,
 ) -> io::Result<()> {
     let mut terminal = ratatui::init();
@@ -35,7 +35,7 @@ pub async fn run(
         );
     }
 
-    let result = event_loop(&mut terminal, backend, &mut approvals, open).await;
+    let result = event_loop(&mut terminal, backend, &mut prompts, open).await;
 
     if enhanced {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
@@ -48,7 +48,7 @@ pub async fn run(
 async fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     backend: Arc<dyn Backend>,
-    approvals: &mut mpsc::Receiver<PendingApproval>,
+    prompts: &mut mpsc::Receiver<UserPrompt>,
     open: Option<String>,
 ) -> io::Result<()> {
     let mut app = App::new(backend.clone());
@@ -107,7 +107,7 @@ async fn event_loop(
                 Err(RecvError::Lagged(_)) => {}
                 Err(RecvError::Closed) => agent_rx = backend.subscribe(),
             },
-            Some(p) = approvals.recv() => app.on_approval(p),
+            Some(p) = prompts.recv() => app.on_prompt(p),
             Some(result) = done_rx.recv() => {
                 // Apply events the run emitted before it finished.
                 while let Ok(ev) = agent_rx.try_recv() {

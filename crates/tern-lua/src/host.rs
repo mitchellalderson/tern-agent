@@ -19,9 +19,10 @@ const MAX_HTTP_BODY: usize = 5 * 1024 * 1024;
 
 /// How users provide secrets; shown when one is missing so the model
 /// relays the real mechanism instead of inventing one (like a `.env` file).
-pub const SECRETS_HELP: &str = "The user sets secrets as environment variables or in ~/.tern/secrets.toml \
-(TOML lines like {key} = \"...\", file mode 0600), then restarts tern (or uses /reload in the chat UI). \
-tern does not read .env files. Never ask the user to paste a secret into the chat.";
+pub const SECRETS_HELP: &str = "Call secret_request with names [\"{key}\"] and why it's needed: the user \
+enters it in a private prompt you never see, and it works straight away. Never ask the user to paste a \
+secret into the chat. (Users can also set secrets as environment variables or in ~/.tern/secrets.toml; \
+tern does not read .env files.)";
 
 /// Globals removed before sandboxing: code loading and environment access.
 const REMOVED_GLOBALS: &[&str] = &[

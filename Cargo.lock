@@ -3445,6 +3445,7 @@ dependencies = [
  "tern-store",
  "tokio",
  "tokio-util",
+ "tracing",
  "wiremock",
 ]
 

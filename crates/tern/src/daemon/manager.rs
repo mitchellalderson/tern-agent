@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tern_core::agent::{RunOutcome, RunStatus};
-use tern_core::approval::{ApprovalHandler, ApprovalRequest, Decision};
+use tern_core::approval::{
+    ApprovalHandler, ApprovalRequest, Decision, SecretAsk, SecretRequest, SecretValues,
+};
 use tern_core::events::AgentEvent;
 use tern_gateway::{ChatHost, Gateway};
 use tokio::sync::{broadcast, oneshot, watch};
@@ -100,6 +102,115 @@ impl ApiApprovals {
     }
 }
 
+/// A secret request waiting for an API client to answer (never with the
+/// values: those only travel in the answer).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ApiSecretRequest {
+    pub id: String,
+    pub run_id: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    pub secrets: Vec<SecretAsk>,
+    /// The agent's words.
+    pub reason: String,
+    pub replace: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<String>,
+}
+
+type PendingSecrets = Mutex<HashMap<String, (ApiSecretRequest, oneshot::Sender<SecretValues>)>>;
+
+/// Secret requests for API clients. Unlike approvals they wait when no
+/// client is attached: the user is notified and may open the app, and the
+/// tool's own timeout ends the wait.
+#[derive(Default)]
+pub struct ApiSecretRequests {
+    pending: Arc<PendingSecrets>,
+    tx: OnceLock<broadcast::Sender<ApiSecretRequest>>,
+}
+
+/// Drops a request from the pending list when its asker stops waiting.
+struct Unlist(Arc<PendingSecrets>, String);
+
+impl Drop for Unlist {
+    fn drop(&mut self) {
+        if let Ok(mut p) = self.0.lock() {
+            p.remove(&self.1);
+        }
+    }
+}
+
+impl ApiSecretRequests {
+    fn tx(&self) -> &broadcast::Sender<ApiSecretRequest> {
+        self.tx.get_or_init(|| broadcast::channel(64).0)
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<ApiSecretRequest> {
+        self.tx().subscribe()
+    }
+
+    async fn ask(&self, req: &SecretRequest, root_session_id: Option<String>) -> SecretValues {
+        let (tx, rx) = oneshot::channel();
+        let msg = ApiSecretRequest {
+            id: req.id.clone(),
+            run_id: req.run_id.clone(),
+            session_id: req.session_id.clone(),
+            call_id: req.call_id.clone(),
+            secrets: req.asks.clone(),
+            reason: req.reason.clone(),
+            replace: req.replace,
+            parent_run_id: req.parent_run_id.clone(),
+            agent_label: req.agent_label.clone(),
+            root_session_id: root_session_id.filter(|_| req.parent_run_id.is_some()),
+        };
+        if let Ok(mut p) = self.pending.lock() {
+            p.insert(req.id.clone(), (msg.clone(), tx));
+        }
+        let _unlist = Unlist(self.pending.clone(), req.id.clone());
+        // Nobody listening is fine: late clients find it in `pending`.
+        let _ = self.tx().send(msg);
+        rx.await.unwrap_or_default()
+    }
+
+    /// Answer `id` with `values`. Every name must be one the request asked
+    /// for, so a request for `FOO` can't be used to write another secret.
+    pub fn answer(&self, id: &str, values: SecretValues) -> Result<(), AnswerError> {
+        let mut p = self.pending.lock().map_err(|_| AnswerError::NotFound)?;
+        let Some((req, _)) = p.get(id) else {
+            return Err(AnswerError::NotFound);
+        };
+        if let Some(extra) = values
+            .keys()
+            .find(|k| !req.secrets.iter().any(|a| &a.name == *k))
+        {
+            return Err(AnswerError::NotAsked(extra.clone()));
+        }
+        let Some((_, tx)) = p.remove(id) else {
+            return Err(AnswerError::NotFound);
+        };
+        tx.send(values).map_err(|_| AnswerError::NotFound)
+    }
+
+    pub fn pending(&self) -> Vec<ApiSecretRequest> {
+        self.pending
+            .lock()
+            .map(|p| p.values().map(|(r, _)| r.clone()).collect())
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Debug)]
+pub enum AnswerError {
+    NotFound,
+    /// A name the request didn't ask for.
+    NotAsked(String),
+}
+
 /// Late-bound pieces the approval router needs (the runtime is built with
 /// the router, so they can't be passed to its constructor).
 #[derive(Default)]
@@ -107,30 +218,112 @@ pub struct Routes {
     pub store: OnceLock<tern_store::Store>,
     pub gateways: OnceLock<HashMap<String, Arc<dyn Gateway>>>,
     pub api: ApiApprovals,
+    pub secrets: ApiSecretRequests,
 }
 
 /// Sends each approval to the chat the run's tree reports to, else to API
 /// clients. A sub-agent asks where its root run would.
 pub struct Router(pub Arc<Routes>);
 
-#[async_trait]
-impl ApprovalHandler for Router {
-    async fn ask(&self, req: &ApprovalRequest) -> Decision {
+/// A gateway and the chat on it a run tree reports to.
+type ChatTarget = (Arc<dyn Gateway>, String);
+
+impl Router {
+    /// The session at the top of `run_id`'s tree, and the gateway chat that
+    /// tree reports to, if any.
+    fn place(&self, run_id: &str) -> (Option<String>, Option<ChatTarget>) {
         let routes = &self.0;
         let root = routes.store.get().and_then(|s| {
-            let root = s.root_run(&req.run_id).ok()?;
+            let root = s.root_run(run_id).ok()?;
             s.run(&root).ok().flatten()
         });
         let target = root.as_ref().and_then(|r| {
             let s = routes.store.get()?;
             s.run_deliver_to(&r.id).ok().flatten()
         });
-        if let Some((gateway, chat)) = target.as_deref().and_then(|t| t.split_once(':'))
-            && let Some(g) = routes.gateways.get().and_then(|gs| gs.get(gateway))
-        {
-            return g.ask_approval(chat, req).await;
+        let chat = target.as_deref().and_then(|t| {
+            let (gateway, chat) = t.split_once(':')?;
+            let g = routes.gateways.get()?.get(gateway)?.clone();
+            Some((g, chat.to_owned()))
+        });
+        (root.map(|r| r.session_id), chat)
+    }
+}
+
+/// Updates a gateway's secret notice when the request ends, however it ends.
+struct Notice {
+    gateway: Arc<dyn Gateway>,
+    chat: String,
+    handle: String,
+    text: Option<String>,
+}
+
+impl Drop for Notice {
+    fn drop(&mut self) {
+        let text = self
+            .text
+            .take()
+            .unwrap_or_else(|| "🔑 No longer waiting for this secret.".into());
+        let (g, chat, handle) = (self.gateway.clone(), self.chat.clone(), self.handle.clone());
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move { g.secret_request_done(&chat, &handle, &text).await });
         }
-        routes.api.ask(req, root.map(|r| r.session_id)).await
+    }
+}
+
+#[async_trait]
+impl ApprovalHandler for Router {
+    async fn ask(&self, req: &ApprovalRequest) -> Decision {
+        match self.place(&req.run_id) {
+            (_, Some((g, chat))) => g.ask_approval(&chat, req).await,
+            (root, None) => self.0.api.ask(req, root).await,
+        }
+    }
+
+    /// API clients always get the prompt. A chat only gets a pointer to
+    /// them, since a value typed there would stay in its history.
+    async fn ask_secrets(&self, req: &SecretRequest) -> Option<SecretValues> {
+        let (root, chat) = self.place(&req.run_id);
+        let mut notice = None;
+        if let Some((g, chat)) = chat
+            && let Some(handle) = g.secret_request_notice(&chat, req).await
+        {
+            notice = Some(Notice {
+                gateway: g,
+                chat,
+                handle,
+                text: None,
+            });
+        }
+        let values = self.0.secrets.ask(req, root).await;
+        if let Some(n) = &mut notice {
+            // What the tool will save: a value that cleans up to nothing
+            // (`""`, a bare `Bearer `) counts as skipped there too.
+            let saved = |name: &str| {
+                values.get(name).is_some_and(|v| {
+                    !tern_core::secrets::keys::normalize_key(v)
+                        .unwrap_or_else(|_| v.trim().to_owned())
+                        .is_empty()
+                })
+            };
+            let names = |set: bool| -> Vec<&str> {
+                req.asks
+                    .iter()
+                    .filter(|a| saved(&a.name) == set)
+                    .map(|a| a.name.as_str())
+                    .collect()
+            };
+            let (saved, skipped) = (names(true), names(false));
+            let mut text = String::from("🔑 ");
+            if !saved.is_empty() {
+                text.push_str(&format!("✓ {} saved. ", saved.join(", ")));
+            }
+            if !skipped.is_empty() {
+                text.push_str(&format!("{} skipped.", skipped.join(", ")));
+            }
+            n.text = Some(text.trim_end().to_owned());
+        }
+        Some(values)
     }
 }
 

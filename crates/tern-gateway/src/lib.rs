@@ -6,7 +6,7 @@ pub mod telegram;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tern_core::approval::{ApprovalRequest, Decision};
+use tern_core::approval::{ApprovalRequest, Decision, SecretRequest};
 use tern_core::events::AgentEvent;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -39,4 +39,12 @@ pub trait Gateway: Send + Sync {
     async fn deliver(&self, target: &str, run_id: Option<&str>, text: &str) -> Result<(), String>;
     /// Ask the user in `target` to approve a tool call.
     async fn ask_approval(&self, target: &str, req: &ApprovalRequest) -> Decision;
+    /// Tell the user in `target` that the agent is waiting for secrets they
+    /// must enter in the app or TUI: a chat must never collect the value.
+    /// Returns a handle for [`Gateway::secret_request_done`].
+    async fn secret_request_notice(&self, _target: &str, _req: &SecretRequest) -> Option<String> {
+        None
+    }
+    /// Replace the notice with how the request ended.
+    async fn secret_request_done(&self, _target: &str, _handle: &str, _text: &str) {}
 }

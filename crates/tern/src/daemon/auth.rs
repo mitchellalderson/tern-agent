@@ -43,7 +43,13 @@ type Shared = Arc<Manager>;
 pub const API_VERSION: u32 = 1;
 
 /// What `/v1/health` advertises; clients derive behaviour from it.
-pub const FEATURES: &[&str] = &["devices", "schedules", "uploads", "subagents"];
+pub const FEATURES: &[&str] = &[
+    "devices",
+    "schedules",
+    "uploads",
+    "subagents",
+    "secret_requests",
+];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";
 const CODE_TTL: Duration = Duration::from_secs(10 * 60);

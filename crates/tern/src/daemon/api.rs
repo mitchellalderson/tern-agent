@@ -24,6 +24,7 @@
 //! | GET | `/v1/events` | Server-Sent Events: agent events and approval requests |
 //! | GET | `/v1/approvals` | approvals waiting for an API client |
 //! | POST | `/v1/approvals/{id}` | answer `{decision: "once" \| "always" \| "deny"}` |
+//! | GET / POST | `/v1/secret-requests[/{id}]` | the agent's prompts for secrets (`api_secrets.rs`) |
 //!
 //! Agent events on `/v1/events` carry `session_id` as well as `run_id`, and
 //! events of sub-agent runs also `parent_run_id` and `root_session_id`.
@@ -60,7 +61,7 @@ use tern_core::types::{ContentBlock, Usage};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
-use super::manager::{ApiApproval, Manager};
+use super::manager::{ApiApproval, ApiSecretRequest, Manager};
 
 pub(super) type Shared = Arc<Manager>;
 
@@ -510,6 +511,7 @@ async fn usage(
 #[serde(untagged)]
 pub enum ApiEvent {
     Approval { approval_requested: ApiApproval },
+    SecretRequest { secret_requested: ApiSecretRequest },
     Change(crate::providers::Change),
     Agent(tern_core::events::AgentEvent),
 }
@@ -517,16 +519,18 @@ pub enum ApiEvent {
 async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let agent = m.rt.agent.subscribe();
     let approvals = m.routes.api.subscribe();
+    let secrets = m.routes.secrets.subscribe();
     let changes = m.rt.subscribe_changes();
     let stream = futures::stream::unfold(
         (
             agent,
             approvals,
+            secrets,
             changes,
             m,
             HashMap::<String, RunPlace>::new(),
         ),
-        |(mut agent, mut approvals, mut changes, m, mut sessions)| async move {
+        |(mut agent, mut approvals, mut secrets, mut changes, m, mut sessions)| async move {
             loop {
                 let ev = tokio::select! {
                     e = agent.recv() => match e {
@@ -536,6 +540,11 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
                     },
                     a = approvals.recv() => match a {
                         Ok(a) => ApiEvent::Approval { approval_requested: a },
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => return None,
+                    },
+                    r = secrets.recv() => match r {
+                        Ok(r) => ApiEvent::SecretRequest { secret_requested: r },
                         Err(RecvError::Lagged(_)) => continue,
                         Err(RecvError::Closed) => return None,
                     },
@@ -552,7 +561,7 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
                 let data = serde_json::to_string(&data).unwrap_or_default();
                 return Some((
                     Ok(Event::default().data(data)),
-                    (agent, approvals, changes, m, sessions),
+                    (agent, approvals, secrets, changes, m, sessions),
                 ));
             }
         },

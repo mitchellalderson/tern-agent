@@ -6,7 +6,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::json;
 use tern_core::SecretStatus;
-use tern_core::approval::ApprovalRequest;
+use tern_core::approval::{ApprovalRequest, SecretAsk, SecretRequest, SecretValues};
 use tern_core::subagent::ChildRun;
 use tern_core::types::{ContentBlock, Role, ToolCall};
 use tern_store::SessionSummary;
@@ -14,7 +14,7 @@ use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::*;
-use crate::{HistoryMessage, Started};
+use crate::{HistoryMessage, PendingSecret, Started, UserPrompt};
 
 /// (session, model, text) passed to `start_run`.
 type StartCall = (Option<String>, Option<String>, String);
@@ -975,4 +975,143 @@ fn agents_commands_list_show_and_message_sub_agents() {
         [("c1".to_owned(), "public only, please".to_owned())]
     );
     assert!(notices(&app).contains("sent to research"));
+}
+
+fn secret_request(call: &str, names: &[&str]) -> (PendingSecret, oneshot::Receiver<SecretValues>) {
+    let (reply, rx) = oneshot::channel();
+    let asks = names
+        .iter()
+        .map(|n| SecretAsk {
+            name: (*n).into(),
+            in_file: false,
+            in_env: false,
+            used_by: vec!["connector weather (draft) · reaches api.weather.com".into()],
+        })
+        .collect();
+    let request = SecretRequest {
+        id: format!("q-{call}"),
+        run_id: "r1".into(),
+        session_id: "s1".into(),
+        call_id: Some(call.into()),
+        asks,
+        reason: "the weather connector sends it as a bearer token".into(),
+        replace: false,
+        parent_run_id: None,
+        agent_label: None,
+    };
+    (PendingSecret { request, reply }, rx)
+}
+
+#[test]
+fn secret_prompts_take_values_without_showing_them() {
+    let (mut app, _) = new_app();
+    submit(&mut app, "set up weather");
+    let (p, mut rx) = secret_request("c1", &["WEATHER_KEY", "WEATHER_ID"]);
+    app.on_prompt(UserPrompt::Secret(p));
+
+    let s = screen(&mut app, 90, 24);
+    assert!(s.contains("The agent is asking for secrets"), "{s}");
+    assert!(s.contains("The agent says: \"the weather connector"), "{s}");
+    assert!(s.contains("used by connector weather (draft)"), "{s}");
+    assert!(s.contains("secret needed"), "{s}");
+
+    // Enter starts typing into the prompt. A paste with a trailing newline
+    // doesn't submit; Tab moves on.
+    app.on_key(key(KeyCode::Enter), Instant::now());
+    app.on_paste("wk-0123456789abcdefXYZ\n");
+    assert!(rx.try_recv().is_err());
+    let s = screen(&mut app, 90, 24);
+    assert!(!s.contains("0123456789abcdef"), "value shown: {s}");
+    assert!(s.contains("wk-012…fXYZ"), "{s}");
+    app.on_key(key(KeyCode::Tab), Instant::now());
+    type_text(&mut app, "id-42");
+    // Keys went to the prompt, not the chat input.
+    assert!(app.input.text().is_empty());
+    app.on_key(key(KeyCode::Enter), Instant::now());
+
+    let values = rx.try_recv().unwrap();
+    assert_eq!(values["WEATHER_KEY"], "wk-0123456789abcdefXYZ");
+    assert_eq!(values["WEATHER_ID"], "id-42");
+    assert!(app.secret_prompt.is_none());
+    // Nothing of the value is left in the transcript or input history.
+    let s = screen(&mut app, 90, 24);
+    assert!(!s.contains("wk-0"), "{s}");
+}
+
+#[test]
+fn secret_prompts_skip_queue_and_close_when_answered_elsewhere() {
+    let (mut app, _) = new_app();
+    submit(&mut app, "go");
+    let (a, mut rx_a) = secret_request("c1", &["A_KEY"]);
+    let (b, mut rx_b) = secret_request("c2", &["B_KEY"]);
+    let (c, mut rx_c) = secret_request("c3", &["C_KEY"]);
+    app.on_prompt(UserPrompt::Secret(a));
+    app.on_prompt(UserPrompt::Secret(b));
+    app.on_prompt(UserPrompt::Secret(c));
+
+    // Esc skips: an empty answer.
+    app.on_key(key(KeyCode::Esc), Instant::now());
+    assert!(rx_a.try_recv().unwrap().is_empty());
+
+    // B is answered by another client: its tool call finishes, the prompt
+    // closes without answering, and C comes up.
+    app.on_agent_event(AgentEvent::ToolFinished {
+        run_id: "r1".into(),
+        id: "c2".into(),
+        name: "secret_request".into(),
+        is_error: false,
+        preview: String::new(),
+        output: r#"{"B_KEY":"set"}"#.into(),
+        replayed: false,
+    });
+    assert!(matches!(
+        rx_b.try_recv(),
+        Err(oneshot::error::TryRecvError::Closed)
+    ));
+    assert_eq!(app.secret_prompt.as_ref().unwrap().call_id(), Some("c3"));
+
+    // Ctrl+C while running skips what's left along with cancelling.
+    let effects = app.on_key(
+        with(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        Instant::now(),
+    );
+    assert_eq!(effects, [Effect::Cancel]);
+    assert!(rx_c.try_recv().unwrap().is_empty());
+    assert!(app.secret_prompt.is_none());
+}
+
+#[test]
+fn a_prompt_that_opens_mid_message_ignores_the_rest_of_it() {
+    let (mut app, _) = new_app();
+    submit(&mut app, "go");
+    type_text(&mut app, "and also check tomorr");
+    let (p, mut rx) = secret_request("c1", &["WEATHER_KEY"]);
+    app.on_prompt(UserPrompt::Secret(p));
+    // The rest of the message, and the Enter meant to send it.
+    type_text(&mut app, "ow");
+    app.on_paste("pasted into the chat");
+    app.on_key(key(KeyCode::Enter), Instant::now());
+    assert!(rx.try_recv().is_err(), "nothing saved");
+    let prompt = app.secret_prompt.as_ref().unwrap();
+    assert_eq!(prompt.values, [""]);
+    assert!(prompt.armed);
+}
+
+#[test]
+fn a_finished_run_skips_only_its_own_prompts() {
+    let (mut app, _) = new_app();
+    submit(&mut app, "go");
+    let (mine, mut rx_mine) = secret_request("c1", &["MINE"]);
+    let (mut other, mut rx_other) = secret_request("c2", &["OTHER"]);
+    other.request.run_id = "someone-elses-run".into();
+    app.on_prompt(UserPrompt::Secret(other));
+    app.on_prompt(UserPrompt::Secret(mine));
+    // The same request again (e.g. from the pending list) is ignored.
+    let (dup, _) = secret_request("c2", &["OTHER"]);
+    app.on_prompt(UserPrompt::Secret(dup));
+
+    app.on_run_done(outcome(RunStatus::Completed));
+    assert!(rx_mine.try_recv().unwrap().is_empty(), "own prompt skipped");
+    assert!(rx_other.try_recv().is_err(), "another client's stays open");
+    assert_eq!(app.secret_prompt.as_ref().unwrap().call_id(), Some("c2"));
 }

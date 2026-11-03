@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tern_core::approval::{ApprovalRequest, Decision};
+use tern_core::approval::{ApprovalRequest, Decision, SecretRequest};
 use tern_core::events::AgentEvent;
 use tern_store::Store;
 use tokio::sync::{Mutex, broadcast, oneshot};
@@ -431,6 +431,45 @@ impl Gateway for TelegramGateway {
         // dropped; the stale entry then answers "Expired".
         rx.await.unwrap_or(Decision::Deny)
     }
+
+    async fn secret_request_notice(&self, target: &str, req: &SecretRequest) -> Option<String> {
+        let chat = target.parse::<i64>().ok()?;
+        match self.api.send_message(chat, &secret_notice(req), None).await {
+            Ok(id) => Some(id.to_string()),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not send secret request notice");
+                None
+            }
+        }
+    }
+
+    async fn secret_request_done(&self, target: &str, handle: &str, text: &str) {
+        let (Ok(chat), Ok(id)) = (target.parse::<i64>(), handle.parse::<i64>()) else {
+            return;
+        };
+        if let Err(e) = self.api.edit_message(chat, id, text, None).await {
+            tracing::warn!(error = %e, "could not update secret request notice");
+        }
+    }
+}
+
+/// Points the user at an app that can take the value: never this chat.
+fn secret_notice(req: &SecretRequest) -> String {
+    let names: Vec<&str> = req.asks.iter().map(|a| a.name.as_str()).collect();
+    let who = match &req.agent_label {
+        Some(l) => format!("Sub-agent {l}"),
+        None => "tern".to_owned(),
+    };
+    let mut text = format!(
+        "🔑 {who} needs {} to continue.\nThe agent says: \"{}\"\n\n",
+        names.join(", "),
+        req.reason
+    );
+    text.push_str(
+        "Enter it in the tern app or the TUI, not here: chat messages keep it in the history. \
+         It's waiting in the conversation, or set it with /secrets in the TUI.",
+    );
+    text
 }
 
 #[cfg(test)]

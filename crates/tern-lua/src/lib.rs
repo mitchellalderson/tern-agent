@@ -274,6 +274,39 @@ impl Connectors {
     }
 }
 
+/// `(secret, what reads it)` for every secret a connector in `active` or
+/// `drafts` declares, naming the hosts it can send it to, e.g.
+/// `connector weather (draft) · reaches api.weather.com`. Shown when the
+/// agent asks the user for a secret, so they can see where it would go.
+pub fn describe_secret_uses(host: &Host, active: &Path, drafts: &Path) -> Vec<(String, String)> {
+    let mut uses = Vec::new();
+    for (dir, draft) in [(active, false), (drafts, true)] {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == EXTENSION))
+            .collect();
+        files.sort();
+        for path in files {
+            let Ok(vm) = load_file(host, &path) else {
+                continue;
+            };
+            let caps = &vm.spec.capabilities;
+            let mut user = format!("connector {}", vm.spec.name);
+            if draft {
+                user.push_str(" (draft)");
+            }
+            if !caps.http.is_empty() {
+                user.push_str(&format!(" · reaches {}", caps.http.join(", ")));
+            }
+            uses.extend(caps.secrets.iter().map(|s| (s.clone(), user.clone())));
+        }
+    }
+    uses
+}
+
 #[async_trait]
 impl ToolSource for Connectors {
     async fn prepare(&self) {

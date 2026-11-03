@@ -13,8 +13,9 @@ use tern_core::types::Usage;
 
 use crate::history;
 use crate::input::Input;
+use crate::secret_prompt::{Done, SecretPrompt};
 use crate::secrets::SecretsPanel;
-use crate::{Backend, BackendResult, PendingApproval, SessionInfo};
+use crate::{Backend, BackendResult, PendingApproval, PendingSecret, SessionInfo, UserPrompt};
 
 /// Two Ctrl+C presses within this window quit.
 pub const DOUBLE_CTRL_C: Duration = Duration::from_secs(1);
@@ -128,6 +129,10 @@ pub struct App {
     pub approval: Option<PendingApproval>,
     /// Further approvals (sub-agents ask concurrently), shown in turn.
     approval_queue: VecDeque<PendingApproval>,
+    /// The agent asking for secrets (`secret_request`), drawn in the
+    /// transcript; it takes every key while open.
+    pub secret_prompt: Option<SecretPrompt>,
+    secret_queue: VecDeque<PendingSecret>,
     pub last_usage: Option<Usage>,
     pub hint: Option<String>,
     /// The `/secrets` panel, drawn over the transcript while open.
@@ -175,6 +180,8 @@ impl App {
             running: None,
             approval: None,
             approval_queue: VecDeque::new(),
+            secret_prompt: None,
+            secret_queue: VecDeque::new(),
             last_usage: None,
             hint: None,
             secrets: None,
@@ -210,6 +217,13 @@ impl App {
         if let Some(panel) = &mut self.secrets {
             if !panel.on_key(key, self.backend.as_ref()) {
                 self.secrets = None;
+            }
+            return vec![];
+        }
+
+        if let Some(p) = &mut self.secret_prompt {
+            if let Some(done) = p.on_key(key) {
+                self.answer_secret(done);
             }
             return vec![];
         }
@@ -291,6 +305,8 @@ impl App {
     pub fn on_paste(&mut self, text: &str) {
         if let Some(panel) = &mut self.secrets {
             panel.on_paste(text);
+        } else if let Some(p) = &mut self.secret_prompt {
+            p.on_paste(text);
         } else if self.approval.is_none() {
             self.input
                 .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
@@ -312,6 +328,11 @@ impl App {
         if self.running.is_some() {
             // The whole tree stops, so deny everything it is waiting on.
             self.deny_all_approvals();
+            if let Some(run) = self.running.as_ref().map(|r| r.run_id.clone()) {
+                self.skip_secrets_of(&run);
+            }
+        } else if self.secret_prompt.is_some() {
+            self.answer_secret(Done::Skip);
         } else if self.approval.is_some() {
             self.answer_approval(Decision::Deny);
         }
@@ -333,6 +354,50 @@ impl App {
     fn deny_all_approvals(&mut self) {
         while self.approval.is_some() {
             self.answer_approval(Decision::Deny);
+        }
+    }
+
+    fn answer_secret(&mut self, done: Done) {
+        if let Some(p) = self.secret_prompt.take() {
+            p.finish(done);
+        }
+        self.secret_prompt = self.secret_queue.pop_front().map(SecretPrompt::new);
+    }
+
+    /// Skip the prompts of `run` and its sub-agents. Others stay open: an
+    /// attached TUI also sees prompts of runs other clients started, which
+    /// they may still answer.
+    fn skip_secrets_of(&mut self, run: &str) {
+        let ours = |r: &str| r == run || self.agents.contains(r);
+        let mut keep = VecDeque::new();
+        for p in self.secret_queue.drain(..).collect::<Vec<_>>() {
+            if ours(&p.request.run_id) {
+                SecretPrompt::new(p).finish(Done::Skip);
+            } else {
+                keep.push_back(p);
+            }
+        }
+        self.secret_queue = keep;
+        if self
+            .secret_prompt
+            .as_ref()
+            .is_some_and(|p| ours(&p.pending.request.run_id))
+        {
+            self.answer_secret(Done::Skip);
+        }
+    }
+
+    /// Close prompts for `call_id` without answering: it finished, so
+    /// someone answered elsewhere or the agent stopped waiting.
+    fn close_secret(&mut self, call_id: &str) {
+        self.secret_queue
+            .retain(|p| p.request.call_id.as_deref() != Some(call_id));
+        if self
+            .secret_prompt
+            .as_ref()
+            .is_some_and(|p| p.call_id() == Some(call_id))
+        {
+            self.secret_prompt = self.secret_queue.pop_front().map(SecretPrompt::new);
         }
     }
 
@@ -659,6 +724,9 @@ impl App {
     // ---- agent events ----
 
     pub fn on_agent_event(&mut self, ev: AgentEvent) {
+        if let AgentEvent::ToolFinished { id, .. } = &ev {
+            self.close_secret(id);
+        }
         // Children run concurrently with their parent: their events update
         // their own line, never the transcript. Events of other runs (another
         // client's, or a previous run's) are ignored.
@@ -922,6 +990,37 @@ impl App {
             .find(|e| matches!(e, Entry::Tool { id: i, .. } if i == id))
     }
 
+    pub fn on_prompt(&mut self, prompt: UserPrompt) {
+        match prompt {
+            UserPrompt::Approval(p) => self.on_approval(p),
+            UserPrompt::Secret(p) => self.on_secret(p),
+        }
+    }
+
+    pub fn on_secret(&mut self, pending: PendingSecret) {
+        // An attached TUI can get the same request twice: live, and from
+        // the pending list it loads on attach.
+        let id = &pending.request.id;
+        if self
+            .secret_prompt
+            .as_ref()
+            .is_some_and(|p| &p.pending.request.id == id)
+            || self.secret_queue.iter().any(|p| &p.request.id == id)
+        {
+            return;
+        }
+        if self.secret_prompt.is_some() {
+            self.secret_queue.push_back(pending);
+        } else {
+            self.secret_prompt = Some(SecretPrompt::new(pending));
+        }
+        // The prompt is drawn in the transcript. An open /secrets panel
+        // keeps the keyboard until it closes, so a value being typed there
+        // can't spill into the prompt.
+        self.overlay = None;
+        self.scroll = 0;
+    }
+
     pub fn on_approval(&mut self, pending: PendingApproval) {
         let run = pending.request.run_id.clone();
         self.set_agent_state(&run, AgentState::Approval, None);
@@ -940,6 +1039,7 @@ impl App {
     pub fn on_run_done(&mut self, result: BackendResult<RunOutcome>) -> Vec<Effect> {
         let run_id = self.running.take().map(|r| r.run_id).unwrap_or_default();
         self.deny_all_approvals();
+        self.skip_secrets_of(&run_id);
         for e in &mut self.entries {
             match e {
                 Entry::Assistant { streaming, .. } => *streaming = false,

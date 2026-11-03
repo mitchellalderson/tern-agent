@@ -121,7 +121,14 @@ impl Runtime {
             changes.clone(),
         ));
         let slot = HostSlot::default();
-        let (tools, connectors) = build_tools(home, &config, &store, &secrets, &slot)?;
+        let (mut tools, connectors) = build_tools(home, &config, &store, &secrets, &slot)?;
+        tools.register(Arc::new(tern_tools::secret_request::SecretRequest::new(
+            approvals.clone(),
+            secrets.clone(),
+            store.clone(),
+            secret_uses(home, live.clone(), &secrets, &store)?,
+            Duration::from_secs(config.secret_request_timeout_secs),
+        )));
         let tools = Arc::new(tools);
 
         // Every value in secrets.toml, plus env-provided secrets the config
@@ -327,6 +334,23 @@ fn provider_factory(
         tern_providers::build(name, &cfg, &secrets)
     });
     Ok((factory, false))
+}
+
+/// What reads each secret, for `secret_request` prompts: config entries plus
+/// every connector, active or draft, with the hosts it reaches.
+fn secret_uses(
+    home: &TernHome,
+    live: Arc<RwLock<Config>>,
+    secrets: &Secrets,
+    store: &Store,
+) -> anyhow::Result<tern_tools::secret_request::SecretUses> {
+    let lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
+    let (active, drafts) = (home.connectors_dir(), home.drafts_dir());
+    Ok(Arc::new(move || {
+        let mut uses = live.read().map(|c| c.secret_uses()).unwrap_or_default();
+        uses.extend(tern_lua::describe_secret_uses(&lua, &active, &drafts));
+        uses
+    }))
 }
 
 fn build_tools(

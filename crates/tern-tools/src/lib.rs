@@ -6,6 +6,7 @@ pub mod http;
 pub mod memory;
 pub mod paths;
 pub mod schedule;
+pub mod secret_request;
 pub mod shell;
 pub mod skills;
 

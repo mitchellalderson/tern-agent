@@ -98,6 +98,28 @@ class ApprovalItem extends Item {
   String? outcome;
 }
 
+/// The agent asking for secrets. The values never come here: the card
+/// holds them in its text fields only until they are sent.
+class SecretRequestItem extends Item {
+  SecretRequestItem(this.request);
+  final SecretRequest request;
+
+  /// Null while waiting. `saved`, `skipped`, `expired`, or `finished` when
+  /// the tool call ended without this app answering.
+  String? outcome;
+
+  /// Names this app sent a value for (only the names).
+  List<String> saved = const [];
+
+  /// This device can't answer (no owner scope): show the card read-only.
+  bool readOnly = false;
+
+  /// The tool result, name → `set` / `already_set` / `skipped` / `timed_out`.
+  Map<String, String> result = const {};
+
+  bool get open => outcome == null;
+}
+
 /// A run that ended other than by completing.
 class RunEndItem extends Item {
   RunEndItem({required this.runId, required this.status, this.error});
@@ -167,6 +189,7 @@ class Transcript {
     );
     final phase = switch (last) {
       ApprovalItem(outcome: null) => null,
+      SecretRequestItem(outcome: null) => null,
       WorkItem(:final steps) when last.running => RunPhase.tool(
         steps.lastWhere((s) => s.status == StepStatus.running).name,
       ),
@@ -357,6 +380,7 @@ class Transcript {
         );
         if (!work.running) work.finished = now;
         if (!isError) _pillFor(name, step.summary);
+        closeSecretRequests(e.runId, id, output);
       case ApprovalRequested(:final approval):
         if (items.any(
           (i) => i is ApprovalItem && i.approval.id == approval.id,
@@ -364,6 +388,13 @@ class Transcript {
           return false;
         }
         items.add(ApprovalItem(approval));
+      case SecretRequested(:final request):
+        if (items.any(
+          (i) => i is SecretRequestItem && i.request.id == request.id,
+        )) {
+          return false;
+        }
+        items.add(SecretRequestItem(request));
       case ApprovalAnswered(:final outcome, :final runId):
         final pending = items.whereType<ApprovalItem>().where(
           (a) => a.approval.runId == runId && a.outcome == null,
@@ -383,6 +414,7 @@ class Transcript {
         if (activeRun == runId) activeRun = null;
         _agentCalls.clear();
         expireApprovals(runId);
+        expireSecretRequests(runId);
         for (final i in items) {
           if (i is AssistantItem) i.streaming = false;
           if (i is WorkItem) {
@@ -406,6 +438,35 @@ class Transcript {
     for (final a in items.whereType<ApprovalItem>()) {
       if (a.outcome == null && a.approval.runId == run) a.outcome = 'expired';
     }
+  }
+
+  /// Close [run]'s open secret requests: it ended without them.
+  void expireSecretRequests(String run) {
+    for (final r in items.whereType<SecretRequestItem>()) {
+      if (r.open && r.request.runId == run) r.outcome = 'expired';
+    }
+  }
+
+  /// The `secret_request` call [callId] finished: whoever answered, the
+  /// request is over. [output] is `{"NAME":"set"}`, safe to show.
+  /// Returns whether a card closed.
+  bool closeSecretRequests(String run, String callId, String output) {
+    var closed = false;
+    for (final r in items.whereType<SecretRequestItem>()) {
+      if (r.request.runId != run || r.request.callId != callId) continue;
+      if (r.open) {
+        r.outcome = 'finished';
+        closed = true;
+      }
+      try {
+        if (jsonDecode(output) case final Map m) {
+          r.result = {for (final e in m.entries) '${e.key}': '${e.value}'};
+        }
+      } on FormatException {
+        // Not the JSON result (an error message): nothing to show.
+      }
+    }
+    return closed;
   }
 
   /// Sub-agent tool calls in flight, id → name.

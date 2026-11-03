@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'endpoint.dart';
 import 'models.dart';
+import 'secret_requests.dart';
 import 'sse.dart';
 import 'subagents.dart';
 import 'tools.dart';
@@ -160,6 +161,19 @@ class TernClient {
     for (final a in await _json('GET', '/v1/approvals') as List)
       Approval.fromJson(a as Json),
   ];
+
+  /// Secret requests waiting for a value (resync). Check `features` in
+  /// [health] for `secret_requests` first.
+  Future<List<SecretRequest>> secretRequests() async => [
+    for (final r in await _json('GET', '/v1/secret-requests') as List)
+      SecretRequest.fromJson(r as Json),
+  ];
+
+  /// Send the values the user entered. Names left out are skipped; an empty
+  /// map skips everything. Throws [TernException] with status 404 if the
+  /// request is no longer pending, 403 without owner scope.
+  Future<void> answerSecretRequest(String id, Map<String, String> values) =>
+      _json('POST', '/v1/secret-requests/$id', {'values': values});
 
   Future<List<Schedule>> schedules() async => [
     for (final s in await _json('GET', '/v1/schedules') as List)

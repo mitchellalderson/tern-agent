@@ -215,6 +215,7 @@ See [Troubleshooting](#troubleshooting).
 | `mcp.servers.<name>.env_secrets` | `[]` | Secrets passed to the server's environment. |
 | `mcp.servers.<name>.idempotent` | `false` | Its tools are safe to re-run when resuming. |
 | `mcp.servers.<name>.requires_approval` | `false` | Ask before each of its tool calls. |
+| `secret_request_timeout_secs` | `900` | How long the agent's prompt for a secret waits for you. |
 
 Secrets are looked up by name in the environment first, then in `~/.tern/secrets.toml` (mode 0600):
 
@@ -237,6 +238,8 @@ curl --unix-socket ~/.tern/tern.sock -X PUT http://tern/v1/secrets/ANTHROPIC_API
 ```
 
 Both create `secrets.toml` with mode 0600 if needed, keep its comments, and take effect without a restart for providers, connectors, and newly started MCP servers. The Telegram gateway reads its token only when the daemon starts. A secret set in the environment takes precedence over the file.
+
+**The agent can ask you for a secret.** When a connector it wrote (or anything else) needs a key that isn't set, the agent calls `secret_request` with the name and a reason. You get a private prompt: inline in the TUI, as a card in the desktop app, or in Telegram as a pointer to the app (a chat never takes the value). The prompt shows what would read the secret, for example `connector weather (draft) · reaches api.weather.com`. The value goes straight into `secrets.toml`; the agent only learns whether each name was `set`, `already_set`, `skipped` or `timed_out`. Values that are already set aren't asked for again unless the agent asks to replace them. A prompt waits up to `secret_request_timeout_secs` (default 900); runs with nobody to ask (`tern run --yes`) skip it. API clients see prompts on `/v1/events` as `{"secret_requested": …}`, list them with `GET /v1/secret-requests`, and answer with `POST /v1/secret-requests/{id}` `{"values": {"NAME": "…"}}` (names left out are skipped; only names the request asked for are accepted; owner scope).
 
 Environment variables: `TERN_HOME` (data directory, default `~/.tern`) and `TERN_LOG` (log level, e.g. `debug`).
 

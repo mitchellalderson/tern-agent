@@ -44,6 +44,7 @@ class TernStore extends ChangeNotifier {
   /// Run → the conversation its approvals show in (a sub-agent's go to
   /// the one the user started).
   final _approvalSession = <String, String>{};
+  final _secretSession = <String, String>{};
   final usage = <String, Usage>{};
   List<Schedule> schedules = [];
   String? error;
@@ -64,6 +65,17 @@ class TernStore extends ChangeNotifier {
       .whereType<ApprovalItem>()
       .where((a) => a.outcome == null)
       .length;
+
+  /// Secret requests waiting anywhere.
+  int get pendingSecrets => transcripts.values
+      .expand((t) => t.items)
+      .whereType<SecretRequestItem>()
+      .where((r) => r.open)
+      .length;
+
+  /// Whether the core can ask for secrets (older ones can't).
+  bool get hasSecretRequests =>
+      health?.features.contains('secret_requests') ?? false;
 
   String? modelFor(String? session) {
     final s = sessions.where((x) => x.id == session).firstOrNull;
@@ -130,6 +142,17 @@ class TernStore extends ChangeNotifier {
     for (final a in await client.pendingApprovals()) {
       _transcriptFor(a.sessionId)?.apply(ApprovalRequested(a));
     }
+    if (hasSecretRequests) {
+      try {
+        for (final r in await client.secretRequests()) {
+          _routeSecret(r);
+          _transcriptFor(r.rootSessionId ?? r.sessionId)
+              ?.apply(SecretRequested(r));
+        }
+      } on TernException {
+        // Not available to this device: the event stream still delivers.
+      }
+    }
   }
 
   Future<void> _load(String id) async {
@@ -142,6 +165,11 @@ class TernStore extends ChangeNotifier {
     for (final a
         in previous?.items.whereType<ApprovalItem>() ?? <ApprovalItem>[]) {
       if (a.outcome == null) t.items.add(a);
+    }
+    for (final r
+        in previous?.items.whereType<SecretRequestItem>() ??
+            <SecretRequestItem>[]) {
+      if (r.open) t.items.add(r);
     }
     transcripts[id] = t;
     usage[id] = await client.usage(id);
@@ -202,6 +230,9 @@ class TernStore extends ChangeNotifier {
   Transcript? _transcriptFor(String session) =>
       transcripts.putIfAbsent(session, Transcript.new);
 
+  @visibleForTesting
+  void onEventForTest(TernEvent e) => _onEvent(e);
+
   void _onEvent(TernEvent e) {
     String? session;
     switch (e) {
@@ -209,6 +240,8 @@ class TernStore extends ChangeNotifier {
         session = approval.rootSessionId ?? approval.sessionId;
         _runSession[approval.runId] ??= approval.sessionId;
         _approvalSession[approval.runId] = session;
+      case SecretRequested(:final request):
+        session = _routeSecret(request);
       case RunStarted(:final runId, :final sessionId):
         session = sessionId;
         _runSession[runId] = sessionId;
@@ -236,12 +269,14 @@ class TernStore extends ChangeNotifier {
       return;
     }
     var changed = _transcriptFor(session)!.apply(e);
+    if (e is ToolFinished) changed = _closeSecrets(e) || changed;
     if (e is RunEvent && _parentOf.containsKey(e.runId)) {
       changed = _onChildEvent(e, session) || changed;
     } else if (e is RunFinished) {
       unawaited(_afterRun(session, e));
     }
     if (e is ApprovalRequested) _notifyApproval(e.approval);
+    if (e is SecretRequested) _notifySecret(e.request, session);
     if (changed) notifyListeners();
   }
 
@@ -255,6 +290,9 @@ class TernStore extends ChangeNotifier {
         // Its approvals live in the conversation the user started.
         if (_approvalSession[runId] case final root?) {
           transcripts[root]?.expireApprovals(runId);
+        }
+        if (_secretSession[runId] case final root?) {
+          transcripts[root]?.expireSecretRequests(runId);
         }
         final reply = transcripts[session]?.items
             .whereType<AssistantItem>()
@@ -292,6 +330,38 @@ class TernStore extends ChangeNotifier {
     );
   }
 
+  /// Where a request's card belongs: the conversation the user started.
+  String _routeSecret(SecretRequest r) {
+    final session = r.rootSessionId ?? r.sessionId;
+    _runSession[r.runId] ??= r.sessionId;
+    _secretSession[r.runId] = session;
+    return session;
+  }
+
+  /// A `secret_request` call ended: its card closes, whoever answered.
+  /// (A sub-agent's event lands in its own transcript; the card is in the
+  /// root's.)
+  bool _closeSecrets(ToolFinished e) {
+    var changed = false;
+    for (final t in transcripts.values) {
+      changed = t.closeSecretRequests(e.runId, e.id, e.output) || changed;
+    }
+    return changed;
+  }
+
+  // The notification names the request, never a value field.
+  void _notifySecret(SecretRequest r, String session) {
+    if (!_unseen(session)) return;
+    final names = r.secrets.map((s) => s.name).join(', ');
+    unawaited(
+      notifier.show(
+        id: r.id,
+        title: '${r.agentLabel ?? 'The agent'} is asking for a secret',
+        body: names,
+      ),
+    );
+  }
+
   void _notifyFinished(String session, RunFinished e) {
     if (!_unseen(session) || e.status == 'interrupted') return;
     final title = sessions.where((s) => s.id == session).firstOrNull?.title;
@@ -320,7 +390,9 @@ class TernStore extends ChangeNotifier {
           transcripts.entries
               .where(
                 (t) => t.value.items.any(
-                  (i) => i is ApprovalItem && i.approval.id == id,
+                  (i) =>
+                      (i is ApprovalItem && i.approval.id == id) ||
+                      (i is SecretRequestItem && i.request.id == id),
                 ),
               )
               .map((t) => t.key)
@@ -346,7 +418,7 @@ class TernStore extends ChangeNotifier {
 
   @override
   void notifyListeners() {
-    final pending = pendingApprovals;
+    final pending = pendingApprovals + pendingSecrets;
     if (pending != _badge) {
       _badge = pending;
       unawaited(notifier.badge(pending));
@@ -459,6 +531,31 @@ class TernStore extends ChangeNotifier {
       // Usually: the run already moved on and the approval expired.
       item.outcome = 'expired';
       error = e.message;
+    }
+    notifyListeners();
+  }
+
+  /// Send what the user entered (only non-empty values; an empty map
+  /// skips the request). The values live in the card's fields and the
+  /// request body, nowhere else.
+  Future<void> answerSecret(
+    SecretRequestItem item,
+    Map<String, String> values,
+  ) async {
+    try {
+      await client.answerSecretRequest(item.request.id, values);
+      item.saved = values.keys.toList();
+      item.outcome = values.isEmpty ? 'skipped' : 'saved';
+    } on TernException catch (e) {
+      switch (e.status) {
+        case 403:
+          item.readOnly = true;
+        case 404:
+          // Answered elsewhere, or the run moved on.
+          item.outcome = 'expired';
+        default:
+          error = e.message;
+      }
     }
     notifyListeners();
   }

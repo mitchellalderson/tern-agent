@@ -67,10 +67,11 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
         inp.workspace.display()
     ));
     out.push_str(
-        "\n\n## Secrets\n\nAPI keys and tokens are set by the user as environment variables or in \
-         ~/.tern/secrets.toml (`NAME = \"value\"`, file mode 0600), and take effect after restarting tern \
-         (or /reload in the chat UI). tern does not read .env files. Never ask the user to paste a secret \
-         into the conversation, and never write one to a file yourself.",
+        "\n\n## Secrets\n\nWhen something needs an API key or token that isn't set, call \
+         `secret_request` with its name and what it's for: the user enters it in a private prompt you \
+         never see, and it works straight away. Never ask the user to paste a secret into the \
+         conversation, and never write one to a file yourself. (Users can also set secrets as \
+         environment variables or in ~/.tern/secrets.toml; tern does not read .env files.)",
     );
 
     if let Some(sub) = inp.subagents {

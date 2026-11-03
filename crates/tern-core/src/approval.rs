@@ -41,9 +41,48 @@ pub struct ApprovalRequest {
     pub agent_label: Option<String>,
 }
 
+/// One secret a `secret_request` asks for, with what is known about it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretAsk {
+    pub name: String,
+    pub in_file: bool,
+    /// Set in the environment, which wins over a value saved here.
+    pub in_env: bool,
+    /// What would read it, e.g. `connector weather (draft) · reaches api.weather.com`.
+    pub used_by: Vec<String>,
+}
+
+/// The agent asking the user to enter secrets (docs/secret-requests-spec.md).
+#[derive(Debug, Clone)]
+pub struct SecretRequest {
+    pub id: String,
+    pub run_id: String,
+    pub session_id: String,
+    /// The `secret_request` tool call, so front ends can place the prompt
+    /// and close it on that call's `tool_finished`.
+    pub call_id: Option<String>,
+    pub asks: Vec<SecretAsk>,
+    /// The agent's words: show them as such, never as tern's own.
+    pub reason: String,
+    /// The user is asked to replace values that are already set.
+    pub replace: bool,
+    pub parent_run_id: Option<String>,
+    pub agent_label: Option<String>,
+}
+
+/// What the user entered, by name. Names left out were skipped. Values go
+/// straight to `secrets.toml`; they never reach the model or the journal.
+pub type SecretValues = std::collections::BTreeMap<String, String>;
+
 #[async_trait]
 pub trait ApprovalHandler: Send + Sync {
     async fn ask(&self, req: &ApprovalRequest) -> Decision;
+
+    /// Ask the user to enter secrets. `None` means nobody can be asked
+    /// (non-interactive runs), which the tool reports as skipped.
+    async fn ask_secrets(&self, _req: &SecretRequest) -> Option<SecretValues> {
+        None
+    }
 }
 
 /// Approves everything (`--yes`).

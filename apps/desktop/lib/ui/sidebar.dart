@@ -211,7 +211,11 @@ class _SessionRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.colors;
     final waiting =
-        transcript?.items.any((i) => i is ApprovalItem && i.outcome == null) ??
+        transcript?.items.any(
+          (i) =>
+              (i is ApprovalItem && i.outcome == null) ||
+              (i is SecretRequestItem && i.open),
+        ) ??
         false;
     final running = transcript?.activeRun != null;
     final icon = switch (session.source) {
@@ -249,7 +253,7 @@ class _SessionRow extends StatelessWidget {
                 const SizedBox(width: 6),
                 if (waiting)
                   Tooltip(
-                    message: 'Waiting for your approval',
+                    message: 'Waiting for you',
                     child: _Dot(color: c.warn),
                   )
                 else if (running)

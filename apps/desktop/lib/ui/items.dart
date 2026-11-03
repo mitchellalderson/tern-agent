@@ -41,6 +41,7 @@ class ItemView extends StatelessWidget {
     final AgentsItem a => AgentsCard(agents: a, store: store),
     final PillItem p => _Pill(p),
     final ApprovalItem a => ApprovalCard(item: a, store: store),
+    final SecretRequestItem r => SecretRequestCard(item: r, store: store),
     final RunEndItem r => _RunEnd(r, store: store),
   };
 }
@@ -468,6 +469,227 @@ class _ApprovalCardState extends State<ApprovalCard> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// The agent asking for secrets. Mirrors [ApprovalCard]. Values exist only
+/// in the text controllers until sent; nothing here logs, stores or
+/// re-displays them.
+class SecretRequestCard extends StatefulWidget {
+  const SecretRequestCard({super.key, required this.item, required this.store});
+
+  final SecretRequestItem item;
+  final TernStore store;
+
+  @override
+  State<SecretRequestCard> createState() => _SecretRequestCardState();
+}
+
+class _SecretRequestCardState extends State<SecretRequestCard> {
+  final _controllers = <String, TextEditingController>{};
+  final _shown = <String>{};
+  var _busy = false;
+  var _disposedFields = false;
+
+  TextEditingController _field(String name) =>
+      _controllers.putIfAbsent(name, TextEditingController.new);
+
+  void _disposeFields() {
+    if (_disposedFields) return;
+    _disposedFields = true;
+    for (final c in _controllers.values) {
+      c
+        ..clear()
+        ..dispose();
+    }
+    _controllers.clear();
+  }
+
+  @override
+  void dispose() {
+    _disposeFields();
+    super.dispose();
+  }
+
+  Future<void> _send({required bool skip}) async {
+    final values = <String, String>{};
+    if (!skip) {
+      for (final e in _controllers.entries) {
+        if (e.value.text.isNotEmpty) values[e.key] = e.value.text;
+      }
+    }
+    setState(() => _busy = true);
+    await widget.store.answerSecret(widget.item, values);
+    if (mounted) setState(() => _busy = false);
+  }
+
+  Future<void> _paste(String name) async {
+    // The clipboard is read only here, on the click.
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data?.text case final text? when mounted) {
+      setState(() => _field(name).text = text.trim());
+    }
+  }
+
+  String _state(SecretAsk s) {
+    if (s.inEnv) {
+      return 'set in the environment, which wins over a saved value';
+    }
+    if (s.inFile) return 'saved — this replaces it';
+    return 'not set';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final item = widget.item;
+    final r = item.request;
+    final names = r.secrets.map((s) => s.name).toList();
+    if (!item.open) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _disposeFields());
+      final (icon, color, text) = switch (item.outcome) {
+        'saved' => (
+          Icons.check_circle_outline,
+          c.ok,
+          '${item.saved.join(', ')} saved ✓',
+        ),
+        'skipped' => (Icons.block, c.muted, '${names.join(', ')} skipped'),
+        _ when item.result.isNotEmpty => (
+          Icons.check_circle_outline,
+          c.muted,
+          item.result.entries.map((e) => '${e.key}: ${e.value}').join(', '),
+        ),
+        _ => (Icons.block, c.muted, '${names.join(', ')} not entered'),
+      };
+      return Row(
+        children: [
+          Icon(icon, size: 15, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12.5, color: c.muted),
+            ),
+          ),
+        ],
+      );
+    }
+    final who = r.agentLabel == null
+        ? 'The agent'
+        : 'Sub-agent ${r.agentLabel}';
+    final title =
+        '$who is asking for ${names.length == 1 ? 'a secret' : 'secrets'}';
+    return Container(
+      decoration: BoxDecoration(
+        color: c.card,
+        border: Border.all(color: c.warn.withValues(alpha: 0.6)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.key_outlined, size: 16, color: c.warn),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          // Labelled, so the agent's text can't pass as tern's own.
+          Text(
+            'The agent says: “${r.reason}”',
+            style: TextStyle(fontSize: 13, color: c.muted),
+          ),
+          for (final s in r.secrets) ...[
+            const SizedBox(height: 12),
+            Text(s.name, style: mono.copyWith(color: c.text)),
+            const SizedBox(height: 2),
+            Text(_state(s), style: TextStyle(fontSize: 12, color: c.muted)),
+            Text(
+              s.usedBy.isEmpty
+                  ? 'Nothing uses this secret yet.'
+                  : 'Used by ${s.usedBy.join('; ')}',
+              style: TextStyle(fontSize: 12, color: c.muted),
+            ),
+            if (!item.readOnly) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: ValueKey('secret-${s.name}'),
+                      controller: _field(s.name),
+                      obscureText: !_shown.contains(s.name),
+                      enableSuggestions: false,
+                      autocorrect: false,
+                      enableIMEPersonalizedLearning: false,
+                      style: mono.copyWith(color: c.text),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        hintText: 'Value',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  TextButton(
+                    onPressed: () => _paste(s.name),
+                    child: const Text('Paste'),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(
+                      () => _shown.contains(s.name)
+                          ? _shown.remove(s.name)
+                          : _shown.add(s.name),
+                    ),
+                    child: Text(_shown.contains(s.name) ? 'Hide' : 'Show'),
+                  ),
+                ],
+              ),
+            ],
+          ],
+          const SizedBox(height: 12),
+          if (item.readOnly)
+            Text(
+              'Enter this on an owner device',
+              style: TextStyle(fontSize: 12.5, color: c.warn),
+            )
+          else
+            Row(
+              children: [
+                FilledButton(
+                  onPressed: _busy ? null : () => _send(skip: false),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: c.accent,
+                    foregroundColor: c.onAccent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  child: const Text('Save'),
+                ),
+                const SizedBox(width: 4),
+                TextButton(
+                  onPressed: _busy ? null : () => _send(skip: true),
+                  style: TextButton.styleFrom(foregroundColor: c.muted),
+                  child: const Text('Skip'),
+                ),
+              ],
+            ),
+        ],
       ),
     );
   }

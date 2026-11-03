@@ -547,3 +547,58 @@ async fn socket_api_runs_streams_and_approves() {
         .unwrap();
     assert!(detail["messages"].as_array().unwrap().len() >= 4);
 }
+
+/// docs/secret-requests-spec.md §5.4: a run in a Telegram chat that asks
+/// for a secret gets a pointer to the app there, never a field; the app
+/// answers, and the pointer is updated.
+#[tokio::test(flavor = "multi_thread")]
+async fn telegram_secret_requests_point_to_the_app() {
+    let tg = FakeTelegram::start();
+    let env = Env::new(Some(&tg));
+    env.script(json!({ "turns": [
+        { "tool_calls": [{ "name": "secret_request", "input": {
+            "names": ["WEATHER_API_KEY"], "reason": "The weather connector needs it." } }] },
+        { "text": "Thanks, the key is saved." }
+    ]}));
+    let _daemon = env.daemon();
+    env.pair(&tg).await;
+    tg.user_says("set up weather").await;
+
+    let notice = tg.wait_for("tern needs WEATHER_API_KEY", 10).await;
+    let text = notice["text"].as_str().unwrap();
+    assert!(
+        text.contains("The agent says: \"The weather connector needs it.\""),
+        "{text}"
+    );
+    assert!(text.contains("not here"), "{text}");
+    assert!(notice["buttons"].as_array().unwrap().is_empty());
+
+    // The app answers through the API.
+    let http = api(&env.socket());
+    let pending: Value = http
+        .get("http://tern/v1/secret-requests")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = pending[0]["id"].as_str().unwrap();
+    let ok = http
+        .post(format!("http://tern/v1/secret-requests/{id}"))
+        .json(&json!({ "values": { "WEATHER_API_KEY": "wk-from-the-app-123" } }))
+        .send()
+        .await
+        .unwrap();
+    assert!(ok.status().is_success());
+
+    tg.wait_for("✓ WEATHER_API_KEY saved", 10).await;
+    tg.wait_for("Thanks, the key is saved.", 10).await;
+    assert!(
+        !tg.messages()
+            .await
+            .iter()
+            .any(|m| m["text"].as_str().unwrap_or("").contains("wk-from-the-app")),
+        "the value never reaches the chat"
+    );
+}

@@ -11,16 +11,20 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tern_core::SecretStatus;
 use tern_core::agent::RunOutcome;
-use tern_core::approval::{ApprovalRequest, Decision};
+use tern_core::approval::{ApprovalRequest, Decision, SecretRequest};
 use tern_core::events::AgentEvent;
 use tern_core::subagent::ChildRun;
 use tern_core::types::{Role, ToolCall, Usage};
 use tern_store::{SessionRow, SessionSummary};
-use tern_tui::{Backend, BackendResult, HistoryMessage, PendingApproval, SessionInfo, Started};
+use tern_tui::{
+    Backend, BackendResult, HistoryMessage, PendingApproval, PendingSecret, SessionInfo, Started,
+    UserPrompt,
+};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::daemon::api::{self, ApiEvent};
+use crate::daemon::manager::ApiSecretRequest;
 
 const BASE: &str = "http://tern";
 
@@ -28,9 +32,11 @@ pub struct Remote {
     http: reqwest::Client,
     base: String,
     events: broadcast::Sender<AgentEvent>,
+    /// The connection may answer secret requests (owner scope).
+    owner: bool,
 }
 
-type Attached = (Arc<Remote>, mpsc::Receiver<PendingApproval>);
+type Attached = (Arc<Remote>, mpsc::Receiver<UserPrompt>);
 
 /// An error and its sources: reqwest's own message hides TLS failures such
 /// as a pin mismatch.
@@ -45,7 +51,7 @@ fn causes(e: &dyn std::error::Error) -> String {
 }
 
 /// Connect if a daemon answers on `socket`. Returns the backend and the
-/// channel its approval requests arrive on.
+/// channel its approval and secret requests arrive on.
 pub async fn connect(socket: &Path) -> Option<Attached> {
     if !socket.exists() {
         return None;
@@ -74,16 +80,25 @@ pub async fn connect_url(url: &str, token: &str, pin: Option<&str>) -> anyhow::R
 
 async fn attach(http: reqwest::Client, base: String) -> BackendResult<Attached> {
     let (events, _) = broadcast::channel(1024);
-    let (approvals_tx, approvals_rx) = mpsc::channel(8);
-    let remote = Arc::new(Remote { http, base, events });
-    remote
-        .request::<Value>(
-            remote
+    let (prompts_tx, prompts_rx) = mpsc::channel(8);
+    let probe = Remote {
+        http,
+        base,
+        events,
+        owner: false,
+    };
+    let health: Value = probe
+        .request(
+            probe
                 .http
-                .get(remote.url("/v1/health"))
+                .get(probe.url("/v1/health"))
                 .timeout(Duration::from_secs(5)),
         )
         .await?;
+    let remote = Arc::new(Remote {
+        owner: health["auth"]["scope"] == "owner",
+        ..probe
+    });
     // Subscribe before returning, so no event of the first run is missed.
     let resp = remote
         .http
@@ -94,17 +109,29 @@ async fn attach(http: reqwest::Client, base: String) -> BackendResult<Attached> 
     if !resp.status().is_success() {
         return Err(format!("events: HTTP {}", resp.status()));
     }
-    tokio::spawn(pump(remote.clone(), resp, approvals_tx));
-    Ok((remote, approvals_rx))
+    // Secret requests wait for minutes, so pick up ones opened before we
+    // attached (the TUI ignores any that also arrive live).
+    let pending: Vec<ApiSecretRequest> = remote
+        .request(remote.http.get(remote.url("/v1/secret-requests")))
+        .await
+        .unwrap_or_default();
+    {
+        let (remote, prompts) = (remote.clone(), prompts_tx.clone());
+        tokio::spawn(async move {
+            for r in pending {
+                if !forward_secret(&remote, &prompts, r).await {
+                    return;
+                }
+            }
+        });
+    }
+    tokio::spawn(pump(remote.clone(), resp, prompts_tx));
+    Ok((remote, prompts_rx))
 }
 
-/// Read the SSE stream: agent events go to subscribers, approval requests
-/// to the TUI, whose answers are posted back.
-async fn pump(
-    remote: Arc<Remote>,
-    resp: reqwest::Response,
-    approvals: mpsc::Sender<PendingApproval>,
-) {
+/// Read the SSE stream: agent events go to subscribers, approval and
+/// secret requests to the TUI, whose answers are posted back.
+async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sender<UserPrompt>) {
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
     while let Some(Ok(chunk)) = stream.next().await {
@@ -143,8 +170,8 @@ async fn pump(
                         parent_run_id: a.parent_run_id,
                         agent_label: a.agent_label,
                     };
-                    if approvals
-                        .send(PendingApproval { request, reply })
+                    if prompts
+                        .send(UserPrompt::Approval(PendingApproval { request, reply }))
                         .await
                         .is_err()
                     {
@@ -165,11 +192,71 @@ async fn pump(
                             .await;
                     });
                 }
+                Ok(ApiEvent::SecretRequest {
+                    secret_requested: r,
+                }) => {
+                    if !forward_secret(&remote, &prompts, r).await {
+                        return;
+                    }
+                }
                 Err(_) => {}
             }
         }
     }
     tracing::warn!("lost the daemon event stream");
+}
+
+/// Show a secret request in the TUI and post its answer. Devices without
+/// the owner scope can't answer (the daemon would refuse), so they don't get
+/// the prompt. Returns false once the TUI has gone.
+async fn forward_secret(
+    remote: &Arc<Remote>,
+    prompts: &mpsc::Sender<UserPrompt>,
+    r: ApiSecretRequest,
+) -> bool {
+    if !remote.owner {
+        return true;
+    }
+    let (reply, rx) = oneshot::channel();
+    let request = SecretRequest {
+        id: r.id.clone(),
+        run_id: r.run_id,
+        session_id: r.session_id,
+        call_id: r.call_id,
+        asks: r.secrets,
+        reason: r.reason,
+        replace: r.replace,
+        parent_run_id: r.parent_run_id,
+        agent_label: r.agent_label,
+    };
+    if prompts
+        .send(UserPrompt::Secret(PendingSecret { request, reply }))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let http = remote.http.clone();
+    let url = remote.url(&format!("/v1/secret-requests/{}", r.id));
+    tokio::spawn(async move {
+        // Dropped unanswered: answered elsewhere, or over.
+        let Ok(values) = rx.await else {
+            return;
+        };
+        match http
+            .post(url)
+            .json(&json!({ "values": values }))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {}
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), "answering a secret request failed")
+            }
+            Err(e) => tracing::warn!(error = %e, "answering a secret request failed"),
+        }
+    });
+    true
 }
 
 impl Remote {

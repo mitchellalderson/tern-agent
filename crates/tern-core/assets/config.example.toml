@@ -11,6 +11,8 @@ context_window = 128000
 
 # Secrets (API keys, tokens) are read from environment variables first,
 # then from secrets.toml next to this file (which must be mode 0600).
+# The agent can ask you for one with a private prompt; it waits this long.
+secret_request_timeout_secs = 900
 
 # [providers.anthropic]
 # kind = "anthropic"

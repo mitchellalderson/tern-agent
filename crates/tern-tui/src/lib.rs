@@ -6,6 +6,7 @@
 mod app;
 mod history;
 mod input;
+mod secret_prompt;
 mod secrets;
 mod term;
 mod ui;
@@ -16,7 +17,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tern_core::SecretStatus;
 use tern_core::agent::RunOutcome;
-use tern_core::approval::{ApprovalHandler, ApprovalRequest, Decision};
+use tern_core::approval::{
+    ApprovalHandler, ApprovalRequest, Decision, SecretRequest, SecretValues,
+};
 use tern_core::events::AgentEvent;
 use tern_core::subagent::ChildRun;
 use tern_core::types::{ContentBlock, Role, Usage};
@@ -110,13 +113,27 @@ pub struct PendingApproval {
     pub reply: oneshot::Sender<Decision>,
 }
 
+/// Secrets the agent asked for (`secret_request`), answered through
+/// `reply` with the values entered. Dropping `reply` answers nothing, for
+/// prompts closed because someone else answered.
+pub struct PendingSecret {
+    pub request: SecretRequest,
+    pub reply: oneshot::Sender<SecretValues>,
+}
+
+/// Something the agent is waiting on the user for.
+pub enum UserPrompt {
+    Approval(PendingApproval),
+    Secret(PendingSecret),
+}
+
 /// `ApprovalHandler` that forwards requests to the TUI's event loop.
 pub struct TuiApprover {
-    tx: mpsc::Sender<PendingApproval>,
+    tx: mpsc::Sender<UserPrompt>,
 }
 
 impl TuiApprover {
-    pub fn new() -> (Arc<Self>, mpsc::Receiver<PendingApproval>) {
+    pub fn new() -> (Arc<Self>, mpsc::Receiver<UserPrompt>) {
         let (tx, rx) = mpsc::channel(8);
         (Arc::new(Self { tx }), rx)
     }
@@ -130,9 +147,20 @@ impl ApprovalHandler for TuiApprover {
             request: request.clone(),
             reply,
         };
-        if self.tx.send(pending).await.is_err() {
+        if self.tx.send(UserPrompt::Approval(pending)).await.is_err() {
             return Decision::Deny;
         }
         rx.await.unwrap_or(Decision::Deny)
+    }
+
+    async fn ask_secrets(&self, request: &SecretRequest) -> Option<SecretValues> {
+        let (reply, rx) = oneshot::channel();
+        let pending = PendingSecret {
+            request: request.clone(),
+            reply,
+        };
+        self.tx.send(UserPrompt::Secret(pending)).await.ok()?;
+        // A prompt closed without an answer counts as skipped.
+        Some(rx.await.unwrap_or_default())
     }
 }

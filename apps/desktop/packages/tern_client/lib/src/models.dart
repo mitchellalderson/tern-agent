@@ -3,6 +3,8 @@
 // event types decode to [UnknownEvent], so a newer daemon doesn't break
 // an older app.
 
+import 'secret_requests.dart';
+
 typedef Json = Map<String, dynamic>;
 
 /// `/v1/health`: what the core is and what this client may do there
@@ -398,6 +400,9 @@ sealed class TernEvent {
     if (j['approval_requested'] case final Json a) {
       return ApprovalRequested(Approval.fromJson(a));
     }
+    if (j['secret_requested'] case final Json s) {
+      return SecretRequested(SecretRequest.fromJson(s));
+    }
     final run = j['run_id'] as String? ?? '';
     final event = _agentEvent(j, run);
     if (event is RunEvent) {
@@ -662,6 +667,11 @@ class RunFinished extends RunEvent {
 class ApprovalRequested extends TernEvent {
   const ApprovalRequested(this.approval);
   final Approval approval;
+}
+
+class SecretRequested extends TernEvent {
+  const SecretRequested(this.request);
+  final SecretRequest request;
 }
 
 class UnknownEvent extends TernEvent {

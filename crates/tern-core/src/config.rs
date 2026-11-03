@@ -35,6 +35,8 @@ pub struct Config {
     pub max_iterations: u32,
     /// Default model context window in tokens; providers can override it.
     pub context_window: u64,
+    /// How long a `secret_request` prompt waits for the user.
+    pub secret_request_timeout_secs: u64,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub sandbox: SandboxConfig,
     pub gateway: GatewayConfig,
@@ -50,6 +52,7 @@ impl Default for Config {
             workspace: "~/tern-workspace".into(),
             max_iterations: 40,
             context_window: 128_000,
+            secret_request_timeout_secs: 900,
             providers: BTreeMap::new(),
             sandbox: SandboxConfig::default(),
             gateway: GatewayConfig::default(),
