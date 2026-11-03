@@ -42,6 +42,8 @@ impl PromptMaker {
             tools: Arc::downgrade(tools),
             sub: s.enabled.then(|| SubagentPrompt {
                 max_concurrent: s.max_concurrent,
+                max_iterations: s.max_iterations,
+                budget_tokens: s.budget_tokens,
                 models: s
                     .models
                     .iter()

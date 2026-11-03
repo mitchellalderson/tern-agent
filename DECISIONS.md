@@ -245,7 +245,8 @@ The desktop app's view of sub-agents (S4) and the prompt that makes tern delegat
 - **The activity line** says "Waiting on N agents · M done" while the run is between model calls with children out; an unanswered approval still hides it.
 - **The prompt is built per role** (`AgentRole::Main` / `Subagent { label }` in `tern_core::prompt`), by `runtime::PromptMaker`, which the sub-agent host gets late-bound (`Subagents::set_prompt`), so a child's frozen prompt has the "You are a sub-agent" section instead of its parent's. The "Sub-agents" section goes to runs that get the `agent_*` tools (depth < `max_depth`), after Secrets and before Skills; model aliases are listed as `` `alias` (provider:model) ``. With `[subagents] enabled = false` the prompt is unchanged from before S0.
 - **`[subagents].enabled` now defaults to true.** Runs started before the upgrade keep their frozen prompt; one interrupted by the upgrade replays with a different tool list (see S2–S3).
-- **Not done**: the real-provider eval set from §7 (fan-out, a quick lookup that must not delegate, review-my-work).
+- **Tightened for eagerness (2026-11-03)**: the Sub-agents section now says to fan out first on a multi-part request, "when in doubt, delegate", to spawn a read-only reviewer before reporting a substantial change, and lists the per-child step and token limits (`SubagentPrompt` carries `max_iterations` and `budget_tokens`) so the parent raises them instead of doing the work itself. `persona.md` gains a line on finishing the whole task and taking reversible steps without asking.
+- **Not done**: the real-provider eval set from §7 (fan-out, a quick lookup that must not delegate, review-my-work). The prompt's eagerness is asserted by string checks only.
 
 ## Shell sandbox
 

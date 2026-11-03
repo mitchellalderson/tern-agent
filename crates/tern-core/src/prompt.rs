@@ -21,6 +21,10 @@ pub enum AgentRole<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentPrompt {
     pub max_concurrent: u32,
+    /// Per child unless `agent_spawn` asks for fewer (`[subagents].max_iterations`).
+    pub max_iterations: u32,
+    /// Per child unless `agent_spawn` asks for fewer (`[subagents].budget_tokens`).
+    pub budget_tokens: u64,
     /// What `agent_spawn` accepts as `model`: aliases, described.
     pub models: Vec<String>,
     /// Whether its sub-agents may start their own.
@@ -112,6 +116,8 @@ fn subagents_section(sub: &SubagentPrompt) -> String {
     };
     SUBAGENTS
         .replace("{max_concurrent}", &sub.max_concurrent.to_string())
+        .replace("{max_iterations}", &sub.max_iterations.to_string())
+        .replace("{budget_tokens}", &with_thousands(sub.budget_tokens))
         .replace("{models}", &models)
         .replace("{nest}", nest)
 }
@@ -121,16 +127,20 @@ const SUBAGENTS: &str = "## Sub-agents
 You can delegate work to sub-agents: separate instances of you that run in parallel, each with a fresh context, the \
 same workspace and, unless you limit them, the same tools. Delegating well is one of the most useful things you do. \
 It finishes independent work in parallel, keeps your own context free of detail you only need the conclusion of, and \
-gives you independent checks. Be proactive about it: you coordinate, they do the legwork.
+gives you independent checks. Be proactive about it: you coordinate, they do the legwork. On a request with more than \
+one part, fan out first, before you start reading or searching yourself: once you have done the legwork there is \
+nothing left to delegate. When in doubt, delegate.
 
 Delegate by default when:
 - the work splits into parts that don't depend on each other (several companies, files, repos, sources or \
 approaches): spawn one sub-agent per part, all in the same turn;
 - a part needs a lot of reading, searching or trial and error, and you only need what it found;
 - a step would flood your context (long logs, large files, many web pages);
-- you want a second opinion on your own work: a fresh reviewer who hasn't seen your reasoning.
-Do it yourself when the task takes only a few tool calls, when each step depends on the one before, or when it needs \
-the conversation with the user that only you have. Never delegate talking to the user.
+- you have made a substantial change or reached a conclusion the user will act on: before you report, spawn a \
+read-only reviewer who hasn't seen your reasoning.
+Do it yourself only when the whole task takes a few tool calls, when it is one short chain where every step needs the \
+result of the one before, or when it needs the conversation with the user that only you have. Never delegate talking \
+to the user.
 
 Fanning out:
 - Call `agent_spawn` once per part, then `agent_wait`, all in one turn. Up to {max_concurrent} run at once; more are \
@@ -141,6 +151,9 @@ it, so no two do the same work.
 and never let two of them write the same files.
 - Pick `model` for the job: {models}. A light model is fine for lookups and summaries; use a strong one for hard \
 reasoning and code.
+- Each sub-agent gets {max_iterations} steps and {budget_tokens} tokens unless you pass `max_iterations` or \
+`budget_tokens`. Give more to one you have asked to read, search or try a lot; a task that needs a big budget is not a \
+reason to do it yourself.
 
 Briefing: a sub-agent knows only what you put in `task`. Write it like a handoff to a capable colleague who has just \
 walked in:
@@ -162,8 +175,8 @@ When reports come back:
 - Treat each report as a claim, not a fact. Before you act on it or tell the user, check what matters: open the file it \
 changed, rerun the test, look at the source it cites. A confident tone is not evidence.
 - If reports conflict, find out why instead of picking one. Spawn a focused follow-up if you need to.
-- If a sub-agent failed or ran out of budget, retry it with a better brief, take that part over yourself, or tell the \
-user what is missing.
+- If a sub-agent failed or ran out of budget, retry it with a better brief and a larger budget, take that part over \
+yourself, or tell the user what is missing.
 - Write one answer in your own words. The user has not seen the reports, so don't refer to them as if they had, and \
 say what you checked and what you didn't.
 
@@ -186,6 +199,19 @@ them.
 - Check your work before you finish: rerun the test, re-read the file, confirm the source.
 - Your final message is the report. Lead with the answer in the shape the brief asked for, then what you checked, what \
 you assumed, and anything left undone. Use exact paths, links and figures. No preamble, and no \"let me know if…\".";
+
+/// `400000` → `400,000`.
+fn with_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
 
 /// File contents with HTML comments stripped, or `None` if nothing is left.
 fn read_nonempty(path: &Path) -> Option<String> {
@@ -267,6 +293,8 @@ mod tests {
         std::fs::write(home.persona_path(), "I am tern.").unwrap();
         let sub = SubagentPrompt {
             max_concurrent: 3,
+            max_iterations: 30,
+            budget_tokens: 400_000,
             models: vec!["fast (anthropic:claude-haiku-5-5)".to_owned()],
             can_nest: false,
         };
@@ -283,7 +311,9 @@ mod tests {
         let main = system_prompt(&inp(AgentRole::Main, Some(&sub)));
         assert!(main.contains("## Sub-agents"));
         assert!(main.contains("Be proactive about it"));
+        assert!(main.contains("When in doubt, delegate."));
         assert!(main.contains("Up to 3 run at once"));
+        assert!(main.contains("Each sub-agent gets 30 steps and 400,000 tokens"));
         assert!(main.contains("Pick `model` for the job: fast (anthropic:claude-haiku-5-5)."));
         assert!(main.contains("They can't start sub-agents of their own."));
         assert!(!main.contains("## You are a sub-agent"));
