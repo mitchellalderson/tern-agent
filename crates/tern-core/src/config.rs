@@ -356,6 +356,11 @@ pub struct McpServerConfig {
     pub idempotent: bool,
     #[serde(default)]
     pub requires_approval: bool,
+    /// Per-tool effect overrides, keyed by the server's own tool name (`"*"`
+    /// for the rest), e.g. `effects = { search = "read", "*" = "write" }`.
+    /// They win over the server's `readOnlyHint` / `destructiveHint`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub effects: BTreeMap<String, crate::tool::Effect>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

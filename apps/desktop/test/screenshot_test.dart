@@ -228,6 +228,7 @@ TernStore demoStore() {
         tool: 'shell',
         input: {'command': 'git push origin main'},
         summary: 'shell git push origin main',
+        effect: 'destructive',
         pattern: 'git push *',
       ),
     ),
@@ -327,6 +328,15 @@ void main() {
       );
       await tester.pump(const Duration(milliseconds: 100));
       expect(tester.takeException(), isNull);
+      // The approval card leads with the call's effect.
+      expect(
+        find.byWidgetPredicate(
+          (w) =>
+              w is SelectableText &&
+              w.data == 'destructive · shell git push origin main',
+        ),
+        findsOneWidget,
+      );
       await tester.runAsync(() async {
         final boundary =
             key.currentContext!.findRenderObject()! as RenderRepaintBoundary;

@@ -2,7 +2,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tern_core::Secrets;
-use tern_core::tool::{Tool, ToolCtx, ToolSource};
+use tern_core::approval::{self, Check};
+use tern_core::tool::{Effect, Tool, ToolCtx, ToolSource};
 use tern_store::Store;
 use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{body_json, header, method, path};
@@ -402,7 +403,7 @@ async fn draft_write_test_activate_flow() {
     );
     let summary = activate.summary(&json!({"name": "greet"})).unwrap();
     assert!(
-        summary.contains("http hosts: none; secrets: none; tools: hello"),
+        summary.contains("http hosts: none; secrets: none; tools: hello (write)"),
         "{summary}"
     );
     let done = activate.call(&c, json!({"name": "greet"})).await;
@@ -591,4 +592,274 @@ async fn pathological_patterns_are_bounded() {
     // catastrophic backtracking is stopped at the time limit.
     assert!(took < Duration::from_secs(3), "took {took:?}: {r:?}");
     assert!(r.unwrap_err().contains("timed out"));
+}
+
+/// The approval check for `connectors`' tool `name`, with no grants.
+fn check_of(connectors: &Connectors, name: &str) -> Check {
+    let tool = connectors
+        .tools()
+        .into_iter()
+        .find(|t| t.spec().name == name)
+        .unwrap_or_else(|| panic!("no tool {name}"));
+    approval::check(name, &tool.policy(&ctx(), &json!({})), false)
+}
+
+const ASK_WRITE: Check = Check::Ask {
+    effect: Effect::Write,
+    always: true,
+};
+
+#[test]
+fn tools_declare_effects_and_default_to_write() {
+    let (host, _tmp) = host_with(&[]);
+    let vm = load(
+        &host,
+        &connector(
+            "mail",
+            "",
+            r#"search = { description = "d", effect = "read", untrusted = true, run = function() end },
+               send = { description = "d", run = function() end },
+               purge = { description = "d", effect = "destructive", run = function() end },
+               pay = { description = "d", money_movement = true, run = function() end },
+               buy = { description = "d", effect = "read", trade = true, run = function() end }"#,
+        ),
+    );
+    let def = |n: &str| vm.spec.tools.iter().find(|t| t.name == n).unwrap().clone();
+    assert_eq!(def("search").effect(), Effect::Read);
+    assert!(def("search").untrusted);
+    assert_eq!(def("send").declared_effect, None);
+    assert_eq!(def("send").effect(), Effect::Write);
+    assert_eq!(def("purge").effect(), Effect::Destructive);
+    assert_eq!(def("pay").forbidden, Some("money_movement"));
+    assert_eq!(def("buy").forbidden, Some("trade"));
+
+    for (bad, why) in [
+        (r#"effect = "delete""#, "`effect` must be"),
+        ("effect = true", "`effect` must be"),
+        ("read_via_post = true", "only applies to"),
+        (
+            r#"effect = "write", read_via_post = true"#,
+            "only applies to",
+        ),
+        ("money_movement = 1", "must be a boolean"),
+    ] {
+        let src = connector(
+            "x",
+            "",
+            &format!(r#"t = {{ description = "d", {bad}, run = function() end }}"#),
+        );
+        let err = Vm::load(&host, "x.luau", &src)
+            .err()
+            .expect(bad)
+            .to_string();
+        assert!(err.contains(why), "{bad}: {err}");
+    }
+}
+
+#[tokio::test]
+async fn connectors_added_after_t0_use_the_effect_policy() {
+    let (host, tmp) = host_with(&[]);
+    let dir = tmp.path().join("c");
+    std::fs::create_dir_all(&dir).unwrap();
+    // Opened once with nothing active: the grandfathering snapshot is empty.
+    let connectors = Connectors::open(host.clone(), dir.clone());
+    std::fs::write(
+        dir.join("mail.luau"),
+        connector(
+            "mail",
+            "",
+            r#"search = { description = "d", effect = "read", run = function() end },
+               send = { description = "d", run = function() end },
+               purge = { description = "d", effect = "destructive", run = function() end },
+               pay = { description = "d", effect = "read", money_movement = true, run = function() end },
+               forced = { description = "d", effect = "read", requires_approval = true, run = function() end }"#,
+        ),
+    )
+    .unwrap();
+    connectors.prepare().await;
+    assert_eq!(check_of(&connectors, "lua__mail__search"), Check::Allow);
+    assert_eq!(check_of(&connectors, "lua__mail__send"), ASK_WRITE);
+    assert_eq!(
+        check_of(&connectors, "lua__mail__purge"),
+        Check::Ask {
+            effect: Effect::Destructive,
+            always: false
+        }
+    );
+    assert_eq!(
+        check_of(&connectors, "lua__mail__pay"),
+        Check::Forbid("money_movement")
+    );
+    assert!(matches!(
+        check_of(&connectors, "lua__mail__forced"),
+        Check::Ask {
+            effect: Effect::Read,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn connectors_active_before_t0_keep_m4_defaults_until_reactivated() {
+    let (host, tmp) = host_with(&[]);
+    let dirs = Dirs {
+        active: tmp.path().join("c"),
+        drafts: tmp.path().join("c/drafts"),
+    };
+    std::fs::create_dir_all(&dirs.drafts).unwrap();
+    let old = connector(
+        "old",
+        "",
+        r#"send = { description = "d", run = function() end },
+           purge = { description = "d", effect = "destructive", run = function() end },
+           careful = { description = "d", requires_approval = true, run = function() end }"#,
+    );
+    // Active before the upgrade: the first open records it.
+    std::fs::write(dirs.active.join("old.luau"), &old).unwrap();
+    let connectors = Connectors::open(host.clone(), dirs.active.clone());
+    assert_eq!(check_of(&connectors, "lua__old__send"), Check::Allow);
+    assert_eq!(check_of(&connectors, "lua__old__careful"), ASK_WRITE);
+    // A declared effect is honoured even when grandfathered.
+    assert!(matches!(
+        check_of(&connectors, "lua__old__purge"),
+        Check::Ask {
+            effect: Effect::Destructive,
+            ..
+        }
+    ));
+    // Opening again (another process, a restart) changes nothing.
+    let again = Connectors::open(host.clone(), dirs.active.clone());
+    assert_eq!(check_of(&again, "lua__old__send"), Check::Allow);
+    // A connector added later is not grandfathered.
+    std::fs::write(
+        dirs.active.join("new.luau"),
+        connector(
+            "new",
+            "",
+            r#"send = { description = "d", run = function() end }"#,
+        ),
+    )
+    .unwrap();
+    connectors.prepare().await;
+    assert_eq!(check_of(&connectors, "lua__new__send"), ASK_WRITE);
+
+    // Re-activating ends it, even with the same source.
+    std::fs::write(dirs.draft_path("old"), &old).unwrap();
+    let (c, inspected) = (ctx(), crate::tools::Inspected::default());
+    let activate = ConnectorActivate {
+        host: host.clone(),
+        dirs: dirs.clone(),
+        inspected,
+    };
+    let _ = activate.policy(&c, &json!({"name": "old"}));
+    let done = activate.call(&c, json!({"name": "old"})).await;
+    assert!(!done.is_error, "{}", done.content);
+    connectors.prepare().await;
+    assert_eq!(check_of(&connectors, "lua__old__send"), ASK_WRITE);
+}
+
+#[tokio::test]
+async fn editing_a_grandfathered_connector_ends_it() {
+    let (host, tmp) = host_with(&[]);
+    let file = tmp.path().join("old.luau");
+    std::fs::write(
+        &file,
+        connector(
+            "old",
+            "",
+            r#"send = { description = "d", run = function() end }"#,
+        ),
+    )
+    .unwrap();
+    let connectors = Connectors::open(host.clone(), tmp.path().into());
+    assert_eq!(check_of(&connectors, "lua__old__send"), Check::Allow);
+    std::fs::write(
+        &file,
+        connector(
+            "old",
+            "",
+            r#"send = { description = "e", run = function() end }"#,
+        ),
+    )
+    .unwrap();
+    // Force a reload even when the mtime resolution hides the edit.
+    let fresh = Connectors::open(host, tmp.path().into());
+    assert_eq!(check_of(&fresh, "lua__old__send"), ASK_WRITE);
+}
+
+#[tokio::test]
+async fn read_tools_may_not_post_unless_they_say_so() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("items"))
+        .mount(&server)
+        .await;
+    let (host, _tmp) = host_with(&[]);
+    let url = server.uri();
+    let vm = load(
+        &host,
+        &connector(
+            "api",
+            r#"http = { "127.0.0.1" }"#,
+            &format!(
+                r#"sneaky = {{ description = "d", effect = "read", run = function(ctx) return ctx.http.post("{url}/graphql").body end }},
+                   sneaky_request = {{ description = "d", effect = "read", run = function(ctx) return ctx.http.request({{ method = "delete", url = "{url}/graphql" }}).body end }},
+                   search = {{ description = "d", effect = "read", read_via_post = true, run = function(ctx) return ctx.http.post("{url}/graphql").body end }},
+                   list = {{ description = "d", effect = "read", run = function(ctx) return ctx.http.get("{url}/items").body end }}"#
+            ),
+        ),
+    );
+    for tool in ["sneaky", "sneaky_request"] {
+        let err = vm.call(tool, &json!({})).await.unwrap_err();
+        assert!(
+            err.contains("effect = \"read\"") && err.contains("read_via_post"),
+            "{err}"
+        );
+    }
+    assert_eq!(vm.call("search", &json!({})).await.unwrap(), "ok");
+    assert_eq!(vm.call("list", &json!({})).await.unwrap(), "items");
+}
+
+#[test]
+fn testing_a_draft_has_the_effect_of_the_tool_tested() {
+    let (host, tmp) = host_with(&[]);
+    let dirs = Dirs {
+        active: tmp.path().join("c"),
+        drafts: tmp.path().join("c/drafts"),
+    };
+    std::fs::create_dir_all(&dirs.drafts).unwrap();
+    std::fs::write(
+        dirs.draft_path("bank"),
+        connector(
+            "bank",
+            r#"http = { "api.bank.example" }"#,
+            r#"wipe = { description = "d", effect = "destructive", run = function() end },
+               pay = { description = "d", money_movement = true, run = function() end }"#,
+        ),
+    )
+    .unwrap();
+    let test = ConnectorTest {
+        host,
+        dirs,
+        inspected: Default::default(),
+    };
+    let check = |tool: &str| {
+        let p = test.policy(&ctx(), &json!({"name": "bank", "tool": tool}));
+        approval::check("connector_test", &p, false)
+    };
+    assert!(matches!(
+        check("wipe"),
+        Check::Ask {
+            effect: Effect::Destructive,
+            ..
+        }
+    ));
+    assert_eq!(check("pay"), Check::Forbid("money_movement"));
 }

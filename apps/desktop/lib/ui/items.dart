@@ -423,7 +423,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
                 border: Border.all(color: c.hairline),
               ),
               child: SelectableText(
-                _showInput ? input : a.summary,
+                _showInput ? input : a.headline,
                 style: mono.copyWith(color: c.text),
               ),
             ),

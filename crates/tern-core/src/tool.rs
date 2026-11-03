@@ -14,11 +14,92 @@ use crate::types::{ToolCall, ToolSpec};
 /// Tool output beyond this is cut in the middle (spec §6).
 pub const MAX_TOOL_OUTPUT: usize = 32 * 1024;
 
+/// What a tool call does to the world (tooling spec §5.1). The host decides
+/// whether to ask from this, never the model: see [`crate::approval::check`].
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Effect {
+    /// Only looks. Never asks.
+    Read,
+    /// Changes something. Asks unless an "always" grant covers it. The
+    /// default for a tool that declares nothing (tooling spec §13.4).
+    #[default]
+    Write,
+    /// Hard or impossible to undo. Asks every time.
+    Destructive,
+}
+
+impl Effect {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effect::Read => "read",
+            Effect::Write => "write",
+            Effect::Destructive => "destructive",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "read" => Some(Effect::Read),
+            "write" => Some(Effect::Write),
+            "destructive" => Some(Effect::Destructive),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Effect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolPolicy {
     /// Safe to re-run after a crash interrupted it.
     pub idempotent: bool,
+    /// The effect of this call; usually [`Tool::effect`], but a tool may
+    /// raise it for particular arguments.
+    pub effect: Effect,
+    /// Ask even where the effect alone wouldn't (a `read` outside the
+    /// workspace, config `requires_approval`). Grants still apply.
     pub requires_approval: bool,
+    /// The host grants this `write` without a stored grant: writes to the
+    /// workspace and tern's own state, and grandfathered M4 connectors.
+    /// Ignored for `destructive` and when `requires_approval` is set.
+    pub granted: bool,
+    /// Set for tools flagged `money_movement` or `trade`: refused, and
+    /// nothing can approve them.
+    pub forbidden: Option<&'static str>,
+}
+
+impl ToolPolicy {
+    pub const fn new(effect: Effect, idempotent: bool) -> Self {
+        Self {
+            idempotent,
+            effect,
+            requires_approval: false,
+            granted: false,
+            forbidden: None,
+        }
+    }
+
+    /// A `write` the host grants by itself (see [`ToolPolicy::granted`]).
+    pub const fn granted_write(idempotent: bool) -> Self {
+        Self {
+            granted: true,
+            ..Self::new(Effect::Write, idempotent)
+        }
+    }
+
+    pub const fn forced(self, requires_approval: bool) -> Self {
+        Self {
+            requires_approval,
+            ..self
+        }
+    }
 }
 
 pub struct ToolCtx {
@@ -112,6 +193,14 @@ impl ToolResult {
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
+    /// The declared effect, shown in tool lists. Per-call policy is
+    /// [`Tool::policy`]'s `effect`.
+    fn effect(&self) -> Effect;
+    /// Returns third-party text (web pages, mail, chat messages) that may
+    /// carry instructions. Recorded now; tainting runs is T3.
+    fn untrusted(&self) -> bool {
+        false
+    }
     /// Policy for this particular call; may depend on the arguments (e.g.
     /// writes outside the workspace need approval, writes inside don't).
     fn policy(&self, ctx: &ToolCtx, args: &Value) -> ToolPolicy;
@@ -219,6 +308,14 @@ impl ToolRegistry {
         self.get(&call.name).is_none_or(|t| t.allow_always())
     }
 
+    /// Declared effect and untrusted flag of every tool, by name.
+    pub fn effects(&self) -> BTreeMap<String, (Effect, bool)> {
+        self.all()
+            .into_iter()
+            .map(|(name, t)| (name, (t.effect(), t.untrusted())))
+            .collect()
+    }
+
     pub fn summarize(&self, call: &ToolCall) -> String {
         self.get(&call.name)
             .and_then(|t| t.summary(&call.input))
@@ -229,10 +326,7 @@ impl ToolRegistry {
     pub fn policy(&self, ctx: &ToolCtx, call: &ToolCall) -> ToolPolicy {
         match self.get(&call.name) {
             Some(t) => t.policy(ctx, &call.input),
-            None => ToolPolicy {
-                idempotent: true,
-                requires_approval: false,
-            },
+            None => ToolPolicy::new(Effect::Read, true),
         }
     }
 

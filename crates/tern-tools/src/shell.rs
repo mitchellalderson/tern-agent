@@ -6,7 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult, progress_sink};
+use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult, progress_sink};
 use tern_core::types::ToolSpec;
 use tern_sandbox::{ExecOpts, OutputSink, SandboxBackend};
 
@@ -34,6 +34,10 @@ struct ShellArgs {
 
 #[async_trait]
 impl Tool for Shell {
+    fn effect(&self) -> Effect {
+        Effect::Destructive
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "shell",
@@ -50,10 +54,9 @@ impl Tool for Shell {
     }
 
     fn policy(&self, _ctx: &ToolCtx, _args: &Value) -> ToolPolicy {
-        ToolPolicy {
-            idempotent: false,
-            requires_approval: true,
-        }
+        // Destructive outside the allowlist, a granted write inside it
+        // (`approval::check`).
+        ToolPolicy::new(Effect::Destructive, false).forced(true)
     }
 
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {

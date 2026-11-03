@@ -211,6 +211,12 @@ class _ToolDialogState extends State<ToolDialog> {
   }
 }
 
+const _effectHelp = {
+  'read': 'Never asks.',
+  'write': 'Asks unless you chose “Always allow”.',
+  'destructive': 'Asks every time.',
+};
+
 class _Formatted extends StatelessWidget {
   const _Formatted(this.spec);
 
@@ -228,6 +234,16 @@ class _Formatted extends StatelessWidget {
         const SizedBox(height: 6),
         SelectableText(
           spec.description.isEmpty ? '(none)' : spec.description,
+          style: const TextStyle(fontSize: 13, height: 1.45),
+        ),
+        const SizedBox(height: 20),
+        Text('EFFECT', style: labels),
+        const SizedBox(height: 6),
+        Text(
+          [
+            '${spec.effect} · ${_effectHelp[spec.effect] ?? ''}',
+            if (spec.untrusted) 'Returns third-party text.',
+          ].join('  '),
           style: const TextStyle(fontSize: 13, height: 1.45),
         ),
         const SizedBox(height: 20),

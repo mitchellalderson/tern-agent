@@ -146,10 +146,14 @@ fn agent_writes_tests_activates_and_then_uses_a_connector() {
 
     let list = String::from_utf8_lossy(&env.tern(&["connectors", "list"]).stdout).into_owned();
     assert!(list.contains("✓ greet — Greetings"), "{list}");
+    // Activated after T0 and declaring no effect: `write`, not grandfathered.
+    assert!(list.contains("lua__greet__hello [write]"), "{list}");
+    assert!(!list.contains("grandfathered"), "{list}");
     let test = env.tern(&["connectors", "test", "greet"]);
     assert!(test.status.success());
     assert!(
-        String::from_utf8_lossy(&test.stdout).contains("lua__greet__hello: Say hello (idempotent)")
+        String::from_utf8_lossy(&test.stdout)
+            .contains("lua__greet__hello [write]: Say hello (idempotent)")
     );
 
     // A new run sees the activated connector's tools.

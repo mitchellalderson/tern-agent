@@ -246,7 +246,7 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             .as_deref()
             .map(|l| format!("[{l}] "))
             .unwrap_or_default();
-        for l in wrap(&format!("{who}Allow {}?", p.request.summary), width) {
+        for l in wrap(&format!("{who}Allow {}?", p.request.headline()), width) {
             out.push(Line::from(Span::styled(l, warn)));
         }
         let mut options = vec![Span::styled("[y]", warn), Span::raw(" yes once   ")];

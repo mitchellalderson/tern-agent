@@ -11,7 +11,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult, ToolSource};
+use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult, ToolSource};
 use tern_core::types::ToolSpec;
 
 pub use host::{DEFAULT_MEMORY, DEFAULT_TIMEOUT, Host, LoadError, Vm, host_allowed};
@@ -21,6 +21,12 @@ pub const EXTENSION: &str = "luau";
 
 /// kv namespace recording what the user approved at activation.
 pub const APPROVALS_NS: &str = "lua:approved";
+
+/// kv namespace of connectors that keep M4's approval default: name → the
+/// source hash they had when effects arrived (T0).
+pub const GRANDFATHERED_NS: &str = "lua:grandfathered";
+const META_NS: &str = "lua:meta";
+const SNAPSHOT_KEY: &str = "effects_snapshot";
 
 /// What a connector is, for approval purposes: its exact source and the
 /// capabilities it declared when loaded.
@@ -106,7 +112,7 @@ pub fn load_file(host: &Host, path: &Path) -> Result<Vm, LoadError> {
 /// (capabilities computed by code, e.g. from the time, would differ).
 /// Connectors the user installed by hand have no record and load as-is.
 pub fn load_active(host: &Host, path: &Path) -> Result<Vm, LoadError> {
-    let loaded = load_fingerprinted(host, path)?;
+    let mut loaded = load_fingerprinted(host, path)?;
     let name = &loaded.vm.spec.name;
     let record = host
         .store
@@ -121,14 +127,64 @@ pub fn load_active(host: &Host, path: &Path) -> Result<Vm, LoadError> {
             "{name} changed since you approved it (its file or declared capabilities differ); activate it again or remove it"
         )));
     }
+    loaded.vm.grandfathered = is_grandfathered(&host.store, name, &loaded.fingerprint.hash);
     Ok(loaded.vm)
 }
 
-/// Remember what the user approved for `name`.
+/// Remember what the user approved for `name`. Activating again also ends
+/// its grandfathering: from now on, tools without an `effect` are `write`.
 pub fn record_approval(host: &Host, name: &str, fp: &Fingerprint) -> Result<(), String> {
     host.store
         .kv_set(APPROVALS_NS, name, &fp.to_json())
+        .and_then(|()| host.store.kv_delete(GRANDFATHERED_NS, name))
         .map_err(|e| e.to_string())
+}
+
+/// Whether connector `name` with source `hash` keeps M4's default.
+pub fn is_grandfathered(store: &tern_store::Store, name: &str, hash: &str) -> bool {
+    store
+        .kv_get(GRANDFATHERED_NS, name)
+        .ok()
+        .flatten()
+        .is_some_and(|h| h == hash)
+}
+
+/// T0 changed the default for a tool without `effect` from "no approval" to
+/// `write`. Connectors that were already active keep the old default: the
+/// first time this runs against a data directory it records each active
+/// connector's source hash. Editing the file or activating it again ends
+/// that. Later runs do nothing, so a connector added afterwards gets the
+/// new default.
+pub fn grandfather_existing(host: &Host, dir: &Path) {
+    if host
+        .store
+        .kv_get(META_NS, SNAPSHOT_KEY)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    for path in luau_files(dir) {
+        if let Ok(l) = load_fingerprinted(host, &path) {
+            let _ = host
+                .store
+                .kv_set(GRANDFATHERED_NS, &l.vm.spec.name, &l.fingerprint.hash);
+        }
+    }
+    let _ = host.store.kv_set(META_NS, SNAPSHOT_KEY, "1");
+}
+
+fn luau_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == EXTENSION))
+        .collect();
+    files.sort();
+    files
 }
 
 /// A Luau connector tool exposed to the agent as `lua__<connector>__<tool>`.
@@ -154,10 +210,21 @@ impl Tool for LuaTool {
         }
     }
 
+    fn effect(&self) -> Effect {
+        self.def.effect()
+    }
+
+    fn untrusted(&self) -> bool {
+        self.def.untrusted
+    }
+
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
         ToolPolicy {
-            idempotent: self.def.idempotent,
-            requires_approval: self.def.requires_approval,
+            // M4: no approval unless the tool asked for it.
+            granted: self.vm.grandfathered && self.def.declared_effect.is_none(),
+            forbidden: self.def.forbidden,
+            ..ToolPolicy::new(self.def.effect(), self.def.idempotent)
+                .forced(self.def.requires_approval)
         }
     }
 
@@ -187,6 +254,7 @@ pub struct Connectors {
 
 impl Connectors {
     pub fn open(host: Host, dir: PathBuf) -> Self {
+        grandfather_existing(&host, &dir);
         let c = Self {
             host,
             dir,
@@ -281,15 +349,7 @@ impl Connectors {
 pub fn describe_secret_uses(host: &Host, active: &Path, drafts: &Path) -> Vec<(String, String)> {
     let mut uses = Vec::new();
     for (dir, draft) in [(active, false), (drafts, true)] {
-        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == EXTENSION))
-            .collect();
-        files.sort();
-        for path in files {
+        for path in luau_files(dir) {
             let Ok(vm) = load_file(host, &path) else {
                 continue;
             };

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tern_core::skills;
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult};
+use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult};
 use tern_core::types::ToolSpec;
 
 use crate::{args, spec};
@@ -28,6 +28,10 @@ struct ReadArgs {
 
 #[async_trait]
 impl Tool for SkillRead {
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "skill_read",
@@ -37,10 +41,7 @@ impl Tool for SkillRead {
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        ToolPolicy {
-            idempotent: true,
-            requires_approval: false,
-        }
+        ToolPolicy::new(Effect::Read, true)
     }
 
     async fn call(&self, _: &ToolCtx, raw: Value) -> ToolResult {

@@ -216,7 +216,7 @@ async fn telegram_pairing_streaming_and_button_approvals() {
     env.pair(&tg).await;
     tg.user_says("run the command").await;
     let prompt = tg
-        .wait_for("Allow shell echo approved-by-button?", 10)
+        .wait_for("Allow destructive · shell echo approved-by-button?", 10)
         .await;
     let buttons = prompt["buttons"].as_array().unwrap();
     let labels: Vec<&str> = buttons

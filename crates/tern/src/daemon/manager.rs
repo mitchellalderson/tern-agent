@@ -33,6 +33,9 @@ pub struct ApiApproval {
     pub tool: String,
     pub input: serde_json::Value,
     pub summary: String,
+    /// `read`, `write` or `destructive`; older daemons send none (`write`).
+    #[serde(default)]
+    pub effect: tern_core::tool::Effect,
     pub pattern: Option<String>,
     /// Set for a sub-agent's call: its parent run, its label, and the
     /// session of the top of its tree (where the user is looking).
@@ -71,6 +74,7 @@ impl ApiApprovals {
             tool: req.call.name.clone(),
             input: req.call.input.clone(),
             summary: req.summary.clone(),
+            effect: req.effect,
             pattern: req.pattern.clone(),
             parent_run_id: req.parent_run_id.clone(),
             agent_label: req.agent_label.clone(),

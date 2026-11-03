@@ -373,6 +373,7 @@ fn approvals_are_answered_inline() {
                 input: json!({"command": "git push"}),
             },
             summary: "shell git push".into(),
+            effect: tern_core::tool::Effect::Destructive,
             pattern: Some("git *".into()),
             parent_run_id: None,
             agent_label: None,
@@ -380,7 +381,7 @@ fn approvals_are_answered_inline() {
         reply: tx,
     });
     let s = screen(&mut app, 70, 12);
-    assert!(s.contains("Allow shell git push?"), "{s}");
+    assert!(s.contains("Allow destructive · shell git push?"), "{s}");
     assert!(s.contains("[a] always (shell git *)"), "{s}");
     // Typing other keys does nothing while an approval is pending.
     type_text(&mut app, "x");
@@ -430,6 +431,7 @@ fn ctrl_c_denies_a_pending_approval() {
                 input: json!({}),
             },
             summary: "shell".into(),
+            effect: tern_core::tool::Effect::Write,
             pattern: Some("*".into()),
             parent_run_id: None,
             agent_label: None,
@@ -901,6 +903,7 @@ fn approval(
                     input: json!({"command": "ls"}),
                 },
                 summary: format!("shell ls {id}"),
+                effect: tern_core::tool::Effect::Write,
                 pattern: None,
                 parent_run_id: label.map(|_| "r1".into()),
                 agent_label: label.map(Into::into),
@@ -923,14 +926,14 @@ fn approvals_from_sub_agents_are_labelled_and_answered_in_turn() {
     app.on_approval(a2);
     assert_eq!(agent_lines(&app)[0].state, AgentState::Approval);
     let s = screen(&mut app, 80, 14);
-    assert!(s.contains("[research] Allow shell ls a1?"), "{s}");
+    assert!(s.contains("[research] Allow write · shell ls a1?"), "{s}");
     assert!(s.contains("! research  Waiting for approval"), "{s}");
 
     app.on_key(key(KeyCode::Char('y')), Instant::now());
     assert_eq!(rx1.try_recv().unwrap(), Decision::AllowOnce);
     assert!(rx2.try_recv().is_err(), "the second waits its turn");
     let s = screen(&mut app, 80, 14);
-    assert!(s.contains("[review] Allow shell ls a2?"), "{s}");
+    assert!(s.contains("[review] Allow write · shell ls a2?"), "{s}");
 
     // Stopping the run denies whatever is still waiting.
     app.on_key(

@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::json;
 use tern_core::Secrets;
 use tern_core::config::{McpServerConfig, McpTransport};
-use tern_core::tool::{ToolCtx, ToolSource};
+use tern_core::tool::{Effect, ToolCtx, ToolSource};
 use tern_core::types::ToolCall;
 use tern_mcp::{McpServer, McpServers};
 use tokio_util::sync::CancellationToken;
@@ -30,6 +30,7 @@ fn stdio_cfg(env_secrets: Vec<String>) -> McpServerConfig {
         env_secrets,
         idempotent: false,
         requires_approval: false,
+        effects: Default::default(),
     }
 }
 
@@ -230,6 +231,7 @@ async fn streamable_http_transport() {
         env_secrets: vec![],
         idempotent: true,
         requires_approval: true,
+        effects: Default::default(),
     };
     let set = McpServers::new(vec![McpServer::new("remote", cfg, secrets)]);
     set.prepare().await;
@@ -247,4 +249,57 @@ async fn streamable_http_transport() {
         "{}",
         r.content
     );
+}
+
+#[tokio::test]
+async fn annotations_map_to_effects_and_config_overrides_them() {
+    let (secrets, _tmp) = secrets(&[]);
+    let effects_of = |set: &McpServers| -> Vec<(String, Effect)> {
+        set.tools()
+            .iter()
+            .map(|t| (t.spec().name, t.effect()))
+            .collect()
+    };
+    let set = McpServers::new(vec![McpServer::new(
+        "fx",
+        stdio_cfg(vec![]),
+        secrets.clone(),
+    )]);
+    set.prepare().await;
+    let mut got = effects_of(&set);
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            ("mcp__fx__add".to_owned(), Effect::Write), // no annotations
+            ("mcp__fx__crash".to_owned(), Effect::Write), // destructiveHint false
+            ("mcp__fx__echo".to_owned(), Effect::Read), // readOnlyHint
+            ("mcp__fx__env".to_owned(), Effect::Write),
+            ("mcp__fx__fail".to_owned(), Effect::Destructive), // destructiveHint
+        ]
+    );
+
+    let mut cfg = stdio_cfg(vec![]);
+    cfg.effects.insert("echo".into(), Effect::Destructive);
+    cfg.effects.insert("*".into(), Effect::Read);
+    let set = McpServers::new(vec![McpServer::new("fx", cfg, secrets)]);
+    set.prepare().await;
+    let mut got = effects_of(&set);
+    got.sort();
+    assert_eq!(
+        got.iter().map(|(_, e)| *e).collect::<Vec<_>>(),
+        [
+            Effect::Read,
+            Effect::Read,
+            Effect::Destructive, // by name, over the hint and "*"
+            Effect::Read,
+            Effect::Read, // "*" over the destructive hint
+        ]
+    );
+    let echo = set
+        .tools()
+        .into_iter()
+        .find(|t| t.spec().name == "mcp__fx__echo")
+        .unwrap();
+    assert_eq!(echo.policy(&ctx(), &json!({})).effect, Effect::Destructive);
 }

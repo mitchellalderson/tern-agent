@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult};
+use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult};
 use tern_core::types::ToolSpec;
 
 use crate::{args, spec};
@@ -112,6 +112,14 @@ struct FetchArgs {
 
 #[async_trait]
 impl Tool for HttpFetch {
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
+    fn untrusted(&self) -> bool {
+        true
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "http_fetch",
@@ -128,10 +136,7 @@ impl Tool for HttpFetch {
     }
 
     fn policy(&self, _ctx: &ToolCtx, _args: &Value) -> ToolPolicy {
-        ToolPolicy {
-            idempotent: true,
-            requires_approval: false,
-        }
+        ToolPolicy::new(Effect::Read, true)
     }
 
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {

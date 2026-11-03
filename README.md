@@ -46,9 +46,9 @@ tern           # chat
 |---|---|
 | **Models** | Anthropic, plus any OpenAI-compatible endpoint (OpenRouter, Ollama, vLLM, LM Studio). Models are `provider:model`; switch with `--model` or `/model`. |
 | **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `http_fetch`, long-term memory, search over past conversations, skills, schedules. |
-| **Approvals** | Shell commands, and reads or writes outside the workspace (`~/tern-workspace` by default), ask first: allow once, always (e.g. `git *`), or deny. |
-| **MCP** | Configure servers under `[mcp.servers.<name>]` (stdio or streamable HTTP); their tools appear as `mcp__<name>__<tool>`. |
-| **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use. The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
+| **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. |
+| **MCP** | Configure servers under `[mcp.servers.<name>]` (stdio or streamable HTTP); their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. |
+| **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
 | **Telegram** | Chat from your phone, approve tool calls with buttons, get scheduled results. |
 | **Schedules** | "Every weekday at 8am, summarize my unread GitHub notifications" becomes a cron schedule whose results are delivered to the chat that asked. |
@@ -165,9 +165,21 @@ tern connectors [list]     # active connectors and drafts, with capabilities and
 tern connectors test <name>
 ```
 
-`list` loads every `.luau` file in `~/.tern/connectors/` (active) and `~/.tern/connectors/drafts/` (written by the agent, not yet activated) and prints each one's description, declared hosts and secrets, and any secrets that aren't set. Files that fail to load are marked `✗` with the error.
+`list` loads every `.luau` file in `~/.tern/connectors/` (active) and `~/.tern/connectors/drafts/` (written by the agent, not yet activated) and prints each one's description, declared hosts and secrets, its tools with their effect (`- lua__mail__search [read]: … (untrusted)`), and any secrets that aren't set. Files that fail to load are marked `✗` with the error. Active connectors that keep the pre-effects approval default are marked `grandfathered`.
 
-`test <name>` validates `<name>.luau` (active first, then drafts) and lists the tools it exposes, with their idempotent and requires-approval flags. It exits non-zero if the connector doesn't exist or doesn't load. Neither command writes anything.
+`test <name>` validates `<name>.luau` (active first, then drafts) and lists the tools it exposes, with their effect and flags (untrusted, read via POST, idempotent, requires approval, refused). It exits non-zero if the connector doesn't exist or doesn't load. Neither command writes anything.
+
+A connector tool declares what it does:
+
+```lua
+search = { effect = "read", untrusted = true, ... },   -- never asks; returns third-party text
+send   = { effect = "write", ... },                    -- the default: asks unless you chose "always"
+purge  = { effect = "destructive", ... },              -- asks every time
+query  = { effect = "read", read_via_post = true, ... }, -- a read that POSTs (GraphQL, search APIs)
+pay    = { money_movement = true, ... },               -- refused; also `trade = true`
+```
+
+A `read` tool can only send GET and HEAD unless it sets `read_via_post`; anything else fails before the request goes out. Connectors that were already active when tern gained effects keep their old behaviour (tools without an `effect` don't ask) until you activate them again or edit them.
 
 ### `tern setup`
 
@@ -255,6 +267,7 @@ See [Troubleshooting](#troubleshooting).
 | `mcp.servers.<name>.env_secrets` | `[]` | Secrets passed to the server's environment. |
 | `mcp.servers.<name>.idempotent` | `false` | Its tools are safe to re-run when resuming. |
 | `mcp.servers.<name>.requires_approval` | `false` | Ask before each of its tool calls. |
+| `mcp.servers.<name>.effects` | `{}` | Effect per tool, by the server's tool name (`"*"` for the rest): `{ search_issues = "read", delete_repo = "destructive" }`. Overrides the server's `readOnlyHint` / `destructiveHint`; tools without either are `write`. |
 | `secret_request_timeout_secs` | `900` | How long the agent's prompt for a secret waits for you. |
 
 Secrets are looked up by name in the environment first, then in `~/.tern/secrets.toml` (mode 0600):
@@ -338,7 +351,8 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 - **`http_fetch`** refuses loopback, private, link-local, and cloud-metadata addresses, checking every redirect hop and pinning DNS between the check and the connection.
 - **Luau connectors** run in sandboxed VMs (no files, processes, or `require`; 5 s and 64 MB per call) and can only reach the hosts and secrets they declare, including across redirects. An activated connector that changes, or that declares different capabilities than you approved, isn't loaded.
 - **`shell`** runs in an OS sandbox (Seatbelt on macOS, Landlock on Linux) that confines writes to the workspace and keeps your home directory and `~/.tern` unreadable; see [Sandboxing](#sandboxing).
-- **"Always allow"** is never offered for commands that run other commands (`bash`, `env`, `sudo`, `find`, interpreters, …) or for activating connectors, and allowlisted shell commands can't chain (`;`, `|`, `$( )`, …).
+- **Effects** are enforced by tern, not the model: `destructive` calls ask every time and `money_movement` / `trade` tools are refused outright, even with `--yes`.
+- **"Always allow"** is never offered for destructive tools, for commands that run other commands (`bash`, `env`, `sudo`, `find`, interpreters, …) or for activating connectors, and allowlisted shell commands can't chain (`;`, `|`, `$( )`, …).
 
 ## Measurements
 

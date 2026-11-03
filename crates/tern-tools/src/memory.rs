@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult};
+use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult};
 use tern_core::types::ToolSpec;
 use tern_store::Store;
 
@@ -42,6 +42,10 @@ struct SaveArgs {
 
 #[async_trait]
 impl Tool for MemorySave {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "memory_save",
@@ -58,10 +62,7 @@ impl Tool for MemorySave {
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        ToolPolicy {
-            idempotent: false,
-            requires_approval: false,
-        }
+        ToolPolicy::granted_write(false)
     }
 
     async fn call(&self, _: &ToolCtx, raw: Value) -> ToolResult {
@@ -99,6 +100,10 @@ struct SearchArgs {
 
 #[async_trait]
 impl Tool for MemorySearch {
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "memory_search",
@@ -115,10 +120,7 @@ impl Tool for MemorySearch {
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        ToolPolicy {
-            idempotent: true,
-            requires_approval: false,
-        }
+        ToolPolicy::new(Effect::Read, true)
     }
 
     async fn call(&self, _: &ToolCtx, raw: Value) -> ToolResult {
@@ -161,6 +163,10 @@ impl SessionSearch {
 
 #[async_trait]
 impl Tool for SessionSearch {
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "session_search",
@@ -177,10 +183,7 @@ impl Tool for SessionSearch {
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        ToolPolicy {
-            idempotent: true,
-            requires_approval: false,
-        }
+        ToolPolicy::new(Effect::Read, true)
     }
 
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {

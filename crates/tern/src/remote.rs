@@ -167,6 +167,7 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                             input: a.input,
                         },
                         summary: a.summary,
+                        effect: a.effect,
                         pattern: a.pattern,
                         parent_run_id: a.parent_run_id,
                         agent_label: a.agent_label,
