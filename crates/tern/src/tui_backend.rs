@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use tern_core::agent::RunOutcome;
 use tern_core::approval::ApprovalHandler;
 use tern_core::events::AgentEvent;
+use tern_core::subagent::ChildRun;
 use tern_core::types::{ContentBlock, Role, Usage};
 use tern_core::{SecretStatus, TernHome};
 use tern_store::SessionSummary;
@@ -191,6 +192,17 @@ impl Backend for TuiBackend {
 
     fn remove_secret(&self, name: &str) -> BackendResult<bool> {
         self.rt().secrets.remove(name).map_err(err)
+    }
+
+    fn children(&self, run_id: &str) -> BackendResult<Vec<ChildRun>> {
+        crate::subagents::children_of(&self.rt().store, run_id, false).map_err(chain)
+    }
+
+    fn message_run(&self, run_id: &str, text: &str) -> BackendResult<()> {
+        match &self.rt().subagents {
+            Some(h) => h.message_run(run_id, text).map_err(chain),
+            None => Err("sub-agents are disabled ([subagents] enabled = false)".into()),
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 //! `tern run` and `tern resume`: non-interactive runs.
 
+use std::collections::HashMap;
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -120,12 +121,20 @@ async fn watch_interrupts(mut interrupts: Interrupts, cancel: CancellationToken)
 
 async fn print_progress(mut rx: tokio::sync::broadcast::Receiver<AgentEvent>) {
     use tokio::sync::broadcast::error::RecvError;
+    let mut agents = Agents::default();
     loop {
         let ev = match rx.recv().await {
             Ok(ev) => ev,
             Err(RecvError::Lagged(_)) => continue,
             Err(RecvError::Closed) => return,
         };
+        if let Some(line) = agents.line(&ev) {
+            eprintln!("{line}");
+            continue;
+        }
+        if agents.is_child(ev.run_id()) {
+            continue;
+        }
         match ev {
             AgentEvent::ToolStarted { summary, .. } => eprintln!("→ {summary}"),
             AgentEvent::ToolFinished {
@@ -161,6 +170,92 @@ async fn print_progress(mut rx: tokio::sync::broadcast::Receiver<AgentEvent>) {
     }
 }
 
+/// Sub-agent progress, one line each: `[research-1] ✓ read_file src/main.rs`.
+#[derive(Default)]
+struct Agents {
+    /// Child run id → label.
+    labels: HashMap<String, String>,
+    /// (run id, tool call id) → summary, for children's calls in progress.
+    calls: HashMap<(String, String), String>,
+}
+
+impl Agents {
+    fn is_child(&self, run_id: &str) -> bool {
+        self.labels.contains_key(run_id)
+    }
+
+    /// The line to print for `ev`, if it is about a sub-agent.
+    fn line(&mut self, ev: &AgentEvent) -> Option<String> {
+        if let AgentEvent::SubagentSpawned {
+            child_run_id,
+            label,
+            status,
+            ..
+        } = ev
+        {
+            self.labels.insert(child_run_id.clone(), label.clone());
+            let what = if status == "queued" {
+                "queued"
+            } else {
+                "started"
+            };
+            return Some(format!("[{label}] {what}"));
+        }
+        // The parent answering or steering a child.
+        if let AgentEvent::SubagentMessage {
+            to_run_id,
+            kind,
+            text,
+            ..
+        } = ev
+            && let Some(label) = self.labels.get(to_run_id)
+            && kind != "question"
+        {
+            return Some(format!("[{label}] ← {}", first_line(text)));
+        }
+        let label = self.labels.get(ev.run_id())?.clone();
+        Some(match ev {
+            AgentEvent::ToolStarted { id, summary, .. } => {
+                self.calls
+                    .insert((ev.run_id().to_owned(), id.clone()), summary.clone());
+                return None;
+            }
+            AgentEvent::ToolFinished {
+                id, is_error, name, ..
+            } => {
+                let summary = self
+                    .calls
+                    .remove(&(ev.run_id().to_owned(), id.clone()))
+                    .unwrap_or_else(|| name.clone());
+                let mark = if *is_error { "✗" } else { "✓" };
+                format!("[{label}] {mark} {summary}")
+            }
+            AgentEvent::Approval {
+                name,
+                outcome: ApprovalOutcome::Denied | ApprovalOutcome::Timeout,
+                ..
+            } => format!("[{label}] ✗ {name}: not approved"),
+            AgentEvent::SubagentMessage { kind, text, .. } if kind == "question" => {
+                format!("[{label}] asks: {}", first_line(text))
+            }
+            AgentEvent::RunFinished { status, error, .. } => match error {
+                Some(e) => format!("[{label}] {status}: {e}"),
+                None => format!("[{label}] {status}"),
+            },
+            _ => return None,
+        })
+    }
+}
+
+fn first_line(s: &str) -> String {
+    s.lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(120)
+        .collect()
+}
+
 fn approvals(yes: bool) -> Arc<dyn ApprovalHandler> {
     if yes {
         Arc::new(AutoApprove)
@@ -181,7 +276,12 @@ impl ApprovalHandler for TerminalApprover {
             Some(p) => format!(" / [a]lways ({} {p})", req.call.name),
             None => String::new(),
         };
-        let prompt = format!("Allow {}? [y]es{always} / [N]o: ", req.summary);
+        let who = req
+            .agent_label
+            .as_deref()
+            .map(|l| format!("[{l}] "))
+            .unwrap_or_default();
+        let prompt = format!("{who}Allow {}? [y]es{always} / [N]o: ", req.summary);
         tokio::task::spawn_blocking(move || {
             let mut stderr = std::io::stderr();
             let _ = write!(stderr, "{prompt}");

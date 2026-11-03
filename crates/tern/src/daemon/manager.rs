@@ -32,6 +32,14 @@ pub struct ApiApproval {
     pub input: serde_json::Value,
     pub summary: String,
     pub pattern: Option<String>,
+    /// Set for a sub-agent's call: its parent run, its label, and the
+    /// session of the top of its tree (where the user is looking).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<String>,
 }
 
 /// Approvals for API clients: published on a channel, answered over HTTP.
@@ -51,7 +59,8 @@ impl ApiApprovals {
     }
 
     /// Ask attached clients; deny at once if none is listening.
-    async fn ask(&self, req: &ApprovalRequest) -> Decision {
+    /// `root_session_id` is the session at the top of a sub-agent's tree.
+    async fn ask(&self, req: &ApprovalRequest, root_session_id: Option<String>) -> Decision {
         let (tx, rx) = oneshot::channel();
         let msg = ApiApproval {
             id: req.id.clone(),
@@ -61,6 +70,9 @@ impl ApiApprovals {
             input: req.call.input.clone(),
             summary: req.summary.clone(),
             pattern: req.pattern.clone(),
+            parent_run_id: req.parent_run_id.clone(),
+            agent_label: req.agent_label.clone(),
+            root_session_id: root_session_id.filter(|_| req.parent_run_id.is_some()),
         };
         if let Ok(mut p) = self.pending.lock() {
             p.insert(req.id.clone(), (msg.clone(), tx));
@@ -105,16 +117,20 @@ pub struct Router(pub Arc<Routes>);
 impl ApprovalHandler for Router {
     async fn ask(&self, req: &ApprovalRequest) -> Decision {
         let routes = &self.0;
-        let target = routes.store.get().and_then(|s| {
+        let root = routes.store.get().and_then(|s| {
             let root = s.root_run(&req.run_id).ok()?;
-            s.run_deliver_to(&root).ok().flatten()
+            s.run(&root).ok().flatten()
+        });
+        let target = root.as_ref().and_then(|r| {
+            let s = routes.store.get()?;
+            s.run_deliver_to(&r.id).ok().flatten()
         });
         if let Some((gateway, chat)) = target.as_deref().and_then(|t| t.split_once(':'))
             && let Some(g) = routes.gateways.get().and_then(|gs| gs.get(gateway))
         {
             return g.ask_approval(chat, req).await;
         }
-        routes.api.ask(req).await
+        routes.api.ask(req, root.map(|r| r.session_id)).await
     }
 }
 

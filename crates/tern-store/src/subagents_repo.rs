@@ -181,6 +181,45 @@ impl Store {
         Ok((row.0 as u64, row.1 as u64, row.2 as u64, row.3 as u64))
     }
 
+    /// Token usage summed over a session's runs and every run below them
+    /// (their sub-agents, at any depth): (input, output, cache_read,
+    /// cache_write).
+    pub fn session_tree_usage(&self, session_id: &str) -> Result<(u64, u64, u64, u64)> {
+        let row = self.conn()?.query_row(
+            "WITH RECURSIVE tree(id) AS (
+               SELECT id FROM runs WHERE session_id = ?1
+               UNION
+               SELECT r.id FROM runs r JOIN tree t ON r.parent_run_id = t.id
+             )
+             SELECT
+               COALESCE(SUM(json_extract(usage_json, '$.input_tokens')), 0),
+               COALESCE(SUM(json_extract(usage_json, '$.output_tokens')), 0),
+               COALESCE(SUM(json_extract(usage_json, '$.cache_read_tokens')), 0),
+               COALESCE(SUM(json_extract(usage_json, '$.cache_write_tokens')), 0)
+             FROM steps WHERE run_id IN (SELECT id FROM tree) AND usage_json IS NOT NULL",
+            [session_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            },
+        )?;
+        Ok((row.0 as u64, row.1 as u64, row.2 as u64, row.3 as u64))
+    }
+
+    /// The plain text of message `id`.
+    pub fn message_text(&self, id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn()?
+            .query_row("SELECT text FROM messages WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
     /// Number of a run's steps of `kind` (e.g. `llm` = model turns).
     pub fn step_count(&self, run_id: &str, kind: &str) -> Result<u32> {
         Ok(self.conn()?.query_row(
@@ -332,5 +371,29 @@ mod tests {
 
         s.truncate_steps("p", 0).unwrap();
         assert_eq!(s.pending_mail("p").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn subagent_sessions_are_listed_only_on_request_and_usage_sums_trees() {
+        let s = setup();
+        let ids = |l: Vec<crate::SessionSummary>| {
+            let mut v: Vec<String> = l.into_iter().map(|x| x.session.id).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(ids(s.list_sessions(10).unwrap()), ["s"]);
+        assert_eq!(
+            ids(s.list_sessions_from(10, Some("subagent")).unwrap()),
+            ["sc1", "sc2"]
+        );
+        let usage = r#"{"input_tokens":10,"output_tokens":2}"#;
+        for run in ["p", "c1"] {
+            s.start_step(run, 0, "llm", "h", "{}").unwrap();
+            s.complete_step(run, 0, "null", Some(usage), &[]).unwrap();
+        }
+        assert_eq!(s.session_usage("s").unwrap(), (10, 2, 0, 0));
+        assert_eq!(s.session_tree_usage("s").unwrap(), (20, 4, 0, 0));
+        let input = s.run("c1").unwrap().unwrap().input_message_id.unwrap();
+        assert_eq!(s.message_text(input).unwrap().as_deref(), Some("task"));
     }
 }

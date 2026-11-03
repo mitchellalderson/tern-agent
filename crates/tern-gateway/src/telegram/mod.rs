@@ -284,6 +284,14 @@ impl TelegramGateway {
 }
 
 /// What a still-streaming reply shows: the tail, if it's over the limit.
+/// "Allow shell git push?", prefixed with a sub-agent's label when one asks.
+fn approval_prompt(req: &ApprovalRequest) -> String {
+    match &req.agent_label {
+        Some(l) => format!("[{l}] Allow {}?", req.summary),
+        None => format!("Allow {}?", req.summary),
+    }
+}
+
 fn live_view(text: &str) -> String {
     let n = text.chars().count();
     if n <= MAX_MESSAGE - 2 {
@@ -412,7 +420,7 @@ impl Gateway for TelegramGateway {
         buttons.push(("Deny".into(), format!("ap:{id}:deny")));
         if let Err(e) = self
             .api
-            .send_message(chat, &format!("Allow {}?", req.summary), Some(&buttons))
+            .send_message(chat, &approval_prompt(req), Some(&buttons))
             .await
         {
             tracing::warn!(error = %e, "could not send approval request");

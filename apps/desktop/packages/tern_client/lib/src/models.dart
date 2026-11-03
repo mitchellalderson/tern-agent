@@ -732,6 +732,9 @@ class RunItem {
     required this.startedAt,
     this.finishedAt,
     this.error,
+    this.parentRunId,
+    this.label,
+    this.depth = 0,
   });
 
   factory RunItem.fromJson(Json j) => RunItem(
@@ -742,9 +745,18 @@ class RunItem {
     startedAt: _time(j['started_at'] as int),
     finishedAt: _maybeTime(j['finished_at']),
     error: j['error'] as String?,
+    parentRunId: j['parent_run_id'] as String?,
+    label: j['label'] as String?,
+    depth: j['depth'] as int? ?? 0,
   );
 
   final String id;
+
+  /// Set for sub-agents: the run that started it, its name, and how deep
+  /// it is (0 for runs the user started).
+  final String? parentRunId;
+  final String? label;
+  final int depth;
 
   /// `running`, `completed`, `failed` or `interrupted`.
   final String status;

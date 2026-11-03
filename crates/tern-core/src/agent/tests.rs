@@ -1037,6 +1037,22 @@ impl crate::subagent::SubagentHost for FakeHost {
     async fn status(&self, _: &ToolCtx) -> Result<Value, String> {
         unreachable!()
     }
+    async fn send(
+        &self,
+        _: &ToolCtx,
+        _: &str,
+        _: crate::subagent::SendRequest,
+    ) -> Result<Value, String> {
+        unreachable!()
+    }
+    async fn ask_parent(
+        &self,
+        _: &ToolCtx,
+        _: &str,
+        _: crate::subagent::AskRequest,
+    ) -> Result<Value, String> {
+        unreachable!()
+    }
     fn inbox_due(&self, run_id: &str, or_live: bool) -> Result<bool, StepError> {
         self.due_checks.fetch_add(1, Ordering::SeqCst);
         Ok(!self.store.pending_mail(run_id)?.is_empty()

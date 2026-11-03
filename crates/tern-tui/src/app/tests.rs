@@ -7,6 +7,7 @@ use ratatui::backend::TestBackend;
 use serde_json::json;
 use tern_core::SecretStatus;
 use tern_core::approval::ApprovalRequest;
+use tern_core::subagent::ChildRun;
 use tern_core::types::{ContentBlock, Role, ToolCall};
 use tern_store::SessionSummary;
 use tokio::sync::{broadcast, oneshot};
@@ -25,6 +26,8 @@ struct Fake {
     reloads: Mutex<u32>,
     /// secrets.toml: name → value.
     secrets: Mutex<std::collections::BTreeMap<String, String>>,
+    /// (run, text) passed to `message_run`.
+    messaged: Mutex<Vec<(String, String)>>,
 }
 
 #[async_trait]
@@ -137,6 +140,35 @@ impl Backend for Fake {
     }
     fn remove_secret(&self, name: &str) -> BackendResult<bool> {
         Ok(self.secrets.lock().unwrap().remove(name).is_some())
+    }
+    fn children(&self, run_id: &str) -> BackendResult<Vec<ChildRun>> {
+        if run_id != "r1" {
+            return Ok(vec![]);
+        }
+        Ok(vec![ChildRun {
+            run_id: "c1".into(),
+            session_id: "old".into(),
+            parent_run_id: "r1".into(),
+            call_id: "call_1".into(),
+            label: "research".into(),
+            task: "SUBTASK".into(),
+            model: Some("mock:m".into()),
+            depth: 1,
+            status: "question".into(),
+            error: None,
+            started_at: 1,
+            finished_at: None,
+            usage: Usage::default(),
+            result_preview: None,
+            pending_question: Some("Private companies too?".into()),
+        }])
+    }
+    fn message_run(&self, run_id: &str, text: &str) -> BackendResult<()> {
+        self.messaged
+            .lock()
+            .unwrap()
+            .push((run_id.into(), text.into()));
+        Ok(())
     }
 }
 
@@ -342,6 +374,8 @@ fn approvals_are_answered_inline() {
             },
             summary: "shell git push".into(),
             pattern: Some("git *".into()),
+            parent_run_id: None,
+            agent_label: None,
         },
         reply: tx,
     });
@@ -397,6 +431,8 @@ fn ctrl_c_denies_a_pending_approval() {
             },
             summary: "shell".into(),
             pattern: Some("*".into()),
+            parent_run_id: None,
+            agent_label: None,
         },
         reply: tx,
     });
@@ -692,4 +728,251 @@ fn secrets_panel_rejects_bad_names_and_closes_on_ctrl_c() {
     assert!(app.secrets.is_none());
     assert!(fake.secrets.lock().unwrap().is_empty());
     assert!(app.input.text().is_empty());
+}
+
+fn spawned(parent: &str, child: &str, label: &str) -> AgentEvent {
+    AgentEvent::SubagentSpawned {
+        run_id: parent.into(),
+        call_id: format!("call_{label}"),
+        child_run_id: child.into(),
+        child_session_id: format!("s_{child}"),
+        label: label.into(),
+        task: "SUBTASK".into(),
+        model: "mock:m".into(),
+        status: "running".into(),
+    }
+}
+
+fn agent_lines(app: &App) -> Vec<AgentLine> {
+    app.entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Agent(a) => Some(a.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn sub_agent_events_update_their_line_and_never_the_transcript() {
+    let (mut app, _) = new_app();
+    submit(&mut app, "fan out");
+    app.on_agent_event(AgentEvent::ToolStarted {
+        run_id: "r1".into(),
+        id: "call_research".into(),
+        name: "agent_spawn".into(),
+        summary: "agent_spawn research".into(),
+    });
+    app.on_agent_event(spawned("r1", "c1", "research"));
+    let before = app.entries.len();
+    for ev in [
+        AgentEvent::RunStarted {
+            run_id: "c1".into(),
+            session_id: "s_c1".into(),
+            parent_run_id: Some("r1".into()),
+        },
+        AgentEvent::TextDelta {
+            run_id: "c1".into(),
+            text: "child text".into(),
+        },
+        AgentEvent::ToolStarted {
+            run_id: "c1".into(),
+            id: "t1".into(),
+            name: "read_file".into(),
+            summary: "read_file src/main.rs".into(),
+        },
+    ] {
+        app.on_agent_event(ev);
+    }
+    let line = &agent_lines(&app)[0];
+    assert_eq!(line.state, AgentState::Running);
+    assert_eq!(line.activity, "Running read_file src/main.rs");
+    assert!(
+        screen(&mut app, 80, 12).contains("⑂ research  Running read_file src/main.rs · 1 tool")
+    );
+
+    for ev in [
+        AgentEvent::ToolFinished {
+            run_id: "c1".into(),
+            id: "t1".into(),
+            name: "read_file".into(),
+            is_error: false,
+            preview: "fn main".into(),
+            output: "fn main".into(),
+            replayed: false,
+        },
+        AgentEvent::Usage {
+            run_id: "c1".into(),
+            usage: Usage {
+                input_tokens: 1500,
+                output_tokens: 500,
+                ..Usage::default()
+            },
+        },
+        AgentEvent::AssistantMessage {
+            run_id: "c1".into(),
+            text: "The report.\nDetails.".into(),
+            replayed: false,
+        },
+        AgentEvent::RunFinished {
+            run_id: "c1".into(),
+            status: "completed".into(),
+            error: None,
+        },
+        // Another client's run: ignored.
+        AgentEvent::TextDelta {
+            run_id: "elsewhere".into(),
+            text: "not ours".into(),
+        },
+    ] {
+        app.on_agent_event(ev);
+    }
+    // No text or tool entries from the child, and none for agent_spawn.
+    assert_eq!(app.entries.len(), before);
+    assert!(
+        !app.entries
+            .iter()
+            .any(|e| matches!(e, Entry::Assistant { .. } | Entry::Tool { .. })),
+        "{:?}",
+        app.entries
+    );
+    let line = &agent_lines(&app)[0];
+    assert_eq!(line.state, AgentState::Completed);
+    assert_eq!(line.tokens, 2000);
+    assert_eq!(app.live_agents(), 0);
+    let s = screen(&mut app, 80, 12);
+    assert!(
+        s.contains("✓ research  0:00 · 1 tool · 2k tok → The report."),
+        "{s}"
+    );
+
+    // The parent's own text still lands in the transcript.
+    app.on_agent_event(AgentEvent::TextDelta {
+        run_id: "r1".into(),
+        text: "parent text".into(),
+    });
+    assert!(
+        matches!(app.entries.last(), Some(Entry::Assistant { text, .. }) if text == "parent text")
+    );
+}
+
+#[test]
+fn questions_and_answers_show_on_the_agent_line() {
+    let (mut app, _) = new_app();
+    submit(&mut app, "fan out");
+    app.on_agent_event(spawned("r1", "c1", "scan"));
+    app.on_agent_event(AgentEvent::SubagentMessage {
+        run_id: "c1".into(),
+        to_run_id: "r1".into(),
+        kind: "question".into(),
+        text: "Private too?".into(),
+    });
+    let line = &agent_lines(&app)[0];
+    assert_eq!(line.state, AgentState::Question);
+    assert_eq!(line.activity, "Asked: Private too?");
+    assert_eq!(app.live_agents(), 1);
+    assert!(screen(&mut app, 80, 12).contains("waiting on 1 agent"));
+    app.on_agent_event(AgentEvent::SubagentMessage {
+        run_id: "r1".into(),
+        to_run_id: "c1".into(),
+        kind: "answer".into(),
+        text: "No.".into(),
+    });
+    let line = &agent_lines(&app)[0];
+    assert_eq!(line.state, AgentState::Running);
+    assert_eq!(line.activity, "Answered: No.");
+}
+
+fn approval(
+    id: &str,
+    run: &str,
+    label: Option<&str>,
+) -> (PendingApproval, oneshot::Receiver<Decision>) {
+    let (tx, rx) = oneshot::channel();
+    (
+        PendingApproval {
+            request: ApprovalRequest {
+                id: id.into(),
+                run_id: run.into(),
+                session_id: "s".into(),
+                call: ToolCall {
+                    id: format!("t_{id}"),
+                    name: "shell".into(),
+                    input: json!({"command": "ls"}),
+                },
+                summary: format!("shell ls {id}"),
+                pattern: None,
+                parent_run_id: label.map(|_| "r1".into()),
+                agent_label: label.map(Into::into),
+            },
+            reply: tx,
+        },
+        rx,
+    )
+}
+
+#[test]
+fn approvals_from_sub_agents_are_labelled_and_answered_in_turn() {
+    let (mut app, _) = new_app();
+    submit(&mut app, "fan out");
+    app.on_agent_event(spawned("r1", "c1", "research"));
+    app.on_agent_event(spawned("r1", "c2", "review"));
+    let (a1, mut rx1) = approval("a1", "c1", Some("research"));
+    let (a2, mut rx2) = approval("a2", "c2", Some("review"));
+    app.on_approval(a1);
+    app.on_approval(a2);
+    assert_eq!(agent_lines(&app)[0].state, AgentState::Approval);
+    let s = screen(&mut app, 80, 14);
+    assert!(s.contains("[research] Allow shell ls a1?"), "{s}");
+    assert!(s.contains("! research  Waiting for approval"), "{s}");
+
+    app.on_key(key(KeyCode::Char('y')), Instant::now());
+    assert_eq!(rx1.try_recv().unwrap(), Decision::AllowOnce);
+    assert!(rx2.try_recv().is_err(), "the second waits its turn");
+    let s = screen(&mut app, 80, 14);
+    assert!(s.contains("[review] Allow shell ls a2?"), "{s}");
+
+    // Stopping the run denies whatever is still waiting.
+    app.on_key(
+        with(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        Instant::now(),
+    );
+    assert_eq!(rx2.try_recv().unwrap(), Decision::Deny);
+    assert!(app.approval.is_none());
+}
+
+#[test]
+fn agents_commands_list_show_and_message_sub_agents() {
+    let (mut app, fake) = new_app();
+    submit(&mut app, "/agents");
+    assert!(notices(&app).contains("no run yet"));
+    submit(&mut app, "fan out");
+
+    submit(&mut app, "/agents");
+    let n = notices(&app);
+    assert!(
+        n.contains("research  question  c1  asked: Private companies too?"),
+        "{n}"
+    );
+
+    submit(&mut app, "/agent nobody");
+    assert!(notices(&app).contains("no sub-agent \"nobody\"; the last run's are: research"));
+
+    submit(&mut app, "/agent research");
+    let o = app.overlay.as_ref().expect("overlay open");
+    assert!(o.title.contains("research"));
+    let s = screen(&mut app, 60, 12);
+    assert!(s.contains("hello again"), "{s}");
+    // Keys go to the overlay, not the input; Esc closes it.
+    type_text(&mut app, "x");
+    assert!(app.input.text().is_empty());
+    app.on_key(key(KeyCode::Esc), Instant::now());
+    assert!(app.overlay.is_none());
+
+    submit(&mut app, "/agent research public only, please");
+    assert_eq!(
+        fake.messaged.lock().unwrap().as_slice(),
+        [("c1".to_owned(), "public only, please".to_owned())]
+    );
+    assert!(notices(&app).contains("sent to research"));
 }

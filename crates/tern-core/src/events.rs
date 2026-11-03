@@ -31,6 +31,16 @@ pub enum AgentEvent {
         /// `running` or `queued`.
         status: String,
     },
+    /// A question, answer or steering message between runs of one tree
+    /// (`agent_ask_parent`, `agent_send`).
+    SubagentMessage {
+        /// The run that sent it.
+        run_id: String,
+        to_run_id: String,
+        /// `question`, `answer` or `message`.
+        kind: String,
+        text: String,
+    },
     /// Streaming text from a live model call.
     TextDelta {
         run_id: String,
@@ -94,4 +104,26 @@ pub enum AgentEvent {
         status: String,
         error: Option<String>,
     },
+}
+
+impl AgentEvent {
+    /// The run the event belongs to (for `subagent_spawned`, the parent;
+    /// for `subagent_message`, the sender).
+    pub fn run_id(&self) -> &str {
+        match self {
+            Self::RunStarted { run_id, .. }
+            | Self::SubagentSpawned { run_id, .. }
+            | Self::SubagentMessage { run_id, .. }
+            | Self::TextDelta { run_id, .. }
+            | Self::AssistantMessage { run_id, .. }
+            | Self::ToolStarted { run_id, .. }
+            | Self::ToolOutput { run_id, .. }
+            | Self::ToolFinished { run_id, .. }
+            | Self::Approval { run_id, .. }
+            | Self::Retrying { run_id, .. }
+            | Self::Compacted { run_id, .. }
+            | Self::Usage { run_id, .. }
+            | Self::RunFinished { run_id, .. } => run_id,
+        }
+    }
 }

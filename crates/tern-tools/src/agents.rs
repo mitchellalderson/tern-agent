@@ -1,21 +1,27 @@
-//! Sub-agent tools for the parent side (docs/subagents-design.md §2.2):
-//! `agent_spawn`, `agent_wait`, `agent_cancel`, `agent_status`. Each is a
-//! thin shell over the [`SubagentHost`] bound into the slot at startup.
+//! Sub-agent tools (docs/subagents-design.md §2.2–§2.3): `agent_spawn`,
+//! `agent_wait`, `agent_send`, `agent_cancel`, `agent_status` for the parent
+//! side and `agent_ask_parent` for children. Each is a thin shell over the
+//! [`SubagentHost`] bound into the slot at startup.
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use tern_core::subagent::{CancelRequest, HostSlot, SpawnRequest, SubagentHost, WaitRequest};
+use tern_core::subagent::{
+    AskRequest, CancelRequest, HostSlot, SendRequest, SpawnRequest, SubagentHost, WaitRequest,
+};
 use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolRegistry, ToolResult, current_call_id};
 use tern_core::types::ToolSpec;
 
 use crate::{args, spec};
 
-/// Register the parent-side tools, all bound to `slot`.
+/// Register the sub-agent tools, all bound to `slot`. Which runs see which
+/// is decided by tool scope (`agent_ask_parent` only for children).
 pub fn register(registry: &mut ToolRegistry, slot: HostSlot) {
     registry.register(std::sync::Arc::new(AgentSpawn(slot.clone())));
     registry.register(std::sync::Arc::new(AgentWait(slot.clone())));
+    registry.register(std::sync::Arc::new(AgentSend(slot.clone())));
     registry.register(std::sync::Arc::new(AgentCancel(slot.clone())));
-    registry.register(std::sync::Arc::new(AgentStatus(slot)));
+    registry.register(std::sync::Arc::new(AgentStatus(slot.clone())));
+    registry.register(std::sync::Arc::new(AgentAskParent(slot)));
 }
 
 /// Spawning, waiting and cancelling change nothing outside tern's own runs
@@ -208,5 +214,101 @@ impl Tool for AgentStatus {
             Ok(h) => result(h.status(ctx).await),
             Err(e) => e,
         }
+    }
+}
+
+// ---- agent_send ----
+
+pub struct AgentSend(pub HostSlot);
+
+#[async_trait]
+impl Tool for AgentSend {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "agent_send",
+            "Answer a sub-agent's question, or redirect a running sub-agent. A sub-agent waiting on a question gets the message as the answer; otherwise it gets it before its next step.",
+            json!({
+                "type": "object",
+                "required": ["agent", "message"],
+                "properties": {
+                    "agent": { "type": "string", "description": "The sub-agent's label." },
+                    "message": { "type": "string" },
+                    "question_id": { "type": "string",
+                        "description": "The id of the question you are answering (e.g. 'q_17'), from agent_wait or the sub-agent's message." }
+                }
+            }),
+        )
+    }
+
+    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+        policy()
+    }
+
+    fn summary(&self, args: &Value) -> Option<String> {
+        let label = args.get("agent").and_then(Value::as_str).unwrap_or("?");
+        Some(format!("agent_send {label}"))
+    }
+
+    async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
+        let req: SendRequest = match args(raw) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        let host = match host(&self.0) {
+            Ok(h) => h,
+            Err(e) => return e,
+        };
+        let Some(call_id) = current_call_id() else {
+            return ToolResult::error("agent_send must be called by the agent loop");
+        };
+        result(host.send(ctx, &call_id, req).await)
+    }
+}
+
+// ---- agent_ask_parent ----
+
+pub struct AgentAskParent(pub HostSlot);
+
+#[async_trait]
+impl Tool for AgentAskParent {
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "agent_ask_parent",
+            "Ask the agent that started you a question and wait for its answer. Only for decisions that are really its call; otherwise make a sensible assumption and say so in your report.",
+            json!({
+                "type": "object",
+                "required": ["question"],
+                "properties": {
+                    "question": { "type": "string", "description": "One clear question." },
+                    "recommendation": { "type": "string",
+                        "description": "The answer you would choose, used if no answer comes in time." }
+                }
+            }),
+        )
+    }
+
+    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+        policy()
+    }
+
+    fn summary(&self, args: &Value) -> Option<String> {
+        let q = args.get("question").and_then(Value::as_str).unwrap_or("?");
+        let q: String = q.chars().take(80).collect();
+        Some(format!("agent_ask_parent {q}"))
+    }
+
+    async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
+        let req: AskRequest = match args(raw) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        let host = match host(&self.0) {
+            Ok(h) => h,
+            Err(e) => return e,
+        };
+        let Some(call_id) = current_call_id() else {
+            return ToolResult::error("agent_ask_parent must be called by the agent loop");
+        };
+        result(host.ask_parent(ctx, &call_id, req).await)
     }
 }

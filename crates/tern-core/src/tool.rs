@@ -205,7 +205,8 @@ impl ToolRegistry {
         self.all().values().map(|t| t.spec()).collect()
     }
 
-    /// [`ToolRegistry::specs`] limited to `scope` (tool names; `None` = all).
+    /// [`ToolRegistry::specs`] limited to `scope` (tool names; `None` = all
+    /// but the sub-agent-only ones, see [`in_scope`]).
     pub fn specs_for(&self, scope: Option<&[String]>) -> Vec<ToolSpec> {
         self.all()
             .into_iter()
@@ -262,9 +263,13 @@ impl ToolRegistry {
     }
 }
 
-/// Whether `name` is allowed by `scope` (`None` = every tool).
+/// Whether `name` is allowed by `scope` (`None` = every tool except the
+/// ones only sub-agents get, such as `agent_ask_parent`).
 pub fn in_scope(scope: Option<&[String]>, name: &str) -> bool {
-    scope.is_none_or(|s| s.iter().any(|n| n == name))
+    match scope {
+        None => !crate::subagent::CHILD_ONLY_TOOLS.contains(&name),
+        Some(s) => s.iter().any(|n| n == name),
+    }
 }
 
 /// Keep the head and tail of `s` within `max` bytes, marking the cut.

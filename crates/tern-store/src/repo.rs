@@ -489,12 +489,25 @@ impl Store {
         Ok(())
     }
 
+    /// Recent sessions, newest first, without sub-agent sessions.
     pub fn list_sessions(&self, limit: usize) -> Result<Vec<SessionSummary>> {
+        self.list_sessions_from(limit, None)
+    }
+
+    /// Recent sessions from `source` (e.g. `subagent`), or every source but
+    /// `subagent` when `None`.
+    pub fn list_sessions_from(
+        &self,
+        limit: usize,
+        source: Option<&str>,
+    ) -> Result<Vec<SessionSummary>> {
         let sql = format!(
             "SELECT {cols},
                (SELECT count(*) FROM messages m WHERE m.session_id = s.id),
                (SELECT count(*) FROM runs r WHERE r.session_id = s.id)
-             FROM sessions s ORDER BY updated_at DESC LIMIT ?1",
+             FROM sessions s
+             WHERE CASE WHEN ?2 IS NULL THEN s.source <> 'subagent' ELSE s.source = ?2 END
+             ORDER BY updated_at DESC LIMIT ?1",
             cols = SESSION_COLS
                 .split(", ")
                 .map(|c| format!("s.{c}"))
@@ -503,7 +516,7 @@ impl Store {
         );
         let conn = self.conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([limit as i64], |r| {
+        let rows = stmt.query_map(params![limit as i64, source], |r| {
             Ok(SessionSummary {
                 session: session_row(r)?,
                 messages: r.get(7)?,

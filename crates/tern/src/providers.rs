@@ -19,6 +19,18 @@ use crate::runtime::Runtime;
 
 /// Model lists older than this are refreshed in the background.
 const FRESH_SECS: i64 = 600;
+/// Env var overriding [`FRESH_SECS`], for tests.
+pub const FRESH_ENV: &str = "TERN_MODELS_FRESH_SECS";
+
+fn fresh_secs() -> i64 {
+    static SECS: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *SECS.get_or_init(|| {
+        std::env::var(FRESH_ENV)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(FRESH_SECS)
+    })
+}
 const ANTHROPIC_PREFIX: &str = "sk-ant-";
 
 /// A change clients should re-read, sent on `/v1/events`.
@@ -474,7 +486,7 @@ impl Runtime {
             let fp = fingerprint(cfg, key.as_deref());
             let cached = self.models.get(name, &fp);
             let entry = match cached {
-                Some(e) if !refresh && now - e.fetched_at < FRESH_SECS => e,
+                Some(e) if !refresh && now - e.fetched_at < fresh_secs() => e,
                 Some(e) if !refresh => {
                     let (cache, name, cfg) = (self.models.clone(), name.clone(), cfg.clone());
                     tokio::spawn(async move {

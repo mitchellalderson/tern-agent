@@ -13,6 +13,7 @@ use tern_core::SecretStatus;
 use tern_core::agent::RunOutcome;
 use tern_core::approval::{ApprovalRequest, Decision};
 use tern_core::events::AgentEvent;
+use tern_core::subagent::ChildRun;
 use tern_core::types::{Role, ToolCall, Usage};
 use tern_store::{SessionRow, SessionSummary};
 use tern_tui::{Backend, BackendResult, HistoryMessage, PendingApproval, SessionInfo, Started};
@@ -139,6 +140,8 @@ async fn pump(
                         },
                         summary: a.summary,
                         pattern: a.pattern,
+                        parent_run_id: a.parent_run_id,
+                        agent_label: a.agent_label,
                     };
                     if approvals
                         .send(PendingApproval { request, reply })
@@ -374,6 +377,19 @@ impl Backend for Remote {
             reqwest::Method::PUT,
             &format!("/v1/secrets/{name}"),
             json!({ "value": value }),
+        )
+        .map(|_| ())
+    }
+
+    fn children(&self, run_id: &str) -> BackendResult<Vec<ChildRun>> {
+        self.get(&format!("/v1/runs/{run_id}/children"))
+    }
+
+    fn message_run(&self, run_id: &str, text: &str) -> BackendResult<()> {
+        self.send_json::<Value>(
+            reqwest::Method::POST,
+            &format!("/v1/runs/{run_id}/message"),
+            json!({ "text": text }),
         )
         .map(|_| ())
     }

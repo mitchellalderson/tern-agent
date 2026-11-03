@@ -18,6 +18,7 @@ use tern_core::SecretStatus;
 use tern_core::agent::RunOutcome;
 use tern_core::approval::{ApprovalHandler, ApprovalRequest, Decision};
 use tern_core::events::AgentEvent;
+use tern_core::subagent::ChildRun;
 use tern_core::types::{ContentBlock, Role, Usage};
 use tern_store::SessionSummary;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -91,6 +92,15 @@ pub trait Backend: Send + Sync + 'static {
     /// Remove a secret from `secrets.toml`; false if it wasn't there.
     fn remove_secret(&self, _name: &str) -> BackendResult<bool> {
         Err("this backend can't manage secrets".into())
+    }
+    /// The sub-agents `run_id` started, oldest first.
+    fn children(&self, _run_id: &str) -> BackendResult<Vec<ChildRun>> {
+        Err("this backend doesn't support sub-agents".into())
+    }
+    /// Send the user's `text` to a running sub-agent, delivered at its next
+    /// step.
+    fn message_run(&self, _run_id: &str, _text: &str) -> BackendResult<()> {
+        Err("this backend doesn't support sub-agents".into())
     }
 }
 

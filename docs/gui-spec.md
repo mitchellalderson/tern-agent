@@ -181,11 +181,16 @@ The daemon serves JSON over HTTP on `~/.tern/tern.sock` (mode 0600), possibly a 
 | PUT | `/v1/secrets/{name}` | write-only |
 | GET / PATCH | `/v1/config` (P1) | read and edit config through the same validation as `tern config set` |
 | GET | `/v1/doctor` (P1) | doctor results as JSON |
+| GET | `/v1/tools` | full tool specs `[{name, description, input_schema}]` (built) |
+| GET | `/v1/runs/{id}/children[?recursive=1]`, `/v1/sessions/{id}/subagents` | sub-agent runs as `ChildRun` (built, S2; [subagents-design.md](subagents-design.md) §3.2) |
+| POST | `/v1/runs/{id}/message` | `{text}` from the user to a running sub-agent (built, S3) |
+| GET | `/v1/sessions/{id}/runs?include=subagents`, `/v1/sessions/{id}/usage?include=subagents` | run trees and their usage; `/v1/sessions` hides sub-agent sessions unless `?source=subagent` (built, S2) |
 
 Event changes:
 - Add `session_id` to every `AgentEvent`, so a client that attaches mid-run can place events without a lookup. (Built: the SSE layer adds it, so `AgentEvent` itself is unchanged.)
 - New events: `session_updated` (title, model), `schedule_changed`, `connector_changed`, `memory_changed`. `approval_resolved` turned out to be unneeded: the existing `approval` agent event fires whoever answers, and clients close the card on it.
 - Add an `id` to each SSE event, ready for `Last-Event-ID` replay later.
+- Built: `tool_output` (live output chunks of a running tool, matched to `tool_started` by `id`; never replayed), and for sub-agents ([subagents-design.md](subagents-design.md) §3.1) `subagent_spawned` (on the parent's run), `subagent_message` (`question`, `answer` or `message` between runs of a tree), `parent_run_id` and `root_session_id` on every event of a sub-agent run, and `parent_run_id`, `agent_label`, `root_session_id` on a sub-agent's `approval_requested` and in `/v1/approvals`. `/v1/health` reports the `subagents` feature.
 
 ### 7.2 Agents (P1, design separately)
 

@@ -38,6 +38,11 @@ impl Daemon {
 }
 
 fn daemon() -> Daemon {
+    daemon_with(&[])
+}
+
+/// A daemon with extra environment variables (it starts from a clear one).
+fn daemon_with(env: &[(&str, &str)]) -> Daemon {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
     let tern_home = home.join(".tern");
@@ -49,6 +54,7 @@ fn daemon() -> Daemon {
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", &home)
         .env("TERN_HOME", &tern_home)
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -315,4 +321,132 @@ async fn anthropic_needs_a_key_and_names_itself() {
     assert_eq!(v["name"], "anthropic");
     assert_eq!(v["ok"], false);
     assert_eq!(v["error"]["kind"], "missing_key");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_in_the_environment_wins() {
+    let fake = fake_provider().await;
+    let base = format!("{}/v1", fake.uri());
+    let d = daemon_with(&[("FAKE_API_KEY", "sk-good")]);
+    let api = Api::new(&d);
+
+    // No paste needed: use the key already in the environment.
+    let v = api
+        .ok(
+            Method::POST,
+            "/v1/providers/verify",
+            Some(json!({ "kind": "openai_compat", "name": "fake", "base_url": base, "use_env_key": true })),
+        )
+        .await;
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["warnings"].as_array().unwrap().len(), 0);
+
+    // Pasting a different key warns that the environment overrides it.
+    let v = api
+        .ok(
+            Method::POST,
+            "/v1/providers/verify",
+            Some(json!({ "kind": "openai_compat", "name": "fake", "base_url": base, "key": "sk-other" })),
+        )
+        .await;
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("FAKE_API_KEY in your environment overrides"),
+        "{v}"
+    );
+
+    let added = api
+        .ok(
+            Method::POST,
+            "/v1/providers",
+            Some(json!({ "kind": "openai_compat", "name": "fake", "base_url": base, "use_env_key": true })),
+        )
+        .await;
+    assert_eq!(added["provider"]["key_source"], "env", "{added}");
+    assert_eq!(added["provider"]["secret"], "FAKE_API_KEY");
+    // The environment's key is used, not copied into secrets.toml.
+    let secrets = std::fs::read_to_string(d.tern_home().join("secrets.toml")).unwrap_or_default();
+    assert!(!secrets.contains("sk-good"), "{secrets}");
+    let info = api.ok(Method::GET, "/v1/info", None).await;
+    assert_eq!(info["setup_needed"], false);
+
+    // Asking for the environment key when there is none is an error.
+    let (status, text) = api
+        .call(
+            Method::POST,
+            "/v1/providers/verify",
+            Some(json!({ "kind": "openai_compat", "name": "other", "base_url": base, "use_env_key": true })),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(text.contains("OTHER_API_KEY is not set"), "{text}");
+}
+
+fn ids(list: &Value) -> Vec<String> {
+    list[0]["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_model_lists_are_served_then_refreshed() {
+    let fake = fake_provider().await;
+    let base = format!("{}/v1", fake.uri());
+    // Every cached list counts as stale.
+    let d = daemon_with(&[("TERN_MODELS_FRESH_SECS", "0")]);
+    let api = Api::new(&d);
+    api.ok(
+        Method::POST,
+        "/v1/providers",
+        Some(
+            json!({ "kind": "openai_compat", "name": "fake", "base_url": base, "key": "sk-good" }),
+        ),
+    )
+    .await;
+
+    // The provider now lists a new model.
+    fake.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "gpt-newest", "created": 9}]
+        })))
+        .mount(&fake)
+        .await;
+
+    // The stale list comes back at once while a refresh runs behind it.
+    let first = api.ok(Method::GET, "/v1/models", None).await;
+    assert_eq!(ids(&first), ["gpt-new", "gpt-old"]);
+    let end = Instant::now() + Duration::from_secs(10);
+    loop {
+        let now = api.ok(Method::GET, "/v1/models", None).await;
+        if ids(&now) == ["gpt-newest"] {
+            break;
+        }
+        assert!(Instant::now() < end, "list never refreshed: {now}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // The refreshed list is saved to cache/models.json, without the key.
+    let cache = std::fs::read_to_string(d.tern_home().join("cache/models.json")).unwrap();
+    assert!(cache.contains("gpt-newest"), "{cache}");
+    assert!(
+        !cache.contains("sk-good"),
+        "key leaked into the cache: {cache}"
+    );
+
+    // `refresh=true` fetches now, without serving the cached list.
+    fake.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "gpt-latest"}]
+        })))
+        .mount(&fake)
+        .await;
+    let v = api.ok(Method::GET, "/v1/models?refresh=true", None).await;
+    assert_eq!(ids(&v), ["gpt-latest"]);
 }

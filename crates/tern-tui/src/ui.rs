@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::{App, Entry, ToolState};
+use crate::app::{AgentLine, AgentState, App, Entry, Overlay, ToolState};
 use crate::secrets::{Mode, SecretsPanel};
 use crate::wrap::wrap;
 
@@ -32,6 +32,31 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(panel) = &app.secrets {
         draw_secrets(frame, panel, transcript);
     }
+    if let Some(o) = &mut app.overlay {
+        draw_overlay(frame, o, app.expanded, transcript);
+    }
+}
+
+/// A sub-agent's transcript (`/agent <label>`), over `area`.
+fn draw_overlay(frame: &mut Frame<'_>, o: &mut Overlay, expanded: bool, area: Rect) {
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .title(o.title.clone())
+        .border_style(Style::new().fg(Color::Cyan));
+    let inner = block.inner(area).inner(ratatui::layout::Margin::new(1, 0));
+    let width = inner.width.max(1) as usize;
+    let mut lines = Vec::new();
+    entry_lines(&o.entries, expanded, width, &mut lines);
+    if lines.is_empty() {
+        lines.push(Line::from("(no messages yet)".dark_gray()));
+    }
+    let height = inner.height as usize;
+    o.scroll = o.scroll.min(lines.len().saturating_sub(height));
+    let end = lines.len() - o.scroll;
+    let start = end.saturating_sub(height);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
 }
 
 /// The `/secrets` panel, centred over `area`.
@@ -204,11 +229,102 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             "tern — type a message and press Enter. /help for commands.".dark_gray(),
         ));
     }
+    entry_lines(&app.entries, app.expanded, width, &mut out);
+    if let Some(p) = &app.approval {
+        out.push(Line::default());
+        let warn = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        let who = p
+            .request
+            .agent_label
+            .as_deref()
+            .map(|l| format!("[{l}] "))
+            .unwrap_or_default();
+        for l in wrap(&format!("{who}Allow {}?", p.request.summary), width) {
+            out.push(Line::from(Span::styled(l, warn)));
+        }
+        let mut options = vec![Span::styled("[y]", warn), Span::raw(" yes once   ")];
+        if let Some(pattern) = &p.request.pattern {
+            options.push(Span::styled("[a]", warn));
+            options.push(Span::raw(format!(
+                " always ({} {pattern})   ",
+                p.request.call.name
+            )));
+        }
+        options.extend([Span::styled("[n]", warn), Span::raw(" no")]);
+        out.push(Line::from(options));
+    }
+    out
+}
+
+/// `0:42`, `12:03`.
+fn clock(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// `⑂ research-1  Running shell cargo test · 3 tools · 0:42`, finishing as
+/// `✓ research-1  1:12 · 9 tools · 48k tok → first line of the report`.
+fn agent_line(a: &AgentLine, width: usize) -> Line<'static> {
+    let (icon, color) = match a.state {
+        AgentState::Queued => ("⏸", Color::DarkGray),
+        AgentState::Running => ("⑂", Color::Cyan),
+        AgentState::Question => ("?", Color::Yellow),
+        AgentState::Approval => ("!", Color::Yellow),
+        AgentState::Completed => ("✓", Color::Green),
+        AgentState::Failed => ("✗", Color::Red),
+        AgentState::Cancelled => ("⊘", Color::DarkGray),
+    };
+    let tools = match a.tools {
+        1 => "1 tool".to_owned(),
+        n => format!("{n} tools"),
+    };
+    let rest = match a.elapsed {
+        None => {
+            let activity = match a.state {
+                AgentState::Approval => "Waiting for approval",
+                _ => a.activity.as_str(),
+            };
+            format!("{activity} · {tools} · {}", clock(a.started.elapsed()))
+        }
+        Some(e) => {
+            let mut t = format!("{} · {tools}", clock(e));
+            if a.tokens > 0 {
+                t.push_str(&format!(" · {}k tok", a.tokens.div_ceil(1000)));
+            }
+            let first = a.result.lines().find(|l| !l.trim().is_empty());
+            if let Some(f) = first {
+                t.push_str(" → ");
+                t.push_str(f.trim());
+            }
+            t
+        }
+    };
+    let text: String = format!("{icon} {}  {rest}", a.label)
+        .chars()
+        .take(width.max(4))
+        .collect();
+    let label_end = icon.len() + 1 + a.label.len();
+    let (head, tail) = text.split_at(label_end.min(text.len()));
+    Line::from(vec![
+        Span::styled(
+            head.to_owned(),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(tail.to_owned(), Style::new().fg(Color::DarkGray)),
+    ])
+}
+
+/// The lines of `entries` at `width`, appended to `out`.
+fn entry_lines(entries: &[Entry], expanded: bool, width: usize, out: &mut Vec<Line<'static>>) {
     let dim = Style::new().fg(Color::DarkGray);
-    for entry in &app.entries {
-        if !out.is_empty() {
+    let mut prev_agent = false;
+    for entry in entries {
+        // Consecutive agent lines stay together, like a list.
+        let agent = matches!(entry, Entry::Agent(_));
+        if !out.is_empty() && !(agent && prev_agent) {
             out.push(Line::default());
         }
+        prev_agent = agent;
         match entry {
             Entry::User(text) => {
                 for (i, l) in wrap(text, width.saturating_sub(2)).into_iter().enumerate() {
@@ -244,13 +360,13 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 };
                 let first = output.lines().next().unwrap_or_default();
                 let mut head = format!("{icon} {summary}");
-                if !app.expanded && !first.is_empty() {
+                if !expanded && !first.is_empty() {
                     head.push_str(" — ");
                     head.push_str(first);
                 }
                 let head: String = head.chars().take(width.max(4)).collect();
                 out.push(Line::from(Span::styled(head, Style::new().fg(color))));
-                if app.expanded && !output.is_empty() {
+                if expanded && !output.is_empty() {
                     for (n, l) in wrap(output, width.saturating_sub(4))
                         .into_iter()
                         .enumerate()
@@ -268,7 +384,7 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     "(earlier messages were summarized; Ctrl+O to show)",
                     dim.add_modifier(Modifier::ITALIC),
                 )));
-                if app.expanded {
+                if expanded {
                     out.extend(
                         wrap(text, width)
                             .into_iter()
@@ -286,26 +402,9 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     .into_iter()
                     .map(|l| Line::from(Span::styled(l, Style::new().fg(Color::Red)))),
             ),
+            Entry::Agent(a) => out.push(agent_line(a, width)),
         }
     }
-    if let Some(p) = &app.approval {
-        out.push(Line::default());
-        let warn = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-        for l in wrap(&format!("Allow {}?", p.request.summary), width) {
-            out.push(Line::from(Span::styled(l, warn)));
-        }
-        let mut options = vec![Span::styled("[y]", warn), Span::raw(" yes once   ")];
-        if let Some(pattern) = &p.request.pattern {
-            options.push(Span::styled("[a]", warn));
-            options.push(Span::raw(format!(
-                " always ({} {pattern})   ",
-                p.request.call.name
-            )));
-        }
-        options.extend([Span::styled("[n]", warn), Span::raw(" no")]);
-        out.push(Line::from(options));
-    }
-    out
 }
 
 fn draw_input(
@@ -338,7 +437,7 @@ fn draw_input(
         .map(|r| Line::from(r.clone()))
         .collect();
     frame.render_widget(Paragraph::new(visible), inner);
-    if app.approval.is_none() && app.secrets.is_none() {
+    if app.approval.is_none() && app.secrets.is_none() && app.overlay.is_none() {
         let x = inner.x + (cursor.1 as u16).min(inner.width.saturating_sub(1));
         let y = inner.y + (cursor.0 - first) as u16;
         frame.set_cursor_position(Position::new(x, y));
@@ -361,7 +460,17 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else if let Some(r) = &app.running {
         let secs = r.started.elapsed().as_secs();
         let frame_idx = (r.started.elapsed().as_millis() / 100) as usize % SPINNER.len();
-        format!("{} running {secs}s · Ctrl+C to stop", SPINNER[frame_idx])
+        match app.live_agents() {
+            0 => format!("{} running {secs}s · Ctrl+C to stop", SPINNER[frame_idx]),
+            1 => format!(
+                "{} waiting on 1 agent · {secs}s · Ctrl+C to stop",
+                SPINNER[frame_idx]
+            ),
+            n => format!(
+                "{} waiting on {n} agents · {secs}s · Ctrl+C to stop",
+                SPINNER[frame_idx]
+            ),
+        }
     } else if let Some(u) = &app.last_usage {
         format!(
             "last turn {} in / {} out",

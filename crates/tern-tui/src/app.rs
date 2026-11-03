@@ -1,6 +1,7 @@
 //! TUI state and its reactions to keys, agent events, and run completion.
 //! No terminal or async code here, so it is unit-testable.
 
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -43,6 +44,55 @@ pub enum Entry {
     Summary(String),
     Notice(String),
     Error(String),
+    /// One line per sub-agent, updated in place.
+    Agent(AgentLine),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentState {
+    Queued,
+    Running,
+    /// Blocked on `agent_ask_parent`.
+    Question,
+    /// Waiting for the user to answer one of its approvals.
+    Approval,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl AgentState {
+    pub fn is_live(self) -> bool {
+        matches!(
+            self,
+            Self::Queued | Self::Running | Self::Question | Self::Approval
+        )
+    }
+}
+
+/// A sub-agent of the current run, as its line in the transcript shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentLine {
+    pub run_id: String,
+    pub label: String,
+    pub state: AgentState,
+    /// What it is doing ("Running shell cargo test", "Asked: …").
+    pub activity: String,
+    pub tools: u32,
+    pub tokens: u64,
+    pub started: Instant,
+    /// Set when it finished.
+    pub elapsed: Option<Duration>,
+    /// Its latest assistant text (its report once it has finished).
+    pub result: String,
+}
+
+/// A read-only transcript drawn over the main one (`/agent <label>`).
+pub struct Overlay {
+    pub title: String,
+    pub entries: Vec<Entry>,
+    /// Lines scrolled up from the bottom.
+    pub scroll: usize,
 }
 
 /// Work the event loop must do on the app's behalf.
@@ -76,10 +126,19 @@ pub struct App {
     pub model: Option<String>,
     pub running: Option<Running>,
     pub approval: Option<PendingApproval>,
+    /// Further approvals (sub-agents ask concurrently), shown in turn.
+    approval_queue: VecDeque<PendingApproval>,
     pub last_usage: Option<Usage>,
     pub hint: Option<String>,
     /// The `/secrets` panel, drawn over the transcript while open.
     pub secrets: Option<SecretsPanel>,
+    /// A sub-agent's transcript, drawn over the transcript while open.
+    pub overlay: Option<Overlay>,
+    /// Sub-agent runs of the current tree. Their events update their
+    /// `Entry::Agent` line and never the transcript.
+    agents: HashSet<String>,
+    /// The run `/agents` and `/agent` look at: the current or last one.
+    last_run: Option<String>,
     queued: Option<String>,
     last_ctrl_c: Option<Instant>,
 }
@@ -95,6 +154,9 @@ Commands:
   /reload           re-read config and rebuild tools
   /secrets [NAME]   manage API keys and tokens in secrets.toml
   /usage            token usage for this session
+  /agents           list the last run's sub-agents
+  /agent <label>    show a sub-agent's transcript (Esc closes)
+  /agent <label> <message>  send a running sub-agent a message
   /quit             exit
 Keys: Enter send · Shift/Alt+Enter or Ctrl+J newline · Ctrl+O expand tool output
       PgUp/PgDn scroll · Ctrl+C cancel (twice to quit)";
@@ -112,9 +174,13 @@ impl App {
             model,
             running: None,
             approval: None,
+            approval_queue: VecDeque::new(),
             last_usage: None,
             hint: None,
             secrets: None,
+            overlay: None,
+            agents: HashSet::new(),
+            last_run: None,
             queued: None,
             last_ctrl_c: None,
         }
@@ -144,6 +210,20 @@ impl App {
         if let Some(panel) = &mut self.secrets {
             if !panel.on_key(key, self.backend.as_ref()) {
                 self.secrets = None;
+            }
+            return vec![];
+        }
+
+        if let Some(o) = &mut self.overlay {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                KeyCode::Up => o.scroll = o.scroll.saturating_add(1),
+                KeyCode::Down => o.scroll = o.scroll.saturating_sub(1),
+                KeyCode::PageUp => o.scroll = o.scroll.saturating_add(10),
+                KeyCode::PageDown => o.scroll = o.scroll.saturating_sub(10),
+                KeyCode::Home => o.scroll = usize::MAX,
+                KeyCode::End => o.scroll = 0,
+                _ => {}
             }
             return vec![];
         }
@@ -226,10 +306,13 @@ impl App {
         }
         self.last_ctrl_c = Some(now);
         self.hint = Some("press Ctrl+C again to quit".into());
-        if self.secrets.take().is_some() {
+        if self.secrets.take().is_some() || self.overlay.take().is_some() {
             return vec![];
         }
-        if self.approval.is_some() {
+        if self.running.is_some() {
+            // The whole tree stops, so deny everything it is waiting on.
+            self.deny_all_approvals();
+        } else if self.approval.is_some() {
             self.answer_approval(Decision::Deny);
         }
         if self.running.is_some() {
@@ -243,6 +326,13 @@ impl App {
     fn answer_approval(&mut self, decision: Decision) {
         if let Some(p) = self.approval.take() {
             let _ = p.reply.send(decision);
+        }
+        self.approval = self.approval_queue.pop_front();
+    }
+
+    fn deny_all_approvals(&mut self) {
+        while self.approval.is_some() {
+            self.answer_approval(Decision::Deny);
         }
     }
 
@@ -281,6 +371,7 @@ impl App {
                     });
                 }
                 self.model = Some(started.model);
+                self.start_tree(&started.run_id);
                 self.running = Some(Running {
                     run_id: started.run_id.clone(),
                     started: Instant::now(),
@@ -418,9 +509,96 @@ impl App {
                     Err(e) => self.error(e),
                 },
             },
+            "agents" => self.list_agents(),
+            "agent" if arg.is_empty() => self
+                .error("usage: /agent <label> to show it, /agent <label> <message> to message it"),
+            "agent" => {
+                let (label, message) = match arg.split_once(char::is_whitespace) {
+                    Some((l, m)) => (l, m.trim()),
+                    None => (arg, ""),
+                };
+                self.agent_command(label, message);
+            }
             other => self.error(format!("unknown command /{other}; try /help")),
         }
         vec![]
+    }
+
+    /// A new top-level run: forget the previous run's sub-agents.
+    fn start_tree(&mut self, run_id: &str) {
+        self.agents.clear();
+        self.last_run = Some(run_id.to_owned());
+    }
+
+    fn list_agents(&mut self) {
+        let Some(run) = self.last_run.clone() else {
+            self.notice("no run yet");
+            return;
+        };
+        match self.backend.children(&run) {
+            Err(e) => self.error(e),
+            Ok(list) if list.is_empty() => self.notice("the last run started no sub-agents"),
+            Ok(list) => {
+                let lines: Vec<String> = list
+                    .iter()
+                    .map(|c| {
+                        let detail = c
+                            .pending_question
+                            .as_deref()
+                            .map(|q| format!("asked: {q}"))
+                            .or_else(|| c.error.clone())
+                            .or_else(|| c.result_preview.clone())
+                            .unwrap_or_default();
+                        let detail = detail.lines().next().unwrap_or_default().to_owned();
+                        format!("{}  {}  {}  {detail}", c.label, c.status, c.run_id)
+                    })
+                    .collect();
+                self.notice(format!(
+                    "sub-agents (show with /agent <label>, message with /agent <label> <text>):\n{}",
+                    lines.join("\n")
+                ));
+            }
+        }
+    }
+
+    fn agent_command(&mut self, label: &str, message: &str) {
+        let Some(run) = self.last_run.clone() else {
+            self.error("no run yet");
+            return;
+        };
+        let list = match self.backend.children(&run) {
+            Ok(l) => l,
+            Err(e) => return self.error(e),
+        };
+        let Some(child) = list.iter().find(|c| c.label == label) else {
+            let labels: Vec<&str> = list.iter().map(|c| c.label.as_str()).collect();
+            let known = if labels.is_empty() {
+                "none".to_owned()
+            } else {
+                labels.join(", ")
+            };
+            return self.error(format!(
+                "no sub-agent {label:?}; the last run's are: {known}"
+            ));
+        };
+        if !message.is_empty() {
+            match self.backend.message_run(&child.run_id, message) {
+                Ok(()) => self.notice(format!("sent to {label}")),
+                Err(e) => self.error(e),
+            }
+            return;
+        }
+        match self.backend.session(&child.session_id) {
+            Ok(Some((_, messages))) => {
+                self.overlay = Some(Overlay {
+                    title: format!(" {label} · {} · Esc to close ", child.status),
+                    entries: history::entries(&messages),
+                    scroll: 0,
+                });
+            }
+            Ok(None) => self.error(format!("session {} not found", child.session_id)),
+            Err(e) => self.error(e),
+        }
     }
 
     fn resume(&mut self, id: &str) -> Vec<Effect> {
@@ -444,6 +622,7 @@ impl App {
                 Ok(Some((info, messages))) => {
                     self.open_session(info, &messages);
                     self.notice(format!("resuming run {id}"));
+                    self.start_tree(id);
                     self.running = Some(Running {
                         run_id: id.to_owned(),
                         started: Instant::now(),
@@ -480,6 +659,19 @@ impl App {
     // ---- agent events ----
 
     pub fn on_agent_event(&mut self, ev: AgentEvent) {
+        // Children run concurrently with their parent: their events update
+        // their own line, never the transcript. Events of other runs (another
+        // client's, or a previous run's) are ignored.
+        if self.agents.contains(ev.run_id()) {
+            return self.on_child_event(ev);
+        }
+        if self
+            .running
+            .as_ref()
+            .is_none_or(|r| r.run_id != ev.run_id())
+        {
+            return;
+        }
         match ev {
             AgentEvent::TextDelta { text, .. } => match self.entries.last_mut() {
                 Some(Entry::Assistant {
@@ -505,6 +697,8 @@ impl App {
                     });
                 }
             }
+            // The agent lines stand in for the agent_* calls.
+            AgentEvent::ToolStarted { name, .. } if name.starts_with("agent_") => {}
             AgentEvent::ToolStarted { id, summary, .. } => {
                 self.entries.push(Entry::Tool {
                     id,
@@ -569,11 +763,156 @@ impl App {
                 self.notice("summarized earlier messages to fit the context window")
             }
             AgentEvent::Usage { usage, .. } => self.last_usage = Some(usage),
+            AgentEvent::SubagentSpawned {
+                child_run_id,
+                label,
+                status,
+                ..
+            } => self.add_agent(child_run_id, label, &status),
+            AgentEvent::SubagentMessage {
+                to_run_id,
+                kind,
+                text,
+                ..
+            } => {
+                let what = if kind == "answer" { "Answered" } else { "Told" };
+                let activity = format!("{what}: {}", first_line(&text));
+                self.set_agent_state(&to_run_id, AgentState::Running, Some(activity));
+            }
             AgentEvent::RunStarted { .. }
             | AgentEvent::RunFinished { .. }
-            | AgentEvent::ToolOutput { .. }
-            | AgentEvent::SubagentSpawned { .. } => {}
+            | AgentEvent::ToolOutput { .. } => {}
         }
+    }
+
+    fn add_agent(&mut self, run_id: String, label: String, status: &str) {
+        let queued = status == "queued";
+        self.agents.insert(run_id.clone());
+        self.entries.push(Entry::Agent(AgentLine {
+            run_id,
+            label,
+            state: if queued {
+                AgentState::Queued
+            } else {
+                AgentState::Running
+            },
+            activity: if queued { "Queued" } else { "Starting" }.into(),
+            tools: 0,
+            tokens: 0,
+            started: Instant::now(),
+            elapsed: None,
+            result: String::new(),
+        }));
+    }
+
+    fn agent_mut(&mut self, run_id: &str) -> Option<&mut AgentLine> {
+        self.entries.iter_mut().rev().find_map(|e| match e {
+            Entry::Agent(a) if a.run_id == run_id => Some(a),
+            _ => None,
+        })
+    }
+
+    /// Change a live agent's state (finished ones stay finished).
+    fn set_agent_state(&mut self, run_id: &str, state: AgentState, activity: Option<String>) {
+        if let Some(a) = self.agent_mut(run_id)
+            && a.state.is_live()
+        {
+            a.state = state;
+            if let Some(act) = activity {
+                a.activity = act;
+            }
+        }
+    }
+
+    /// An event of a sub-agent run: update its line.
+    fn on_child_event(&mut self, ev: AgentEvent) {
+        let run_id = ev.run_id().to_owned();
+        match ev {
+            // A grandchild.
+            AgentEvent::SubagentSpawned {
+                child_run_id,
+                label,
+                status,
+                ..
+            } => self.add_agent(child_run_id, label, &status),
+            AgentEvent::SubagentMessage { kind, text, .. } if kind == "question" => {
+                let activity = format!("Asked: {}", first_line(&text));
+                self.set_agent_state(&run_id, AgentState::Question, Some(activity));
+            }
+            AgentEvent::RunStarted { .. } => {
+                self.set_agent_state(&run_id, AgentState::Running, Some("Thinking".into()));
+            }
+            AgentEvent::TextDelta { .. } => {
+                if let Some(a) = self.agent_mut(&run_id)
+                    && a.state == AgentState::Running
+                {
+                    a.activity = "Writing".into();
+                }
+            }
+            AgentEvent::AssistantMessage { text, .. } => {
+                if let Some(a) = self.agent_mut(&run_id)
+                    && !text.trim().is_empty()
+                {
+                    a.result = text;
+                }
+            }
+            AgentEvent::ToolStarted { summary, .. } => {
+                if let Some(a) = self.agent_mut(&run_id) {
+                    a.tools += 1;
+                    if a.state == AgentState::Running {
+                        a.activity = format!("Running {summary}");
+                    }
+                }
+            }
+            AgentEvent::ToolFinished { name, .. } => {
+                let state = if name == "agent_ask_parent" {
+                    // Answered (or timed out).
+                    Some(AgentState::Running)
+                } else {
+                    None
+                };
+                if let Some(a) = self.agent_mut(&run_id)
+                    && a.state.is_live()
+                {
+                    a.state = state.unwrap_or(a.state);
+                    a.activity = "Thinking".into();
+                }
+            }
+            AgentEvent::Approval { .. } => {
+                self.set_agent_state(&run_id, AgentState::Running, None);
+            }
+            AgentEvent::Usage { usage, .. } => {
+                if let Some(a) = self.agent_mut(&run_id) {
+                    a.tokens += usage.input_tokens
+                        + usage.output_tokens
+                        + usage.cache_read_tokens
+                        + usage.cache_write_tokens;
+                }
+            }
+            AgentEvent::RunFinished { status, .. } => {
+                if let Some(a) = self.agent_mut(&run_id) {
+                    a.state = match status.as_str() {
+                        "completed" => AgentState::Completed,
+                        "interrupted" => AgentState::Cancelled,
+                        _ => AgentState::Failed,
+                    };
+                    a.elapsed = Some(a.started.elapsed());
+                    a.activity.clear();
+                }
+            }
+            AgentEvent::SubagentMessage { .. }
+            | AgentEvent::ToolOutput { .. }
+            | AgentEvent::Retrying { .. }
+            | AgentEvent::Compacted { .. } => {}
+        }
+    }
+
+    /// Sub-agents of the current tree that are still working.
+    pub fn live_agents(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Agent(a) if a.state.is_live()))
+            .count()
     }
 
     fn tool_mut(&mut self, id: &str) -> Option<&mut Entry> {
@@ -584,20 +923,23 @@ impl App {
     }
 
     pub fn on_approval(&mut self, pending: PendingApproval) {
-        // A second request can't arrive while one is pending (tools run one
-        // at a time); deny defensively rather than overwrite.
-        if let Some(old) = self.approval.replace(pending) {
-            let _ = old.reply.send(Decision::Deny);
+        let run = pending.request.run_id.clone();
+        self.set_agent_state(&run, AgentState::Approval, None);
+        // Sub-agents ask concurrently: answer one at a time, in order.
+        if self.approval.is_some() {
+            self.approval_queue.push_back(pending);
+        } else {
+            self.approval = Some(pending);
         }
+        // The prompt is drawn in the transcript.
+        self.overlay = None;
         self.scroll = 0;
     }
 
     /// The driven run finished (or the backend failed). May start a queued message.
     pub fn on_run_done(&mut self, result: BackendResult<RunOutcome>) -> Vec<Effect> {
         let run_id = self.running.take().map(|r| r.run_id).unwrap_or_default();
-        if let Some(p) = self.approval.take() {
-            let _ = p.reply.send(Decision::Deny);
-        }
+        self.deny_all_approvals();
         for e in &mut self.entries {
             match e {
                 Entry::Assistant { streaming, .. } => *streaming = false,
@@ -634,6 +976,15 @@ impl App {
     fn error(&mut self, s: impl Into<String>) {
         self.entries.push(Entry::Error(s.into()));
     }
+}
+
+fn first_line(s: &str) -> String {
+    s.lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(120)
+        .collect()
 }
 
 #[cfg(test)]

@@ -53,7 +53,10 @@ class _RunInspectorState extends State<RunInspector> {
     // The journal grows while a run goes; keep up with it.
     _refresh = Timer.periodic(const Duration(seconds: 2), (_) {
       final run = _selected;
-      if (run != null && _live(run)) _pick(run, quiet: true);
+      if (run != null && _live(run)) {
+        _pick(run, quiet: true);
+        _reloadRuns();
+      }
     });
   }
 
@@ -64,17 +67,59 @@ class _RunInspectorState extends State<RunInspector> {
   }
 
   bool _live(String run) =>
-      widget.store.transcripts.values.any((t) => t.activeRun == run);
+      widget.store.transcripts.values.any((t) => t.activeRun == run) ||
+      (_runs?.any(
+            (r) =>
+                r.id == run && (r.status == 'running' || r.status == 'queued'),
+          ) ??
+          false);
 
   Future<void> _load() async {
     try {
-      final runs = await widget.store.client.runs(widget.session);
+      final runs = await widget.store.client.runs(
+        widget.session,
+        subagents: true,
+      );
       if (!mounted) return;
-      setState(() => _runs = runs.reversed.toList());
+      setState(() => _runs = _tree(runs));
       await _pick(widget.run ?? runs.lastOrNull?.id);
     } on TernException catch (e) {
       if (mounted) setState(() => _error = e.message);
     }
+  }
+
+  Future<void> _reloadRuns() async {
+    try {
+      final runs = await widget.store.client.runs(
+        widget.session,
+        subagents: true,
+      );
+      if (mounted) setState(() => _runs = _tree(runs));
+    } on TernException {
+      // Keep the list we have.
+    }
+  }
+
+  /// Newest first, each run followed by the sub-agents it started.
+  static List<RunItem> _tree(List<RunItem> runs) {
+    final kids = <String, List<RunItem>>{};
+    for (final r in runs) {
+      if (r.parentRunId case final p?) (kids[p] ??= []).add(r);
+    }
+    final ids = runs.map((r) => r.id).toSet();
+    final out = <RunItem>[];
+    void add(RunItem r) {
+      out.add(r);
+      for (final k in kids[r.id] ?? const <RunItem>[]) {
+        add(k);
+      }
+    }
+
+    // Roots: runs whose parent isn't listed (normally the user's).
+    for (final r in runs.reversed) {
+      if (r.parentRunId == null || !ids.contains(r.parentRunId)) add(r);
+    }
+    return out;
   }
 
   Future<void> _pick(String? run, {bool quiet = false}) async {
@@ -351,6 +396,23 @@ class _RunInspectorState extends State<RunInspector> {
   static String _label(StepItem s) {
     final input = s.input;
     if (input is Map) {
+      if (s.kind == 'inbox') {
+        final mail = switch (s.output) {
+          {'mail': final List m} => m.whereType<Map>(),
+          _ => const <Map>[],
+        };
+        final what = [
+          for (final m in mail)
+            '${m['agent'] ?? 'message'} ${switch (m['kind']) {
+              'finished' => m['status'] ?? 'finished',
+              'question' => 'asked',
+              final k => k,
+            }}',
+        ].join(', ');
+        return what.isEmpty
+            ? (input['wait'] == true ? 'Waiting on sub-agents' : 'Inbox')
+            : 'Inbox: $what';
+      }
       if (s.kind == 'llm') {
         return 'Model call${input['model'] is String ? ' · ${input['model']}' : ''}';
       }
@@ -396,7 +458,7 @@ class _RunRow extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          padding: EdgeInsets.fromLTRB(10.0 + 14 * run.depth, 8, 10, 8),
           child: Row(
             children: [
               Container(
@@ -409,12 +471,22 @@ class _RunRow extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    if (run.label case final label?)
+                      Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: mono.copyWith(fontSize: 12.5),
+                      )
+                    else
+                      Text(
+                        whenInWords(run.startedAt),
+                        style: const TextStyle(fontSize: 13),
+                      ),
                     Text(
-                      whenInWords(run.startedAt),
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                    Text(
-                      '${run.status} · ${run.trigger}',
+                      run.label == null
+                          ? '${run.status} · ${run.trigger}'
+                          : '${run.status} · sub-agent',
                       style: TextStyle(fontSize: 11.5, color: c.muted),
                     ),
                   ],

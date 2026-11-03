@@ -1,7 +1,7 @@
 # tern sub-agents: delegation, fan-out and coordination
 
-Status: S0 and S1 built (2026-11-03); S2–S5 not started. See "Implementation notes (S0–S1)" at the end and
-DECISIONS.md "S0–S1" for where the code differs from this design. Related: [gui-spec.md](gui-spec.md) §7.2 (agent
+Status: S0–S3 built (2026-11-03); S4–S5 not started. See "Implementation notes" at the end and DECISIONS.md
+"S0–S1" and "S2–S3" for where the code differs from this design. Related: [gui-spec.md](gui-spec.md) §7.2 (agent
 profiles and "per-role models", which this builds toward), [research/inngest-tie-in.md](research/inngest-tie-in.md)
 ("Fan-out / subagents: later"), and the "Claude Duet" channels question in gui-spec §11.2, which is a different idea
 and not covered here.
@@ -636,3 +636,28 @@ Where the built code differs from the design above (details in DECISIONS.md "S0�
   ended`.
 - `when_task_contains` is an alias of the mock's existing `conversations[].matches`.
 - `tern runs list` hiding children (§3.2) landed in S1. The blocking inbox step emits no progress lines.
+
+## Implementation notes (S2–S3)
+
+Details in DECISIONS.md "S2–S3".
+
+- `ChildRun` lives in `tern_core::subagent` (the TUI's `Backend::children` returns it too) and is built from the store
+  by `subagents::child_run`, so it works with sub-agents disabled or for a child another process drives. Its status
+  adds `stopped` and `cancelled` to §3.2's list: `cancelled` for a child interrupted on purpose, `interrupted` only for
+  one a crash cut off. `started_at`/`finished_at` are Unix seconds (other API times are milliseconds).
+- A child's question is pending while its newest journal step is a started `agent_ask_parent` call and no answer to it
+  is waiting; that drives `status: "question"`, `pending_question` and `agent_wait` returning early.
+- `agent_send` to a child blocked on a question is always the answer: `question_id` is optional, and a wrong one is an
+  error. Sent to a child that isn't asking, it is a `message`, or a late `answer` when it names a question.
+- The question id is `q_<mail id>`. The ask timeout counts from when the question was first posted, so a re-execution
+  after a crash doesn't restart it; the timeout result is JSON with `answer: null` and the §2.3 note.
+- Questions delivered by `agent_wait` (or answered by `agent_send` before the inbox saw them) are consumed there, so
+  they don't reach the inbox as well.
+- `POST /v1/runs/{id}/message` emits no `subagent_message`: the event's `run_id` is the sender, and the user isn't a
+  run. Steering text renders as `[message from the main agent]` (from the parent) or `[message from the user to this
+  agent]`.
+- `agent_ask_parent` is hidden from top-level runs by `tool::in_scope` (a `None` scope means "all but child-only
+  tools") and always added to a child's frozen scope.
+- `/v1/health` reports `subagents` whether or not `[subagents].enabled` is set: it says the API exists.
+- The cancel cascade on `/v1/runs/{id}/cancel` was already in S1 (a parent's drive ending cancels its children).
+- The `tern_client` fixture test (gui-spec §6.4) doesn't exist on the Rust side yet, so S2 added none.

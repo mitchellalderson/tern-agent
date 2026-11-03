@@ -1,6 +1,8 @@
-//! The sub-agent host (docs/subagents-design.md §1.3–§1.6): creates child
-//! runs for `agent_spawn`, hands them to a [`RunDriver`], and delivers their
-//! results to the parent through `finished` mail.
+//! The sub-agent host (docs/subagents-design.md §1.3–§2.4): creates child
+//! runs for `agent_spawn`, hands them to a [`RunDriver`], delivers their
+//! results to the parent through `finished` mail, and carries questions,
+//! answers and steering messages between runs of a tree (`agent_ask_parent`,
+//! `agent_send`, `POST /v1/runs/{id}/message`).
 //!
 //! Lives with `Runtime` rather than the daemon, so sub-agents work wherever
 //! runs are driven: the daemon drives children through its `Manager`, the
@@ -17,10 +19,12 @@ use tern_core::config::{ModelRef, SubagentsConfig};
 use tern_core::events::AgentEvent;
 use tern_core::journal::{Journal, StepError};
 use tern_core::subagent::{
-    self, AGENT_TOOLS, CHILD_EXCLUDED_TOOLS, CancelRequest, FINISHED_PREFIX, Finished,
-    READ_ONLY_TOOLS, SpawnRequest, SubagentHost, SubagentLimits, ToolsArg, WaitMode, WaitRequest,
+    self, AGENT_TOOLS, ASK_PREFIX, AskRequest, CHILD_EXCLUDED_TOOLS, CHILD_ONLY_TOOLS,
+    CancelRequest, ChildRun, FINISHED_PREFIX, Finished, Note, Question, READ_ONLY_TOOLS,
+    SendRequest, SpawnRequest, SubagentHost, SubagentLimits, ToolsArg, WaitMode, WaitRequest,
 };
 use tern_core::tool::{ToolCtx, ToolRegistry, consume_mail, progress_sink};
+use tern_core::types::Usage;
 use tern_core::types::{ContentBlock, Message};
 use tern_store::{MailRow, NewMail, NewRun, RunRow, Store, now_ms};
 use tokio::sync::{Notify, broadcast};
@@ -420,16 +424,23 @@ impl Subagents {
             }
         };
         names.retain(|n| {
-            !CHILD_EXCLUDED_TOOLS.contains(&n.as_str()) && !AGENT_TOOLS.contains(&n.as_str())
+            let n = n.as_str();
+            !CHILD_EXCLUDED_TOOLS.contains(&n)
+                && !AGENT_TOOLS.contains(&n)
+                && !CHILD_ONLY_TOOLS.contains(&n)
         });
-        if depth < self.limits.max_depth {
-            names.extend(
-                AGENT_TOOLS
-                    .iter()
-                    .map(|t| (*t).to_owned())
-                    .filter(|t| all.contains(t)),
-            );
-        }
+        let parent_side: &[&str] = if depth < self.limits.max_depth {
+            AGENT_TOOLS
+        } else {
+            &[]
+        };
+        names.extend(
+            parent_side
+                .iter()
+                .chain(CHILD_ONLY_TOOLS)
+                .map(|t| (*t).to_owned())
+                .filter(|t| all.contains(t)),
+        );
         names.sort();
         names.dedup();
         Ok(names)
@@ -483,7 +494,14 @@ impl Subagents {
             "run_id": child.id,
             "elapsed_secs": (now_ms() - child.started_at).max(0) / 1000,
         });
-        if child.status == "running"
+        if let Some((mail, q)) = pending_question(&self.store, child)? {
+            v["status"] = "question".into();
+            v["question_id"] = subagent::question_id(mail.id).into();
+            v["question"] = q.question.into();
+            if let Some(r) = q.recommendation {
+                v["recommendation"] = r.into();
+            }
+        } else if child.status == "running"
             && let Some(a) = self.activity(child)
         {
             v["activity"] = a.into();
@@ -669,11 +687,16 @@ impl Subagents {
         let mut announced: HashSet<String> = HashSet::new();
         loop {
             let mut done: Vec<MailRow> = Vec::new();
+            // Children blocked on a question: (child, question mail).
+            let mut asking: Vec<(String, MailRow)> = Vec::new();
             for child in &awaited {
                 match self.finished_mail(&child.id)? {
                     Some(m) => done.push(m),
                     None => {
                         if let Some(row) = self.store.run(&child.id)? {
+                            if let Some((m, _)) = pending_question(&self.store, &row)? {
+                                asking.push((row.id.clone(), m));
+                            }
                             self.ensure_driven(&row)?;
                         }
                     }
@@ -691,9 +714,13 @@ impl Subagents {
                 WaitMode::All => done.len() == awaited.len(),
                 WaitMode::Any => !done.is_empty(),
             };
-            if met || tokio::time::Instant::now() >= deadline {
+            // A child blocked on a question would deadlock an `all` wait.
+            if met || !asking.is_empty() || tokio::time::Instant::now() >= deadline {
+                // Reports and questions delivered here don't come back
+                // through the inbox.
                 let unconsumed: Vec<i64> = done
                     .iter()
+                    .chain(asking.iter().map(|(_, m)| m))
                     .filter(|m| m.consumed_step.is_none())
                     .map(|m| m.id)
                     .collect();
@@ -712,7 +739,9 @@ impl Subagents {
                     }
                 }
                 let mut out = json!({ "agents": entries });
-                if !met {
+                if !asking.is_empty() {
+                    out["note"] = "a sub-agent asked a question and is blocked until you answer it with agent_send".into();
+                } else if !met {
                     out["note"] = format!(
                         "timed out after {}s; the others are still working",
                         timeout.as_secs()
@@ -727,6 +756,310 @@ impl Subagents {
             }
         }
     }
+}
+
+impl Subagents {
+    fn try_send(&self, ctx: &ToolCtx, call_id: &str, req: SendRequest) -> anyhow::Result<Value> {
+        let key = format!("send:{}:{call_id}", ctx.run_id);
+        // Re-executed after a crash: it was sent already.
+        if let Some(m) = self.store.mail_by_key(&key)? {
+            return Ok(json!({ "agent": req.agent, "delivered_as": m.kind }));
+        }
+        let kids = self.store.children(&ctx.run_id)?;
+        let Some(child) = kids
+            .iter()
+            .find(|k| k.label.as_deref() == Some(req.agent.as_str()))
+        else {
+            anyhow::bail!(
+                "no sub-agent {:?}; yours are: {}",
+                req.agent,
+                labels_of(&kids)
+            );
+        };
+        if req.message.trim().is_empty() {
+            anyhow::bail!("message is empty");
+        }
+        if is_ended(child) {
+            anyhow::bail!(
+                "{} has already finished ({}); spawn a new sub-agent to continue its work",
+                req.agent,
+                self.status_of(child)?
+            );
+        }
+        let pending = pending_question(&self.store, child)?;
+        let (kind, question_id) = match (&pending, req.question_id) {
+            (Some((m, _)), Some(q)) if q != subagent::question_id(m.id) => anyhow::bail!(
+                "{} is waiting for an answer to {}, not {q}",
+                req.agent,
+                subagent::question_id(m.id)
+            ),
+            // Blocked on a question: whatever is sent is the answer.
+            (Some((m, _)), _) => ("answer", Some(subagent::question_id(m.id))),
+            // An answer to a question that timed out arrives as a late answer.
+            (None, Some(q)) => ("answer", Some(q)),
+            (None, None) => ("message", None),
+        };
+        let body = Note {
+            text: req.message.clone(),
+            question_id,
+        };
+        let posted = self.store.post_mail(&NewMail {
+            to_run_id: &child.id,
+            from_run_id: Some(&ctx.run_id),
+            kind,
+            body: &serde_json::to_string(&body)?,
+            dedupe_key: &key,
+        })?;
+        if let Some((m, _)) = &pending
+            && m.consumed_step.is_none()
+        {
+            // Answered: the question needn't reach the inbox as well.
+            consume_mail(&[m.id]);
+        }
+        if posted {
+            let _ = self.events.send(AgentEvent::SubagentMessage {
+                run_id: ctx.run_id.clone(),
+                to_run_id: child.id.clone(),
+                kind: kind.into(),
+                text: req.message,
+            });
+        }
+        self.notify.notify_waiters();
+        self.ensure_driven(child)?;
+        Ok(json!({
+            "agent": req.agent,
+            "delivered_as": kind,
+            "status": self.status_of(child)?,
+        }))
+    }
+
+    async fn try_ask(
+        &self,
+        ctx: &ToolCtx,
+        call_id: &str,
+        req: AskRequest,
+    ) -> anyhow::Result<Value> {
+        let me = self.run(&ctx.run_id).map_err(anyhow::Error::msg)?;
+        let Some(parent) = me.parent_run_id.clone() else {
+            anyhow::bail!("only sub-agents can ask a parent agent");
+        };
+        if req.question.trim().is_empty() {
+            anyhow::bail!("question is empty");
+        }
+        let key = format!("{ASK_PREFIX}{}:{call_id}", me.id);
+        let body = Question {
+            agent: me.label.clone().unwrap_or_default(),
+            question: req.question.clone(),
+            recommendation: req.recommendation.clone(),
+        };
+        // Keyed by the call id, so a re-execution doesn't ask twice.
+        let posted = self.store.post_mail(&NewMail {
+            to_run_id: &parent,
+            from_run_id: Some(&me.id),
+            kind: "question",
+            body: &serde_json::to_string(&body)?,
+            dedupe_key: &key,
+        })?;
+        let mail = self
+            .store
+            .mail_by_key(&key)?
+            .ok_or_else(|| anyhow::anyhow!("question {key} vanished"))?;
+        let qid = subagent::question_id(mail.id);
+        if posted {
+            tracing::info!(run = %me.id, parent = %parent, question = %qid, "sub-agent asked its parent");
+            let _ = self.events.send(AgentEvent::SubagentMessage {
+                run_id: me.id.clone(),
+                to_run_id: parent.clone(),
+                kind: "question".into(),
+                text: req.question,
+            });
+        }
+        self.notify.notify_waiters();
+        // Counted from when the question was first asked, so a re-execution
+        // after a crash doesn't restart the clock.
+        let timeout_secs = self.config.ask_parent_timeout_secs.max(1);
+        let deadline_ms = mail.created_at + (timeout_secs as i64) * 1000;
+        loop {
+            if let Some((answer, note)) = self.answer_for(&me.id, &qid)? {
+                consume_mail(&[answer.id]);
+                return Ok(json!({ "question_id": qid, "answer": note.text }));
+            }
+            let left = deadline_ms - now_ms();
+            if left <= 0 {
+                return Ok(json!({
+                    "question_id": qid,
+                    "answer": null,
+                    "note": format!(
+                        "No answer within {}. Proceed with your recommendation and say in your report what you assumed.",
+                        human_secs(timeout_secs)
+                    ),
+                }));
+            }
+            tokio::select! {
+                r = self.sleep_or_wake(&ctx.cancel) => r?,
+                () = tokio::time::sleep(Duration::from_millis(left as u64)) => {}
+            }
+        }
+    }
+
+    /// The unconsumed answer to question `qid` in `run_id`'s mail.
+    fn answer_for(&self, run_id: &str, qid: &str) -> anyhow::Result<Option<(MailRow, Note)>> {
+        for m in self.store.pending_mail(run_id)? {
+            if m.kind == "answer"
+                && let Ok(n) = serde_json::from_str::<Note>(&m.body)
+                && n.question_id.as_deref() == Some(qid)
+            {
+                return Ok(Some((m, n)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// A message from the user to a running sub-agent (`POST
+    /// /v1/runs/{id}/message`), delivered at its next step.
+    pub fn message_run(&self, run_id: &str, text: &str) -> anyhow::Result<()> {
+        let run = self
+            .store
+            .run(run_id)?
+            .ok_or_else(|| anyhow::anyhow!("run {run_id} not found"))?;
+        if run.parent_run_id.is_none() {
+            anyhow::bail!("run {run_id} is not a sub-agent; send the main agent a message instead");
+        }
+        if !matches!(run.status.as_str(), "running" | "queued") {
+            anyhow::bail!("sub-agent run {run_id} is not running ({})", run.status);
+        }
+        if text.trim().is_empty() {
+            anyhow::bail!("text is empty");
+        }
+        let body = Note {
+            text: text.to_owned(),
+            question_id: None,
+        };
+        self.store.post_mail(&NewMail {
+            to_run_id: run_id,
+            from_run_id: None,
+            kind: "message",
+            body: &serde_json::to_string(&body)?,
+            dedupe_key: &format!("user:{run_id}:{}", new_id()),
+        })?;
+        tracing::info!(run = run_id, "user message for a sub-agent");
+        self.notify.notify_waiters();
+        Ok(())
+    }
+}
+
+/// `900` → "15 minutes", `90` → "90 seconds".
+fn human_secs(secs: u64) -> String {
+    match secs {
+        60 => "1 minute".into(),
+        s if s % 60 == 0 => format!("{} minutes", s / 60),
+        1 => "1 second".into(),
+        s => format!("{s} seconds"),
+    }
+}
+
+/// A child's unanswered `agent_ask_parent`: the question mail and its body.
+/// Read from the store (the child's newest step is that tool call, still
+/// running, and no answer is waiting for it), so it works for a child driven
+/// by another process.
+pub fn pending_question(
+    store: &Store,
+    child: &RunRow,
+) -> anyhow::Result<Option<(MailRow, Question)>> {
+    if child.status != "running" {
+        return Ok(None);
+    }
+    let Some((kind, status, input)) = store.last_step(&child.id)? else {
+        return Ok(None);
+    };
+    if kind != "tool" || status != "started" {
+        return Ok(None);
+    }
+    let call: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
+    let (Some("agent_ask_parent"), Some(call_id)) = (call["name"].as_str(), call["id"].as_str())
+    else {
+        return Ok(None);
+    };
+    let Some(mail) = store.mail_by_key(&format!("{ASK_PREFIX}{}:{call_id}", child.id))? else {
+        return Ok(None);
+    };
+    let qid = subagent::question_id(mail.id);
+    let answered = store.pending_mail(&child.id)?.iter().any(|m| {
+        m.kind == "answer"
+            && serde_json::from_str::<Note>(&m.body)
+                .is_ok_and(|n| n.question_id.as_deref() == Some(qid.as_str()))
+    });
+    if answered {
+        return Ok(None);
+    }
+    let q = serde_json::from_str::<Question>(&mail.body)?;
+    Ok(Some((mail, q)))
+}
+
+/// `child` as front ends list it.
+pub fn child_run(store: &Store, child: &RunRow) -> anyhow::Result<ChildRun> {
+    let finished = store.mail_by_key(&format!("{FINISHED_PREFIX}{}", child.id))?;
+    let report = finished
+        .as_ref()
+        .and_then(|m| serde_json::from_str::<Finished>(&m.body).ok());
+    let question = pending_question(store, child)?;
+    let status = match (&report, child.status.as_str()) {
+        (Some(f), _) => f.status.clone(),
+        (None, "running") if question.is_some() => "question".into(),
+        (None, "queued" | "running") => child.status.clone(),
+        (None, "interrupted") if subagent::was_cancelled(child) => "cancelled".into(),
+        (None, "interrupted") => "interrupted".into(),
+        (None, other) => subagent::finished_status(other, &final_text(store, child)?).into(),
+    };
+    let result = match &report {
+        Some(f) => f.result.clone(),
+        None if child.status == "completed" => Some(final_text(store, child)?),
+        None => None,
+    };
+    let task = match child.input_message_id {
+        Some(id) => store.message_text(id)?.unwrap_or_default(),
+        None => String::new(),
+    };
+    let (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) =
+        store.run_usage(&child.id)?;
+    Ok(ChildRun {
+        run_id: child.id.clone(),
+        session_id: child.session_id.clone(),
+        parent_run_id: child.parent_run_id.clone().unwrap_or_default(),
+        call_id: child.parent_call_id.clone().unwrap_or_default(),
+        label: child.label.clone().unwrap_or_default(),
+        task: task.chars().take(subagent::TASK_PREVIEW).collect(),
+        model: child.model.clone(),
+        depth: child.depth,
+        status,
+        error: child.error.clone(),
+        started_at: child.started_at / 1000,
+        finished_at: child.finished_at.map(|t| t / 1000),
+        usage: Usage {
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        },
+        result_preview: result
+            .filter(|r| !r.trim().is_empty())
+            .map(|r| r.chars().take(subagent::RESULT_PREVIEW).collect()),
+        pending_question: question.map(|(_, q)| q.question),
+    })
+}
+
+/// The children of `run_id`, oldest first; with `recursive`, their children
+/// too (each after its parent).
+pub fn children_of(store: &Store, run_id: &str, recursive: bool) -> anyhow::Result<Vec<ChildRun>> {
+    let mut out = Vec::new();
+    let mut stack: Vec<RunRow> = store.children(run_id)?.into_iter().rev().collect();
+    while let Some(child) = stack.pop() {
+        out.push(child_run(store, &child)?);
+        if recursive && out.len() < 10_000 {
+            stack.extend(store.children(&child.id)?.into_iter().rev());
+        }
+    }
+    Ok(out)
 }
 
 fn labels_of(kids: &[RunRow]) -> String {
@@ -822,6 +1155,22 @@ impl SubagentHost for Subagents {
             out.push(v);
         }
         Ok(json!({ "agents": out }))
+    }
+
+    async fn send(&self, ctx: &ToolCtx, call_id: &str, req: SendRequest) -> Result<Value, String> {
+        self.try_send(ctx, call_id, req)
+            .map_err(|e| format!("{e:#}"))
+    }
+
+    async fn ask_parent(
+        &self,
+        ctx: &ToolCtx,
+        call_id: &str,
+        req: AskRequest,
+    ) -> Result<Value, String> {
+        self.try_ask(ctx, call_id, req)
+            .await
+            .map_err(|e| format!("{e:#}"))
     }
 
     fn inbox_due(&self, run_id: &str, or_live: bool) -> Result<bool, StepError> {

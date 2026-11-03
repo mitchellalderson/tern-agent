@@ -6,6 +6,7 @@ mod api_runs;
 mod api_schedules;
 mod api_providers;
 mod api_secrets;
+mod api_subagents;
 pub mod auth;
 pub mod listen;
 pub mod manager;

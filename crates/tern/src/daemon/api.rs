@@ -8,23 +8,34 @@
 //! | GET | `/v1/tools` | full tool specs: `[{name, description, input_schema}]` |
 //! | POST | `/v1/models/check` | validate `{model}` |
 //! | POST | `/v1/runs` | send a message: `{text, session_id?, model?}` |
-//! | GET | `/v1/runs/active` | runs in progress: `[{run_id, session_id}]` |
+//! | GET | `/v1/runs/active` | runs in progress: `[{run_id, session_id, parent_run_id?, label?}]` |
 //! | POST | `/v1/runs/{id}/resume` | resume an interrupted run |
-//! | POST | `/v1/runs/{id}/cancel` | cancel a run |
+//! | POST | `/v1/runs/{id}/cancel` | cancel a run and its sub-agents |
 //! | GET | `/v1/runs/{id}/wait` | block until the run finishes |
 //! | GET | `/v1/runs/{id}/session` | the run's session id |
-//! | GET | `/v1/sessions` | recent sessions |
+//! | GET | `/v1/runs/{id}/children[?recursive=1]` | its sub-agents: `[ChildRun]` (`api_subagents.rs`) |
+//! | POST | `/v1/runs/{id}/message` | `{text}` from the user to a running sub-agent (`api_subagents.rs`) |
+//! | GET | `/v1/sessions[?source=]` | recent sessions; sub-agent sessions only with `?source=subagent` |
 //! | GET | `/v1/sessions/{id}` | a session and its messages |
 //! | PUT | `/v1/sessions/{id}/model` | set `{model}` |
-//! | GET | `/v1/sessions/{id}/usage` | token usage |
+//! | GET | `/v1/sessions/{id}/usage[?include=subagents]` | token usage (with sub-agents': the run trees) |
+//! | GET | `/v1/sessions/{id}/subagents` | every sub-agent under the session's runs (`api_subagents.rs`) |
+//! | GET | `/v1/sessions/{id}/runs[?include=subagents]` | runs, with the flag their sub-agent runs (`api_runs.rs`) |
 //! | GET | `/v1/events` | Server-Sent Events: agent events and approval requests |
 //! | GET | `/v1/approvals` | approvals waiting for an API client |
 //! | POST | `/v1/approvals/{id}` | answer `{decision: "once" \| "always" \| "deny"}` |
 //!
-//! Agent events on `/v1/events` carry `session_id` as well as `run_id`.
+//! Agent events on `/v1/events` carry `session_id` as well as `run_id`, and
+//! events of sub-agent runs also `parent_run_id` and `root_session_id`.
+//! Besides the run events (`run_started`, `text_delta`, `tool_started`,
+//! `tool_output`, `tool_finished`, …) there are `subagent_spawned` and
+//! `subagent_message` (docs/subagents-design.md §3.1). Approvals of a
+//! sub-agent's calls carry `parent_run_id`, `agent_label` and
+//! `root_session_id`.
 //! Schedules are in `api_schedules.rs`; session runs and journal steps in
-//! `api_runs.rs`; secrets in `api_secrets.rs`; providers, model lists and
-//! the default model in `api_providers.rs`.
+//! `api_runs.rs`; sub-agent runs and messages in `api_subagents.rs`;
+//! secrets in `api_secrets.rs`; providers, model lists and the default model
+//! in `api_providers.rs`.
 //! Pairing, devices and uploads are in `auth.rs` and `uploads.rs`. TCP
 //! listeners (`listen.rs`) serve this same router behind device-token auth.
 
@@ -158,6 +169,7 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/approvals/{id}", post(approve))
         .merge(super::api_schedules::routes())
         .merge(super::api_runs::routes())
+        .merge(super::api_subagents::routes())
         .merge(super::api_secrets::routes())
         .merge(super::api_providers::routes())
         .merge(super::auth::routes())
@@ -245,13 +257,28 @@ async fn start_run(State(m): State<Shared>, Json(b): Json<StartBody>) -> ApiResu
 pub struct ActiveRun {
     pub run_id: String,
     pub session_id: String,
+    /// Set for sub-agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 async fn active_runs(State(m): State<Shared>) -> Json<Vec<ActiveRun>> {
     Json(
         m.active_runs()
             .into_iter()
-            .map(|(session_id, run_id)| ActiveRun { run_id, session_id })
+            .map(|(session_id, run_id)| {
+                let row = m.rt.store.run(&run_id).ok().flatten();
+                let (parent_run_id, label) =
+                    row.map(|r| (r.parent_run_id, r.label)).unwrap_or_default();
+                ActiveRun {
+                    run_id,
+                    session_id,
+                    label: label.filter(|_| parent_run_id.is_some()),
+                    parent_run_id,
+                }
+            })
             .collect(),
     )
 }
@@ -342,8 +369,11 @@ async fn run_session(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> A
 }
 
 #[derive(Deserialize)]
-struct Limit {
+struct SessionsQuery {
     limit: Option<usize>,
+    /// Only sessions from this source; without it, every source but
+    /// `subagent`.
+    source: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -357,10 +387,16 @@ pub struct SessionItem {
     pub updated_at: i64,
 }
 
-async fn sessions(State(m): State<Shared>, Query(q): Query<Limit>) -> ApiResult<Vec<SessionItem>> {
+async fn sessions(
+    State(m): State<Shared>,
+    Query(q): Query<SessionsQuery>,
+) -> ApiResult<Vec<SessionItem>> {
     let list =
         m.rt.store
-            .list_sessions(q.limit.unwrap_or(20).min(200))
+            .list_sessions_from(
+                q.limit.unwrap_or(20).min(200),
+                q.source.as_deref().filter(|s| !s.is_empty()),
+            )
             .map_err(internal)?;
     Ok(Json(
         list.into_iter()
@@ -436,9 +472,31 @@ async fn set_model(
     ))
 }
 
-async fn usage(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Usage> {
-    let (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) =
-        m.rt.store.session_usage(&id).map_err(internal)?;
+#[derive(Deserialize)]
+pub(super) struct Include {
+    /// `subagents` adds sub-agent runs.
+    pub(super) include: Option<String>,
+}
+
+impl Include {
+    pub(super) fn subagents(&self) -> bool {
+        self.include
+            .as_deref()
+            .is_some_and(|i| i.split(',').any(|x| x.trim() == "subagents"))
+    }
+}
+
+async fn usage(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<Include>,
+) -> ApiResult<Usage> {
+    let (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) = if q.subagents() {
+        m.rt.store.session_tree_usage(&id)
+    } else {
+        m.rt.store.session_usage(&id)
+    }
+    .map_err(internal)?;
     Ok(Json(Usage {
         input_tokens,
         output_tokens,
@@ -461,7 +519,13 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
     let approvals = m.routes.api.subscribe();
     let changes = m.rt.subscribe_changes();
     let stream = futures::stream::unfold(
-        (agent, approvals, changes, m, HashMap::<String, String>::new()),
+        (
+            agent,
+            approvals,
+            changes,
+            m,
+            HashMap::<String, RunPlace>::new(),
+        ),
         |(mut agent, mut approvals, mut changes, m, mut sessions)| async move {
             loop {
                 let ev = tokio::select! {
@@ -496,29 +560,60 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// Where a run's events belong.
+#[derive(Clone)]
+struct RunPlace {
+    session_id: String,
+    /// Sub-agents only: their parent run and the session at the top of
+    /// their tree.
+    parent: Option<(String, String)>,
+}
+
+fn run_place(m: &Shared, run_id: &str) -> Option<RunPlace> {
+    let store = &m.rt.store;
+    let r = store.run(run_id).ok()??;
+    let parent = match r.parent_run_id {
+        Some(p) => {
+            let root = store.root_run(&p).ok()?;
+            let root = store.run(&root).ok()??;
+            Some((p, root.session_id))
+        }
+        None => None,
+    };
+    Some(RunPlace {
+        session_id: r.session_id,
+        parent,
+    })
+}
+
 /// Add `session_id` to an agent event, so a client that attached mid-run
-/// can place it. Run → session lookups are cached per connection.
-fn with_session(m: &Shared, cache: &mut HashMap<String, String>, data: &mut Value) {
+/// can place it, and for a sub-agent's events `parent_run_id` and
+/// `root_session_id`. Run lookups are cached per connection.
+fn with_session(m: &Shared, cache: &mut HashMap<String, RunPlace>, data: &mut Value) {
     let Some(obj) = data.as_object_mut() else {
         return;
     };
-    if obj.contains_key("session_id") {
-        return;
-    }
     let Some(run) = obj.get("run_id").and_then(Value::as_str) else {
         return;
     };
     if !cache.contains_key(run) {
-        let Ok(Some(r)) = m.rt.store.run(run) else {
+        let Some(place) = run_place(m, run) else {
             return;
         };
         if cache.len() > 1000 {
             cache.clear();
         }
-        cache.insert(run.to_owned(), r.session_id);
+        cache.insert(run.to_owned(), place);
     }
-    if let Some(s) = cache.get(run) {
-        obj.insert("session_id".into(), Value::String(s.clone()));
+    let Some(place) = cache.get(run).cloned() else {
+        return;
+    };
+    obj.entry("session_id")
+        .or_insert_with(|| Value::String(place.session_id));
+    if let Some((parent, root_session)) = place.parent {
+        obj.entry("parent_run_id")
+            .or_insert_with(|| Value::String(parent));
+        obj.insert("root_session_id".into(), Value::String(root_session));
     }
 }
 

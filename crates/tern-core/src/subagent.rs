@@ -24,10 +24,23 @@ pub const RESULT_MAX: usize = 16 * 1024;
 pub const TASK_PREVIEW: usize = 500;
 /// Session source of a child's session.
 pub const SESSION_SOURCE: &str = "subagent";
+/// How much of a child's report `ChildRun::result_preview` carries.
+pub const RESULT_PREVIEW: usize = 300;
+/// Dedupe-key prefix of a child's `agent_ask_parent` question:
+/// `ask:<child run>:<call id>`.
+pub const ASK_PREFIX: &str = "ask:";
 
 /// Tool names of the parent-side tools; children get them only below the
 /// depth limit.
-pub const AGENT_TOOLS: &[&str] = &["agent_spawn", "agent_wait", "agent_cancel", "agent_status"];
+pub const AGENT_TOOLS: &[&str] = &[
+    "agent_spawn",
+    "agent_wait",
+    "agent_send",
+    "agent_cancel",
+    "agent_status",
+];
+/// Tools only sub-agents get; top-level runs never see them.
+pub const CHILD_ONLY_TOOLS: &[&str] = &["agent_ask_parent"];
 /// `tools: "read_only"`.
 pub const READ_ONLY_TOOLS: &[&str] = &[
     "read_file",
@@ -120,6 +133,75 @@ pub struct CancelRequest {
     pub reason: Option<String>,
 }
 
+/// `agent_send` arguments.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendRequest {
+    pub agent: String,
+    pub message: String,
+    #[serde(default)]
+    pub question_id: Option<String>,
+}
+
+/// `agent_ask_parent` arguments.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AskRequest {
+    pub question: String,
+    #[serde(default)]
+    pub recommendation: Option<String>,
+}
+
+/// Body of `question` mail (child → parent).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Question {
+    pub agent: String,
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<String>,
+}
+
+/// Body of `answer` mail (parent → child, for a pending question) and of
+/// `message` mail (steering from the parent or the user).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Note {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_id: Option<String>,
+}
+
+/// The id the parent uses to answer the question in mail `mail_id`.
+pub fn question_id(mail_id: i64) -> String {
+    format!("q_{mail_id}")
+}
+
+/// A sub-agent run as front ends list it (`GET /v1/runs/{id}/children`,
+/// `GET /v1/sessions/{id}/subagents`, the TUI's `/agents`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChildRun {
+    pub run_id: String,
+    pub session_id: String,
+    pub parent_run_id: String,
+    /// The `agent_spawn` tool call that started it.
+    pub call_id: String,
+    pub label: String,
+    /// The first 500 characters of the brief.
+    pub task: String,
+    pub model: Option<String>,
+    pub depth: u32,
+    /// `queued`, `running`, `question` (blocked in `agent_ask_parent`),
+    /// `completed`, `stopped`, `failed`, `cancelled` or `interrupted`.
+    pub status: String,
+    pub error: Option<String>,
+    /// Unix seconds.
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub usage: crate::types::Usage,
+    /// The first 300 characters of its report.
+    pub result_preview: Option<String>,
+    pub pending_question: Option<String>,
+}
+
 /// Body of `finished` mail: how a child ended, as its parent sees it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Finished {
@@ -171,6 +253,18 @@ pub trait SubagentHost: Send + Sync {
     async fn cancel(&self, ctx: &ToolCtx, req: CancelRequest) -> Result<Value, String>;
     /// Every child of `ctx.run_id` with status, activity and usage.
     async fn status(&self, ctx: &ToolCtx) -> Result<Value, String>;
+    /// Answer a child's question or steer it (`agent_send`), keyed by
+    /// `call_id` so a re-execution doesn't send twice.
+    async fn send(&self, ctx: &ToolCtx, call_id: &str, req: SendRequest) -> Result<Value, String>;
+    /// Ask the parent of `ctx.run_id` and block until it answers or the
+    /// configured timeout passes (`agent_ask_parent`). The answer mail is
+    /// consumed with [`crate::tool::consume_mail`].
+    async fn ask_parent(
+        &self,
+        ctx: &ToolCtx,
+        call_id: &str,
+        req: AskRequest,
+    ) -> Result<Value, String>;
 
     /// Whether `run_id` has mail waiting or, with `or_live`, children that
     /// haven't reported back yet.
@@ -243,14 +337,30 @@ pub fn render_mail(m: &MailRow) -> String {
         };
         return format!("{head}\n{}", detail.trim_end());
     }
+    if m.kind == "question"
+        && let Ok(q) = serde_json::from_value::<Question>(body.clone())
+    {
+        let mut out = format!(
+            "[sub-agent {} asks ({})]\n{}",
+            q.agent,
+            question_id(m.id),
+            q.question.trim_end()
+        );
+        if let Some(r) = q.recommendation.filter(|r| !r.trim().is_empty()) {
+            out.push_str(&format!("\nIts recommendation: {}", r.trim_end()));
+        }
+        out.push_str("\nIt is blocked until you answer with agent_send.");
+        return out;
+    }
     let text = body
         .get("text")
         .and_then(Value::as_str)
         .map(str::to_owned)
         .unwrap_or_else(|| m.body.clone());
-    match m.from_run_id {
-        None => format!("[message from the user to this agent]\n{text}"),
-        Some(_) => format!("[{} from another agent]\n{text}", m.kind),
+    match (m.from_run_id.as_deref(), m.kind.as_str()) {
+        (None, _) => format!("[message from the user to this agent]\n{text}"),
+        (Some(_), "answer") => format!("[answer from the main agent]\n{text}"),
+        (Some(_), _) => format!("[message from the main agent]\n{text}"),
     }
 }
 
@@ -324,6 +434,23 @@ mod tests {
         assert_eq!(
             render_mail(&m),
             "[message from the user to this agent]\nhurry up"
+        );
+        let m = mail("message", Some("p"), serde_json::json!({"text": "focus"}));
+        assert_eq!(render_mail(&m), "[message from the main agent]\nfocus");
+        let m = mail(
+            "answer",
+            Some("p"),
+            serde_json::json!({"text": "no", "question_id": "q_1"}),
+        );
+        assert_eq!(render_mail(&m), "[answer from the main agent]\nno");
+        let m = mail(
+            "question",
+            Some("c"),
+            serde_json::json!({"agent": "scan", "question": "Private too?", "recommendation": "no"}),
+        );
+        assert_eq!(
+            render_mail(&m),
+            "[sub-agent scan asks (q_1)]\nPrivate too?\nIts recommendation: no\nIt is blocked until you answer with agent_send."
         );
     }
 

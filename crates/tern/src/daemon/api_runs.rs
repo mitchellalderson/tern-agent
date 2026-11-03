@@ -2,16 +2,16 @@
 //!
 //! | Method | Path | |
 //! |---|---|---|
-//! | GET | `/v1/sessions/{id}/runs` | the session's runs, oldest first |
+//! | GET | `/v1/sessions/{id}/runs[?include=subagents]` | the session's runs, oldest first (each followed by its sub-agent runs, with the flag) |
 //! | GET | `/v1/runs/{id}/steps` | the run's journal steps |
 
-use axum::extract::{Path as UrlPath, State};
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::api::{ApiResult, Shared, internal, not_found};
+use super::api::{ApiResult, Include, Shared, internal, not_found};
 
 pub fn routes() -> Router<Shared> {
     Router::new()
@@ -28,26 +28,52 @@ pub struct RunItem {
     pub started_at: i64,
     pub finished_at: Option<i64>,
     pub error: Option<String>,
+    /// Set for sub-agent runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// 0 for top-level runs.
+    #[serde(default)]
+    pub depth: u32,
+}
+
+impl From<tern_store::RunRow> for RunItem {
+    fn from(r: tern_store::RunRow) -> Self {
+        Self {
+            id: r.id,
+            status: r.status,
+            trigger: r.trigger,
+            model: r.model,
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+            error: r.error,
+            parent_run_id: r.parent_run_id,
+            label: r.label,
+            depth: r.depth,
+        }
+    }
 }
 
 async fn session_runs(
     State(m): State<Shared>,
     UrlPath(id): UrlPath<String>,
+    Query(q): Query<Include>,
 ) -> ApiResult<Vec<RunItem>> {
-    let runs = m.rt.store.runs_for_session(&id).map_err(internal)?;
-    Ok(Json(
-        runs.into_iter()
-            .map(|r| RunItem {
-                id: r.id,
-                status: r.status,
-                trigger: r.trigger,
-                model: r.model,
-                started_at: r.started_at,
-                finished_at: r.finished_at,
-                error: r.error,
-            })
-            .collect(),
-    ))
+    let store = &m.rt.store;
+    let mut out = Vec::new();
+    for run in store.runs_for_session(&id).map_err(internal)? {
+        // Depth-first, so each sub-agent follows its parent.
+        let mut stack = vec![run];
+        while let Some(r) = stack.pop() {
+            if q.subagents() && out.len() < 10_000 {
+                let kids = store.children(&r.id).map_err(internal)?;
+                stack.extend(kids.into_iter().rev());
+            }
+            out.push(RunItem::from(r));
+        }
+    }
+    Ok(Json(out))
 }
 
 #[derive(Serialize, Deserialize)]

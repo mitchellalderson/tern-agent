@@ -319,14 +319,15 @@ async fn fan_out_of_three_reports_back_to_the_parent() {
     assert!(top.get("parent_run_id").is_none(), "{top}");
 
     assert_fan_out_finished(&env);
-    // Children are read-only and can't spawn (max_depth 1).
+    // Children are read-only and can't spawn (max_depth 1), but can ask.
     let scope: String = env.query("SELECT tool_scope FROM runs WHERE label = 'a'");
     let scope: Vec<String> = serde_json::from_str(&scope).unwrap();
     assert!(scope.contains(&"list_dir".to_owned()));
+    assert!(scope.contains(&"agent_ask_parent".to_owned()));
     assert!(
         !scope
             .iter()
-            .any(|t| t.starts_with("agent_") || t == "shell")
+            .any(|t| (t.starts_with("agent_") && t != "agent_ask_parent") || t == "shell")
     );
 
     // `runs show` lists the children under their spawn steps.

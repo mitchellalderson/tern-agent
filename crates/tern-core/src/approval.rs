@@ -35,6 +35,10 @@ pub struct ApprovalRequest {
     /// What "always allow" would add to the allowlist, or `None` if this
     /// call can't be always-allowed (front ends then hide the option).
     pub pattern: Option<String>,
+    /// For a sub-agent's call: its parent run and label, so front ends can
+    /// say who is asking.
+    pub parent_run_id: Option<String>,
+    pub agent_label: Option<String>,
 }
 
 #[async_trait]

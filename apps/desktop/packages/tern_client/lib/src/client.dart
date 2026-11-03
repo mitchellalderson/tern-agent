@@ -211,10 +211,18 @@ class TernClient {
     await _json('POST', '/v1/schedules/preview', {'cron': cron}),
   );
 
-  Future<List<RunItem>> runs(String session) async => [
-    for (final r in await _json('GET', '/v1/sessions/$session/runs') as List)
-      RunItem.fromJson(r as Json),
-  ];
+  /// A conversation's runs; with [subagents], the runs they started too.
+  Future<List<RunItem>> runs(String session, {bool subagents = false}) async =>
+      [
+        for (final r
+            in await _json(
+                  'GET',
+                  '/v1/sessions/$session/runs'
+                      '${subagents ? '?include=subagents' : ''}',
+                )
+                as List)
+          RunItem.fromJson(r as Json),
+      ];
 
   Future<List<StepItem>> steps(String run) async => [
     for (final s in await _json('GET', '/v1/runs/$run/steps') as List)
