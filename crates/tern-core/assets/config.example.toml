@@ -1,0 +1,38 @@
+# tern configuration. See `tern doctor` for what is missing.
+
+# Model used when none is given, as "provider:model".
+# default_model = "anthropic:claude-sonnet-4-5"
+
+workspace = "~/tern-workspace"
+max_iterations = 40
+
+# Secrets (API keys, tokens) are read from environment variables first,
+# then from secrets.toml next to this file (which must be mode 0600).
+
+# [providers.anthropic]
+# kind = "anthropic"
+# api_key_secret = "ANTHROPIC_API_KEY"
+
+# [providers.openrouter]
+# kind = "openai_compat"
+# base_url = "https://openrouter.ai/api/v1"
+# api_key_secret = "OPENROUTER_API_KEY"
+
+# [providers.ollama]
+# kind = "openai_compat"
+# base_url = "http://localhost:11434/v1"
+
+[sandbox]
+backend = "host"           # "host" | "docker"
+shell_timeout_secs = 120
+docker_image = "debian:stable-slim"
+
+# [gateway.telegram]
+# enabled = true
+# bot_token_secret = "TELEGRAM_BOT_TOKEN"
+
+# [mcp.servers.github]
+# transport = "stdio"
+# command = "github-mcp-server"
+# args = ["stdio"]
+# env_secrets = ["GITHUB_TOKEN"]

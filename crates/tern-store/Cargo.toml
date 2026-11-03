@@ -1,0 +1,16 @@
+[package]
+name = "tern-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

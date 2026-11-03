@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  build-linux:
+    name: build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@v2
+      - run: cargo install cargo-zigbuild --locked
+      - run: cargo zigbuild --release --locked -p tern --target ${{ matrix.target }}
+      - name: Check binary is static
+        run: file target/${{ matrix.target }}/release/tern | tee /dev/stderr | grep -q 'statically linked'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tern-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/tern
+
+  build-macos:
+    name: build ${{ matrix.target }}
+    runs-on: macos-latest
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked -p tern --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tern-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/tern
