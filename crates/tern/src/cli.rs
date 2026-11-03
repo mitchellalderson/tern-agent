@@ -75,6 +75,25 @@ pub enum Command {
         #[arg(long)]
         run: Option<String>,
     },
+    /// Connect a model provider: choose one, paste an API key, pick a model.
+    Setup,
+    /// List, add or remove model providers (for scripts; `tern setup` is
+    /// the guided way).
+    Providers {
+        #[command(subcommand)]
+        command: Option<ProvidersCommand>,
+    },
+    /// List the models each provider offers.
+    Models {
+        /// Only this provider.
+        provider: Option<String>,
+        /// Ask the providers again instead of using the cached lists.
+        #[arg(long)]
+        refresh: bool,
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Check configuration, providers, database, and integrations.
     Doctor(DoctorArgs),
     /// Read and write config.toml.
@@ -82,6 +101,46 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProvidersCommand {
+    /// Configured providers and their keys (never the values).
+    List,
+    /// Add a provider. The key is read from stdin when it isn't a terminal
+    /// (`pbpaste | tern providers add anthropic`), else asked for hidden.
+    Add {
+        /// `anthropic` or `openai-compat`.
+        kind: ProviderKindArg,
+        /// Base URL, required for openai-compat (e.g. http://localhost:11434/v1).
+        #[arg(long)]
+        url: Option<String>,
+        /// Name to refer to it by (default: anthropic, or one from the URL).
+        #[arg(long)]
+        name: Option<String>,
+        /// Model to make the default (default: the first listed, when there
+        /// is no usable default yet).
+        #[arg(long)]
+        default_model: Option<String>,
+        /// Use the key already in the environment.
+        #[arg(long)]
+        env_key: bool,
+        /// No key: for local servers that don't need one.
+        #[arg(long, conflicts_with = "env_key")]
+        no_key: bool,
+    },
+    /// Remove a provider and, unless --keep-key, its API key.
+    Rm {
+        name: String,
+        #[arg(long)]
+        keep_key: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum ProviderKindArg {
+    Anthropic,
+    OpenaiCompat,
 }
 
 #[derive(Debug, Subcommand)]

@@ -3284,6 +3284,7 @@ dependencies = [
  "blake3",
  "chrono",
  "clap",
+ "crossterm",
  "futures",
  "qrcode",
  "rcgen",

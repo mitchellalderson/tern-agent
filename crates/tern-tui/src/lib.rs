@@ -6,10 +6,13 @@
 mod app;
 mod history;
 mod input;
+mod models;
 mod secret_prompt;
 mod secrets;
+mod setup;
 mod term;
 mod ui;
+mod ui_setup;
 mod wrap;
 
 use std::sync::Arc;
@@ -21,6 +24,7 @@ use tern_core::approval::{
     ApprovalHandler, ApprovalRequest, Decision, SecretRequest, SecretValues,
 };
 use tern_core::events::AgentEvent;
+use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
 use tern_core::subagent::ChildRun;
 use tern_core::types::{ContentBlock, Role, Usage};
 use tern_store::SessionSummary;
@@ -31,6 +35,8 @@ pub use app::App;
 pub use term::run;
 
 pub type BackendResult<T> = Result<T, String>;
+
+const NO_SETUP: &str = "this backend can't manage providers";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Started {
@@ -95,6 +101,55 @@ pub trait Backend: Send + Sync + 'static {
     /// Remove a secret from `secrets.toml`; false if it wasn't there.
     fn remove_secret(&self, _name: &str) -> BackendResult<bool> {
         Err("this backend can't manage secrets".into())
+    }
+    /// Resolve a model reference, filling in the provider when only one
+    /// lists that model. The default only checks it.
+    fn resolve_model(&self, model: &str) -> BackendResult<Resolved> {
+        self.check_model(model)?;
+        Ok(Resolved {
+            model: model.to_owned(),
+            warning: None,
+        })
+    }
+    /// No usable model yet: the TUI opens provider setup.
+    fn setup_needed(&self) -> bool {
+        false
+    }
+    /// Configured providers, without keys.
+    fn providers(&self) -> BackendResult<Vec<ProviderStatus>> {
+        Err(NO_SETUP.into())
+    }
+    /// Model lists for every provider, or one. May call the providers.
+    async fn models(
+        &self,
+        _provider: Option<String>,
+        _refresh: bool,
+    ) -> BackendResult<Vec<ProviderModels>> {
+        Err(NO_SETUP.into())
+    }
+    /// Check a new provider (or a change to `existing`) without saving.
+    async fn verify_provider(
+        &self,
+        _draft: ProviderDraft,
+        _existing: Option<String>,
+    ) -> BackendResult<Verified> {
+        Err(NO_SETUP.into())
+    }
+    /// Verify, store the key, write the config and reload providers.
+    async fn save_provider(
+        &self,
+        _draft: ProviderDraft,
+        _existing: Option<String>,
+        _default_model: Option<String>,
+    ) -> BackendResult<ProviderStatus> {
+        Err(NO_SETUP.into())
+    }
+    fn remove_provider(&self, _name: &str, _remove_secret: bool) -> BackendResult<()> {
+        Err(NO_SETUP.into())
+    }
+    /// Set `default_model`; returns the resolved `provider:model`.
+    fn set_default_model(&self, _model: &str) -> BackendResult<Resolved> {
+        Err(NO_SETUP.into())
     }
     /// The sub-agents `run_id` started, oldest first.
     fn children(&self, _run_id: &str) -> BackendResult<Vec<ChildRun>> {

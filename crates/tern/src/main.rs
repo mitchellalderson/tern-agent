@@ -9,6 +9,7 @@ mod gateway_cmd;
 mod inspect;
 mod logging;
 mod providers;
+mod providers_cmd;
 mod remote;
 mod report_cmd;
 mod run_cmd;
@@ -86,8 +87,21 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 }),
                 None => None,
             };
-            tui_backend::run(&home, remote)
+            tui_backend::run(&home, remote, None)
         }
+        Some(Command::Setup) => {
+            home.ensure_layout()?;
+            tui_backend::run(&home, None, Some("/setup"))
+        }
+        Some(Command::Providers { command }) => {
+            home.ensure_layout()?;
+            providers_cmd::run(&home, command)
+        }
+        Some(Command::Models {
+            provider,
+            refresh,
+            json,
+        }) => providers_cmd::models(&home, provider, refresh, json),
         Some(Command::Devices { command }) => devices_cmd::run(&home, command),
         Some(Command::Run {
             prompt,

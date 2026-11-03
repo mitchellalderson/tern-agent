@@ -512,7 +512,7 @@ async fn usage(
 pub enum ApiEvent {
     Approval { approval_requested: ApiApproval },
     SecretRequest { secret_requested: ApiSecretRequest },
-    Change(crate::providers::Change),
+    Change(tern_core::models::Change),
     Agent(tern_core::events::AgentEvent),
 }
 

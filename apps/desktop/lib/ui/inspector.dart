@@ -173,6 +173,13 @@ class _RunInspectorState extends State<RunInspector> {
                       ),
                     ),
                   ),
+                  if (_steps != null && _selected != null)
+                    CopyButton(
+                      key: const Key('copy-run'),
+                      tooltip: 'Copy run details',
+                      size: 17,
+                      text: _report,
+                    ),
                   QuietIconButton(
                     icon: Icons.close,
                     tooltip: 'Close',
@@ -322,15 +329,72 @@ class _RunInspectorState extends State<RunInspector> {
       ? (s.input as Map)['id'] as String?
       : null;
 
+  static String _pretty(Object? v) =>
+      v is String ? v : const JsonEncoder.withIndent('  ').convert(v);
+
+  /// The selected run as plain text, for pasting into a bug report or a
+  /// chat: its summary and error, every step on one line, and the input,
+  /// output and error of each step that failed.
+  String _report() {
+    final run = _runs?.where((r) => r.id == _selected).firstOrNull;
+    final steps = _steps ?? const <StepItem>[];
+    final out = StringBuffer()
+      ..writeln(
+        [
+          'Run ${run?.id ?? _selected}',
+          ?run?.label,
+          ?run?.status,
+          ?run?.model,
+          if (run != null) run.trigger,
+        ].join(' · '),
+      );
+    if (run?.error case final e?) out.writeln('Error: $e');
+    out.writeln();
+    for (final s in steps) {
+      out.writeln(
+        '${s.idx}. ${_label(s)} [${s.status}'
+        '${s.duration == null ? '' : ', ${_ms(s.duration!)}'}]',
+      );
+    }
+    for (final s in steps.where(
+      (s) => s.status == 'failed' || s.error != null,
+    )) {
+      out
+        ..writeln()
+        ..writeln('--- step ${s.idx}: ${_label(s)} ---')
+        ..writeln('Input:')
+        ..writeln(_pretty(s.input));
+      if (s.output != null) {
+        out
+          ..writeln('Output:')
+          ..writeln(_pretty(s.output));
+      }
+      if (s.error case final e?) {
+        out
+          ..writeln('Error:')
+          ..writeln(e);
+      }
+    }
+    return out.toString().trimRight();
+  }
+
   Widget _detail(BuildContext context, StepItem s) {
     final c = context.colors;
-    String pretty(Object? v) =>
-        v is String ? v : const JsonEncoder.withIndent('  ').convert(v);
     Widget block(String label, Object? v) => Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: Theme.of(context).textTheme.labelSmall),
-        const SizedBox(height: 4),
+        Row(
+          children: [
+            Text(label, style: Theme.of(context).textTheme.labelSmall),
+            const SizedBox(width: 2),
+            CopyButton(
+              key: Key('copy-${s.idx}-$label'),
+              tooltip: 'Copy ${label.toLowerCase()}',
+              size: 13,
+              text: () => _pretty(v),
+            ),
+          ],
+        ),
         Container(
           width: double.infinity,
           constraints: const BoxConstraints(maxHeight: 220),
@@ -342,7 +406,7 @@ class _RunInspectorState extends State<RunInspector> {
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(10),
             child: SelectableText(
-              pretty(v),
+              _pretty(v),
               style: mono.copyWith(color: c.text),
             ),
           ),

@@ -33,6 +33,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(panel) = &app.secrets {
         draw_secrets(frame, panel, transcript);
     }
+    if let Some(panel) = &app.setup {
+        crate::ui_setup::draw_setup(frame, panel, transcript);
+    }
+    if let Some(picker) = &app.picker {
+        crate::ui_setup::draw_picker(frame, picker, transcript);
+    }
     if let Some(o) = &mut app.overlay {
         draw_overlay(frame, o, app.expanded, transcript);
     }
@@ -532,6 +538,8 @@ fn draw_input(
     if app.approval.is_none()
         && app.secret_prompt.is_none()
         && app.secrets.is_none()
+        && app.setup.is_none()
+        && app.picker.is_none()
         && app.overlay.is_none()
     {
         let x = inner.x + (cursor.1 as u16).min(inner.width.saturating_sub(1));
@@ -541,7 +549,7 @@ fn draw_input(
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let model = app.model.as_deref().unwrap_or("no model");
+    let model = app.model.as_deref().unwrap_or("no model — /setup");
     let session = app
         .session
         .as_ref()

@@ -11,8 +11,12 @@ use serde::{Deserialize, Serialize};
 use tern_core::Config;
 use tern_core::config::edit::ConfigFile;
 use tern_core::config::{ModelRef, ProviderConfig, ProviderKind};
+use tern_core::models::{
+    Change, ListError, ModelInfo, ProviderDraft, ProviderModels, ProviderStatus, Resolved,
+    Verified, describe, host_of,
+};
 use tern_core::secrets::keys::{mask_key, normalize_key, secret_name_for};
-use tern_providers::{ListError, Listing, ModelInfo, list_models};
+use tern_providers::{Listing, list_models};
 use tokio::sync::broadcast;
 
 use crate::runtime::Runtime;
@@ -32,79 +36,6 @@ fn fresh_secs() -> i64 {
     })
 }
 const ANTHROPIC_PREFIX: &str = "sk-ant-";
-
-/// A change clients should re-read, sent on `/v1/events`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Change {
-    ProvidersChanged {},
-    ModelsChanged { provider: String },
-}
-
-/// What a client fills in to add or change a provider.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct ProviderDraft {
-    /// Required when adding; ignored when changing an existing provider.
-    pub kind: Option<ProviderKind>,
-    /// Defaults to `anthropic`, or a name suggested from the base URL.
-    pub name: Option<String>,
-    pub base_url: Option<String>,
-    /// A pasted key. Cleaned up with `normalize_key` before use.
-    pub key: Option<String>,
-    /// Use the key already set in the environment under the secret name.
-    #[serde(default)]
-    pub use_env_key: bool,
-}
-
-/// The result of checking a draft against the provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Verified {
-    /// The key is accepted (the list may still be empty, e.g. on a 429).
-    pub ok: bool,
-    pub name: String,
-    pub error: Option<ListError>,
-    /// The error in plain words, for showing as is.
-    pub message: Option<String>,
-    /// Advice that doesn't block saving, e.g. an environment override.
-    pub warnings: Vec<String>,
-    /// Set when `/v1` had to be added to the base URL.
-    pub suggested_base_url: Option<String>,
-    pub key_hint: Option<String>,
-    pub models: Vec<ModelInfo>,
-}
-
-/// A configured provider, for `GET /v1/providers`. Never includes a key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderStatus {
-    pub name: String,
-    pub kind: ProviderKind,
-    pub base_url: Option<String>,
-    pub secret: Option<String>,
-    /// `env`, `file` or `missing`; `none` when no key is configured.
-    pub key_source: String,
-    pub key_hint: Option<String>,
-    /// From the last model listing, if any.
-    pub error: Option<ListError>,
-    pub message: Option<String>,
-    pub is_default: bool,
-}
-
-/// One provider's models, for `GET /v1/models`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderModels {
-    pub provider: String,
-    pub error: Option<ListError>,
-    pub message: Option<String>,
-    /// Unix seconds; `None` when never fetched.
-    pub fetched_at: Option<i64>,
-    pub models: Vec<ModelInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Resolved {
-    pub model: String,
-    pub warning: Option<String>,
-}
 
 // --- Model cache ----------------------------------------------------------
 
@@ -218,41 +149,6 @@ fn fingerprint(cfg: &ProviderConfig, key: Option<&str>) -> String {
 }
 
 // --- Plain-words errors ---------------------------------------------------
-
-/// A listing error as a sentence a person can act on (spec §5.3).
-pub fn describe(e: &ListError, provider: &str, base: Option<&str>) -> String {
-    let host = base.map_or_else(|| provider.to_owned(), host_of);
-    match e {
-        ListError::MissingKey => format!("{provider} needs an API key."),
-        ListError::BadUrl(why) => format!("{why}."),
-        ListError::Unauthorized => {
-            format!("{provider} rejected that key. Check you copied all of it.")
-        }
-        ListError::Forbidden => "The key works, but this account can't list models. \
-             Check its permissions or billing."
-            .into(),
-        ListError::RateLimited => "Key works (rate limited right now).".into(),
-        ListError::NotFound => {
-            format!("{host} has no model list; type a model id instead.")
-        }
-        ListError::Unreachable(why) => {
-            let local = host == "localhost" || host.starts_with("127.") || host == "::1";
-            let hint = if local { " Is the server running?" } else { "" };
-            format!("Couldn't reach {host}: {why}.{hint}")
-        }
-        ListError::Unexpected(status) => format!("{host} answered HTTP {status}."),
-        ListError::Malformed(why) => format!("{host} sent a model list tern can't read: {why}."),
-    }
-}
-
-fn host_of(url: &str) -> String {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    match authority.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or_default().to_owned(),
-        None => authority.split(':').next().unwrap_or_default().to_owned(),
-    }
-}
 
 /// A provider name from a base URL: `api.openai.com` → `openai`,
 /// `localhost:11434` → `ollama`, `localhost:1234` → `lmstudio`.

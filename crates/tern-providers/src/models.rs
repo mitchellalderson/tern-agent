@@ -1,12 +1,11 @@
 //! Listing a provider's models: the picker's source, and `tern doctor`'s
 //! reachability probe.
 
-use std::fmt;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tern_core::config::{ProviderConfig, ProviderKind};
+pub use tern_core::models::{ListError, ModelInfo};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Stop following Anthropic's pagination after this many pages.
@@ -23,20 +22,6 @@ const NOT_CHAT: &[&str] = &[
     "image",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelInfo {
-    /// What goes after `provider:`.
-    pub id: String,
-    /// Display name, when the provider gives one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_window: Option<u64>,
-    /// Unix seconds, when the provider gives it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created: Option<i64>,
-}
-
 /// A successful listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listing {
@@ -44,56 +29,6 @@ pub struct Listing {
     /// Set when `base_url` had no version path and adding `/v1` worked.
     pub suggested_base_url: Option<String>,
 }
-
-/// Why a listing failed, in a shape clients can turn into wording.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
-pub enum ListError {
-    /// No API key, for a provider that needs one.
-    MissingKey,
-    /// The base URL is unusable (missing, or not http/https).
-    BadUrl(String),
-    /// 401: the key was rejected.
-    Unauthorized,
-    /// 403: the key works but may not list models.
-    Forbidden,
-    /// 404: the server answered but has no models endpoint.
-    NotFound,
-    /// 429: the key works but is rate limited.
-    RateLimited,
-    /// Connection, DNS or TLS failure.
-    Unreachable(String),
-    /// Any other HTTP status.
-    Unexpected(u16),
-    /// A 2xx answer we could not parse.
-    Malformed(String),
-}
-
-impl ListError {
-    /// The server answered in a way that shows the key is accepted, even
-    /// though there is no list to show.
-    pub fn key_accepted(&self) -> bool {
-        matches!(self, Self::RateLimited | Self::NotFound)
-    }
-}
-
-impl fmt::Display for ListError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingKey => write!(f, "no API key is set"),
-            Self::BadUrl(why) => write!(f, "invalid base URL: {why}"),
-            Self::Unauthorized => write!(f, "the API key was rejected (HTTP 401)"),
-            Self::Forbidden => write!(f, "the key may not list models (HTTP 403)"),
-            Self::NotFound => write!(f, "the server has no models endpoint (HTTP 404)"),
-            Self::RateLimited => write!(f, "rate limited (HTTP 429)"),
-            Self::Unreachable(why) => write!(f, "unreachable: {why}"),
-            Self::Unexpected(status) => write!(f, "unexpected HTTP {status}"),
-            Self::Malformed(why) => write!(f, "unexpected response: {why}"),
-        }
-    }
-}
-
-impl std::error::Error for ListError {}
 
 /// List the chat models `cfg` offers, newest first where the provider says.
 pub async fn list_models(cfg: &ProviderConfig, key: Option<&str>) -> Result<Listing, ListError> {

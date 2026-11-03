@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/gestures.dart';
@@ -87,6 +88,53 @@ class AgentAvatar extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A [QuietIconButton] that copies [text] to the clipboard and shows a check
+/// for a moment. [text] is read on click, so it can describe live state.
+class CopyButton extends StatefulWidget {
+  const CopyButton({
+    super.key,
+    required this.text,
+    this.tooltip = 'Copy',
+    this.size = 15,
+  });
+
+  final String Function() text;
+  final String tooltip;
+  final double size;
+
+  @override
+  State<CopyButton> createState() => _CopyButtonState();
+}
+
+class _CopyButtonState extends State<CopyButton> {
+  Timer? _reset;
+
+  @override
+  void dispose() {
+    _reset?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _copy() async {
+    await Clipboard.setData(ClipboardData(text: widget.text()));
+    if (!mounted) return;
+    _reset?.cancel();
+    setState(
+      () => _reset = Timer(const Duration(milliseconds: 1500), () {
+        if (mounted) setState(() => _reset = null);
+      }),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => QuietIconButton(
+    icon: _reset == null ? Icons.copy_rounded : Icons.check_rounded,
+    tooltip: _reset == null ? widget.tooltip : 'Copied',
+    size: widget.size,
+    onPressed: _copy,
+  );
 }
 
 /// A small borderless icon button with a tooltip.

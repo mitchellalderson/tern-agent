@@ -13,8 +13,10 @@ use tern_core::types::Usage;
 
 use crate::history;
 use crate::input::Input;
+use crate::models::{ModelPicker, PickerAction};
 use crate::secret_prompt::{Done, SecretPrompt};
 use crate::secrets::SecretsPanel;
+use crate::setup::{SetupAction, SetupPanel, Task, TaskDone};
 use crate::{Backend, BackendResult, PendingApproval, PendingSecret, SessionInfo, UserPrompt};
 
 /// Two Ctrl+C presses within this window quit.
@@ -107,6 +109,9 @@ pub enum Effect {
     Cancel,
     /// The backend was rebuilt; subscribe to its event bus again.
     Resubscribe,
+    /// Backend work to run in the background; its result comes back
+    /// through [`App::on_task_done`].
+    Task(Task),
 }
 
 pub struct Running {
@@ -137,6 +142,10 @@ pub struct App {
     pub hint: Option<String>,
     /// The `/secrets` panel, drawn over the transcript while open.
     pub secrets: Option<SecretsPanel>,
+    /// The `/setup` panel, drawn over the transcript while open.
+    pub setup: Option<SetupPanel>,
+    /// The `/model` picker, drawn over the transcript while open.
+    pub picker: Option<ModelPicker>,
     /// A sub-agent's transcript, drawn over the transcript while open.
     pub overlay: Option<Overlay>,
     /// Sub-agent runs of the current tree. Their events update their
@@ -151,7 +160,8 @@ pub struct App {
 const HELP: &str = "\
 Commands:
   /new              start a new session
-  /model [p:model]  show or set the model
+  /model [model]    pick a model, or set one (the provider may be left off)
+  /setup            add or change model providers and API keys
   /sessions         list recent sessions
   /resume <id>      open a session, or resume an interrupted run
   /tools            list available tools
@@ -169,6 +179,14 @@ Keys: Enter send · Shift/Alt+Enter or Ctrl+J newline · Ctrl+O expand tool outp
 impl App {
     pub fn new(backend: Arc<dyn Backend>) -> Self {
         let model = backend.default_model();
+        let setup = backend
+            .setup_needed()
+            .then(|| SetupPanel::open(backend.as_ref()).ok())
+            .flatten()
+            .map(|mut p| {
+                p.intro = Some("Welcome to tern. Connect a model provider to get started.".into());
+                p
+            });
         Self {
             backend,
             entries: Vec::new(),
@@ -185,6 +203,8 @@ impl App {
             last_usage: None,
             hint: None,
             secrets: None,
+            setup,
+            picker: None,
             overlay: None,
             agents: HashSet::new(),
             last_run: None,
@@ -219,6 +239,38 @@ impl App {
                 self.secrets = None;
             }
             return vec![];
+        }
+        if let Some(panel) = &mut self.setup {
+            let action = panel.on_key(key, self.backend.as_ref());
+            let changed = std::mem::take(&mut panel.changed);
+            if changed {
+                self.models_changed();
+            }
+            return match action {
+                SetupAction::None => vec![],
+                SetupAction::Close => {
+                    self.setup = None;
+                    vec![]
+                }
+                SetupAction::Run(task) => vec![Effect::Task(task)],
+            };
+        }
+        if let Some(picker) = &mut self.picker {
+            return match picker.on_key(key) {
+                PickerAction::None => vec![],
+                PickerAction::Close => {
+                    self.picker = None;
+                    vec![]
+                }
+                PickerAction::Refresh => vec![Effect::Task(Task::Models {
+                    provider: None,
+                    refresh: true,
+                })],
+                PickerAction::Choose { model, default } => {
+                    self.use_model(&model, default);
+                    vec![]
+                }
+            };
         }
 
         if let Some(p) = &mut self.secret_prompt {
@@ -305,6 +357,10 @@ impl App {
     pub fn on_paste(&mut self, text: &str) {
         if let Some(panel) = &mut self.secrets {
             panel.on_paste(text);
+        } else if let Some(panel) = &mut self.setup {
+            panel.on_paste(text);
+        } else if let Some(picker) = &mut self.picker {
+            picker.list.on_paste(text);
         } else if let Some(p) = &mut self.secret_prompt {
             p.on_paste(text);
         } else if self.approval.is_none() {
@@ -322,7 +378,11 @@ impl App {
         }
         self.last_ctrl_c = Some(now);
         self.hint = Some("press Ctrl+C again to quit".into());
-        if self.secrets.take().is_some() || self.overlay.take().is_some() {
+        if self.secrets.take().is_some()
+            || self.setup.take().is_some()
+            || self.picker.take().is_some()
+            || self.overlay.take().is_some()
+        {
             return vec![];
         }
         if self.running.is_some() {
@@ -482,24 +542,16 @@ impl App {
                 self.notice("new session");
             }
             "model" if arg.is_empty() => {
-                let m = self
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "(none configured)".into());
-                self.notice(format!("model: {m}"));
+                self.picker = Some(ModelPicker::new(self.model.clone()));
+                return vec![Effect::Task(Task::Models {
+                    provider: None,
+                    refresh: false,
+                })];
             }
-            "model" => match self.backend.check_model(arg) {
+            "model" => self.use_model(arg, false),
+            "setup" | "providers" => match SetupPanel::open(self.backend.as_ref()) {
+                Ok(panel) => self.setup = Some(panel),
                 Err(e) => self.error(e),
-                Ok(()) => {
-                    if let Some(s) = &self.session
-                        && let Err(e) = self.backend.set_session_model(&s.id, arg)
-                    {
-                        self.error(e);
-                        return vec![];
-                    }
-                    self.model = Some(arg.to_owned());
-                    self.notice(format!("model set to {arg}"));
-                }
             },
             "sessions" => match self.backend.sessions(15) {
                 Err(e) => self.error(e),
@@ -1067,6 +1119,77 @@ impl App {
             Some(text) => self.send(text),
             None => vec![],
         }
+    }
+
+    /// Use `model` for the next runs (and this session); with `default`,
+    /// also make it the default for new sessions.
+    fn use_model(&mut self, model: &str, default: bool) {
+        let resolved = match self.backend.resolve_model(model) {
+            Ok(r) => r,
+            Err(e) => {
+                match &mut self.picker {
+                    Some(p) => p.message = Some((true, e)),
+                    None => self.error(e),
+                }
+                return;
+            }
+        };
+        if let Some(s) = &self.session
+            && let Err(e) = self.backend.set_session_model(&s.id, &resolved.model)
+        {
+            self.error(e);
+            return;
+        }
+        if default && let Err(e) = self.backend.set_default_model(&resolved.model) {
+            self.error(e);
+            return;
+        }
+        self.picker = None;
+        self.model = Some(resolved.model.clone());
+        let mut msg = if default {
+            format!("model set to {} (and the default)", resolved.model)
+        } else {
+            format!("model set to {}", resolved.model)
+        };
+        if let Some(w) = resolved.warning {
+            msg.push_str(&format!("\n{w}"));
+        }
+        self.notice(msg);
+    }
+
+    /// Providers or the default model changed: pick up the new default
+    /// unless this session has chosen its own model.
+    fn models_changed(&mut self) {
+        let own = self.session.as_ref().and_then(|s| s.model.as_ref());
+        if own.is_none() {
+            self.model = self.backend.default_model();
+        }
+    }
+
+    /// A background [`Task`] finished.
+    pub fn on_task_done(&mut self, done: TaskDone) -> Vec<Effect> {
+        if let Some(panel) = &mut self.setup {
+            panel.on_task_done(done, self.backend.as_ref());
+            if std::mem::take(&mut panel.changed) {
+                self.models_changed();
+            }
+        } else if let Some(picker) = &mut self.picker {
+            match done {
+                TaskDone::Models(Ok(groups)) => picker.list.set_groups(groups),
+                TaskDone::Models(Err(e)) => {
+                    picker.list.set_groups(Vec::new());
+                    picker.message = Some((true, e));
+                }
+                _ => {}
+            }
+        }
+        vec![]
+    }
+
+    /// Something is loading in a panel (for the spinner).
+    pub fn is_busy(&self) -> bool {
+        self.setup.as_ref().is_some_and(SetupPanel::is_busy)
+            || self.picker.as_ref().is_some_and(|p| p.list.loading)
     }
 
     fn notice(&mut self, s: impl Into<String>) {
