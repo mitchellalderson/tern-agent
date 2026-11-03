@@ -137,6 +137,30 @@ class TernClient {
       StepItem.fromJson(s as Json),
   ];
 
+  /// Every secret in `secrets.toml` or referred to by config or a
+  /// connector. Values are never returned.
+  Future<List<SecretStatus>> secrets() async => [
+    for (final s in await _json('GET', '/v1/secrets') as List)
+      SecretStatus.fromJson(s as Json),
+  ];
+
+  /// Store `value` in `secrets.toml`. Takes effect without a restart.
+  Future<SecretStatus> setSecret(String name, String value) async =>
+      SecretStatus.fromJson(
+        await _json('PUT', '/v1/secrets/$name', {'value': value}),
+      );
+
+  /// Remove `name` from `secrets.toml`. Returns false if it wasn't there.
+  Future<bool> removeSecret(String name) async {
+    try {
+      await _json('DELETE', '/v1/secrets/$name');
+      return true;
+    } on TernException catch (e) {
+      if (e.status == 404) return false;
+      rethrow;
+    }
+  }
+
   Future<void> answer(String approval, Decision decision) =>
       _json('POST', '/v1/approvals/$approval', {'decision': decision.wire});
 

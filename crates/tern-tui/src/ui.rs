@@ -4,9 +4,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::{App, Entry, ToolState};
+use crate::secrets::{Mode, SecretsPanel};
 use crate::wrap::wrap;
 
 const MAX_INPUT_ROWS: usize = 8;
@@ -28,6 +29,159 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     draw_transcript(frame, app, transcript);
     draw_input(frame, app, input, &rows, cursor, input_rows);
     draw_status(frame, app, status);
+    if let Some(panel) = &app.secrets {
+        draw_secrets(frame, panel, transcript);
+    }
+}
+
+/// The `/secrets` panel, centred over `area`.
+fn draw_secrets(frame: &mut Frame<'_>, panel: &SecretsPanel, area: Rect) {
+    let dim = Style::new().fg(Color::DarkGray);
+    let key = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let width = area.width.saturating_sub(4).min(80);
+    let inner_width = width.saturating_sub(4) as usize;
+    let name_width = panel
+        .items
+        .iter()
+        .map(|s| s.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(12, 32);
+
+    let mut body: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(
+            "Stored in secrets.toml (mode 0600). Environment variables take precedence.",
+            dim,
+        )),
+        Line::default(),
+    ];
+    if panel.items.is_empty() {
+        body.push(Line::from(Span::styled(
+            "No secrets yet, and nothing in config refers to one.",
+            dim,
+        )));
+    }
+    // Rows of chrome around the list: help, blank, prompt, message, borders.
+    let chrome = body.len() + 7;
+    let room = (area.height as usize).saturating_sub(chrome).max(1);
+    let first = (panel.selected + 1).saturating_sub(room);
+    for (i, s) in panel.items.iter().enumerate().skip(first).take(room) {
+        let selected = i == panel.selected && panel.mode == Mode::List;
+        let (state, color) = match (s.in_env, s.in_file) {
+            (true, true) => ("env (overrides file)", Color::Yellow),
+            (true, false) => ("env", Color::Green),
+            (false, true) => ("set", Color::Green),
+            (false, false) => ("missing", Color::Red),
+        };
+        let used = if s.used_by.is_empty() {
+            "unused".to_owned()
+        } else {
+            s.used_by.join(", ")
+        };
+        let name = format!("{:name_width$}", s.name);
+        let mut line = Line::from(vec![
+            Span::styled(if selected { "› " } else { "  " }, key),
+            Span::styled(
+                name,
+                if selected {
+                    Style::new().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new()
+                },
+            ),
+            Span::raw("  "),
+            Span::styled(format!("{state:8}"), Style::new().fg(color)),
+            Span::raw("  "),
+            Span::styled(used, dim),
+        ]);
+        if line.width() > inner_width {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+                .chars()
+                .take(inner_width)
+                .collect();
+            line = Line::from(text);
+        }
+        body.push(line);
+    }
+    body.push(Line::default());
+
+    let (prompt, help): (Line<'static>, Vec<(&str, &str)>) = match &panel.mode {
+        Mode::List => (
+            Line::default(),
+            vec![
+                ("Enter", "set"),
+                ("n", "new"),
+                ("d", "remove"),
+                ("↑↓", "move"),
+                ("Esc", "close"),
+            ],
+        ),
+        Mode::Name(name) => (
+            Line::from(vec![
+                Span::styled("Name: ", key),
+                Span::raw(name.clone()),
+                Span::raw("▌"),
+            ]),
+            vec![("Enter", "next"), ("Esc", "cancel")],
+        ),
+        Mode::Value { name, value } => {
+            let n = value.chars().count();
+            let dots = "•".repeat(n.min(24));
+            let count = if n == 0 {
+                "type or paste the value".to_owned()
+            } else {
+                format!("{n} characters")
+            };
+            (
+                Line::from(vec![
+                    Span::styled(format!("New value for {name}: "), key),
+                    Span::raw(dots),
+                    Span::raw("▌  "),
+                    Span::styled(count, dim),
+                ]),
+                vec![("Enter", "save"), ("Ctrl+U", "clear"), ("Esc", "cancel")],
+            )
+        }
+        Mode::ConfirmRemove(name) => (
+            Line::from(Span::styled(
+                format!("Remove {name} from secrets.toml?"),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )),
+            vec![("y", "remove"), ("any other key", "cancel")],
+        ),
+    };
+    body.push(prompt);
+    body.push(match &panel.message {
+        Some((true, m)) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Red))),
+        Some((false, m)) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Green))),
+        None => Line::default(),
+    });
+    let mut keys = Vec::new();
+    for (k, what) in help {
+        keys.push(Span::styled(format!("[{k}]"), key));
+        keys.push(Span::styled(format!(" {what}   "), dim));
+    }
+    body.push(Line::from(keys));
+
+    let height = (body.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .title(" secrets ")
+        .border_style(Style::new().fg(Color::Cyan));
+    let inner = block.inner(popup).inner(ratatui::layout::Margin::new(1, 0));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(body), inner);
 }
 
 fn draw_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -184,7 +338,7 @@ fn draw_input(
         .map(|r| Line::from(r.clone()))
         .collect();
     frame.render_widget(Paragraph::new(visible), inner);
-    if app.approval.is_none() {
+    if app.approval.is_none() && app.secrets.is_none() {
         let x = inner.x + (cursor.1 as u16).min(inner.width.saturating_sub(1));
         let y = inner.y + (cursor.0 - first) as u16;
         frame.set_cursor_position(Position::new(x, y));

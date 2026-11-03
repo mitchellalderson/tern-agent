@@ -12,7 +12,10 @@ pub enum Mode {
     /// Typing a new secret's name.
     Name(String),
     /// Typing the value for `name`. Shown only as a count of characters.
-    Value { name: String, value: String },
+    Value {
+        name: String,
+        value: String,
+    },
     ConfirmRemove(String),
 }
 
@@ -99,8 +102,7 @@ impl SecretsPanel {
                                 ));
                             }
                             Some(s) => {
-                                self.message =
-                                    Some((true, format!("{} isn't set", s.name)));
+                                self.message = Some((true, format!("{} isn't set", s.name)));
                             }
                             None => {}
                         }

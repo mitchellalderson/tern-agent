@@ -127,6 +127,27 @@ void main() {
     await client.deleteSchedule(s.id);
     expect(await client.schedules(), isEmpty);
   }, skip: bin == null ? 'set TERN_BIN to run' : false);
+
+  test('secrets: set, list without values, remove', () async {
+    final before = await client.secrets();
+    expect(before.where((s) => s.name == 'DART_TEST_TOKEN'), isEmpty);
+
+    final set = await client.setSecret('DART_TEST_TOKEN', 'dart-secret-value');
+    expect(set.inFile, isTrue);
+    final file = File('${tmp.path}/.tern/secrets.toml');
+    expect(await file.readAsString(), contains('dart-secret-value'));
+    expect(
+      jsonEncode((await client.secrets()).map((s) => s.name).toList()),
+      contains('DART_TEST_TOKEN'),
+    );
+
+    await expectLater(
+      client.setSecret('bad-name', 'x'),
+      throwsA(isA<TernException>().having((e) => e.status, 'status', 400)),
+    );
+    expect(await client.removeSecret('DART_TEST_TOKEN'), isTrue);
+    expect(await client.removeSecret('DART_TEST_TOKEN'), isFalse);
+  }, skip: bin == null ? 'set TERN_BIN to run' : false);
 }
 
 /// Buffers a stream so tests can wait for the next event of a type.

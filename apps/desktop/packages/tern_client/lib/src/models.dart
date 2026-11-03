@@ -575,4 +575,37 @@ class StepItem {
   Duration? get duration => finishedAt?.difference(startedAt);
 }
 
+/// A secret tern knows about. The API never returns values.
+class SecretStatus {
+  const SecretStatus({
+    required this.name,
+    required this.inFile,
+    required this.inEnv,
+    required this.usedBy,
+  });
+
+  factory SecretStatus.fromJson(Json j) => SecretStatus(
+    name: j['name'] as String,
+    inFile: j['in_file'] as bool,
+    inEnv: j['in_env'] as bool,
+    usedBy: [for (final u in j['used_by'] as List) u as String],
+  );
+
+  final String name;
+
+  /// Stored in `secrets.toml`.
+  final bool inFile;
+
+  /// Set in the daemon's environment, which takes precedence over the file.
+  final bool inEnv;
+
+  /// What refers to it, e.g. `provider anthropic` or `connector hubspot`.
+  final List<String> usedBy;
+
+  bool get isSet => inFile || inEnv;
+}
+
+/// Secret names double as environment variable names.
+final secretName = RegExp(r'^[A-Za-z_][A-Za-z0-9_]{0,127}$');
+
 DateTime? _maybeTime(Object? t) => t is int ? _time(t) : null;

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../state/store.dart';
 import 'conversation.dart';
 import 'offline.dart';
+import 'secrets.dart';
 import 'side_panel.dart';
 import 'sidebar.dart';
 import 'widgets.dart';
@@ -90,16 +91,19 @@ class _HomeState extends State<Home> {
             control: true,
             alt: true,
           ): _togglePanel,
+          const SingleActivator(LogicalKeyboardKey.comma, control: true): () {
+            if (store.health != null) showSecretsDialog(context, store);
+          },
         },
         child: Focus(autofocus: true, child: body),
       );
     }
     return PlatformMenuBar(
       menus: [
-        const PlatformMenu(
+        PlatformMenu(
           label: 'tern',
           menus: [
-            PlatformMenuItemGroup(
+            const PlatformMenuItemGroup(
               members: [
                 PlatformProvidedMenuItem(
                   type: PlatformProvidedMenuItemType.about,
@@ -107,6 +111,20 @@ class _HomeState extends State<Home> {
               ],
             ),
             PlatformMenuItemGroup(
+              members: [
+                PlatformMenuItem(
+                  label: 'Secrets…',
+                  shortcut: const SingleActivator(
+                    LogicalKeyboardKey.comma,
+                    meta: true,
+                  ),
+                  onSelected: store.health == null
+                      ? null
+                      : () => showSecretsDialog(context, store),
+                ),
+              ],
+            ),
+            const PlatformMenuItemGroup(
               members: [
                 PlatformProvidedMenuItem(
                   type: PlatformProvidedMenuItemType.hide,
@@ -116,7 +134,9 @@ class _HomeState extends State<Home> {
                 ),
               ],
             ),
-            PlatformProvidedMenuItem(type: PlatformProvidedMenuItemType.quit),
+            const PlatformProvidedMenuItem(
+              type: PlatformProvidedMenuItemType.quit,
+            ),
           ],
         ),
         PlatformMenu(

@@ -5,6 +5,7 @@ use crossterm::event::{KeyEventState, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::json;
+use tern_core::SecretStatus;
 use tern_core::approval::ApprovalRequest;
 use tern_core::types::{ContentBlock, Role, ToolCall};
 use tern_store::SessionSummary;
@@ -22,6 +23,8 @@ struct Fake {
     started: Mutex<Vec<StartCall>>,
     models_set: Mutex<Vec<(String, String)>>,
     reloads: Mutex<u32>,
+    /// secrets.toml: name → value.
+    secrets: Mutex<std::collections::BTreeMap<String, String>>,
 }
 
 #[async_trait]
@@ -100,6 +103,40 @@ impl Backend for Fake {
     }
     fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
         broadcast::channel(1).1
+    }
+    fn secrets(&self) -> BackendResult<Vec<SecretStatus>> {
+        let file = self.secrets.lock().unwrap();
+        let mut all: Vec<SecretStatus> = file
+            .keys()
+            .map(|name| SecretStatus {
+                name: name.clone(),
+                in_file: true,
+                in_env: false,
+                used_by: vec![],
+            })
+            .collect();
+        if !file.contains_key("API_KEY") {
+            all.insert(
+                0,
+                SecretStatus {
+                    name: "API_KEY".into(),
+                    in_file: false,
+                    in_env: false,
+                    used_by: vec!["provider mock".into()],
+                },
+            );
+        }
+        Ok(all)
+    }
+    fn set_secret(&self, name: &str, value: &str) -> BackendResult<()> {
+        self.secrets
+            .lock()
+            .unwrap()
+            .insert(name.into(), value.into());
+        Ok(())
+    }
+    fn remove_secret(&self, name: &str) -> BackendResult<bool> {
+        Ok(self.secrets.lock().unwrap().remove(name).is_some())
     }
 }
 
@@ -578,4 +615,81 @@ fn paste_keeps_newlines() {
     let (mut app, _) = new_app();
     app.on_paste("one\r\ntwo\rthree");
     assert_eq!(app.input.text(), "one\ntwo\nthree");
+}
+
+#[test]
+fn secrets_panel_sets_values_without_showing_them() {
+    let (mut app, fake) = new_app();
+    submit(&mut app, "/secrets");
+    let shown = screen(&mut app, 80, 20);
+    assert!(
+        shown.contains("API_KEY") && shown.contains("missing"),
+        "{shown}"
+    );
+    assert!(shown.contains("provider mock"), "{shown}");
+
+    // Enter on the selected (missing) secret asks for its value.
+    app.on_key(key(KeyCode::Enter), Instant::now());
+    type_text(&mut app, "sk-typed");
+    app.on_paste("-pasted\n");
+    let shown = screen(&mut app, 80, 20);
+    assert!(shown.contains("New value for API_KEY"), "{shown}");
+    assert!(shown.contains("15 characters"), "{shown}");
+    assert!(
+        !shown.contains("sk-typed") && !shown.contains("pasted"),
+        "{shown}"
+    );
+    app.on_key(key(KeyCode::Enter), Instant::now());
+
+    assert_eq!(
+        fake.secrets
+            .lock()
+            .unwrap()
+            .get("API_KEY")
+            .map(String::as_str),
+        Some("sk-typed-pasted")
+    );
+    assert!(
+        app.input.text().is_empty(),
+        "nothing leaks into the chat input"
+    );
+    assert!(fake.started.lock().unwrap().is_empty(), "nothing is sent");
+    let shown = screen(&mut app, 80, 20);
+    assert!(
+        shown.contains("saved API_KEY") && shown.contains("set"),
+        "{shown}"
+    );
+
+    // A new one by name, then remove it.
+    app.on_key(key(KeyCode::Char('n')), Instant::now());
+    type_text(&mut app, "github_token");
+    app.on_key(key(KeyCode::Enter), Instant::now());
+    type_text(&mut app, "ghp_x");
+    app.on_key(key(KeyCode::Enter), Instant::now());
+    assert!(fake.secrets.lock().unwrap().contains_key("GITHUB_TOKEN"));
+    app.on_key(key(KeyCode::Char('d')), Instant::now());
+    assert!(screen(&mut app, 80, 20).contains("Remove GITHUB_TOKEN"));
+    app.on_key(key(KeyCode::Char('y')), Instant::now());
+    assert!(!fake.secrets.lock().unwrap().contains_key("GITHUB_TOKEN"));
+
+    app.on_key(key(KeyCode::Esc), Instant::now());
+    assert!(app.secrets.is_none());
+}
+
+#[test]
+fn secrets_panel_rejects_bad_names_and_closes_on_ctrl_c() {
+    let (mut app, fake) = new_app();
+    submit(&mut app, "/secrets 9bad");
+    assert!(app.secrets.is_none());
+    assert!(notices(&app).contains("invalid secret name"));
+
+    submit(&mut app, "/secrets TOKEN");
+    type_text(&mut app, "half-typed");
+    app.on_key(
+        with(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        Instant::now(),
+    );
+    assert!(app.secrets.is_none());
+    assert!(fake.secrets.lock().unwrap().is_empty());
+    assert!(app.input.text().is_empty());
 }

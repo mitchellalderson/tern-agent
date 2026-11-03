@@ -3,11 +3,11 @@
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use tern_core::TernHome;
 use tern_core::agent::RunOutcome;
 use tern_core::approval::ApprovalHandler;
 use tern_core::events::AgentEvent;
 use tern_core::types::{ContentBlock, Role, Usage};
+use tern_core::{SecretStatus, TernHome};
 use tern_store::SessionSummary;
 use tern_tui::{Backend, BackendResult, HistoryMessage, SessionInfo, Started};
 use tokio::sync::broadcast;
@@ -178,6 +178,19 @@ impl Backend for TuiBackend {
 
     fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
         self.rt().agent.subscribe()
+    }
+
+    fn secrets(&self) -> BackendResult<Vec<SecretStatus>> {
+        Ok(self.rt().secret_statuses())
+    }
+
+    /// Applies to the next model call or tool use; no reload needed.
+    fn set_secret(&self, name: &str, value: &str) -> BackendResult<()> {
+        self.rt().secrets.set(name, value).map_err(err)
+    }
+
+    fn remove_secret(&self, name: &str) -> BackendResult<bool> {
+        self.rt().secrets.remove(name).map_err(err)
     }
 }
 

@@ -92,4 +92,19 @@ void main() {
     expect(step.duration, const Duration(milliseconds: 2500));
     expect(step.usage!.total, 6);
   });
+
+  test('decodes secrets and validates names', () {
+    final s = SecretStatus.fromJson(
+      jsonDecode(
+            '{"name":"ANTHROPIC_API_KEY","in_file":false,"in_env":true,'
+            '"used_by":["provider anthropic"]}',
+          )
+          as Json,
+    );
+    expect(s.isSet, isTrue);
+    expect(s.usedBy, ['provider anthropic']);
+    expect(secretName.hasMatch('GITHUB_TOKEN'), isTrue);
+    expect(secretName.hasMatch('9LIVES'), isFalse);
+    expect(secretName.hasMatch('A-B'), isFalse);
+  });
 }

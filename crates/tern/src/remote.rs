@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use tern_core::SecretStatus;
 use tern_core::agent::RunOutcome;
 use tern_core::approval::{ApprovalRequest, Decision};
 use tern_core::events::AgentEvent;
@@ -310,5 +311,28 @@ impl Backend for Remote {
 
     fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
         self.events.subscribe()
+    }
+
+    fn secrets(&self) -> BackendResult<Vec<SecretStatus>> {
+        self.get("/v1/secrets")
+    }
+
+    fn set_secret(&self, name: &str, value: &str) -> BackendResult<()> {
+        self.send_json::<Value>(
+            reqwest::Method::PUT,
+            &format!("/v1/secrets/{name}"),
+            json!({ "value": value }),
+        )
+        .map(|_| ())
+    }
+
+    fn remove_secret(&self, name: &str) -> BackendResult<bool> {
+        match self
+            .blocking(self.request::<Value>(self.http.delete(format!("{BASE}/v1/secrets/{name}"))))
+        {
+            Ok(_) => Ok(true),
+            Err(e) if e.contains("not found") => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 }
