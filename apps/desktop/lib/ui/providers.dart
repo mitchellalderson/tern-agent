@@ -66,7 +66,8 @@ class _ProvidersDialogState extends State<ProvidersDialog> {
     if (!mounted) return;
     setState(() {
       _setup = null;
-      _notice = 'Saved ${p.name}${p.keyHint == null ? '' : ' (key ${p.keyHint})'}.';
+      _notice =
+          'Saved ${p.name}${p.keyHint == null ? '' : ' (key ${p.keyHint})'}.';
     });
   }
 
@@ -126,7 +127,8 @@ class _ProvidersDialogState extends State<ProvidersDialog> {
     unawaited(store.loadModels());
     final chosen = await showDialog<String>(
       context: context,
-      builder: (context) => _DefaultModelDialog(store: store, provider: provider),
+      builder: (context) =>
+          _DefaultModelDialog(store: store, provider: provider),
     );
     if (chosen == null) return;
     try {
@@ -135,10 +137,7 @@ class _ProvidersDialogState extends State<ProvidersDialog> {
       await _load();
       if (mounted) {
         setState(
-          () => _notice = [
-            'Default model: ${r.model}.',
-            ?r.warning,
-          ].join(' '),
+          () => _notice = ['Default model: ${r.model}.', ?r.warning].join(' '),
         );
       }
     } on TernException catch (e) {
@@ -532,13 +531,16 @@ class ProviderSetupState extends State<ProviderSetup> {
     super.dispose();
   }
 
-  ProviderDraft get _draft => ProviderDraft(
-    kind: widget.existing == null ? _kind : null,
-    name: _verified?.name ?? _name.text,
-    baseUrl: _verified?.suggestedBaseUrl ?? _url.text,
-    key: _useEnv ? null : _key.text,
-    useEnvKey: _useEnv,
-  );
+  ProviderDraft get _draft {
+    String? opt(String s) => s.trim().isEmpty ? null : s.trim();
+    return ProviderDraft(
+      kind: widget.existing == null ? _kind : null,
+      name: _verified?.name ?? opt(_name.text),
+      baseUrl: _verified?.suggestedBaseUrl ?? opt(_url.text),
+      key: _useEnv ? null : opt(_key.text),
+      useEnvKey: _useEnv,
+    );
+  }
 
   void _onKeyChanged(String text) {
     // A jump of several characters at once is a paste: check it shortly.
@@ -571,8 +573,7 @@ class ProviderSetupState extends State<ProviderSetup> {
   Future<void> _verify({bool env = false}) async {
     _debounce?.cancel();
     if (env) _useEnv = true;
-    final needsKey =
-        _kind == ProviderKind.anthropic || widget.existing != null;
+    final needsKey = _kind == ProviderKind.anthropic || widget.existing != null;
     if (!_useEnv && needsKey && _key.text.trim().isEmpty) {
       setState(() => _error = 'Paste your API key first.');
       return;
@@ -606,8 +607,8 @@ class ProviderSetupState extends State<ProviderSetup> {
       setState(() {
         _busy = false;
         _step = _Step.model;
-        _makeDefault = widget.store.info?.defaultModel == null ||
-            widget.store.setupNeeded;
+        _makeDefault =
+            widget.store.info?.defaultModel == null || widget.store.setupNeeded;
       });
     } on TernException catch (e) {
       if (mounted) {
@@ -631,7 +632,9 @@ class ProviderSetupState extends State<ProviderSetup> {
         defaultModel: _makeDefault ? model : null,
       );
       _key.clear();
-      if (mounted) widget.onDone(status);
+      if (!mounted) return;
+      setState(() => _busy = false);
+      widget.onDone(status);
     } on TernException catch (e) {
       if (mounted) {
         setState(() {
@@ -783,9 +786,7 @@ class ProviderSetupState extends State<ProviderSetup> {
           onTap: () => setState(() {
             _kind = kind;
             _error = null;
-            _step = kind == ProviderKind.anthropic
-                ? _Step.key
-                : _Step.endpoint;
+            _step = kind == ProviderKind.anthropic ? _Step.key : _Step.endpoint;
           }),
         ),
     ],
@@ -857,7 +858,9 @@ class ProviderSetupState extends State<ProviderSetup> {
           onSubmitted: (_) => _busy ? null : _verify(),
           decoration: _box(
             context,
-            hint: _kind == ProviderKind.anthropic ? 'sk-ant-…' : 'Paste the key',
+            hint: _kind == ProviderKind.anthropic
+                ? 'sk-ant-…'
+                : 'Paste the key',
             suffix: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -1029,10 +1032,7 @@ class _KindCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 2),
-                    Text(
-                      blurb,
-                      style: TextStyle(fontSize: 12, color: c.muted),
-                    ),
+                    Text(blurb, style: TextStyle(fontSize: 12, color: c.muted)),
                   ],
                 ),
               ),

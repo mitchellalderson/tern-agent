@@ -1,6 +1,6 @@
 # Provider, API key and model setup
 
-Status: P0 (engine and API) and P1 (TUI, CLI) built; P2 (desktop) not started. Covers the engine, TUI, desktop app and CLI.
+Status: P0 (engine and API), P1 (TUI, CLI) and P2 (desktop) built. Covers the engine, TUI, desktop app and CLI.
 
 ## 1. Problem
 
@@ -179,7 +179,7 @@ fn set_default_model(&self, model: &str) -> BackendResult<()>;
   - Sections per provider, each row showing the display name (when there is one), the id in mono, and the context window when known. Recent models are pinned at the top.
   - The last row is `Use "<typed text>"` for free text. The footer has **Manage providers…** and a refresh icon.
   - A soft `warning` from `check_model` shows as a note under the chip.
-- **Settings → Models** (the gui-spec §4.5 tab): the provider list with status chips, **Add provider**, the default-model combobox (same widget), and per provider **Change key**, **Refresh models** and **Remove**. ⌘, opens Settings on this tab; the current Secrets dialog becomes an "Advanced" **Secrets** tab.
+- **Settings → Models** (the gui-spec §4.5 tab; built as a **Models** dialog on ⌘, since the app has no Settings window yet, with Secrets behind a "Secrets (advanced)…" button and in the tern menu): the provider list with status chips, **Add provider**, the default-model combobox (same widget), and per provider **Change key**, **Refresh models** and **Remove**. ⌘, opens Settings on this tab; the current Secrets dialog becomes an "Advanced" **Secrets** tab.
 - **Add provider sheet**:
   - Two cards: **Anthropic** ("Claude models") and **OpenAI-compatible** ("OpenAI, OpenRouter, Ollama, or any server with the OpenAI API").
   - OpenAI-compatible asks for the base URL, with the name filled in from it and editable.

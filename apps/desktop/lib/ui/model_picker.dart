@@ -80,9 +80,13 @@ List<ModelRow> modelRows(
   return rows;
 }
 
+/// The provider counts only when the filter names one (`ollama:`), so
+/// "opus" doesn't match every Anthropic model through "anthropic".
 bool _matches(String filter, String provider, ModelInfo m) =>
-    _subsequence(filter, '$provider:${m.id}') ||
-    (m.name != null && _subsequence(filter, m.name!));
+    filter.contains(':')
+    ? _subsequence(filter, '$provider:${m.id}')
+    : _subsequence(filter, m.id) ||
+          (m.name != null && _subsequence(filter, m.name!));
 
 bool _subsequence(String needle, String hay) {
   final h = hay.toLowerCase();
@@ -343,28 +347,29 @@ class _Choice extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Flexible(
-                child: Text(
-                  label,
+              // One text, so the id and its note share the row and the
+              // check mark sits at the end.
+              Expanded(
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: label,
+                        style: row is TypedChoice
+                            ? const TextStyle(fontSize: 13)
+                            : mono.copyWith(fontSize: 13),
+                      ),
+                      if (note.isNotEmpty)
+                        TextSpan(
+                          text: '   $note',
+                          style: TextStyle(fontSize: 11.5, color: c.muted),
+                        ),
+                    ],
+                  ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: row is TypedChoice
-                      ? const TextStyle(fontSize: 13)
-                      : mono.copyWith(fontSize: 13),
                 ),
               ),
-              if (note.isNotEmpty) ...[
-                const SizedBox(width: 10),
-                Flexible(
-                  child: Text(
-                    note,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11.5, color: c.muted),
-                  ),
-                ),
-              ],
-              const Spacer(),
               if (current) Icon(Icons.check, size: 15, color: c.accent),
             ],
           ),

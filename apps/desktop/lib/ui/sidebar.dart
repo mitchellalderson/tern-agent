@@ -193,9 +193,8 @@ class _AgentRow extends StatelessWidget {
                         : null,
                     child: Text(
                       'Set up a model…',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: context.colors.accent,
-                      ),
+                      style: Theme.of(context).textTheme.bodySmall
+                          ?.copyWith(color: context.colors.accent),
                     ),
                   ),
               ],
