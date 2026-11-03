@@ -37,6 +37,7 @@ pub struct Config {
     pub sandbox: SandboxConfig,
     pub gateway: GatewayConfig,
     pub mcp: McpConfig,
+    pub api: ApiConfig,
 }
 
 impl Default for Config {
@@ -50,6 +51,7 @@ impl Default for Config {
             sandbox: SandboxConfig::default(),
             gateway: GatewayConfig::default(),
             mcp: McpConfig::default(),
+            api: ApiConfig::default(),
         }
     }
 }
@@ -171,6 +173,48 @@ pub struct TelegramConfig {
     pub bot_token_secret: String,
     /// Bot API base URL; only changed for tests or self-hosted API servers.
     pub api_url: Option<String>,
+}
+
+/// `[api]`: where the daemon's API listens (deployment spec §6.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ApiConfig {
+    /// `"unix"` (always on) plus any `"tcp://host:port"` listeners.
+    pub listen: Vec<String>,
+    pub tls: TlsMode,
+    /// Certificate chain and key (PEM) for `tls = "files"`.
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
+    /// Honour `X-Forwarded-For` from a reverse proxy on loopback.
+    pub trust_proxy: bool,
+    /// The URL devices use to reach this core, put in pairing links.
+    /// Defaults to the first TCP listener (with this host's name for
+    /// `0.0.0.0`).
+    pub public_url: Option<String>,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            listen: vec!["unix".into()],
+            tls: TlsMode::Auto,
+            tls_cert: None,
+            tls_key: None,
+            trust_proxy: false,
+            public_url: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsMode {
+    /// A self-signed certificate in `$TERN_HOME/tls/`, pinned by clients.
+    Auto,
+    /// `tls_cert` and `tls_key`, verified against the usual roots.
+    Files,
+    /// Plain HTTP: only behind a TLS-terminating proxy on loopback.
+    Off,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

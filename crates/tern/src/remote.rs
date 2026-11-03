@@ -1,4 +1,5 @@
-//! The TUI's view of a running daemon, over its Unix socket API.
+//! The TUI's view of a running daemon, over its Unix socket API, or over
+//! HTTPS with a device token (`tern --remote <url>`).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -23,12 +24,27 @@ const BASE: &str = "http://tern";
 
 pub struct Remote {
     http: reqwest::Client,
+    base: String,
     events: broadcast::Sender<AgentEvent>,
+}
+
+type Attached = (Arc<Remote>, mpsc::Receiver<PendingApproval>);
+
+/// An error and its sources: reqwest's own message hides TLS failures such
+/// as a pin mismatch.
+fn causes(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(s) = source {
+        out.push_str(&format!(": {s}"));
+        source = s.source();
+    }
+    out
 }
 
 /// Connect if a daemon answers on `socket`. Returns the backend and the
 /// channel its approval requests arrive on.
-pub async fn connect(socket: &Path) -> Option<(Arc<Remote>, mpsc::Receiver<PendingApproval>)> {
+pub async fn connect(socket: &Path) -> Option<Attached> {
     if !socket.exists() {
         return None;
     }
@@ -36,27 +52,48 @@ pub async fn connect(socket: &Path) -> Option<(Arc<Remote>, mpsc::Receiver<Pendi
         .unix_socket(socket)
         .build()
         .ok()?;
-    let health = http
-        .get(format!("{BASE}/v1/health"))
-        .timeout(Duration::from_secs(2))
-        .send()
+    attach(http, BASE.into()).await.ok()
+}
+
+/// Connect to a core over HTTPS with a device token, pinning its
+/// certificate when `pin` is given (deployment spec §7.2).
+pub async fn connect_url(url: &str, token: &str, pin: Option<&str>) -> anyhow::Result<Attached> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    let mut auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))?;
+    auth.set_sensitive(true);
+    headers.insert(reqwest::header::AUTHORIZATION, auth);
+    let http = crate::daemon::tls::client(pin)?
+        .default_headers(headers)
+        .build()?;
+    attach(http, url.trim_end_matches('/').to_owned())
         .await
-        .ok()?;
-    if !health.status().is_success() {
-        return None;
-    }
+        .map_err(anyhow::Error::msg)
+}
+
+async fn attach(http: reqwest::Client, base: String) -> BackendResult<Attached> {
     let (events, _) = broadcast::channel(1024);
     let (approvals_tx, approvals_rx) = mpsc::channel(8);
-    let remote = Arc::new(Remote { http, events });
+    let remote = Arc::new(Remote { http, base, events });
+    remote
+        .request::<Value>(
+            remote
+                .http
+                .get(remote.url("/v1/health"))
+                .timeout(Duration::from_secs(5)),
+        )
+        .await?;
     // Subscribe before returning, so no event of the first run is missed.
     let resp = remote
         .http
-        .get(format!("{BASE}/v1/events"))
+        .get(remote.url("/v1/events"))
         .send()
         .await
-        .ok()?;
+        .map_err(|e| format!("daemon: {}", causes(&e)))?;
+    if !resp.status().is_success() {
+        return Err(format!("events: HTTP {}", resp.status()));
+    }
     tokio::spawn(pump(remote.clone(), resp, approvals_tx));
-    Some((remote, approvals_rx))
+    Ok((remote, approvals_rx))
 }
 
 /// Read the SSE stream: agent events go to subscribers, approval requests
@@ -108,6 +145,7 @@ async fn pump(
                         return;
                     }
                     let http = remote.http.clone();
+                    let url = remote.url(&format!("/v1/approvals/{}", a.id));
                     tokio::spawn(async move {
                         let decision = match rx.await.unwrap_or(Decision::Deny) {
                             Decision::AllowOnce => "once",
@@ -115,7 +153,7 @@ async fn pump(
                             Decision::Deny => "deny",
                         };
                         let _ = http
-                            .post(format!("{BASE}/v1/approvals/{}", a.id))
+                            .post(url)
                             .json(&json!({ "decision": decision }))
                             .send()
                             .await;
@@ -129,9 +167,23 @@ async fn pump(
 }
 
 impl Remote {
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.base)
+    }
+
     async fn request<T: DeserializeOwned>(&self, req: reqwest::RequestBuilder) -> BackendResult<T> {
-        let resp = req.send().await.map_err(|e| format!("daemon: {e}"))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("daemon: {}", causes(&e)))?;
         let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            // No retry: the token was revoked or never valid.
+            return Err(format!(
+                "signed out of {}: this device's token was revoked or is unknown; pair it again",
+                self.base
+            ));
+        }
         let body: Value = resp.json().await.map_err(|e| format!("daemon: {e}"))?;
         if !status.is_success() {
             return Err(body["error"]
@@ -151,7 +203,7 @@ impl Remote {
     }
 
     fn get<T: DeserializeOwned>(&self, path: &str) -> BackendResult<T> {
-        self.blocking(self.request(self.http.get(format!("{BASE}{path}"))))
+        self.blocking(self.request(self.http.get(self.url(path))))
     }
 
     fn send_json<T: DeserializeOwned>(
@@ -160,13 +212,7 @@ impl Remote {
         path: &str,
         body: Value,
     ) -> BackendResult<T> {
-        self.blocking(
-            self.request(
-                self.http
-                    .request(method, format!("{BASE}{path}"))
-                    .json(&body),
-            ),
-        )
+        self.blocking(self.request(self.http.request(method, self.url(path)).json(&body)))
     }
 }
 
@@ -213,11 +259,14 @@ impl Backend for Remote {
         cancel: CancellationToken,
     ) -> BackendResult<RunOutcome> {
         if resume {
-            self.request::<Value>(self.http.post(format!("{BASE}/v1/runs/{run_id}/resume")))
-                .await?;
+            self.request::<Value>(
+                self.http
+                    .post(self.url(&format!("/v1/runs/{run_id}/resume"))),
+            )
+            .await?;
         }
         let wait =
-            self.request::<RunOutcome>(self.http.get(format!("{BASE}/v1/runs/{run_id}/wait")));
+            self.request::<RunOutcome>(self.http.get(self.url(&format!("/v1/runs/{run_id}/wait"))));
         tokio::pin!(wait);
         tokio::select! {
             r = &mut wait => return r,
@@ -225,7 +274,7 @@ impl Backend for Remote {
         }
         let _ = self
             .http
-            .post(format!("{BASE}/v1/runs/{run_id}/cancel"))
+            .post(self.url(&format!("/v1/runs/{run_id}/cancel")))
             .send()
             .await;
         wait.await

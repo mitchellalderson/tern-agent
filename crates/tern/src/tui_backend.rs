@@ -181,8 +181,19 @@ impl Backend for TuiBackend {
     }
 }
 
-/// `tern` with no subcommand: attach to a running daemon, else run embedded.
-pub fn run(home: &TernHome) -> anyhow::Result<std::process::ExitCode> {
+/// A core to attach to over the network (`tern --remote`).
+pub struct RemoteTarget {
+    pub url: String,
+    pub token: String,
+    pub pin: Option<String>,
+}
+
+/// `tern` with no subcommand: attach to `remote` if given, else to a
+/// running daemon, else run embedded.
+pub fn run(
+    home: &TernHome,
+    remote: Option<RemoteTarget>,
+) -> anyhow::Result<std::process::ExitCode> {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!("the chat UI needs a terminal; use `tern run \"<prompt>\"` for scripts");
@@ -191,6 +202,14 @@ pub fn run(home: &TernHome) -> anyhow::Result<std::process::ExitCode> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        if let Some(t) = remote {
+            let (remote, approvals) =
+                crate::remote::connect_url(&t.url, &t.token, t.pin.as_deref()).await?;
+            tracing::info!(url = %t.url, "attached to a remote core");
+            return tern_tui::run(remote, approvals, None)
+                .await
+                .map_err(anyhow::Error::from);
+        }
         let socket = home
             .socket_connect_path()
             .inspect_err(|e| tracing::warn!("not attaching to the daemon: {e}"));

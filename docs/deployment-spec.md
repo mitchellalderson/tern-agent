@@ -1,6 +1,6 @@
 # tern deployment topologies: install tiers, storage backends, remote cores, hosted cloud
 
-Status: draft, 2026-11-03. Post-MVP. Nothing here is built yet. This is a design to pull work from as it comes up,
+Status: draft, 2026-11-03. Post-MVP. D1 (remote core) is built except the GUI's remote profiles; see DECISIONS.md "D1". The rest isn't built yet. This is a design to pull work from as it comes up,
 not a milestone plan. Each section names the engine change it needs and the phase it belongs to (§12).
 
 Related: [gui-spec.md](gui-spec.md) (the Flutter client, §6 and §7.4 there are superseded by §6–§7 here),

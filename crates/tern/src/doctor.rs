@@ -189,6 +189,9 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
         },
     }
 
+    r.section("Remote access");
+    check_listeners(&mut r, &config);
+
     r.section("Gateways");
     match &config.gateway.telegram {
         Some(t) if t.enabled => {
@@ -416,6 +419,34 @@ fn check_daemon(r: &mut Report, home: &TernHome) {
                 None,
             );
         }
+    }
+}
+
+/// `[api]` (deployment spec §6.1, §6.6).
+fn check_listeners(r: &mut Report, config: &tern_core::Config) {
+    let addrs = match crate::daemon::listen::check(&config.api) {
+        Ok(a) => a,
+        Err(e) => return r.check(Status::Fail, format!("{e:#}"), None),
+    };
+    if addrs.is_empty() {
+        return r.check(Status::Info, "local socket only (no TCP listener)", None);
+    }
+    let list: Vec<String> = addrs.iter().map(|a| format!("tcp://{a}")).collect();
+    r.check(
+        Status::Ok,
+        format!(
+            "listening on {} ({:?} TLS)",
+            list.join(", "),
+            config.api.tls
+        ),
+        None,
+    );
+    if config.sandbox.backend == SandboxBackendKind::Host {
+        r.check(
+            Status::Warn,
+            "the API is reachable over TCP and sandbox.backend = \"host\": approved shell commands from paired devices run on this machine",
+            Some("Consider sandbox.backend = \"docker\", or pair phones with --scope read."),
+        );
     }
 }
 

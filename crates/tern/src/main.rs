@@ -2,6 +2,7 @@ mod cli;
 mod config_cmd;
 mod connectors_cmd;
 mod daemon;
+mod devices_cmd;
 mod doctor;
 mod gateway_cmd;
 mod inspect;
@@ -54,7 +55,27 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        None => tui_backend::run(&home),
+        None => {
+            let remote = match cli.remote {
+                Some(url) => Some(tui_backend::RemoteTarget {
+                    url,
+                    token: std::env::var("TERN_REMOTE_TOKEN")
+                        .ok()
+                        .filter(|t| !t.is_empty())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "--remote needs a device token in $TERN_REMOTE_TOKEN (get one with `tern devices join <link>`)"
+                            )
+                        })?,
+                    pin: cli
+                        .pin
+                        .or_else(|| std::env::var("TERN_REMOTE_PIN").ok().filter(|p| !p.is_empty())),
+                }),
+                None => None,
+            };
+            tui_backend::run(&home, remote)
+        }
+        Some(Command::Devices { command }) => devices_cmd::run(&home, command),
         Some(Command::Run {
             prompt,
             session,

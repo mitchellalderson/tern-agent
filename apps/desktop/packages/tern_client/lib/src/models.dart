@@ -5,14 +5,121 @@
 
 typedef Json = Map<String, dynamic>;
 
+/// `/v1/health`: what the core is and what this client may do there
+/// (deployment spec §7.3). Derive behaviour from these, not from how the
+/// core was reached.
 class Health {
-  const Health({required this.pid, required this.version});
+  const Health({
+    required this.pid,
+    required this.version,
+    this.api = 1,
+    this.deployment = 'local',
+    this.authKind = 'owner',
+    this.scope = 'owner',
+    this.features = const {},
+  });
 
-  factory Health.fromJson(Json j) =>
-      Health(pid: j['pid'] as int, version: j['version'] as String);
+  factory Health.fromJson(Json j) {
+    final auth = j['auth'] as Json?;
+    return Health(
+      pid: j['pid'] as int,
+      version: j['version'] as String,
+      api: j['api'] as int? ?? 1,
+      deployment: j['deployment'] as String? ?? 'local',
+      authKind: auth?['kind'] as String? ?? 'owner',
+      scope: auth?['scope'] as String? ?? 'owner',
+      features: {
+        for (final f in j['features'] as List? ?? const []) f as String,
+      },
+    );
+  }
 
   final int pid;
   final String version;
+  final int api;
+
+  /// `local` (this machine: files, Finder, start/stop apply), `server` or
+  /// `cloud`.
+  final String deployment;
+
+  /// `owner` (the local socket), `device` or `cloud`.
+  final String authKind;
+
+  /// `owner`, `chat` or `read`. Hide owner-only screens below `owner`.
+  final String scope;
+
+  /// e.g. `devices`, `uploads`.
+  final Set<String> features;
+
+  bool get isLocal => deployment == 'local';
+  bool get isOwner => scope == 'owner';
+  bool get canChat => scope != 'read';
+}
+
+/// A paired device, as the owner sees it.
+class Device {
+  const Device({
+    required this.id,
+    required this.name,
+    required this.scope,
+    this.platform,
+    required this.createdAt,
+    this.lastSeenAt,
+    this.lastIp,
+    this.revokedAt,
+  });
+
+  factory Device.fromJson(Json j) => Device(
+    id: j['id'] as String,
+    name: j['name'] as String,
+    scope: j['scope'] as String,
+    platform: j['platform'] as String?,
+    createdAt: DateTime.fromMillisecondsSinceEpoch(j['created_at'] as int),
+    lastSeenAt: _ms(j['last_seen_at']),
+    lastIp: j['last_ip'] as String?,
+    revokedAt: _ms(j['revoked_at']),
+  );
+
+  final String id;
+  final String name;
+  final String scope;
+  final String? platform;
+  final DateTime createdAt;
+  final DateTime? lastSeenAt;
+  final String? lastIp;
+  final DateTime? revokedAt;
+
+  bool get revoked => revokedAt != null;
+}
+
+DateTime? _ms(Object? v) =>
+    v == null ? null : DateTime.fromMillisecondsSinceEpoch(v as int);
+
+/// A one-time code for a new device; show [link] as a QR code.
+class PairingOffer {
+  const PairingOffer({
+    required this.code,
+    required this.scope,
+    this.link,
+    this.fingerprint,
+    required this.expiresIn,
+  });
+
+  factory PairingOffer.fromJson(Json j) => PairingOffer(
+    code: j['code'] as String,
+    scope: j['scope'] as String,
+    link: j['link'] as String?,
+    fingerprint: j['fingerprint'] as String?,
+    expiresIn: Duration(seconds: j['expires_in_secs'] as int),
+  );
+
+  final String code;
+  final String scope;
+
+  /// Null when the core has no TCP listener yet.
+  final String? link;
+  final String? fingerprint;
+  final Duration expiresIn;
 }
 
 class Info {

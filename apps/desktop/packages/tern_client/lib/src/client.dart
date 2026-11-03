@@ -20,6 +20,32 @@ class TernException implements Exception {
   String toString() => message;
 }
 
+/// HTTP 401 from a remote core: the device token was revoked or never
+/// valid. Show "Signed out of <core>" with re-pair; retrying won't help.
+class SignedOutException extends TernException {
+  const SignedOutException(super.message, {required this.core})
+    : super(status: 401);
+
+  final String core;
+}
+
+/// What redeeming a pairing link returns.
+class Pairing {
+  const Pairing({
+    required this.deviceId,
+    required this.scope,
+    required this.endpoint,
+  });
+
+  final String deviceId;
+
+  /// `owner`, `chat` or `read`.
+  final String scope;
+
+  /// Ready to use; keep its token in the Keychain, not in preferences.
+  final RemoteEndpoint endpoint;
+}
+
 class TernClient {
   TernClient(this.endpoint) : _http = endpoint.httpClient();
 
@@ -27,6 +53,45 @@ class TernClient {
   final HttpClient _http;
 
   void close() => _http.close(force: true);
+
+  /// Redeem a pairing link (deployment spec §6.2 step 2), pinning the
+  /// core's certificate when the link has a fingerprint.
+  static Future<Pairing> pair(
+    PairingLink link, {
+    required String deviceName,
+    String? platform,
+  }) async {
+    // A throwaway token: pairing is the one route that needs none.
+    final bootstrap = RemoteEndpoint(
+      link.url,
+      token: '',
+      pin: link.fingerprint,
+    );
+    final client = TernClient(bootstrap);
+    try {
+      final j =
+          await client._request('POST', '/v1/auth/pair', {
+                'code': link.code,
+                'device_name': deviceName,
+                'platform': ?platform,
+              }, auth: false)
+              as Json;
+      return Pairing(
+        deviceId: j['device_id'] as String,
+        scope: j['scope'] as String,
+        endpoint: RemoteEndpoint(
+          link.url,
+          token: j['token'] as String,
+          pin: link.fingerprint,
+        ),
+      );
+    } on SignedOutException catch (e) {
+      // On this route a 401 means the code, not a token.
+      throw TernException(e.message, status: 401);
+    } finally {
+      client.close();
+    }
+  }
 
   Future<Health> health() async =>
       Health.fromJson(await _json('GET', '/v1/health'));
@@ -80,8 +145,55 @@ class TernClient {
   Future<void> answer(String approval, Decision decision) =>
       _json('POST', '/v1/approvals/$approval', {'decision': decision.wire});
 
+  /// Put a file in the core's workspace (remote cores can't take a path).
+  /// Returns its workspace-relative path, to mention in a message. Check
+  /// `features` in [health] for `uploads` first.
+  Future<String> upload(String name, List<int> bytes) async {
+    final boundary = 'tern-${DateTime.now().microsecondsSinceEpoch}';
+    final safe = name.replaceAll(RegExp(r'["\r\n]'), '_');
+    final body = <int>[
+      ...utf8.encode(
+        '--$boundary\r\n'
+        'Content-Disposition: form-data; name="file"; filename="$safe"\r\n'
+        'Content-Type: application/octet-stream\r\n\r\n',
+      ),
+      ...bytes,
+      ...utf8.encode('\r\n--$boundary--\r\n'),
+    ];
+    final j = await _request(
+      'POST',
+      '/v1/uploads',
+      body,
+      contentType: ContentType(
+        'multipart',
+        'form-data',
+        parameters: {'boundary': boundary},
+      ),
+    );
+    return (j as Json)['path'] as String;
+  }
+
+  /// Owner only: paired devices.
+  Future<List<Device>> devices() async => [
+    for (final d in await _json('GET', '/v1/devices') as List)
+      Device.fromJson(d as Json),
+  ];
+
+  /// Owner only: a pairing link for a new device (the app's Add device).
+  Future<PairingOffer> offerPairing({
+    String scope = 'chat',
+    String? name,
+  }) async => PairingOffer.fromJson(
+    await _json('POST', '/v1/devices/pair', {'scope': scope, 'name': ?name}),
+  );
+
+  /// Owner only: sign a device out at once.
+  Future<void> revokeDevice(String id) => _json('DELETE', '/v1/devices/$id');
+
   /// The live event stream. It ends (with an error) when the connection
-  /// drops; callers reconnect and resync. Cancelling closes the connection.
+  /// drops; callers reconnect and resync, except after a
+  /// [SignedOutException], which no retry fixes. Cancelling closes the
+  /// connection.
   Stream<TernEvent> events() {
     // Its own HttpClient: cancelling an open response doesn't return until
     // the server ends it, so the connection is force-closed instead.
@@ -99,6 +211,19 @@ class TernClient {
         );
       } on TernException catch (e) {
         out.addError(e);
+        await out.close();
+        return;
+      }
+      if (res.statusCode >= 400) {
+        final text = await res.transform(utf8.decoder).join();
+        String? msg;
+        try {
+          final j = jsonDecode(text);
+          if (j is Json) msg = j['error'] as String?;
+        } on FormatException {
+          // Not JSON; use the status.
+        }
+        out.addError(_error(res.statusCode, msg));
         await out.close();
         return;
       }
@@ -124,18 +249,45 @@ class TernClient {
     return out.stream;
   }
 
-  Future<dynamic> _json(String method, String path, [Object? body]) async {
-    final res = await _send(method, path, body);
+  Future<dynamic> _json(String method, String path, [Object? body]) =>
+      _request(method, path, body);
+
+  Future<dynamic> _request(
+    String method,
+    String path,
+    Object? body, {
+    ContentType? contentType,
+    bool auth = true,
+  }) async {
+    final res = await _send(
+      method,
+      path,
+      body,
+      contentType: contentType,
+      auth: auth,
+    );
     final text = await res.transform(utf8.decoder).join();
-    final Object? decoded = text.isEmpty ? null : jsonDecode(text);
+    Object? decoded;
+    try {
+      decoded = text.isEmpty ? null : jsonDecode(text);
+    } on FormatException {
+      decoded = text;
+    }
     if (res.statusCode >= 400) {
-      final msg = decoded is Json ? decoded['error'] : null;
-      throw TernException(
-        msg as String? ?? 'HTTP ${res.statusCode}',
-        status: res.statusCode,
-      );
+      final msg = decoded is Json ? decoded['error'] as String? : null;
+      throw _error(res.statusCode, msg);
     }
     return decoded;
+  }
+
+  TernException _error(int status, String? msg) {
+    if (status == HttpStatus.unauthorized && endpoint is RemoteEndpoint) {
+      return SignedOutException(
+        'Signed out of ${endpoint.describe()}: ${msg ?? 'the device token was revoked'}',
+        core: endpoint.describe(),
+      );
+    }
+    return TernException(msg ?? 'HTTP $status', status: status);
   }
 
   Future<HttpClientResponse> _send(
@@ -144,6 +296,8 @@ class TernClient {
     Object? body, {
     HttpClient? client,
     String accept = 'application/json',
+    ContentType? contentType,
+    bool auth = true,
   }) async {
     try {
       final req = await (client ?? _http).openUrl(
@@ -151,8 +305,12 @@ class TernClient {
         endpoint.base.resolve(path),
       );
       req.headers.set(HttpHeaders.acceptHeader, accept);
-      endpoint.headers.forEach(req.headers.set);
-      if (body != null) {
+      if (auth) endpoint.headers.forEach(req.headers.set);
+      if (body is List<int> && contentType != null) {
+        req.headers.contentType = contentType;
+        req.contentLength = body.length;
+        req.add(body);
+      } else if (body != null) {
         req.headers.contentType = ContentType.json;
         req.write(jsonEncode(body));
       }
@@ -161,6 +319,13 @@ class TernClient {
       throw TernException(
         "can't reach tern at ${endpoint.describe()}: "
         '${e.osError?.message ?? e.message}',
+      );
+    } on TlsException catch (e) {
+      // With a pin, this is also what a different certificate looks like.
+      throw TernException(
+        "can't establish a secure connection to ${endpoint.describe()}: "
+        '${e.osError?.message ?? e.message} '
+        "(the core's certificate isn't the one this device paired with?)",
       );
     } on HttpException catch (e) {
       throw TernException(e.message);

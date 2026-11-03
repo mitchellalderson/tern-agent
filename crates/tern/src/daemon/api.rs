@@ -3,7 +3,7 @@
 //!
 //! | Method | Path | |
 //! |---|---|---|
-//! | GET | `/v1/health` | pid and version |
+//! | GET | `/v1/health` | pid, version, and capabilities (see `auth::health`) |
 //! | GET | `/v1/info` | default model and tools |
 //! | POST | `/v1/models/check` | validate `{model}` |
 //! | POST | `/v1/runs` | send a message: `{text, session_id?, model?}` |
@@ -19,6 +19,9 @@
 //! | GET | `/v1/events` | Server-Sent Events: agent events and approval requests |
 //! | GET | `/v1/approvals` | approvals waiting for an API client |
 //! | POST | `/v1/approvals/{id}` | answer `{decision: "once" \| "always" \| "deny"}` |
+//!
+//! Pairing, devices and uploads are in `auth.rs` and `uploads.rs`. TCP
+//! listeners (`listen.rs`) serve this same router behind device-token auth.
 
 use std::convert::Infallible;
 use std::path::Path;
@@ -146,11 +149,12 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/events", get(events))
         .route("/v1/approvals", get(pending_approvals))
         .route("/v1/approvals/{id}", post(approve))
+        .merge(super::auth::routes())
         .with_state(manager)
 }
 
-async fn health() -> Json<Value> {
-    Json(json!({ "pid": std::process::id(), "version": env!("CARGO_PKG_VERSION") }))
+async fn health(auth: Option<axum::Extension<super::auth::Auth>>) -> Json<Value> {
+    Json(super::auth::health(auth.as_ref().map(|a| &a.0)))
 }
 
 #[derive(Serialize, Deserialize)]

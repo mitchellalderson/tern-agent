@@ -2,7 +2,11 @@
 //! scheduler, gateways, and the local API on `~/.tern/tern.sock`.
 
 pub mod api;
+pub mod auth;
+pub mod listen;
 pub mod manager;
+pub mod tls;
+pub mod uploads;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -67,6 +71,7 @@ pub fn run(home: &TernHome) -> anyhow::Result<ExitCode> {
 }
 
 async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow::Result<ExitCode> {
+    listen::check(&rt.config.api)?;
     let shutdown = CancellationToken::new();
 
     let mut gateways: HashMap<String, Arc<dyn Gateway>> = HashMap::new();
@@ -106,11 +111,20 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     let socket = home.socket_path();
     let bind = home.socket_bind_path();
     let api = api::serve(manager.clone(), &socket, &bind, shutdown.clone()).await?;
+    let tcp = listen::serve(manager.clone(), home, &rt.config.api, shutdown.clone()).await?;
     eprintln!(
         "tern daemon running (pid {}), API on {}",
         std::process::id(),
         socket.display()
     );
+    for (addr, _) in &tcp {
+        eprintln!("  and on tcp://{addr} (device tokens required; pair with `tern devices pair`)");
+    }
+    if !tcp.is_empty() && rt.config.sandbox.backend == tern_core::config::SandboxBackendKind::Host {
+        tracing::warn!(
+            "the API is reachable over TCP and the sandbox is `host`: approved shell commands run on this machine"
+        );
+    }
     tracing::info!(socket = %socket.display(), "daemon started");
 
     wait_for_signal().await;
@@ -119,6 +133,9 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     // exactly as after a crash.
     shutdown.cancel();
     let _ = tokio::time::timeout(Duration::from_secs(2), api).await;
+    for (_, task) in tcp {
+        let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+    }
     let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(&bind);
     Ok(ExitCode::SUCCESS)

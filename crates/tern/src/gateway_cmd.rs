@@ -9,16 +9,21 @@ const CODE_TTL_MS: i64 = 10 * 60 * 1000;
 /// No 0/O or 1/I, so the code survives being read off a screen.
 const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-pub fn pair(home: &TernHome) -> anyhow::Result<ExitCode> {
-    let (config, _) = Config::load(&home.config_path())?;
-    let store = Store::open(&home.db_path())?;
+/// An 8-character single-use code, also used for device pairing.
+pub fn new_code() -> String {
     // UUIDv4 bytes come from the OS's CSPRNG; 32 symbols divide 256 evenly,
     // so taking each byte mod 32 is unbiased.
     let bytes = *uuid::Uuid::new_v4().as_bytes();
-    let code: String = bytes[..8]
+    bytes[..8]
         .iter()
         .map(|b| ALPHABET[usize::from(*b) % ALPHABET.len()] as char)
-        .collect();
+        .collect()
+}
+
+pub fn pair(home: &TernHome) -> anyhow::Result<ExitCode> {
+    let (config, _) = Config::load(&home.config_path())?;
+    let store = Store::open(&home.db_path())?;
+    let code = new_code();
     store.create_pairing_code(&code, CODE_TTL_MS)?;
     println!("{code}");
     eprintln!("Send this code to your Telegram bot within 10 minutes to pair your account.");
