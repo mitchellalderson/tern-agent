@@ -991,6 +991,71 @@ fn triage_resumes_recent_and_interrupts_stale_runs() {
 }
 
 #[test]
+fn calls_left_unanswered_by_a_cancelled_run_get_not_run_results() {
+    let row = |id: i64, role: &str, content: Value| tern_store::MessageRow {
+        id,
+        session_id: "s".into(),
+        run_id: None,
+        step_idx: None,
+        role: role.into(),
+        content_json: content.to_string(),
+        text: String::new(),
+        created_at: 0,
+        summary_of: None,
+    };
+    let tool_use =
+        |id: &str| json!({"type": "tool_use", "id": id, "name": "edit_file", "input": {}});
+    let rows = vec![
+        row(1, "user", json!([{"type": "text", "text": "edit these"}])),
+        // A batch where only the first call ran before the run was replaced.
+        row(2, "assistant", json!([tool_use("a"), tool_use("b")])),
+        row(
+            3,
+            "user",
+            json!([{"type": "tool_result", "tool_use_id": "a", "content": "ok"}]),
+        ),
+        row(4, "user", json!([{"type": "text", "text": "never mind"}])),
+        // A batch where nothing ran, at the end of the context.
+        row(5, "assistant", json!([tool_use("c")])),
+    ];
+    let msgs = to_messages(rows).unwrap();
+    let roles: Vec<Role> = msgs.iter().map(|m| m.role).collect();
+    assert_eq!(
+        roles,
+        [
+            Role::User,
+            Role::Assistant,
+            Role::User,
+            Role::Assistant,
+            Role::User
+        ]
+    );
+    let results = |m: &Message| -> Vec<(String, bool)> {
+        m.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    is_error,
+                    ..
+                } => Some((tool_use_id.clone(), *is_error)),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        results(&msgs[2]),
+        [("b".to_string(), true), ("a".to_string(), false)]
+    );
+    // Results must come before the user's new text.
+    assert!(matches!(
+        msgs[2].content.last(),
+        Some(ContentBlock::Text { .. })
+    ));
+    assert_eq!(results(&msgs[4]), [("c".to_string(), true)]);
+}
+
+#[test]
 fn backoff_grows_and_caps() {
     let base = Duration::from_secs(1);
     assert!(backoff(base, 1) <= Duration::from_secs(1));

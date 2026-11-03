@@ -857,7 +857,61 @@ fn to_messages(rows: Vec<tern_store::MessageRow>) -> Result<Vec<Message>, AgentE
             _ => out.push(Message { role, content }),
         }
     }
+    close_dangling_tool_uses(&mut out);
     Ok(out)
+}
+
+/// The result given to a call that never got one.
+pub const NOT_RUN_TOOL_MESSAGE: &str =
+    "not run: the run stopped (cancelled, or replaced by a new message) before this call executed";
+
+/// Give every tool call without a result an error result, first in the next
+/// message. A run cancelled mid-batch (say, while waiting on approval)
+/// leaves calls unanswered in the session, and providers reject any later
+/// request that includes them.
+fn close_dangling_tool_uses(messages: &mut Vec<Message>) {
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].role != Role::Assistant {
+            i += 1;
+            continue;
+        }
+        let answered: std::collections::HashSet<&str> = match messages.get(i + 1) {
+            Some(next) if next.role == Role::User => next
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Default::default(),
+        };
+        let missing: Vec<ContentBlock> = messages[i]
+            .tool_uses()
+            .filter(|c| !answered.contains(c.id.as_str()))
+            .map(|c| ContentBlock::ToolResult {
+                tool_use_id: c.id,
+                content: NOT_RUN_TOOL_MESSAGE.into(),
+                is_error: true,
+            })
+            .collect();
+        if !missing.is_empty() {
+            match messages.get_mut(i + 1) {
+                Some(next) if next.role == Role::User => {
+                    next.content.splice(0..0, missing);
+                }
+                _ => messages.insert(
+                    i + 1,
+                    Message {
+                        role: Role::User,
+                        content: missing,
+                    },
+                ),
+            }
+        }
+        i += 1;
+    }
 }
 
 /// How recently a crashed run must have made progress to be auto-resumed.
