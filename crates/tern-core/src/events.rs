@@ -1,11 +1,11 @@
 //! Events broadcast to front ends while a run executes.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::approval::ApprovalOutcome;
 use crate::types::Usage;
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     RunStarted {

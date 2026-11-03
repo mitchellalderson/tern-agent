@@ -4,6 +4,7 @@ pub mod agent;
 pub mod approval;
 pub mod compaction;
 pub mod config;
+pub mod cron;
 pub mod events;
 pub mod home;
 pub mod journal;

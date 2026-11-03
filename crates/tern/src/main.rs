@@ -1,9 +1,12 @@
 mod cli;
 mod config_cmd;
 mod connectors_cmd;
+mod daemon;
 mod doctor;
+mod gateway_cmd;
 mod inspect;
 mod logging;
+mod remote;
 mod run_cmd;
 mod runtime;
 mod tui_backend;
@@ -67,8 +70,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             },
         ),
         Some(Command::Resume { run_id, yes }) => run_cmd::resume(&home, &run_id, yes),
-        Some(Command::Daemon) => not_yet("`tern daemon`", "M5"),
-        Some(Command::Gateway { .. }) => not_yet("`tern gateway`", "M5"),
+        Some(Command::Daemon) => daemon::run(&home),
+        Some(Command::Gateway {
+            command: cli::GatewayCommand::Pair,
+        }) => gateway_cmd::pair(&home),
         Some(Command::Sessions { command }) => {
             match command.unwrap_or(SessionsCommand::List) {
                 SessionsCommand::List => inspect::sessions_list(&home)?,
@@ -88,9 +93,4 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             ConnectorsCommand::Test { name } => connectors_cmd::test(&home, &name),
         },
     }
-}
-
-fn not_yet(what: &str, milestone: &str) -> anyhow::Result<ExitCode> {
-    eprintln!("{what} is not implemented yet (planned for milestone {milestone}).");
-    Ok(ExitCode::from(2))
 }

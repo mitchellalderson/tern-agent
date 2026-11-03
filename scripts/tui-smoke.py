@@ -5,7 +5,8 @@ Usage: scripts/tui-smoke.py path/to/tern
 
 Unit tests cover the TUI's state and rendering; this checks the parts they
 can't: terminal setup and teardown, key decoding, the async event loop,
-approvals, cancellation, and resume. Unix only. Standard library only.
+approvals, cancellation, resume, and attaching to a running daemon.
+Unix only. Standard library only.
 """
 
 import fcntl
@@ -23,18 +24,22 @@ import time
 ROWS, COLS = 30, 100
 
 
+def tern_env(home, script):
+    script_path = os.path.join(home, "script.json")
+    with open(script_path, "w") as f:
+        json.dump(script, f)
+    return {
+        "PATH": os.environ["PATH"],
+        "HOME": home,
+        "TERN_HOME": os.path.join(home, ".tern"),
+        "TERN_PROVIDER": "mock:" + script_path,
+        "TERM": "xterm-256color",
+    }
+
+
 class Tui:
     def __init__(self, binary, home, script):
-        script_path = os.path.join(home, "script.json")
-        with open(script_path, "w") as f:
-            json.dump(script, f)
-        env = {
-            "PATH": os.environ["PATH"],
-            "HOME": home,
-            "TERN_HOME": os.path.join(home, ".tern"),
-            "TERN_PROVIDER": "mock:" + script_path,
-            "TERM": "xterm-256color",
-        }
+        env = tern_env(home, script)
         self.home = home
         self.buf = b""
         self.pid, self.fd = pty.fork()
@@ -184,10 +189,46 @@ def cancel_and_resume(binary):
     check(t, "exits cleanly", t.wait_exit())
 
 
+def attached_to_daemon(binary):
+    import subprocess
+    home = tempfile.mkdtemp(prefix="tern-tui-")
+    script = {"turns": [
+        {"tool_calls": [{"name": "shell", "input": {"command": "echo attached > attached.txt"}}]},
+        {"text": "Done through the daemon."},
+    ]}
+    daemon = subprocess.Popen([binary, "daemon"], env=tern_env(home, script),
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    sock = os.path.join(home, ".tern", "tern.sock")
+    end = time.time() + 10
+    while not os.path.exists(sock) and time.time() < end:
+        time.sleep(0.05)
+    try:
+        t = Tui(binary, home, script)
+        check(t, "attached: welcome screen", t.wait_for("type a message"))
+        t.type("use the daemon")
+        check(t, "attached: approval prompt via the daemon", t.wait_for("Allow shell echo attached"))
+        t.type("y", enter=False)
+        check(t, "attached: final answer", t.wait_for("Done through the daemon."))
+        check(t, "attached: daemon ran the tool",
+              os.path.exists(os.path.join(home, "tern-workspace", "attached.txt")))
+        sessions = subprocess.run([binary, "sessions"], env=tern_env(home, script),
+                                  capture_output=True, text=True).stdout
+        # Daemon API sessions have source "api"; an embedded TUI would say "tui".
+        check(t, "attached: the run went through the daemon API", " api " in sessions and " tui " not in sessions)
+        t.ctrl_c()
+        time.sleep(0.1)
+        t.ctrl_c()
+        check(t, "attached: exits cleanly", t.wait_exit())
+    finally:
+        daemon.kill()
+        daemon.wait()
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     binary = os.path.abspath(sys.argv[1])
     chat_with_approval(binary)
     cancel_and_resume(binary)
+    attached_to_daemon(binary)
     sys.exit(1 if failures else 0)

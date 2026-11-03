@@ -112,6 +112,7 @@ impl Runtime {
         model: Option<&str>,
         text: &str,
         source: &str,
+        trigger: &str,
     ) -> anyhow::Result<StartedRun> {
         let session = match session {
             Some(id) => self
@@ -141,7 +142,7 @@ impl Runtime {
         });
         let run = self
             .agent
-            .start_run(&session.id, text, &model, &system, "user")?;
+            .start_run(&session.id, text, &model, &system, trigger)?;
         Ok(StartedRun {
             session_id: session.id,
             run_id: run.id,

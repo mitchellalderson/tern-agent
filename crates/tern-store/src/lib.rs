@@ -1,7 +1,10 @@
 //! SQLite storage: connection setup, schema migrations, and repositories.
 
+mod daemon_repo;
 mod migrations;
 mod repo;
+
+pub use daemon_repo::ScheduleRow;
 
 pub use repo::{
     MemoryRow, MessageHit, MessageRow, NewMessage, NewRun, RunRow, SessionRow, SessionSummary,

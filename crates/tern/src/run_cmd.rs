@@ -25,7 +25,7 @@ pub struct RunArgs<'a> {
 
 pub fn run(home: &TernHome, args: RunArgs<'_>) -> anyhow::Result<ExitCode> {
     let rt = Runtime::open(home, approvals(args.yes))?;
-    let run = rt.start_run(args.session, args.model, args.prompt, "cli")?;
+    let run = rt.start_run(args.session, args.model, args.prompt, "cli", "user")?;
     let banner = format!(
         "run {} (session {}, {})",
         run.run_id, run.session_id, run.model

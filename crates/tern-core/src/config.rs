@@ -169,6 +169,8 @@ pub struct TelegramConfig {
     #[serde(default)]
     pub enabled: bool,
     pub bot_token_secret: String,
+    /// Bot API base URL; only changed for tests or self-hosted API servers.
+    pub api_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

@@ -69,7 +69,8 @@ impl AgentConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RunStatus {
     Running,
     Completed,
@@ -88,7 +89,7 @@ impl RunStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct RunOutcome {
     pub run_id: String,
     pub status: RunStatus,
@@ -440,7 +441,7 @@ impl Agent {
                 call,
                 InFlight::Retry,
                 || async {
-                    let decision = self.decide(call, cancel).await?;
+                    let decision = self.decide(run, call, cancel).await?;
                     let messages = match decision {
                         ApprovalOutcome::Approved => vec![],
                         ApprovalOutcome::Denied => {
@@ -473,6 +474,7 @@ impl Agent {
     /// decision is journaled even when the allowlist answers it.
     async fn decide(
         &self,
+        run: &RunRow,
         call: &ToolCall,
         cancel: &CancellationToken,
     ) -> Result<ApprovalOutcome, StepError> {
@@ -481,6 +483,9 @@ impl Agent {
             return Ok(ApprovalOutcome::Approved);
         }
         let req = ApprovalRequest {
+            id: new_id(),
+            run_id: run.id.clone(),
+            session_id: run.session_id.clone(),
             call: call.clone(),
             summary: self.tools.summarize(call),
             pattern: approval::pattern_for(call),

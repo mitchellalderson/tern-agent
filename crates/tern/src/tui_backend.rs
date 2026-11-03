@@ -66,7 +66,7 @@ impl Backend for TuiBackend {
     ) -> BackendResult<Started> {
         let run = self
             .rt()
-            .start_run(session, model, text, "tui")
+            .start_run(session, model, text, "tui", "user")
             .map_err(chain)?;
         Ok(Started {
             session_id: run.session_id,
@@ -181,17 +181,28 @@ impl Backend for TuiBackend {
     }
 }
 
-/// `tern` with no subcommand.
+/// `tern` with no subcommand: attach to a running daemon, else run embedded.
 pub fn run(home: &TernHome) -> anyhow::Result<std::process::ExitCode> {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!("the chat UI needs a terminal; use `tern run \"<prompt>\"` for scripts");
     }
-    let (approver, approvals) = tern_tui::TuiApprover::new();
-    let backend = Arc::new(TuiBackend::open(home, approver)?);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(tern_tui::run(backend, approvals, None))?;
+    runtime.block_on(async {
+        if let Some((remote, approvals)) = crate::remote::connect(&home.socket_connect_path()).await
+        {
+            tracing::info!("attached to the running daemon");
+            return tern_tui::run(remote, approvals, None)
+                .await
+                .map_err(anyhow::Error::from);
+        }
+        let (approver, approvals) = tern_tui::TuiApprover::new();
+        let backend = Arc::new(TuiBackend::open(home, approver)?);
+        tern_tui::run(backend, approvals, None)
+            .await
+            .map_err(anyhow::Error::from)
+    })?;
     Ok(std::process::ExitCode::SUCCESS)
 }

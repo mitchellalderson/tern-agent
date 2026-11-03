@@ -65,7 +65,33 @@ fn text_stream(text: String) -> EventStream {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Script {
+    #[serde(default)]
     pub turns: Vec<Turn>,
+    /// Alternative scripts chosen by the conversation's first user message:
+    /// the first entry whose `matches` it contains wins; otherwise `turns`.
+    #[serde(default)]
+    pub conversations: Vec<Conversation>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Conversation {
+    pub matches: String,
+    pub turns: Vec<Turn>,
+}
+
+impl Script {
+    fn turns_for(&self, req: &ChatRequest) -> &[Turn] {
+        let first = req
+            .messages
+            .iter()
+            .find(|m| m.role == Role::User)
+            .map(|m| m.text())
+            .unwrap_or_default();
+        self.conversations
+            .iter()
+            .find(|c| first.contains(&c.matches))
+            .map_or(&self.turns, |c| &c.turns)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -121,10 +147,15 @@ impl Provider for MockProvider {
             return Ok(text_stream(format!("mock summary mock-turns={n}")));
         }
         let n = turns_so_far(&req);
-        let turn = self.script.turns.get(n).cloned().unwrap_or_else(|| Turn {
-            text: "(mock script exhausted)".into(),
-            ..Turn::default()
-        });
+        let turn = self
+            .script
+            .turns_for(&req)
+            .get(n)
+            .cloned()
+            .unwrap_or_else(|| Turn {
+                text: "(mock script exhausted)".into(),
+                ..Turn::default()
+            });
         if turn.delay_ms > 0 {
             tokio::select! {
                 () = tokio::time::sleep(Duration::from_millis(turn.delay_ms)) => {}

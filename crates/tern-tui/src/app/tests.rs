@@ -295,6 +295,9 @@ fn approvals_are_answered_inline() {
     let (tx, mut rx) = oneshot::channel();
     app.on_approval(PendingApproval {
         request: ApprovalRequest {
+            id: "a1".into(),
+            run_id: "r1".into(),
+            session_id: "s1".into(),
             call: ToolCall {
                 id: "t".into(),
                 name: "shell".into(),
@@ -347,6 +350,9 @@ fn ctrl_c_denies_a_pending_approval() {
     let (tx, mut rx) = oneshot::channel();
     app.on_approval(PendingApproval {
         request: ApprovalRequest {
+            id: "a1".into(),
+            run_id: "r1".into(),
+            session_id: "s1".into(),
             call: ToolCall {
                 id: "t".into(),
                 name: "shell".into(),

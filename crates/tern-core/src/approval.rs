@@ -24,6 +24,10 @@ pub enum ApprovalOutcome {
 
 #[derive(Debug, Clone)]
 pub struct ApprovalRequest {
+    /// Unique per request, for front ends that answer asynchronously.
+    pub id: String,
+    pub run_id: String,
+    pub session_id: String,
     pub call: ToolCall,
     /// One-line description of what the call does.
     pub summary: String,

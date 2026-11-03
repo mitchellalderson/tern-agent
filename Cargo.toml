@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.88"
+rust-version = "1.89"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -17,6 +17,7 @@ expect_used = "deny"
 
 [workspace.dependencies]
 tern-core = { path = "crates/tern-core" }
+tern-gateway = { path = "crates/tern-gateway" }
 tern-lua = { path = "crates/tern-lua" }
 tern-mcp = { path = "crates/tern-mcp" }
 tern-store = { path = "crates/tern-store" }
@@ -26,6 +27,7 @@ tern-tui = { path = "crates/tern-tui" }
 tern-sandbox = { path = "crates/tern-sandbox" }
 
 anyhow = "1.0.104"
+axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json", "query"] }
 async-trait = "0.1.92"
 blake3 = "1.8.7"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
@@ -45,7 +47,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "process", "io-util", "signal", "sync", "fs"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "process", "io-util", "signal", "sync", "fs", "net"] }
 tokio-util = "0.7.20"
 toml = "1.1.8"
 toml_edit = "0.25.17"

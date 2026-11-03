@@ -165,6 +165,9 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
     r.section("Database");
     check_database(&mut r, &home.db_path());
 
+    r.section("Daemon");
+    check_daemon(&mut r, home);
+
     r.section("Sandbox");
     match config.sandbox.backend {
         SandboxBackendKind::Host => r.check(
@@ -378,6 +381,42 @@ fn check_database(r: &mut Report, path: &Path) {
             ),
             (Err(e), _) | (_, Err(e)) => r.check(Status::Fail, e.to_string(), None),
         },
+    }
+}
+
+/// Read-only: inspects the PID file's lock without creating anything.
+fn check_daemon(r: &mut Report, home: &TernHome) {
+    let path = home.pid_path();
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+    else {
+        r.check(
+            Status::Info,
+            "not running (start it with `tern daemon`)",
+            None,
+        );
+        return;
+    };
+    match file.try_lock() {
+        Ok(()) => r.check(
+            Status::Info,
+            "not running (start it with `tern daemon`)",
+            None,
+        ),
+        Err(_) => {
+            let pid = std::fs::read_to_string(&path).unwrap_or_default();
+            r.check(
+                Status::Ok,
+                format!(
+                    "running (pid {}), API on {}",
+                    pid.trim(),
+                    home.socket_path().display()
+                ),
+                None,
+            );
+        }
     }
 }
 

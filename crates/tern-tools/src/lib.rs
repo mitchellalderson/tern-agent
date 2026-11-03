@@ -4,6 +4,7 @@ pub mod fs;
 pub mod http;
 pub mod memory;
 pub mod paths;
+pub mod schedule;
 pub mod shell;
 pub mod skills;
 
@@ -37,6 +38,15 @@ pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> R
     registry.register(Arc::new(http::HttpFetch::new().map_err(|e| e.to_string())?));
     registry.register(Arc::new(memory::MemorySave::new(opts.store.clone())));
     registry.register(Arc::new(memory::MemorySearch::new(opts.store.clone())));
+    registry.register(Arc::new(schedule::ScheduleCreate {
+        store: opts.store.clone(),
+    }));
+    registry.register(Arc::new(schedule::ScheduleList {
+        store: opts.store.clone(),
+    }));
+    registry.register(Arc::new(schedule::ScheduleDelete {
+        store: opts.store.clone(),
+    }));
     registry.register(Arc::new(memory::SessionSearch::new(opts.store)));
     registry.register(Arc::new(skills::SkillRead::new(opts.skills_dir)));
     Ok(())

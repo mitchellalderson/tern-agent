@@ -59,8 +59,38 @@ impl TernHome {
     pub fn logs_dir(&self) -> PathBuf {
         self.root.join("logs")
     }
+    /// Where the daemon's API socket appears: `tern.sock` in the data
+    /// directory (possibly a symlink; see [`TernHome::socket_bind_path`]).
     pub fn socket_path(&self) -> PathBuf {
         self.root.join("tern.sock")
+    }
+
+    /// Where the socket actually lives. Unix socket paths are limited to
+    /// about 104 bytes (macOS) or 108 (Linux), so a long data directory gets
+    /// its socket in a private `/tmp/tern-<uid>/` directory instead, with
+    /// `tern.sock` as a symlink to it.
+    pub fn socket_bind_path(&self) -> PathBuf {
+        let p = self.socket_path();
+        if p.as_os_str().len() <= MAX_SOCKET_PATH {
+            return p;
+        }
+        // Stable per data directory, so restarts reuse the same path.
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in self.root.as_os_str().as_encoded_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        short_socket_dir().join(format!("{:016x}.sock", h))
+    }
+
+    /// The path clients should connect to: the symlink's target if
+    /// `tern.sock` itself is too long to use.
+    pub fn socket_connect_path(&self) -> PathBuf {
+        let p = self.socket_path();
+        if p.as_os_str().len() <= MAX_SOCKET_PATH {
+            return p;
+        }
+        std::fs::read_link(&p).unwrap_or(p)
     }
     pub fn pid_path(&self) -> PathBuf {
         self.root.join("tern.pid")
@@ -78,6 +108,24 @@ impl TernHome {
         }
         Ok(())
     }
+}
+
+/// Longest socket path we bind directly (below both platforms' limits).
+const MAX_SOCKET_PATH: usize = 100;
+
+#[cfg(unix)]
+fn short_socket_dir() -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    // Owner uid of the user's home, without libc: the daemon runs as them.
+    let uid = user_home()
+        .and_then(|h| std::fs::metadata(h).ok())
+        .map_or(0, |m| m.uid());
+    PathBuf::from(format!("/tmp/tern-{uid}"))
+}
+
+#[cfg(not(unix))]
+fn short_socket_dir() -> PathBuf {
+    std::env::temp_dir().join("tern")
 }
 
 /// The current user's home directory, from `$HOME` (or `%USERPROFILE%`).
@@ -118,6 +166,24 @@ mod tests {
             assert_eq!(expand_tilde(Path::new("~/w")), h.join("w"));
             assert_eq!(expand_tilde(Path::new("~")), h);
         }
+    }
+
+    #[test]
+    fn long_homes_get_a_short_socket_path() {
+        let short = TernHome::new("/x/.tern");
+        assert_eq!(short.socket_bind_path(), short.socket_path());
+        let long = TernHome::new(format!("/{}/.tern", "d".repeat(120)));
+        let bind = long.socket_bind_path();
+        assert!(
+            bind.as_os_str().len() <= MAX_SOCKET_PATH,
+            "{}",
+            bind.display()
+        );
+        assert_eq!(bind, long.socket_bind_path(), "stable");
+        assert_ne!(
+            bind,
+            TernHome::new(format!("/{}/.tern", "e".repeat(120))).socket_bind_path()
+        );
     }
 
     #[test]
