@@ -1,0 +1,20 @@
+{
+  "turns": [
+    { "text": "Delegating.", "tool_calls": [
+      { "name": "agent_spawn", "input": { "label": "a", "task": "SUBTASK-a: run ls" } },
+      { "name": "agent_spawn", "input": { "label": "b", "task": "SUBTASK-b: list", "tools": "read_only" } },
+      { "name": "agent_wait", "input": {} }
+    ] },
+    { "text": "Both reported." }
+  ],
+  "conversations": [
+    { "when_task_contains": "SUBTASK-a", "turns": [
+      { "tool_calls": [{ "name": "shell", "input": { "command": "ls" } }] },
+      { "text": "report from a" }
+    ] },
+    { "when_task_contains": "SUBTASK-b", "turns": [
+      { "tool_calls": [{ "name": "list_dir", "input": { "path": "." } }] },
+      { "text": "report from b" }
+    ] }
+  ]
+}

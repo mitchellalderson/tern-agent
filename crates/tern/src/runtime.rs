@@ -1,7 +1,7 @@
 //! Builds the agent from config: store, providers, tools, journal.
 
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -9,6 +9,7 @@ use tern_core::agent::{Agent, AgentConfig, ProviderFactory};
 use tern_core::approval::ApprovalHandler;
 use tern_core::config::{ModelRef, SandboxBackendKind};
 use tern_core::journal::Journal;
+use tern_core::prompt::{AgentRole, SubagentPrompt};
 use tern_core::subagent::HostSlot;
 use tern_core::tool::ToolRegistry;
 use tern_core::types::{Provider, ProviderError};
@@ -20,6 +21,61 @@ use tokio::sync::broadcast;
 use crate::providers::{Change, ModelCache};
 
 use crate::subagents::{LocalDriver, Subagents};
+
+/// Builds system prompts, for runs the user starts and for sub-agents.
+pub struct PromptMaker {
+    home: TernHome,
+    workspace: PathBuf,
+    /// Weak: the registry's `agent_*` tools reach this through their host.
+    tools: Weak<ToolRegistry>,
+    /// Set when sub-agents are enabled.
+    sub: Option<SubagentPrompt>,
+    max_depth: u32,
+}
+
+impl PromptMaker {
+    fn new(home: &TernHome, config: &Config, tools: &Arc<ToolRegistry>) -> Self {
+        let s = &config.subagents;
+        Self {
+            home: home.clone(),
+            workspace: config.workspace_dir(),
+            tools: Arc::downgrade(tools),
+            sub: s.enabled.then(|| SubagentPrompt {
+                max_concurrent: s.max_concurrent,
+                models: s
+                    .models
+                    .iter()
+                    .map(|(alias, model)| format!("`{alias}` ({model})"))
+                    .collect(),
+                can_nest: s.max_depth >= 2,
+            }),
+            max_depth: s.max_depth,
+        }
+    }
+
+    /// The prompt for a run at `depth` (0 = the user's), frozen on its row.
+    pub fn build(&self, role: AgentRole<'_>, depth: u32) -> String {
+        let skills: Vec<(String, String)> = tern_core::skills::discover(&self.home.skills_dir())
+            .into_iter()
+            .map(|s| (s.name, s.description))
+            .collect();
+        let integrations = self
+            .tools
+            .upgrade()
+            .map(|t| t.describe_sources())
+            .unwrap_or_default();
+        tern_core::prompt::system_prompt(&tern_core::prompt::PromptInputs {
+            home: &self.home,
+            role,
+            // Only runs that get the agent_* tools hear about them.
+            subagents: self.sub.as_ref().filter(|_| depth < self.max_depth),
+            now: chrono::Local::now(),
+            workspace: &self.workspace,
+            skills: &skills,
+            integrations: &integrations,
+        })
+    }
+}
 
 pub struct Runtime {
     pub home: TernHome,
@@ -35,6 +91,7 @@ pub struct Runtime {
     /// Set when `[subagents].enabled`. Drives children on local tasks
     /// until the daemon hands it its `Manager`.
     pub subagents: Option<Arc<Subagents>>,
+    prompts: Arc<PromptMaker>,
     /// Shared with providers, connectors and MCP servers: edits through it
     /// apply on their next use.
     pub secrets: Secrets,
@@ -97,6 +154,7 @@ impl Runtime {
         )
         .with_subagents(slot.clone());
         let agent = Arc::new(agent);
+        let prompts = Arc::new(PromptMaker::new(home, &config, &tools));
         let subagents = config.subagents.enabled.then(|| {
             let host = Arc::new(Subagents::new(
                 store.clone(),
@@ -107,6 +165,10 @@ impl Runtime {
                 mock,
             ));
             host.set_driver(Arc::new(LocalDriver::new(&agent)));
+            let p = prompts.clone();
+            host.set_prompt(Box::new(move |label, depth| {
+                p.build(AgentRole::Subagent { label }, depth)
+            }));
             slot.set(host.clone());
             host
         });
@@ -124,6 +186,7 @@ impl Runtime {
             store,
             agent,
             subagents,
+            prompts,
             secrets,
             connectors,
             mock,
@@ -213,18 +276,7 @@ impl Runtime {
             self.store
                 .set_session_model(&session.id, &model.to_string())?;
         }
-        let skills: Vec<(String, String)> = tern_core::skills::discover(&self.home.skills_dir())
-            .into_iter()
-            .map(|s| (s.name, s.description))
-            .collect();
-        let integrations = self.agent.tools().describe_sources();
-        let system = tern_core::prompt::system_prompt(&tern_core::prompt::PromptInputs {
-            home: &self.home,
-            now: chrono::Local::now(),
-            workspace: &self.config.workspace_dir(),
-            skills: &skills,
-            integrations: &integrations,
-        });
+        let system = self.prompts.build(AgentRole::Main, 0);
         let run = self
             .agent
             .start_run(&session.id, text, &model, &system, trigger)?;

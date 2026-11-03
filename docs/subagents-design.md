@@ -1,7 +1,7 @@
 # tern sub-agents: delegation, fan-out and coordination
 
-Status: S0–S3 built (2026-11-03); S4–S5 not started. See "Implementation notes" at the end and DECISIONS.md
-"S0–S1" and "S2–S3" for where the code differs from this design. Related: [gui-spec.md](gui-spec.md) §7.2 (agent
+Status: S0–S5 built (2026-11-03); sub-agents are on by default. See "Implementation notes" at the end and
+DECISIONS.md "S0–S1", "S2–S3" and "S4–S5" for where the code differs from this design. Related: [gui-spec.md](gui-spec.md) §7.2 (agent
 profiles and "per-role models", which this builds toward), [research/inngest-tie-in.md](research/inngest-tie-in.md)
 ("Fan-out / subagents: later"), and the "Claude Duet" channels question in gui-spec §11.2, which is a different idea
 and not covered here.

@@ -238,7 +238,7 @@ pub enum TlsMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SubagentsConfig {
-    /// Registers the `agent_*` tools. Off until the prompt work (S5) lands.
+    /// Registers the `agent_*` tools and tells the agent to delegate.
     pub enabled: bool,
     /// Model for sub-agents when `agent_spawn` doesn't name one, as
     /// `provider:model`. Unset = the parent's model.
@@ -265,7 +265,7 @@ pub struct SubagentsConfig {
 impl Default for SubagentsConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             default_model: None,
             models: BTreeMap::new(),
             max_depth: 1,
@@ -399,12 +399,12 @@ env_secrets = ["GITHUB_TOKEN"]
     }
 
     #[test]
-    fn subagents_table_parses_and_defaults_off() {
-        assert!(!Config::default().subagents.enabled);
+    fn subagents_table_parses_and_defaults_on() {
+        assert!(Config::default().subagents.enabled);
         let c = Config::parse(
             r#"
 [subagents]
-enabled = true
+enabled = false
 default_model = "anthropic:claude-sonnet-4-5"
 models = { fast = "anthropic:claude-haiku-4-5", strong = "anthropic:claude-opus-4-1" }
 max_depth = 1
@@ -418,7 +418,7 @@ ask_parent_timeout_secs = 900
             Path::new("c.toml"),
         )
         .unwrap();
-        assert!(c.subagents.enabled);
+        assert!(!c.subagents.enabled);
         assert_eq!(c.subagents.models["fast"], "anthropic:claude-haiku-4-5");
         let err = Config::parse("[subagents]\nmax_dept = 2", Path::new("c.toml")).unwrap_err();
         assert!(err.to_string().contains("max_dept"), "{err}");

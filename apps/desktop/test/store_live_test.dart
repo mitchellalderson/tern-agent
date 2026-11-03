@@ -17,36 +17,50 @@ Future<void> until(bool Function() ok, String what) async {
   }
 }
 
+/// A daemon in a fresh home with the mock provider on [script], and a
+/// store connected to it. Torn down after the test.
+Future<({TernStore store, FakeNotifier notes, Endpoint endpoint})> _daemon(
+  String bin,
+  String script, {
+  String config = '',
+}) async {
+  final tmp = await Directory.systemTemp.createTemp('tern-store');
+  final home = '${tmp.path}/.tern';
+  await Directory(home).create();
+  await File('$home/config.toml').writeAsString(config);
+  final daemon = await Process.start(
+    File(bin).absolute.path,
+    ['daemon'],
+    environment: {
+      'PATH': Platform.environment['PATH'] ?? '',
+      'HOME': tmp.path,
+      'TERN_HOME': home,
+      'TERN_PROVIDER': 'mock:${File(script).absolute.path}',
+    },
+    includeParentEnvironment: false,
+  );
+  final endpoint = Endpoint.local({'TERN_HOME': home});
+  final notes = FakeNotifier();
+  final store = TernStore(TernClient(endpoint), notifier: notes)
+    ..appActive = false;
+  addTearDown(() async {
+    store.dispose();
+    daemon.kill();
+    await daemon.exitCode;
+    await tmp.delete(recursive: true);
+  });
+  await until(() => File('$home/tern.sock').existsSync(), 'socket');
+  return (store: store, notes: notes, endpoint: endpoint);
+}
+
 void main() {
   final bin = Platform.environment['TERN_BIN'];
 
   test('send, stream, approve, finish; then a fresh store resyncs', () async {
-    final tmp = await Directory.systemTemp.createTemp('tern-store');
-    final home = '${tmp.path}/.tern';
-    await Directory(home).create();
-    final daemon = await Process.start(
-      File(bin!).absolute.path,
-      ['daemon'],
-      environment: {
-        'PATH': Platform.environment['PATH'] ?? '',
-        'HOME': tmp.path,
-        'TERN_HOME': home,
-        'TERN_PROVIDER': 'mock:${File('tool/demo_script.json').absolute.path}',
-      },
-      includeParentEnvironment: false,
+    final (:store, :notes, :endpoint) = await _daemon(
+      bin!,
+      'tool/demo_script.json',
     );
-    final endpoint = Endpoint.local({'TERN_HOME': home});
-    final notes = FakeNotifier();
-    final store = TernStore(TernClient(endpoint), notifier: notes)
-      ..appActive = false;
-    addTearDown(() async {
-      store.dispose();
-      daemon.kill();
-      await daemon.exitCode;
-      await tmp.delete(recursive: true);
-    });
-
-    await until(() => File('$home/tern.sock').existsSync(), 'socket');
     await store.connect();
     expect(store.link, Link.online);
 
@@ -102,6 +116,62 @@ void main() {
       WorkItem,
       AssistantItem,
     ]);
+  }, skip: bin == null ? 'set TERN_BIN to run' : false);
+
+  test('sub-agents: one card, their approval in this conversation', () async {
+    final (:store, :notes, endpoint: _) = await _daemon(
+      bin!,
+      'test/fixtures/subagents_script.json',
+      config: '[subagents]\nenabled = true\n',
+    );
+    await store.connect();
+    await store.send('delegate two things');
+    final session = store.selected!;
+
+    // Sub-agent a's shell call asks here, labelled with its name.
+    await until(
+      () => store.current!.items.whereType<ApprovalItem>().isNotEmpty,
+      'approval from a sub-agent',
+    );
+    final ask = store.current!.items.whereType<ApprovalItem>().single;
+    expect(ask.approval.agentLabel, 'a');
+    expect(ask.approval.rootSessionId, session);
+    await until(() => notes.shown.isNotEmpty, 'notification');
+    expect(notes.shown.first.title, 'a wants to run shell');
+
+    final card = store.current!.items.whereType<AgentsItem>().single;
+    expect(card.children.map((c) => c.label), ['a', 'b']);
+    expect(card.children.every((c) => c.sessionId != null), isTrue);
+    // No tool lines for the agent_* calls.
+    expect(store.current!.items.whereType<WorkItem>(), isEmpty);
+
+    await store.answer(ask, Decision.once);
+    await until(() => store.current!.activeRun == null, 'run to finish');
+    expect(card.children.map((c) => c.status), ['completed', 'completed']);
+    expect(card.children.map((c) => c.result), [
+      'report from a',
+      'report from b',
+    ]);
+    expect((store.current!.items.last as AssistantItem).text, 'Both reported.');
+    expect(ask.outcome, isNotNull);
+
+    // Sub-agent sessions stay out of the sidebar.
+    await until(() => store.sessions.isNotEmpty, 'session list');
+    expect(store.sessions.map((s) => s.id), [session]);
+
+    // Reopening rebuilds the card, and the daemon fills in the details.
+    await store.open(session);
+    final again = store.current!.items.whereType<AgentsItem>().single;
+    expect(again.children.map((c) => c.status), ['completed', 'completed']);
+    expect(again.children.first.sessionId, card.children.first.sessionId);
+    await store.loadChild(again.children.first.sessionId!);
+    expect(
+      store.transcripts[again.children.first.sessionId]!.items
+          .whereType<AssistantItem>()
+          .last
+          .text,
+      'report from a',
+    );
   }, skip: bin == null ? 'set TERN_BIN to run' : false);
 }
 

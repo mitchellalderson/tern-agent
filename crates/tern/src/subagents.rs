@@ -9,7 +9,7 @@
 //! embedded TUI and `tern run` through [`LocalDriver`].
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -122,6 +122,8 @@ pub struct Subagents {
     providers: BTreeSet<String>,
     mock: bool,
     driver: RwLock<Option<Arc<dyn RunDriver>>>,
+    /// Builds a child's system prompt from its label and depth.
+    prompt: OnceLock<PromptFn>,
     /// Woken when mail is posted.
     notify: Notify,
     /// Why runs were cancelled, until their drive ends and records it.
@@ -129,6 +131,9 @@ pub struct Subagents {
     /// Serializes "is there room?" decisions (spawning and dequeueing).
     gate: Mutex<()>,
 }
+
+/// A sub-agent's system prompt, from its label and depth.
+pub type PromptFn = Box<dyn Fn(&str, u32) -> String + Send + Sync>;
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -153,6 +158,7 @@ impl Subagents {
             providers: config.providers.keys().cloned().collect(),
             mock,
             driver: RwLock::new(None),
+            prompt: OnceLock::new(),
             notify: Notify::new(),
             reasons: Mutex::new(HashMap::new()),
             gate: Mutex::new(()),
@@ -164,6 +170,12 @@ impl Subagents {
         if let Ok(mut d) = self.driver.write() {
             *d = Some(driver);
         }
+    }
+
+    /// Set how children's system prompts are built. Without it they get
+    /// their parent's.
+    pub fn set_prompt(&self, prompt: PromptFn) {
+        let _ = self.prompt.set(prompt);
     }
 
     fn driver(&self) -> Option<Arc<dyn RunDriver>> {
@@ -593,6 +605,10 @@ impl Subagents {
 
         let session_id = new_id();
         let run_id = new_id();
+        let system = match self.prompt.get() {
+            Some(build) => build(&req.label, depth),
+            None => parent.system_prompt.clone().unwrap_or_default(),
+        };
         let queued = {
             let _g = self
                 .gate
@@ -614,9 +630,7 @@ impl Subagents {
                     session_id: &session_id,
                     trigger: "subagent",
                     model: &model,
-                    // The parent's frozen prompt; a sub-agent role section
-                    // comes with the prompt work (S5).
-                    system_prompt: parent.system_prompt.as_deref().unwrap_or_default(),
+                    system_prompt: &system,
                     parent_run_id: Some(&parent.id),
                     parent_call_id: Some(call_id),
                     label: Some(&req.label),

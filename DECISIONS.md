@@ -233,4 +233,16 @@ Sub-agents in the API and the TUI (S2) and two-way messaging (S3), from `docs/su
 - **User messages** (`POST /v1/runs/{id}/message`) are `message` mail from no run, keyed `user:<run>:<uuid>`; 404 for an unknown run, 400 for a top-level or finished run, empty text, or sub-agents disabled. They emit no `subagent_message` event (its `run_id` is the sender, and the user isn't one).
 - **`agent_ask_parent` is a child-only tool**: `tool::in_scope(None, …)` excludes `CHILD_ONLY_TOOLS`, and `scope_for` always adds it to a child's frozen scope (even `read_only`). `agent_send` joins `AGENT_TOOLS`. Adding tools changes the tool list in model requests, so a top-level run started before this change with `[subagents]` enabled replays with a different request digest.
 - **Health** advertises `subagents` unconditionally: it says the endpoints exist, not that delegation is on.
-- **Not done**: the Rust fixture writer for `tern_client` (gui-spec §6.4) doesn't exist yet, so no fixtures were added; S4 (desktop) and S5 (prompt) are next.
+- **Not done**: the Rust fixture writer for `tern_client` (gui-spec §6.4) doesn't exist yet, so no fixtures were added.
+
+## S4–S5
+
+The desktop app's view of sub-agents (S4) and the prompt that makes tern delegate (S5), from `docs/subagents-design.md` §4 and §6.
+
+- **One agents card per fan-out** (`AgentsItem` in `apps/desktop/lib/state/transcript.dart`): consecutive `agent_spawn` calls join the last card, notes aside, as tool calls join a `WorkItem`. `agent_spawn`, `agent_wait`, `agent_send`, `agent_cancel` and `agent_status` never become tool steps. A child's status comes from, in order: `subagent_spawned`, its own `run_started`/`run_finished` (the store maps child run → parent run), `subagent_message` questions, and the JSON results of `agent_spawn`/`agent_wait`/`agent_status`, so a card rebuilt from history is right even before `GET /v1/sessions/{id}/subagents` fills in session ids and models.
+- **A child's transcript** is the ordinary reducer on its own session, fed by its events through `_runSession`; the card shows it inline when a row is opened (loading the child session on first open after a reload).
+- **Approvals route by `root_session_id`**, and `approval` answers follow them there; a child's run ending expires its cards in the root conversation.
+- **The activity line** says "Waiting on N agents · M done" while the run is between model calls with children out; an unanswered approval still hides it.
+- **The prompt is built per role** (`AgentRole::Main` / `Subagent { label }` in `tern_core::prompt`), by `runtime::PromptMaker`, which the sub-agent host gets late-bound (`Subagents::set_prompt`), so a child's frozen prompt has the "You are a sub-agent" section instead of its parent's. The "Sub-agents" section goes to runs that get the `agent_*` tools (depth < `max_depth`), after Secrets and before Skills; model aliases are listed as `` `alias` (provider:model) ``. With `[subagents] enabled = false` the prompt is unchanged from before S0.
+- **`[subagents].enabled` now defaults to true.** Runs started before the upgrade keep their frozen prompt; one interrupted by the upgrade replays with a different tool list (see S2–S3).
+- **Not done**: the real-provider eval set from §7 (fan-out, a quick lookup that must not delegate, review-my-work).
