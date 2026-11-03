@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tern_core::Secrets;
 use tern_core::approval::{ApprovalHandler, SecretAsk, SecretRequest as Request};
 use tern_core::secrets::keys::normalize_key;
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult, current_call_id};
+use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult, current_call_id};
 use tern_core::types::ToolSpec;
 use tern_store::Store;
 
@@ -142,6 +142,10 @@ fn result(outcomes: &BTreeMap<String, Outcome>, note: Option<&str>) -> ToolResul
 
 #[async_trait]
 impl Tool for SecretRequest {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             NAME,
@@ -171,10 +175,8 @@ impl Tool for SecretRequest {
     /// The prompt is itself the user's decision, and asking again after a
     /// crash only asks for what is still missing.
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        ToolPolicy {
-            idempotent: true,
-            requires_approval: false,
-        }
+        // The user is the gate: they enter the values or skip.
+        ToolPolicy::granted_write(true)
     }
 
     fn summary(&self, raw: &Value) -> Option<String> {

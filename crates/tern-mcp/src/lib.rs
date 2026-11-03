@@ -15,7 +15,7 @@ use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioC
 use serde_json::Value;
 use tern_core::Secrets;
 use tern_core::config::{McpServerConfig, McpTransport};
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult, ToolSource};
+use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult, ToolSource};
 use tern_core::types::ToolSpec;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -52,6 +52,35 @@ struct RemoteTool {
     exposed: String,
     description: String,
     schema: Value,
+    /// From the server's annotations, before config overrides.
+    hinted: Effect,
+}
+
+/// The effect the server's annotations suggest: `readOnlyHint` → read,
+/// else `destructiveHint` → destructive, else write. MCP defaults
+/// `destructiveHint` to true when absent; tern only trusts what's stated,
+/// so a tool without annotations is `write` (tooling spec §5.1).
+pub fn hinted_effect(annotations: Option<&rmcp::model::ToolAnnotations>) -> Effect {
+    let hint = |f: fn(&rmcp::model::ToolAnnotations) -> Option<bool>| {
+        annotations.and_then(f).unwrap_or(false)
+    };
+    if hint(|a| a.read_only_hint) {
+        Effect::Read
+    } else if hint(|a| a.destructive_hint) {
+        Effect::Destructive
+    } else {
+        Effect::Write
+    }
+}
+
+/// The effect of server tool `remote`: a config override (by name, then
+/// `"*"`) wins over the server's hint.
+pub fn effect_for(cfg: &McpServerConfig, remote: &str, hinted: Effect) -> Effect {
+    cfg.effects
+        .get(remote)
+        .or_else(|| cfg.effects.get("*"))
+        .copied()
+        .unwrap_or(hinted)
 }
 
 #[derive(Default)]
@@ -242,6 +271,7 @@ impl McpServer {
                 remote: t.name.to_string(),
                 description: t.description.map(|d| d.to_string()).unwrap_or_default(),
                 schema: Value::Object((*t.input_schema).clone()),
+                hinted: hinted_effect(t.annotations.as_ref()),
             })
             .collect();
         Ok((client, tools))
@@ -364,11 +394,13 @@ impl Tool for McpTool {
         }
     }
 
+    fn effect(&self) -> Effect {
+        effect_for(&self.server.cfg, &self.tool.remote, self.tool.hinted)
+    }
+
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        ToolPolicy {
-            idempotent: self.server.cfg.idempotent,
-            requires_approval: self.server.cfg.requires_approval,
-        }
+        ToolPolicy::new(self.effect(), self.server.cfg.idempotent)
+            .forced(self.server.cfg.requires_approval)
     }
 
     async fn call(&self, ctx: &ToolCtx, args: Value) -> ToolResult {
@@ -450,6 +482,51 @@ impl ToolSource for McpServers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hints_map_to_effects() {
+        use rmcp::model::ToolAnnotations;
+        let a = |ro: Option<bool>, d: Option<bool>| {
+            let mut a = ToolAnnotations::default();
+            a.read_only_hint = ro;
+            a.destructive_hint = d;
+            a
+        };
+        assert_eq!(hinted_effect(None), Effect::Write);
+        assert_eq!(hinted_effect(Some(&a(None, None))), Effect::Write);
+        assert_eq!(hinted_effect(Some(&a(Some(true), None))), Effect::Read);
+        // readOnly wins: destructiveHint only means something for writers.
+        assert_eq!(
+            hinted_effect(Some(&a(Some(true), Some(true)))),
+            Effect::Read
+        );
+        assert_eq!(
+            hinted_effect(Some(&a(Some(false), Some(true)))),
+            Effect::Destructive
+        );
+        assert_eq!(hinted_effect(Some(&a(None, Some(false)))), Effect::Write);
+    }
+
+    #[test]
+    fn config_overrides_hints_by_name_then_star() {
+        let mut cfg: McpServerConfig = serde_json::from_value(serde_json::json!({
+            "transport": "stdio", "command": "x", "effects": { "search": "read" }
+        }))
+        .unwrap();
+        assert_eq!(
+            effect_for(&cfg, "search", Effect::Destructive),
+            Effect::Read
+        );
+        assert_eq!(
+            effect_for(&cfg, "send", Effect::Destructive),
+            Effect::Destructive
+        );
+        cfg.effects.insert("*".into(), Effect::Write);
+        assert_eq!(effect_for(&cfg, "send", Effect::Destructive), Effect::Write);
+        assert_eq!(effect_for(&cfg, "search", Effect::Write), Effect::Read);
+        let bad = serde_json::json!({ "transport": "stdio", "effects": { "x": "delete" } });
+        assert!(serde_json::from_value::<McpServerConfig>(bad).is_err());
+    }
 
     #[test]
     fn exposed_names_are_safe_and_bounded() {

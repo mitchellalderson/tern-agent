@@ -156,7 +156,7 @@ def chat_with_approval(binary):
     check(t, "welcome screen", t.wait_for("type a message"))
     t.type("list files")
     check(t, "assistant text streams", t.wait_for("I'll list the workspace"))
-    check(t, "approval prompt", t.wait_for("Allow shell echo tui-smoke"))
+    check(t, "approval prompt", t.wait_for("Allow destructive · shell echo tui-smoke"))
     t.type("y", enter=False)
     check(t, "final answer", t.wait_for("Done: proof.txt created."))
     check(t, "tool row", "✓ shell echo tui-smoke" in t.screen())
@@ -206,7 +206,7 @@ def attached_to_daemon(binary):
         t = Tui(binary, home, script)
         check(t, "attached: welcome screen", t.wait_for("type a message"))
         t.type("use the daemon")
-        check(t, "attached: approval prompt via the daemon", t.wait_for("Allow shell echo attached"))
+        check(t, "attached: approval prompt via the daemon", t.wait_for("Allow destructive · shell echo attached"))
         t.type("y", enter=False)
         check(t, "attached: final answer", t.wait_for("Done through the daemon."))
         check(t, "attached: daemon ran the tool",

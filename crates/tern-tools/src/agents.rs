@@ -8,7 +8,9 @@ use serde_json::{Value, json};
 use tern_core::subagent::{
     AskRequest, CancelRequest, HostSlot, SendRequest, SpawnRequest, SubagentHost, WaitRequest,
 };
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolRegistry, ToolResult, current_call_id};
+use tern_core::tool::{
+    Effect, Tool, ToolCtx, ToolPolicy, ToolRegistry, ToolResult, current_call_id,
+};
 use tern_core::types::ToolSpec;
 
 use crate::{args, spec};
@@ -26,10 +28,12 @@ pub fn register(registry: &mut ToolRegistry, slot: HostSlot) {
 
 /// Spawning, waiting and cancelling change nothing outside tern's own runs
 /// and are safe to repeat after a crash (spawn is keyed by the call id).
-fn policy() -> ToolPolicy {
+/// Writes are granted by the host: sub-agents' own calls go through the
+/// same policy.
+fn policy(effect: Effect) -> ToolPolicy {
     ToolPolicy {
-        idempotent: true,
-        requires_approval: false,
+        granted: true,
+        ..ToolPolicy::new(effect, true)
     }
 }
 
@@ -51,6 +55,10 @@ pub struct AgentSpawn(pub HostSlot);
 
 #[async_trait]
 impl Tool for AgentSpawn {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "agent_spawn",
@@ -74,7 +82,7 @@ impl Tool for AgentSpawn {
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        policy()
+        policy(self.effect())
     }
 
     fn summary(&self, args: &Value) -> Option<String> {
@@ -104,6 +112,10 @@ pub struct AgentWait(pub HostSlot);
 
 #[async_trait]
 impl Tool for AgentWait {
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "agent_wait",
@@ -122,7 +134,7 @@ impl Tool for AgentWait {
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        policy()
+        policy(self.effect())
     }
 
     fn summary(&self, args: &Value) -> Option<String> {
@@ -155,6 +167,10 @@ pub struct AgentCancel(pub HostSlot);
 
 #[async_trait]
 impl Tool for AgentCancel {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "agent_cancel",
@@ -171,7 +187,7 @@ impl Tool for AgentCancel {
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        policy()
+        policy(self.effect())
     }
 
     fn summary(&self, args: &Value) -> Option<String> {
@@ -197,6 +213,10 @@ pub struct AgentStatus(pub HostSlot);
 
 #[async_trait]
 impl Tool for AgentStatus {
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "agent_status",
@@ -206,7 +226,7 @@ impl Tool for AgentStatus {
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        policy()
+        policy(self.effect())
     }
 
     async fn call(&self, ctx: &ToolCtx, _raw: Value) -> ToolResult {
@@ -223,6 +243,10 @@ pub struct AgentSend(pub HostSlot);
 
 #[async_trait]
 impl Tool for AgentSend {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "agent_send",
@@ -241,7 +265,7 @@ impl Tool for AgentSend {
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        policy()
+        policy(self.effect())
     }
 
     fn summary(&self, args: &Value) -> Option<String> {
@@ -271,6 +295,10 @@ pub struct AgentAskParent(pub HostSlot);
 
 #[async_trait]
 impl Tool for AgentAskParent {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "agent_ask_parent",
@@ -288,7 +316,7 @@ impl Tool for AgentAskParent {
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        policy()
+        policy(self.effect())
     }
 
     fn summary(&self, args: &Value) -> Option<String> {

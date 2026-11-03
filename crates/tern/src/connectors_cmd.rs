@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 use tern_core::{Secrets, TernHome};
-use tern_lua::{EXTENSION, Host, load_file};
+use tern_lua::{EXTENSION, Host, load_file, load_fingerprinted};
 use tern_store::Store;
 
 /// A host for loading connectors to inspect them: real secrets (so missing
@@ -25,9 +25,47 @@ fn luau_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
+/// One line per tool: name, effect and flags.
+fn tool_lines(spec: &tern_lua::ConnectorSpec) -> Vec<String> {
+    spec.tools
+        .iter()
+        .map(|t| {
+            let flags = [
+                (t.untrusted, "untrusted"),
+                (t.read_via_post, "read via POST"),
+                (t.idempotent, "idempotent"),
+                (t.requires_approval, "requires approval"),
+                (t.forbidden.is_some(), "refused: moves money or trades"),
+            ]
+            .iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, f)| *f)
+            .collect::<Vec<_>>()
+            .join(", ");
+            format!(
+                "- {} [{}]: {}{}",
+                tern_lua::tool_name(&spec.name, &t.name),
+                t.effect(),
+                t.description,
+                if flags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({flags})")
+                }
+            )
+        })
+        .collect()
+}
+
 pub fn list(home: &TernHome) -> anyhow::Result<ExitCode> {
     let host = host(home)?;
     let secrets = Secrets::load(&home.secrets_path())?;
+    // Read-only look at grandfathering (T0); never creates a database.
+    let store = home
+        .db_path()
+        .exists()
+        .then(|| Store::open(&home.db_path()).ok())
+        .flatten();
     for (label, dir) in [
         ("active", home.connectors_dir()),
         ("drafts", home.drafts_dir()),
@@ -42,12 +80,24 @@ pub fn list(home: &TernHome) -> anyhow::Result<ExitCode> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            match load_file(&host, &path) {
+            match load_fingerprinted(&host, &path) {
                 Err(e) => println!("  ✗ {file}: {e}"),
-                Ok(vm) => {
-                    let s = &vm.spec;
+                Ok(l) => {
+                    let s = &l.vm.spec;
                     println!("  ✓ {} — {}", s.name, s.description);
                     println!("      {}", s.capability_summary());
+                    for line in tool_lines(s) {
+                        println!("      {line}");
+                    }
+                    if label == "active"
+                        && store.as_ref().is_some_and(|st| {
+                            tern_lua::is_grandfathered(st, &s.name, &l.fingerprint.hash)
+                        })
+                    {
+                        println!(
+                            "      grandfathered: tools without `effect` don't ask, as before T0, until it is activated again or edited"
+                        );
+                    }
                     let missing: Vec<&str> = s
                         .capabilities
                         .secrets
@@ -87,26 +137,8 @@ pub fn test(home: &TernHome, name: &str) -> anyhow::Result<ExitCode> {
         Ok(vm) => {
             println!("✓ {} is valid ({})", vm.spec.name, path.display());
             println!("  {}", vm.spec.capability_summary());
-            for t in &vm.spec.tools {
-                let flags = [
-                    (t.idempotent, "idempotent"),
-                    (t.requires_approval, "requires approval"),
-                ]
-                .iter()
-                .filter(|(on, _)| *on)
-                .map(|(_, f)| *f)
-                .collect::<Vec<_>>()
-                .join(", ");
-                println!(
-                    "  - {}: {} {}",
-                    tern_lua::tool_name(&vm.spec.name, &t.name),
-                    t.description,
-                    if flags.is_empty() {
-                        String::new()
-                    } else {
-                        format!("({flags})")
-                    }
-                );
+            for line in tool_lines(&vm.spec) {
+                println!("  {line}");
             }
             Ok(ExitCode::SUCCESS)
         }

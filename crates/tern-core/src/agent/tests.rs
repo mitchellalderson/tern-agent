@@ -6,7 +6,7 @@ use tokio::sync::Notify;
 
 use super::*;
 use crate::approval::{AutoApprove, AutoDeny};
-use crate::tool::{Tool, ToolPolicy, progress_sink};
+use crate::tool::{Effect, Tool, ToolPolicy, progress_sink};
 use crate::types::{EventStream, StopReason, ToolSpec};
 
 // ---- test doubles ----
@@ -158,12 +158,16 @@ impl Counter {
         Self {
             name,
             calls: Arc::new(AtomicU32::new(0)),
-            policy: ToolPolicy {
-                idempotent,
-                requires_approval,
-            },
+            policy: ToolPolicy::granted_write(idempotent).forced(requires_approval),
             started: None,
             gate: None,
+        }
+    }
+
+    fn with_policy(name: &'static str, policy: ToolPolicy) -> Self {
+        Self {
+            policy,
+            ..Self::new(name, false, false)
         }
     }
 }
@@ -176,6 +180,9 @@ impl Tool for Counter {
             description: "count".into(),
             input_schema: json!({"type": "object"}),
         }
+    }
+    fn effect(&self) -> Effect {
+        self.policy.effect
     }
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
         self.policy
@@ -204,11 +211,11 @@ impl Tool for Chatty {
             input_schema: json!({"type": "object"}),
         }
     }
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        ToolPolicy {
-            idempotent: false,
-            requires_approval: false,
-        }
+        ToolPolicy::new(Effect::Read, false)
     }
     async fn call(&self, _: &ToolCtx, _: Value) -> ToolResult {
         let sink = progress_sink().expect("agent sets a sink");
@@ -621,6 +628,93 @@ async fn always_allow_is_remembered_and_journaled() {
             "llm:completed"
         ],
     );
+}
+
+/// Answers "always" and records what it was asked.
+#[derive(Default)]
+struct Recorder(Mutex<Vec<ApprovalRequest>>);
+
+#[async_trait]
+impl ApprovalHandler for Recorder {
+    async fn ask(&self, req: &ApprovalRequest) -> Decision {
+        self.0.lock().unwrap().push(req.clone());
+        Decision::AlwaysAllow
+    }
+}
+
+/// Runs `tool` twice and returns what the user was asked and how often it ran.
+async fn twice(h: &Harness, tool: Counter) -> (Vec<ApprovalRequest>, u32, Arc<Script>) {
+    let name = tool.name;
+    let tool = Arc::new(tool);
+    let asks = Arc::new(Recorder::default());
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool(name, json!({})),
+        Reply::Tool(name, json!({"again": true})),
+        Reply::Text("ok"),
+    ]));
+    let agent = h.agent(script.clone(), vec![tool.clone()], asks.clone());
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let asked = asks.0.lock().unwrap().clone();
+    (asked, tool.calls.load(Ordering::SeqCst), script)
+}
+
+#[tokio::test]
+async fn effects_decide_when_to_ask_and_show_in_the_request() {
+    let h = Harness::new();
+    // read: never asks, nothing journaled for approval.
+    let (asked, calls, _) = twice(
+        &h,
+        Counter::with_policy("look", ToolPolicy::new(Effect::Read, false)),
+    )
+    .await;
+    assert!(asked.is_empty());
+    assert_eq!(calls, 2);
+
+    // write: asks once, then the "always" grant covers it.
+    let h = Harness::new();
+    let (asked, calls, _) = twice(
+        &h,
+        Counter::with_policy("send", ToolPolicy::new(Effect::Write, false)),
+    )
+    .await;
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].effect, Effect::Write);
+    assert_eq!(asked[0].pattern.as_deref(), Some("*"));
+    assert_eq!(asked[0].headline(), format!("write · {}", asked[0].summary));
+    assert_eq!(calls, 2);
+
+    // destructive: asks every time and never offers "always".
+    let h = Harness::new();
+    let (asked, calls, _) = twice(
+        &h,
+        Counter::with_policy("wipe", ToolPolicy::new(Effect::Destructive, false)),
+    )
+    .await;
+    assert_eq!(asked.len(), 2);
+    assert!(
+        asked
+            .iter()
+            .all(|r| r.effect == Effect::Destructive && r.pattern.is_none())
+    );
+    assert_eq!(calls, 2);
+    assert!(h.store.allowlist("wipe").unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn money_movement_is_refused_without_asking() {
+    let h = Harness::new();
+    let policy = ToolPolicy {
+        forbidden: Some("money_movement"),
+        ..ToolPolicy::new(Effect::Read, false)
+    };
+    // Even an old "always" entry doesn't help.
+    h.store.add_allowlist("pay", "*").unwrap();
+    let (asked, calls, script) = twice(&h, Counter::with_policy("pay", policy)).await;
+    assert!(asked.is_empty());
+    assert_eq!(calls, 0);
+    let (content, is_error) = last_tool_result(&script.seen.lock().unwrap()[1]).unwrap();
+    assert!(is_error && content.contains("money_movement"), "{content}");
 }
 
 #[tokio::test]

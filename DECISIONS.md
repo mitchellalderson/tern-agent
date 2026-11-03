@@ -262,3 +262,54 @@ OS-level confinement for the host backend, Docker hardening, and process-group k
 - **Docker**: `--cap-drop ALL --security-opt no-new-privileges` always; `--memory 2g --cpus 2 --pids-limit 512` by default (`docker_memory = ""`/`docker_cpus = 0`/`docker_pids = 0` drop each); `--network none` when `sandbox.network = false`. The container's settings are fingerprinted (FNV-1a of image + flags) into a `tern.sandbox.config` label, replacing the old image comparison, so any settings change recreates it. `DockerBackend::new` now takes `DockerSettings`.
 - **`HostBackend` is no longer a unit struct**: `HostBackend::new(HostPolicy)`, `::default()` (confined, network on) and `::unconfined()`. The runtime builds the policy from `[sandbox]` and always denies `$TERN_HOME`.
 - **Not verified here**: the Linux path was cross-checked with clippy (musl via zig) but not run; CI's ubuntu job runs `crates/tern/tests/sandbox.rs`, whose tests skip themselves if the runner kernel has no Landlock.
+
+## T0 (tool effects)
+
+Every tool declares an effect, and the host decides from it when to ask (docs/personal-agent-tooling-spec.md §5.1, §6.3).
+
+- **Model.** `tern_core::tool::Effect` is `read`, `write` or `destructive` (`write` is the `Default`). `Tool::effect()` is required, so a new tool can't forget it, and is what tool lists show. `Tool::untrusted()` (default false) marks tools that return third-party text; it is recorded and listed only, since tainting runs is T3. `ToolPolicy` (per call) gained `effect`, `granted` and `forbidden`; `ToolPolicy::new(effect, idempotent)`, `granted_write(idempotent)` and `.forced(requires_approval)` build it.
+- **Policy is one function**, `approval::check(tool, policy, granted) -> Allow | Ask { effect, always } | Forbid(flag)`, where `granted` means an allowlist ("always") entry covers the call:
+  - `read` doesn't ask;
+  - `write` asks unless an allowlist entry or the host's own grant (`ToolPolicy::granted`) covers it;
+  - `destructive` asks every time, ignores allowlist entries, and never offers "always";
+  - `requires_approval` asks for any effect (allowlist entries still apply) and overrides the host's own grant;
+  - a `forbidden` tool (`money_movement` / `trade`) is refused without asking, whatever its effect, old allowlist entries, or `--yes`. The model gets a "blocked … nobody can approve" error. It is journaled as a `denied` approval step.
+- **Host-granted writes keep today's behaviour.** The spec's table makes `write_file` a `write`. Making every workspace write, memory save or schedule ask would have been a big regression, so writes to the workspace and to tern's own state are `write` with `granted = true`: the host holds a standing grant, in the same place a user's "always" would sit. Outside the workspace `requires_approval` still forces a prompt.
+- **`shell` is the one tool whose allowlist decides its effect.** It is `destructive` and forced, but `check` treats a command covered by the allowlist (`git *`) as a granted `write`. So "shell outside the allowlist counts as destructive" holds: such a command asks, and the prompt still offers "Always (git *)", because that is how commands get into the allowlist. Wrapper commands (`bash`, `env`, …) still get no "always".
+- **Approval steps are only journaled when a prompt is possible** (`approval::needs_check`), i.e. exactly as before for built-ins. `read` tools and host-granted writes skip the step.
+- **Effects of the built-in tools:**
+
+  | Tool | Effect | Notes |
+  |---|---|---|
+  | `read_file`, `list_dir`, `search_files` | read | forced outside the workspace, as before |
+  | `write_file`, `edit_file` | write | host-granted inside the workspace; forced outside |
+  | `shell` | destructive | a granted write when the allowlist covers the command |
+  | `http_fetch` | read, **untrusted** | GET only |
+  | `memory_save` | write | host-granted (tern's own state) |
+  | `memory_search`, `session_search`, `skill_read`, `schedule_list` | read | |
+  | `schedule_create`, `schedule_delete` | write | host-granted. Deleting a schedule is tern's own state, so not `destructive`, which would ask every time |
+  | `agent_spawn`, `agent_cancel`, `agent_send`, `agent_ask_parent` | write | host-granted: a child's own calls go through the same policy |
+  | `agent_wait`, `agent_status` | read | |
+  | `secret_request` | write | host-granted: the user is the gate (they type the values or skip) |
+  | `connector_write` | write | host-granted (drafts directory only) |
+  | `connector_test` | the tested tool's effect | asks (forced) when the draft reaches the network or secrets, as in M4. A `destructive` draft tool then asks every time, and a `money_movement` one is refused. Offline drafts are host-granted |
+  | `connector_activate` | write | forced, never "always", as in M4 |
+
+- **Approval requests carry `effect`** (`ApprovalRequest::effect`, the effect after the shell rule) and `headline()` = `"<effect> · <summary>"`, which the TUI, Telegram, `tern run` and the desktop card show. `ApiApproval.effect` is `#[serde(default)]` (`write`) so a newer client can read an older daemon. `GET /v1/tools` returns `ApiTool` = the spec flattened plus `effect` and `untrusted`. `/v1/info`'s `(name, description)` pairs are unchanged, so the desktop shows effects in the tool dialog (from `/v1/tools`), not in the side-panel list.
+
+### Luau
+
+- **Fields**: `effect = "read" | "write" | "destructive"` (anything else is a load error), `untrusted = true`, `read_via_post = true` (only valid with `effect = "read"`), `money_movement = true`, `trade = true`. A missing `effect` is `write`; `ToolDef::declared_effect` keeps the `Option` so grandfathering can tell.
+- **"Read tool uses a non-GET method" is enforced when the request is made, not at load.** A connector's methods live inside its `run` functions, so a static check would be guesswork. Instead `ctx.http` (both `request{method=…}` and the shorthands) refuses anything but GET/HEAD for a `read` tool without `read_via_post`, before sending, with an error naming both fixes. `connector_test` surfaces it on the first try.
+- **Grandfathering (§13 decision 4).** Before T0 a tool without `requires_approval` never asked. The first time `Connectors::open` runs against a data directory after the upgrade (`grandfather_existing`, guarded by kv `lua:meta/effects_snapshot`), it records each connector already in `~/.tern/connectors/` by source hash in kv `lua:grandfathered`. For a recorded connector whose file still has that hash, tools with no declared `effect` get M4's behaviour (a host-granted `write`: no prompt unless `requires_approval`). Declared effects and money flags apply regardless. Grandfathering ends when:
+  - the file changes (its hash no longer matches);
+  - the connector is activated again (`record_approval` deletes the entry), even with identical source.
+
+  Connectors added after the snapshot never get it. A fresh install snapshots an empty (or user-prepared) directory, which is harmless. `tern connectors list` reads the real database if it exists and marks grandfathered connectors; it never creates one.
+- `capability_summary()` (the activation prompt) now lists tools as `name (effect)`, and `connector_write`'s result shows `[effect]` per tool. The connector docs given to the model describe the new fields.
+
+### MCP
+
+- **Hints**: `readOnlyHint: true` → `read`; else `destructiveHint: true` → `destructive`; else `write`. MCP defaults `destructiveHint` to true when absent, but tern only trusts what a server states, so an unannotated tool is `write` (spec §5.1). `openWorldHint` isn't mapped to `untrusted` yet (MCP defaults it to true, which would mark every tool); MCP tools list as not untrusted until T3 decides.
+- **Override key**: `[mcp.servers.<name>] effects = { <server tool name> = "read" | "write" | "destructive", "*" = … }`. The key is the server's own tool name (not the `mcp__…` exposed name), and `"*"` covers the rest. An exact name wins over `"*"`, and both win over hints. An invalid value fails config parsing. `requires_approval` and `idempotent` stay per server. This is the "per-tool approval overrides" item mcp-management-spec §8 lists for later, kept to one map so the MCP form can add a per-tool picker on top of it.
+- The Python fixture now annotates `echo` (read-only), `fail` (destructive) and `crash` (`destructiveHint: false`).

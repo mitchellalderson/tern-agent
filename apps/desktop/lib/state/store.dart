@@ -342,7 +342,7 @@ class TernStore extends ChangeNotifier {
       notifier.show(
         id: a.id,
         title: '${a.agentLabel ?? 'tern'} wants to run ${a.tool}',
-        body: a.summary,
+        body: a.headline,
         approval: true,
       ),
     );

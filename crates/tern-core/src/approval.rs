@@ -1,9 +1,71 @@
-//! Approval prompts and the persistent allowlist (spec §8.2).
+//! Approval prompts and the persistent allowlist (spec §8.2), and the
+//! effect policy that decides when to ask (tooling spec §5.1).
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::tool::{Effect, ToolPolicy};
 use crate::types::ToolCall;
+
+/// What the host does with a call before running it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Check {
+    /// Run it.
+    Allow,
+    /// Ask the user. `always`: an "always" answer may be offered.
+    Ask { effect: Effect, always: bool },
+    /// Refuse without asking; nothing can approve it.
+    Forbid(&'static str),
+}
+
+/// The effect policy, enforced by the host and never by the model:
+/// - `read` doesn't ask;
+/// - `write` asks unless a grant covers it (`granted`: an "always" entry on
+///   the allowlist; or the host's own, [`ToolPolicy::granted`]);
+/// - `destructive` asks every time;
+/// - `requires_approval` asks for any effect unless an allowlist grant
+///   covers it;
+/// - `money_movement` / `trade` tools are refused outright.
+///
+/// `shell` is the exception that defines the allowlist: a command outside
+/// it is destructive, one inside it is a granted write.
+pub fn check(tool: &str, policy: &ToolPolicy, granted: bool) -> Check {
+    if let Some(flag) = policy.forbidden {
+        return Check::Forbid(flag);
+    }
+    let shell = tool == "shell";
+    let effect = if shell && granted && policy.effect == Effect::Destructive {
+        Effect::Write
+    } else {
+        policy.effect
+    };
+    let ask = Check::Ask {
+        effect,
+        always: effect != Effect::Destructive || shell,
+    };
+    match effect {
+        Effect::Destructive => ask,
+        _ if granted => Check::Allow,
+        _ if policy.requires_approval => ask,
+        Effect::Read => Check::Allow,
+        Effect::Write if policy.granted => Check::Allow,
+        Effect::Write => ask,
+    }
+}
+
+/// Whether a call must go through an approval step at all: some answer
+/// other than [`Check::Allow`] is possible before looking at grants.
+pub fn needs_check(tool: &str, policy: &ToolPolicy) -> bool {
+    check(tool, policy, false) != Check::Allow
+}
+
+/// The message the model gets for a forbidden call.
+pub fn forbidden_message(flag: &str) -> String {
+    format!(
+        "blocked: this tool is flagged `{flag}`. tern never runs tools that move money or trade, \
+         and nobody can approve them. Tell the user to do this themselves."
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
@@ -31,7 +93,8 @@ pub struct ApprovalRequest {
     pub call: ToolCall,
     /// One-line description of what the call does.
     pub summary: String,
-    /// What "always allow" would add to the allowlist.
+    /// The call's effect, shown with the summary ([`ApprovalRequest::headline`]).
+    pub effect: Effect,
     /// What "always allow" would add to the allowlist, or `None` if this
     /// call can't be always-allowed (front ends then hide the option).
     pub pattern: Option<String>,
@@ -39,6 +102,13 @@ pub struct ApprovalRequest {
     /// say who is asking.
     pub parent_run_id: Option<String>,
     pub agent_label: Option<String>,
+}
+
+impl ApprovalRequest {
+    /// `write · gmail_send to bob@…`: the effect, then the summary.
+    pub fn headline(&self) -> String {
+        format!("{} · {}", self.effect, self.summary)
+    }
 }
 
 /// One secret a `secret_request` asks for, with what is known about it.
@@ -220,6 +290,84 @@ mod tests {
         assert!(!allowed_by(&pats, &shell("gitk")));
         assert!(!allowed_by(&pats, &shell("git log; rm -rf ~")));
         assert!(!allowed_by(&pats, &shell("git $(curl evil)")));
+    }
+
+    fn policy(effect: Effect) -> ToolPolicy {
+        ToolPolicy::new(effect, false)
+    }
+
+    const ASK_WRITE: Check = Check::Ask {
+        effect: Effect::Write,
+        always: true,
+    };
+
+    #[test]
+    fn read_never_asks() {
+        assert_eq!(check("t", &policy(Effect::Read), false), Check::Allow);
+        assert!(!needs_check("t", &policy(Effect::Read)));
+    }
+
+    #[test]
+    fn write_asks_unless_granted() {
+        assert_eq!(check("t", &policy(Effect::Write), false), ASK_WRITE);
+        assert_eq!(check("t", &policy(Effect::Write), true), Check::Allow);
+        // The host's own grant (workspace writes, grandfathered connectors).
+        let own = ToolPolicy::granted_write(false);
+        assert_eq!(check("t", &own, false), Check::Allow);
+        assert!(!needs_check("t", &own));
+    }
+
+    #[test]
+    fn destructive_asks_every_time() {
+        let p = policy(Effect::Destructive);
+        let ask = Check::Ask {
+            effect: Effect::Destructive,
+            always: false,
+        };
+        assert_eq!(check("t", &p, false), ask);
+        assert_eq!(check("t", &p, true), ask, "grants don't cover destructive");
+        let p = ToolPolicy { granted: true, ..p };
+        assert_eq!(check("t", &p, true), ask);
+    }
+
+    #[test]
+    fn requires_approval_forces_a_prompt() {
+        let p = policy(Effect::Read).forced(true);
+        let ask = Check::Ask {
+            effect: Effect::Read,
+            always: true,
+        };
+        assert_eq!(check("t", &p, false), ask);
+        assert_eq!(check("t", &p, true), Check::Allow);
+        let p = ToolPolicy::granted_write(false).forced(true);
+        assert_eq!(check("t", &p, false), ASK_WRITE);
+    }
+
+    #[test]
+    fn shell_outside_the_allowlist_is_destructive() {
+        let p = policy(Effect::Destructive).forced(true);
+        assert_eq!(
+            check("shell", &p, false),
+            Check::Ask {
+                effect: Effect::Destructive,
+                always: true
+            }
+        );
+        assert_eq!(check("shell", &p, true), Check::Allow);
+    }
+
+    #[test]
+    fn money_movement_is_forbidden_whatever_else() {
+        for effect in [Effect::Read, Effect::Write, Effect::Destructive] {
+            let p = ToolPolicy {
+                forbidden: Some("money_movement"),
+                ..ToolPolicy::granted_write(true)
+            };
+            let p = ToolPolicy { effect, ..p };
+            assert_eq!(check("t", &p, true), Check::Forbid("money_movement"));
+            assert!(needs_check("t", &p));
+        }
+        assert!(forbidden_message("trade").contains("`trade`"));
     }
 
     #[test]

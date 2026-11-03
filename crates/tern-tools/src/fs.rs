@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult};
+use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult};
 use tern_core::types::ToolSpec;
 
 use std::sync::Arc;
@@ -21,10 +21,7 @@ const MAX_SEARCH_FILE_BYTES: u64 = 2 * 1024 * 1024;
 fn read_policy(ctx: &ToolCtx, args: &Value, default: &str) -> ToolPolicy {
     let raw = args.get("path").and_then(Value::as_str).unwrap_or(default);
     let outside = resolve(&ctx.workspace, raw).is_ok_and(|r| !r.inside_workspace);
-    ToolPolicy {
-        idempotent: true,
-        requires_approval: outside,
-    }
+    ToolPolicy::new(Effect::Read, true).forced(outside)
 }
 
 // ---- read_file ----
@@ -43,6 +40,10 @@ struct ReadArgs {
 
 #[async_trait]
 impl Tool for ReadFile {
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "read_file",
@@ -127,6 +128,10 @@ fn dot() -> String {
 
 #[async_trait]
 impl Tool for ListDir {
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "list_dir",
@@ -195,6 +200,10 @@ struct SearchArgs {
 
 #[async_trait]
 impl Tool for SearchFiles {
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "search_files",
@@ -299,20 +308,21 @@ struct WriteArgs {
     content: String,
 }
 
-/// Writes need approval only outside the workspace.
+/// Workspace writes are granted by the host; outside it they need approval.
 fn write_policy(ctx: &ToolCtx, args: &Value) -> ToolPolicy {
     let outside = args["path"]
         .as_str()
         .and_then(|p| resolve(&ctx.workspace, p).ok())
         .is_some_and(|r| !r.inside_workspace);
-    ToolPolicy {
-        idempotent: false,
-        requires_approval: outside,
-    }
+    ToolPolicy::granted_write(false).forced(outside)
 }
 
 #[async_trait]
 impl Tool for WriteFile {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "write_file",
@@ -369,6 +379,10 @@ struct EditArgs {
 
 #[async_trait]
 impl Tool for EditFile {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "edit_file",

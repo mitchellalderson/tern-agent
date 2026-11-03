@@ -6,16 +6,27 @@ class ToolSpec {
     required this.name,
     required this.description,
     required this.inputSchema,
+    this.effect = 'write',
+    this.untrusted = false,
   });
 
   factory ToolSpec.fromJson(Json j) => ToolSpec(
     name: j['name'] as String,
     description: j['description'] as String? ?? '',
     inputSchema: j['input_schema'] as Json? ?? const {},
+    effect: j['effect'] as String? ?? 'write',
+    untrusted: j['untrusted'] as bool? ?? false,
   );
 
   final String name;
   final String description;
+
+  /// `read` (never asks), `write` (asks unless always-allowed) or
+  /// `destructive` (asks every time). Older daemons send none: `write`.
+  final String effect;
+
+  /// Returns third-party text (web pages, mail, messages).
+  final bool untrusted;
 
   /// JSON Schema for the arguments.
   final Json inputSchema;

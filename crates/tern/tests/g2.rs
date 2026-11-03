@@ -254,3 +254,28 @@ async fn runs_steps_and_event_sessions() {
         .await;
     assert_eq!(status, 404);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_list_their_effect_and_untrusted_flag() {
+    let d = daemon(&json!({ "turns": [] }));
+    let api = Api::new(&d);
+    let tools = api.get("/v1/tools").await;
+    let find = |name: &str| {
+        tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {name} in {tools}"))
+    };
+    let fetch = find("http_fetch");
+    assert_eq!(
+        (fetch["effect"].as_str(), fetch["untrusted"].as_bool()),
+        (Some("read"), Some(true))
+    );
+    assert!(fetch["input_schema"].is_object(), "{fetch}");
+    assert_eq!(find("write_file")["effect"], "write");
+    assert_eq!(find("shell")["effect"], "destructive");
+    assert_eq!(find("read_file")["untrusted"], false);
+}

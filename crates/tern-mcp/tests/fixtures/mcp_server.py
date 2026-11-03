@@ -15,15 +15,17 @@ import sys
 PROTOCOL = "2025-06-18"
 
 TOOLS = [
-    {"name": "echo", "description": "Echo the text back",
+    {"name": "echo", "description": "Echo the text back", "annotations": {"readOnlyHint": True},
      "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
     {"name": "add", "description": "Add two numbers",
      "inputSchema": {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}},
                      "required": ["a", "b"]}},
-    {"name": "fail", "description": "Always reports an error", "inputSchema": {"type": "object"}},
+    {"name": "fail", "description": "Always reports an error", "inputSchema": {"type": "object"},
+     "annotations": {"readOnlyHint": False, "destructiveHint": True}},
     {"name": "env", "description": "Read an environment variable",
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
-    {"name": "crash", "description": "Exit the server process", "inputSchema": {"type": "object"}},
+    {"name": "crash", "description": "Exit the server process", "inputSchema": {"type": "object"},
+     "annotations": {"destructiveHint": False}},
 ]
 
 

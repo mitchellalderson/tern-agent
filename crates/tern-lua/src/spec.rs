@@ -1,6 +1,7 @@
 //! Validating the table a connector file returns (spec §10.2).
 
 use mlua::{Function, Lua, LuaSerdeExt, Table, Value};
+use tern_core::tool::Effect;
 
 use crate::host::LoadError;
 
@@ -18,7 +19,27 @@ pub struct ToolDef {
     pub description: String,
     pub idempotent: bool,
     pub requires_approval: bool,
+    /// As declared; `None` means `write` ([`ToolDef::effect`]), or M4's
+    /// no-approval default for a grandfathered connector.
+    pub declared_effect: Option<Effect>,
+    /// Returns third-party text (mail bodies, web pages, chat messages).
+    pub untrusted: bool,
+    /// A `read` tool that may send POST (GraphQL, search APIs).
+    pub read_via_post: bool,
+    /// `money_movement` or `trade`: the host refuses the tool.
+    pub forbidden: Option<&'static str>,
     pub params: serde_json::Value,
+}
+
+impl ToolDef {
+    pub fn effect(&self) -> Effect {
+        self.declared_effect.unwrap_or(Effect::Write)
+    }
+
+    /// Whether `ctx.http` may only send GET and HEAD for this tool.
+    pub fn get_only(&self) -> bool {
+        self.effect() == Effect::Read && !self.read_via_post
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,7 +60,11 @@ impl ConnectorSpec {
                 v.join(", ")
             }
         };
-        let tools: Vec<&str> = self.tools.iter().map(|t| t.name.as_str()).collect();
+        let tools: Vec<String> = self
+            .tools
+            .iter()
+            .map(|t| format!("{} ({})", t.name, t.effect()))
+            .collect();
         format!(
             "http hosts: {}; secrets: {}; tools: {}",
             list(&self.capabilities.http),
@@ -173,11 +198,39 @@ pub fn parse(lua: &Lua, t: &Table) -> Result<(ConnectorSpec, Vec<(String, Functi
             _ => return Err(ctx("`params` must be a JSON Schema table")),
         };
         check_schema(&params).map_err(|m| ctx(&format!("params: {m}")))?;
+        let declared_effect = match def.raw_get::<Value>("effect") {
+            Ok(Value::Nil) => None,
+            Ok(Value::String(e)) => {
+                Some(Effect::parse(&e.to_string_lossy()).ok_or_else(|| {
+                    ctx("`effect` must be \"read\", \"write\" or \"destructive\"")
+                })?)
+            }
+            _ => {
+                return Err(ctx(
+                    "`effect` must be \"read\", \"write\" or \"destructive\"",
+                ));
+            }
+        };
+        let read_via_post = flag("read_via_post")?;
+        if read_via_post && declared_effect != Some(Effect::Read) {
+            return Err(ctx("`read_via_post` only applies to `effect = \"read\"`"));
+        }
+        let forbidden = if flag("money_movement")? {
+            Some("money_movement")
+        } else if flag("trade")? {
+            Some("trade")
+        } else {
+            None
+        };
         defs.push(ToolDef {
             name: tool.clone(),
             description,
             idempotent: flag("idempotent")?,
             requires_approval: flag("requires_approval")?,
+            declared_effect,
+            untrusted: flag("untrusted")?,
+            read_via_post,
+            forbidden,
             params,
         });
         runs.push((tool, run));

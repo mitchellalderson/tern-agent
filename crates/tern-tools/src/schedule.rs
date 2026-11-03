@@ -5,16 +5,14 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tern_core::cron::Cron;
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult};
+use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult};
 use tern_core::types::ToolSpec;
 use tern_store::{ScheduleRow, Store};
 
 use crate::{args, spec};
 
-const POLICY: ToolPolicy = ToolPolicy {
-    idempotent: false,
-    requires_approval: false,
-};
+/// Schedules are tern's own state: a write the host grants.
+const POLICY: ToolPolicy = ToolPolicy::granted_write(false);
 
 fn fmt_time(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
@@ -96,6 +94,10 @@ struct CreateArgs {
 
 #[async_trait]
 impl Tool for ScheduleCreate {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "schedule_create",
@@ -147,6 +149,10 @@ pub struct ScheduleList {
 
 #[async_trait]
 impl Tool for ScheduleList {
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "schedule_list",
@@ -156,10 +162,7 @@ impl Tool for ScheduleList {
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
-        ToolPolicy {
-            idempotent: true,
-            requires_approval: false,
-        }
+        ToolPolicy::new(Effect::Read, true)
     }
 
     async fn call(&self, _: &ToolCtx, _: Value) -> ToolResult {
@@ -191,6 +194,10 @@ pub struct ScheduleDelete {
 
 #[async_trait]
 impl Tool for ScheduleDelete {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "schedule_delete",

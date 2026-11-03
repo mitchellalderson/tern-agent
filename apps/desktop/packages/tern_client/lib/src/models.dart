@@ -355,6 +355,7 @@ class Approval {
     required this.tool,
     required this.input,
     required this.summary,
+    this.effect = 'write',
     required this.pattern,
     this.parentRunId,
     this.agentLabel,
@@ -368,6 +369,7 @@ class Approval {
     tool: j['tool'] as String,
     input: j['input'],
     summary: j['summary'] as String,
+    effect: j['effect'] as String? ?? 'write',
     pattern: j['pattern'] as String?,
     parentRunId: j['parent_run_id'] as String?,
     agentLabel: j['agent_label'] as String?,
@@ -386,6 +388,12 @@ class Approval {
   final String tool;
   final Object? input;
   final String summary;
+
+  /// `read`, `write` or `destructive`. Older daemons send none: `write`.
+  final String effect;
+
+  /// `write · gmail_send …`: the effect, then the summary.
+  String get headline => '$effect · $summary';
 
   /// What "always allow" adds to the allowlist, or null if this call
   /// can't be always-allowed (hide the option).

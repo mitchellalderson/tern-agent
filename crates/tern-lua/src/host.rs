@@ -81,6 +81,9 @@ pub struct Vm {
     http: reqwest::Client,
     /// One call at a time per VM (the deadline is per VM).
     busy: tokio::sync::Mutex<()>,
+    /// Keeps M4's approval default for tools that declare no effect (T0
+    /// grandfathering; see `crate::grandfathered`).
+    pub grandfathered: bool,
 }
 
 impl Vm {
@@ -125,6 +128,7 @@ impl Vm {
             host: host.clone(),
             http,
             busy: tokio::sync::Mutex::new(()),
+            grandfathered: false,
         })
     }
 
@@ -134,8 +138,15 @@ impl Vm {
         let Some((_, run)) = self.runs.iter().find(|(n, _)| n == name) else {
             return Err(format!("connector {} has no tool {name:?}", self.spec.name));
         };
+        let get_only = self
+            .spec
+            .tools
+            .iter()
+            .find(|t| t.name == name)
+            .is_some_and(|t| t.get_only())
+            .then_some(name);
         let _guard = self.busy.lock().await;
-        let ctx = make_ctx(&self.lua, &self.host, &self.http, &self.spec)
+        let ctx = make_ctx(&self.lua, &self.host, &self.http, &self.spec, get_only)
             .map_err(|e| format!("building ctx: {e}"))?;
         let lua_args = self
             .lua
@@ -251,28 +262,30 @@ fn make_ctx(
     host: &Host,
     client: &reqwest::Client,
     spec: &ConnectorSpec,
+    get_only: Option<&str>,
 ) -> mlua::Result<Table> {
     let ctx = lua.create_table()?;
     let caps = Arc::new(spec.capabilities.clone());
+    let get_only: Option<Arc<str>> = get_only.map(Arc::from);
     let name = spec.name.clone();
 
     let http = lua.create_table()?;
     {
-        let (caps, client) = (caps.clone(), client.clone());
+        let (caps, client, get_only) = (caps.clone(), client.clone(), get_only.clone());
         http.raw_set(
             "request",
             lua.create_async_function(move |lua, opts: Table| {
-                let (caps, client) = (caps.clone(), client.clone());
-                async move { http_request(&lua, &caps, &client, opts).await }
+                let (caps, client, get_only) = (caps.clone(), client.clone(), get_only.clone());
+                async move { http_request(&lua, &caps, &client, get_only.as_deref(), opts).await }
             })?,
         )?;
     }
     for method in ["get", "post", "put", "patch", "delete"] {
-        let (caps, client) = (caps.clone(), client.clone());
+        let (caps, client, get_only) = (caps.clone(), client.clone(), get_only.clone());
         http.raw_set(
             method,
             lua.create_async_function(move |lua, (url, opts): (String, Option<Table>)| {
-                let (caps, client) = (caps.clone(), client.clone());
+                let (caps, client, get_only) = (caps.clone(), client.clone(), get_only.clone());
                 async move {
                     let opts = match opts {
                         Some(t) => t,
@@ -280,7 +293,7 @@ fn make_ctx(
                     };
                     opts.raw_set("url", url)?;
                     opts.raw_set("method", method.to_ascii_uppercase())?;
-                    http_request(&lua, &caps, &client, opts).await
+                    http_request(&lua, &caps, &client, get_only.as_deref(), opts).await
                 }
             })?,
         )?;
@@ -416,6 +429,7 @@ async fn http_request(
     lua: &Lua,
     caps: &Capabilities,
     client: &reqwest::Client,
+    get_only: Option<&str>,
     opts: Table,
 ) -> mlua::Result<Table> {
     let url: String = opts
@@ -445,6 +459,14 @@ async fn http_request(
         .unwrap_or_else(|| "GET".into());
     let method = reqwest::Method::from_bytes(method.to_ascii_uppercase().as_bytes())
         .map_err(|_| mlua::Error::runtime(format!("http: invalid method {method:?}")))?;
+    // Checked before anything is sent: a `read` tool can't write by POST.
+    if let Some(tool) = get_only
+        && !matches!(method, reqwest::Method::GET | reqwest::Method::HEAD)
+    {
+        return Err(mlua::Error::runtime(format!(
+            "http: tools.{tool} declares effect = \"read\" but sent {method}; declare effect = \"write\", or set read_via_post = true if it only reads (GraphQL, search APIs)"
+        )));
+    }
     let mut req = client.request(method, parsed);
     if let Some(headers) = opts.raw_get::<Option<Table>>("headers")? {
         for pair in headers.pairs::<String, String>() {

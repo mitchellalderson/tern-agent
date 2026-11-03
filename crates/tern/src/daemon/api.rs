@@ -5,7 +5,7 @@
 //! |---|---|---|
 //! | GET | `/v1/health` | pid, version, and capabilities (see `auth::health`) |
 //! | GET | `/v1/info` | default model and tools |
-//! | GET | `/v1/tools` | full tool specs: `[{name, description, input_schema}]` |
+//! | GET | `/v1/tools` | full tool specs: `[{name, description, input_schema, effect, untrusted}]` |
 //! | POST | `/v1/models/check` | validate `{model}` |
 //! | POST | `/v1/runs` | send a message: `{text, session_id?, model?}` |
 //! | GET | `/v1/runs/active` | runs in progress: `[{run_id, session_id, parent_run_id?, label?}]` |
@@ -205,8 +205,32 @@ async fn info(State(m): State<Shared>) -> Json<Info> {
     })
 }
 
-async fn tools(State(m): State<Shared>) -> Json<Vec<tern_core::types::ToolSpec>> {
-    Json(m.rt.agent.tools().specs())
+/// A tool spec plus its declared effect (`read` / `write` / `destructive`)
+/// and whether it returns third-party text.
+#[derive(Serialize, Deserialize)]
+pub struct ApiTool {
+    #[serde(flatten)]
+    pub spec: tern_core::types::ToolSpec,
+    pub effect: tern_core::tool::Effect,
+    pub untrusted: bool,
+}
+
+async fn tools(State(m): State<Shared>) -> Json<Vec<ApiTool>> {
+    let reg = m.rt.agent.tools();
+    let effects = reg.effects();
+    Json(
+        reg.specs()
+            .into_iter()
+            .map(|spec| {
+                let (effect, untrusted) = effects.get(&spec.name).copied().unwrap_or_default();
+                ApiTool {
+                    spec,
+                    effect,
+                    untrusted,
+                }
+            })
+            .collect(),
+    )
 }
 
 #[derive(Serialize, Deserialize)]

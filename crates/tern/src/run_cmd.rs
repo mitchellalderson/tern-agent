@@ -281,7 +281,7 @@ impl ApprovalHandler for TerminalApprover {
             .as_deref()
             .map(|l| format!("[{l}] "))
             .unwrap_or_default();
-        let prompt = format!("{who}Allow {}? [y]es{always} / [N]o: ", req.summary);
+        let prompt = format!("{who}Allow {}? [y]es{always} / [N]o: ", req.headline());
         tokio::task::spawn_blocking(move || {
             let mut stderr = std::io::stderr();
             let _ = write!(stderr, "{prompt}");

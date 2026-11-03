@@ -31,10 +31,31 @@ void main() {
     final e = ev(
       '{"approval_requested":{"id":"a","run_id":"r",'
       '"session_id":"s","tool":"shell","input":{"command":"ls"},'
-      '"summary":"shell ls","pattern":"ls"}}',
+      '"summary":"shell ls","effect":"destructive","pattern":"ls"}}',
     );
     expect(e, isA<ApprovalRequested>());
-    expect((e as ApprovalRequested).approval.summary, 'shell ls');
+    final a = (e as ApprovalRequested).approval;
+    expect(a.summary, 'shell ls');
+    expect(a.headline, 'destructive · shell ls');
+    // Daemons before T0 send no effect.
+    final old = ev(
+      '{"approval_requested":{"id":"a","run_id":"r",'
+      '"session_id":"s","tool":"t","input":{},"summary":"t","pattern":null}}',
+    );
+    expect((old as ApprovalRequested).approval.effect, 'write');
+  });
+
+  test('decodes tool effects', () {
+    final t = ToolSpec.fromJson({
+      'name': 'http_fetch',
+      'description': 'GET',
+      'input_schema': {'type': 'object'},
+      'effect': 'read',
+      'untrusted': true,
+    });
+    expect((t.effect, t.untrusted), ('read', true));
+    final old = ToolSpec.fromJson({'name': 'x', 'description': ''});
+    expect((old.effect, old.untrusted), ('write', false));
   });
 
   test('unknown events survive', () {

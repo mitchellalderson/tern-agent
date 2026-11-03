@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use tern_core::tool::{Tool, ToolCtx, ToolPolicy, ToolResult};
+use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult};
 use tern_core::types::ToolSpec;
 
 use crate::{
@@ -105,18 +105,17 @@ fn describe(vm: &Vm) -> String {
     let mut out = format!("{} — {}\n{}", s.name, s.description, s.capability_summary());
     for t in &s.tools {
         out.push_str(&format!(
-            "\n- {}: {}",
+            "\n- {} [{}]: {}",
             tool_name(&s.name, &t.name),
+            t.effect(),
             t.description
         ));
     }
     out
 }
 
-const NOT_IDEMPOTENT: ToolPolicy = ToolPolicy {
-    idempotent: false,
-    requires_approval: false,
-};
+/// Writing a draft only touches the drafts directory: a granted write.
+const NOT_IDEMPOTENT: ToolPolicy = ToolPolicy::granted_write(false);
 
 // ---- connector_write ----
 
@@ -127,6 +126,10 @@ pub struct ConnectorWrite {
 
 #[async_trait]
 impl Tool for ConnectorWrite {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "connector_write".into(),
@@ -177,6 +180,10 @@ pub struct ConnectorTest {
 
 #[async_trait]
 impl Tool for ConnectorTest {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "connector_test".into(),
@@ -196,18 +203,32 @@ impl Tool for ConnectorTest {
     }
 
     /// A draft that can reach the network or read secrets is run only with
-    /// approval: it is code the model just wrote.
+    /// approval: it is code the model just wrote. Testing a tool has that
+    /// tool's effect, so a destructive one asks every time and a
+    /// `money_movement` one is refused.
     fn policy(&self, _: &ToolCtx, args: &Value) -> ToolPolicy {
-        let risky = name_arg(args)
+        let loaded = name_arg(args)
             .ok()
-            .and_then(|n| self.inspected.inspect(&self.host, &self.dirs, n).ok())
-            .is_some_and(|l| {
-                !l.fingerprint.capabilities.http.is_empty()
-                    || !l.fingerprint.capabilities.secrets.is_empty()
-            });
+            .and_then(|n| self.inspected.inspect(&self.host, &self.dirs, n).ok());
+        let risky = loaded.as_ref().is_some_and(|l| {
+            !l.fingerprint.capabilities.http.is_empty()
+                || !l.fingerprint.capabilities.secrets.is_empty()
+        });
+        let tool = args.get("tool").and_then(Value::as_str);
+        let def = loaded.as_ref().and_then(|l| {
+            l.vm.spec
+                .tools
+                .iter()
+                .find(|t| Some(t.name.as_str()) == tool)
+        });
+        let effect = match def {
+            Some(d) if risky => d.effect(),
+            _ => Effect::Write,
+        };
         ToolPolicy {
-            idempotent: false,
-            requires_approval: risky,
+            granted: !risky,
+            forbidden: def.and_then(|d| d.forbidden),
+            ..ToolPolicy::new(effect, false).forced(risky)
         }
     }
 
@@ -253,6 +274,10 @@ pub struct ConnectorActivate {
 
 #[async_trait]
 impl Tool for ConnectorActivate {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "connector_activate".into(),
@@ -269,10 +294,7 @@ impl Tool for ConnectorActivate {
         if let Ok(name) = name_arg(args) {
             let _ = self.inspected.inspect(&self.host, &self.dirs, name);
         }
-        ToolPolicy {
-            idempotent: false,
-            requires_approval: true,
-        }
+        ToolPolicy::new(Effect::Write, false).forced(true)
     }
 
     /// Each activation is a fresh decision: never "always allow".
@@ -348,6 +370,9 @@ return {
   tools = {
     forecast = {
       description = "Forecast for a city",
+      effect = "read",                    -- "read" (never asks), "write" (default; asks unless
+                                          -- always-allowed) or "destructive" (asks every time)
+      untrusted = true,                   -- returns third-party text (mail, web pages, messages)
       idempotent = true,                  -- safe to re-run after a crash (default false)
       params = { type = "object", properties = { city = { type = "string" } }, required = { "city" } },
       run = function(ctx, args)
@@ -360,5 +385,7 @@ return {
     },
   },
 }
+
+A "read" tool may only send GET/HEAD; set read_via_post = true for one that reads via POST (GraphQL, search APIs). Tools that move money or trade must say money_movement = true or trade = true: tern refuses to run them.
 
 ctx API: ctx.http.request{method, url, headers, json, body, timeout} and ctx.http.get/post/put/patch/delete(url, opts) return {status, ok, headers, body, json}; ctx.secret(name) (the secret must be listed in capabilities.secrets; if it isn't set, call secret_request so the user can enter it privately, before connector_test; never ask for secrets in the chat); ctx.kv.get(key) / ctx.kv.set(key, value) (per-connector storage; set nil to delete); ctx.log(level, msg); ctx.now() (unix ms). Globals: json.encode, json.decode, string, table, math, os.time/os.date. No file or process access, no require. Each call has a 5 second limit."#;

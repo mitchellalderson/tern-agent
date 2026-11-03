@@ -436,13 +436,10 @@ impl Agent {
                     self.tools.policy(&ctx, &call)
                 } else {
                     // Refused without running; nothing to approve or redo.
-                    crate::tool::ToolPolicy {
-                        idempotent: true,
-                        requires_approval: false,
-                    }
+                    crate::tool::ToolPolicy::new(crate::tool::Effect::Read, true)
                 };
-                if policy.requires_approval {
-                    let decision = self.approval_step(run, idx, &call, cancel).await;
+                if approval::needs_check(&call.name, &policy) {
+                    let decision = self.approval_step(run, idx, &call, &policy, cancel).await;
                     idx += 1;
                     match decision {
                         Ok(ApprovalOutcome::Approved) => {}
@@ -603,6 +600,7 @@ impl Agent {
         run: &RunRow,
         idx: u32,
         call: &ToolCall,
+        policy: &crate::tool::ToolPolicy,
         cancel: &CancellationToken,
     ) -> Result<ApprovalOutcome, StepError> {
         let out = self
@@ -614,9 +612,16 @@ impl Agent {
                 call,
                 InFlight::Retry,
                 || async {
-                    let decision = self.decide(run, call, cancel).await?;
+                    let decision = self.decide(run, call, policy, cancel).await?;
                     let messages = match decision {
                         ApprovalOutcome::Approved => vec![],
+                        ApprovalOutcome::Denied if policy.forbidden.is_some() => {
+                            let flag = policy.forbidden.unwrap_or_default();
+                            vec![tool_result(
+                                call,
+                                &ToolResult::error(approval::forbidden_message(flag)),
+                            )]
+                        }
                         ApprovalOutcome::Denied => {
                             vec![tool_result(
                                 call,
@@ -643,26 +648,37 @@ impl Agent {
         Ok(out.value)
     }
 
-    /// Allowlist first, then ask. Runs inside the approval step so the
-    /// decision is journaled even when the allowlist answers it.
+    /// The effect policy with the allowlist, then ask. Runs inside the
+    /// approval step so the decision is journaled even when the policy or
+    /// the allowlist answers it.
     async fn decide(
         &self,
         run: &RunRow,
         call: &ToolCall,
+        policy: &crate::tool::ToolPolicy,
         cancel: &CancellationToken,
     ) -> Result<ApprovalOutcome, StepError> {
         let always_ok = self.tools.allow_always(call);
         // A tool that opts out ignores old allowlist entries too.
-        if always_ok && approval::allowed_by(&self.store.allowlist(&call.name)?, call) {
-            return Ok(ApprovalOutcome::Approved);
-        }
+        let granted = policy.forbidden.is_none()
+            && always_ok
+            && approval::allowed_by(&self.store.allowlist(&call.name)?, call);
+        let (effect, always) = match approval::check(&call.name, policy, granted) {
+            approval::Check::Allow => return Ok(ApprovalOutcome::Approved),
+            approval::Check::Forbid(flag) => {
+                tracing::warn!(run = %run.id, tool = %call.name, flag, "refused a forbidden tool");
+                return Ok(ApprovalOutcome::Denied);
+            }
+            approval::Check::Ask { effect, always } => (effect, always && always_ok),
+        };
         let req = ApprovalRequest {
             id: new_id(),
             run_id: run.id.clone(),
             session_id: run.session_id.clone(),
             call: call.clone(),
             summary: self.tools.summarize(call),
-            pattern: approval::pattern_for(call).filter(|_| always_ok),
+            effect,
+            pattern: approval::pattern_for(call).filter(|_| always),
             parent_run_id: run.parent_run_id.clone(),
             agent_label: run.label.clone(),
         };
