@@ -1,0 +1,4 @@
+# `cargo test-all` runs every Rust and Dart test suite (see xtask/src/main.rs).
+[alias]
+xtask = "run -q -p xtask --"
+test-all = "run -q -p xtask -- test"

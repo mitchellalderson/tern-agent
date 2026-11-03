@@ -384,8 +384,21 @@ cd apps/desktop && TERN_BIN=../../target/debug/tern flutter test test/store_live
 ### Tests
 
 ```sh
-cargo test --workspace                          # unit and end-to-end tests (mock model, no network)
-python3 scripts/tui-smoke.py target/debug/tern  # drives the real TUI in a pseudo-terminal
+cargo test-all            # everything CI runs for tests: Rust, then Dart
+cargo test-all --rust     # only the Rust suites
+cargo test-all --dart     # only the Dart suites
+```
+
+`cargo test-all` (an alias for the `xtask` crate) builds `target/debug/tern`, then runs:
+- `cargo test --workspace`: unit and end-to-end tests (mock model, no network);
+- `scripts/tui-smoke.py`, which drives the real TUI in a pseudo-terminal;
+- the `tern_client` and desktop app tests. `TERN_BIN` points at the fresh build, so their live tests run against a real daemon.
+
+Every step runs even if an earlier one fails, and a summary at the end lists what failed. It needs `python3`, and Flutter 3.47+ for the Dart suites. CI runs the same command, plus `cargo fmt --check`, clippy, and `flutter analyze`.
+
+Suites that need something extra are run by hand:
+
+```sh
 cargo test -p tern-sandbox -- --ignored real_docker      # needs Docker
 TERN_SMOKE_MODEL=anthropic:claude-sonnet-5-5 ANTHROPIC_API_KEY=... cargo test -p tern --test m1 -- --ignored real_provider
 ```
