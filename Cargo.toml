@@ -18,21 +18,35 @@ expect_used = "deny"
 [workspace.dependencies]
 tern-core = { path = "crates/tern-core" }
 tern-store = { path = "crates/tern-store" }
+tern-providers = { path = "crates/tern-providers" }
+tern-tools = { path = "crates/tern-tools" }
+tern-sandbox = { path = "crates/tern-sandbox" }
 
 anyhow = "1.0.104"
+async-trait = "0.1.92"
+blake3 = "1.8.7"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+fastrand = "2.5.0"
+futures = "0.3.34"
+html2text = "0.17.4"
+ignore = "0.4.34"
+regex = "1.13.1"
 clap = { version = "4.6.7", features = ["derive"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "json"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "json", "stream"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "process", "io-util", "signal", "sync", "fs"] }
+tokio-util = "0.7.20"
 toml = "1.1.8"
 toml_edit = "0.25.17"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.29.0", features = ["v7"] }
+wiremock = "0.6.5"
 
 [profile.release]
 lto = true

@@ -7,7 +7,10 @@ use rusqlite::Connection;
 
 use crate::{Result, StoreError};
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_run_context.sql"),
+];
 
 pub const LATEST_VERSION: u32 = MIGRATIONS.len() as u32;
 

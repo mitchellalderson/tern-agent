@@ -20,3 +20,25 @@ Choices made where the spec was ambiguous or silent. Newest at the bottom of eac
 - **Unimplemented commands** exist in the CLI with their final shape and exit with code 2 and the milestone they land in.
 - **TLS: reqwest's default rustls (aws-lc-rs) with the platform verifier.** Open question for M1: on minimal Linux hosts without a CA bundle the platform verifier has no roots; we may want to bundle `webpki-roots` via a preconfigured rustls client so the static binary works anywhere.
 - **Release profile**: `lto = true`, `codegen-units = 1`, `strip = true`, `panic = "abort"`.
+
+## M1
+
+- **Traits live in `tern-core`**: `Provider`, `Tool`, `ToolRegistry`, `ApprovalHandler`, plus the journal and agent loop. Implementation crates (`tern-providers`, `tern-tools`, `tern-sandbox`) depend on core, never the reverse. The registry is in core (not `tern-tools`, as §4 suggests) because the loop calls it.
+- **`Tool::policy` takes `(ctx, args)`**, not `()`. `write_file`/`edit_file` need approval only outside the workspace, which depends on the path argument.
+- **Journal API**: `step()` has the §5.2 signature. `step_with()` adds an `InFlight` policy (`Retry`, or `Substitute(output)` for non-idempotent tools) and returns `Outcome { value, replayed }`. Step bodies return `StepOutput { output, usage, messages }`; the messages are committed in the same transaction that completes the step. A `failed` row is re-executed on the next call.
+- **Canonical hashing is explicit**: keys are sorted by our own serializer, so a dependency enabling `serde_json/preserve_order` can't silently change hashes.
+- **Divergence also deletes messages** appended by the discarded steps (`messages.step_idx`, migration 2).
+- **Runs freeze `model` and `system_prompt`** (migration 2). The prompt contains the current time, so rebuilding it on resume would diverge every LLM step. `runs.input_message_id` bounds which session messages a run sees, so a later run's messages don't leak into a replay.
+- **LLM step input is a digest**: `{model, messages: n, request_digest}` where the digest is the hash of the full request. Any change is detected without storing the whole history again for every step.
+- **Approval steps are always journaled when a tool requires approval**, even when the allowlist or `--yes` answers it. Otherwise "always allow" during the first attempt would remove the step on replay and shift every later index.
+- **Allowlist patterns never match commands with shell metacharacters** (`; | & $ \` > < ( )` and newlines), so `git *` doesn't approve `git log; rm -rf ~`.
+- **Retries happen inside the `llm` step** (up to 5 attempts; base 1 s doubling, capped at 30 s, jitter factor 0.5–1.0; `retry-after` honored). Only the final result is journaled. A stream that ends without a stop event counts as a retryable error.
+- **Consecutive same-role messages are merged** when building requests, since each tool step appends its own `tool_result` message.
+- **Path rules**: relative paths resolve in the workspace and may not escape it via `..` or symlinks. Absolute paths are allowed; writes to them need approval.
+- **`max_tokens` defaults to 8192** per model call. Not yet configurable.
+- **`tern run` output**: final answer on stdout; run/session ids and tool progress on stderr. Exit codes: 0 completed, 1 failed, 130 interrupted. Without `--yes`, approvals prompt on the terminal, or are denied when stdin isn't a TTY.
+- **`tern resume` landed in M1** (cheap once the journal existed), with `--yes`. M2 adds daemon auto-resume and `runs show`.
+- **IDs are UUIDv7** (hex, no dashes) for sessions and runs: time-ordered and collision-free without coordination.
+- **Host shell kills only the direct child** on timeout/cancel. Grandchildren started in the background can outlive it. Killing the whole process group needs `unsafe` or another crate; revisit with the sandbox work in M6.
+- **The mock provider picks its reply by the number of assistant turns** in the request, not by call count, so a resumed process continues the script where the crashed one stopped.
+- **No real-provider run yet.** The M1 acceptance prompt runs against the mock in `tests/m1.rs`. The real-provider version is `#[ignore]`d and documented in the test.

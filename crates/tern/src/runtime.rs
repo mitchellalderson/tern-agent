@@ -1,0 +1,130 @@
+//! Builds the agent from config: store, providers, tools, journal.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context, bail};
+use tern_core::agent::{Agent, AgentConfig, ProviderFactory};
+use tern_core::approval::ApprovalHandler;
+use tern_core::config::{ModelRef, SandboxBackendKind};
+use tern_core::journal::Journal;
+use tern_core::tool::ToolRegistry;
+use tern_core::types::{Provider, ProviderError};
+use tern_core::{Config, Secrets, TernHome};
+use tern_providers::{MockProvider, PROVIDER_ENV};
+use tern_store::Store;
+
+pub struct Runtime {
+    pub home: TernHome,
+    pub config: Config,
+    pub store: Store,
+    pub agent: Agent,
+    /// Set when `TERN_PROVIDER=mock:<script>` overrides real providers.
+    pub mock: bool,
+}
+
+impl Runtime {
+    pub fn open(home: &TernHome, approvals: Arc<dyn ApprovalHandler>) -> anyhow::Result<Self> {
+        home.ensure_layout()
+            .with_context(|| format!("creating {}", home.root().display()))?;
+        let (config, _) = Config::load(&home.config_path())?;
+        let secrets = Secrets::load(&home.secrets_path())?;
+        let store = Store::open(&home.db_path())
+            .with_context(|| format!("opening {}", home.db_path().display()))?;
+
+        let workspace = config.workspace_dir();
+        std::fs::create_dir_all(&workspace)
+            .with_context(|| format!("creating workspace {}", workspace.display()))?;
+
+        let (providers, mock) = provider_factory(&config, &secrets)?;
+        let tools = Arc::new(build_tools(&config)?);
+
+        let redactions = config
+            .secret_names()
+            .iter()
+            .filter_map(|n| secrets.get(n))
+            .collect::<Vec<_>>();
+        let journal = Journal::new(store.clone())
+            .with_redactions(redactions)
+            .with_crash_after_from_env();
+
+        let agent = Agent::new(
+            journal,
+            providers,
+            tools,
+            approvals,
+            AgentConfig {
+                workspace: canonical(workspace),
+                max_iterations: config.max_iterations,
+                ..AgentConfig::default()
+            },
+        );
+        Ok(Self {
+            home: home.clone(),
+            config,
+            store,
+            agent,
+            mock,
+        })
+    }
+
+    /// `--model`, else the session's model, else `default_model`.
+    pub fn pick_model(
+        &self,
+        flag: Option<&str>,
+        session_model: Option<&str>,
+    ) -> anyhow::Result<ModelRef> {
+        if let Some(m) = flag.or(session_model) {
+            return Ok(m.parse()?);
+        }
+        match self.config.default_model_ref() {
+            Some(m) => Ok(m?),
+            None if self.mock => Ok("mock:mock".parse()?),
+            None => bail!(
+                "no model selected: pass --model provider:model or run `tern config set default_model provider:model`"
+            ),
+        }
+    }
+}
+
+fn canonical(p: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&p).unwrap_or(p)
+}
+
+fn provider_factory(config: &Config, secrets: &Secrets) -> anyhow::Result<(ProviderFactory, bool)> {
+    if let Some(spec) = std::env::var(PROVIDER_ENV).ok().filter(|v| !v.is_empty()) {
+        let Some(path) = spec.strip_prefix("mock:") else {
+            bail!("{PROVIDER_ENV} must be `mock:<script.json>`, got {spec:?}");
+        };
+        let mock: Arc<dyn Provider> = Arc::new(MockProvider::from_file(path.as_ref())?);
+        return Ok((Arc::new(move |_| Ok(mock.clone())), true));
+    }
+    let providers = config.providers.clone();
+    let secrets = secrets.clone();
+    let factory: ProviderFactory = Arc::new(move |name: &str| {
+        let cfg = providers.get(name).ok_or_else(|| {
+            ProviderError::Config(format!(
+                "provider {name:?} is not configured in config.toml"
+            ))
+        })?;
+        tern_providers::build(name, cfg, &secrets)
+    });
+    Ok((factory, false))
+}
+
+fn build_tools(config: &Config) -> anyhow::Result<ToolRegistry> {
+    if config.sandbox.backend == SandboxBackendKind::Docker {
+        bail!("sandbox.backend = \"docker\" is not implemented yet (milestone M6); use \"host\"");
+    }
+    let mut registry = ToolRegistry::new();
+    tern_tools::register_builtins(
+        &mut registry,
+        tern_tools::BuiltinOptions {
+            sandbox: Arc::new(tern_sandbox::HostBackend),
+            shell_timeout: Duration::from_secs(config.sandbox.shell_timeout_secs),
+        },
+    )
+    .map_err(anyhow::Error::msg)?;
+    Ok(registry)
+}

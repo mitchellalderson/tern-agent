@@ -76,6 +76,24 @@ impl Config {
         expand_tilde(Path::new(&self.workspace))
     }
 
+    /// Every secret name the config refers to (for redaction).
+    pub fn secret_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .providers
+            .values()
+            .filter_map(|p| p.api_key_secret.clone())
+            .collect();
+        if let Some(t) = &self.gateway.telegram {
+            names.push(t.bot_token_secret.clone());
+        }
+        for s in self.mcp.servers.values() {
+            names.extend(s.env_secrets.iter().cloned());
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
     pub fn default_model_ref(&self) -> Option<Result<ModelRef, ConfigError>> {
         self.default_model.as_deref().map(str::parse)
     }

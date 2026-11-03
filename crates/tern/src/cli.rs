@@ -23,7 +23,12 @@ pub enum Command {
         yes: bool,
     },
     /// Resume an interrupted run.
-    Resume { run_id: String },
+    Resume {
+        run_id: String,
+        /// Auto-approve every tool call.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Run the gateway, scheduler, and local API in the foreground.
     Daemon,
     /// Messaging gateways.

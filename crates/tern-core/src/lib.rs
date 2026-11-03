@@ -1,8 +1,15 @@
-//! Domain types, configuration, and (from M1) the agent loop and step journal.
+//! Domain types, configuration, the step journal, and the agent loop.
 
+pub mod agent;
+pub mod approval;
 pub mod config;
+pub mod events;
 pub mod home;
+pub mod journal;
+pub mod prompt;
 pub mod secrets;
+pub mod tool;
+pub mod types;
 
 pub use config::{Config, ConfigError};
 pub use home::TernHome;

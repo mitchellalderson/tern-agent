@@ -1,6 +1,9 @@
 //! SQLite storage: connection setup, schema migrations, and repositories.
 
 mod migrations;
+mod repo;
+
+pub use repo::{MessageRow, NewMessage, NewRun, RunRow, SessionRow, StepRow, now_ms};
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -154,7 +157,7 @@ mod tests {
             .conn()
             .unwrap()
             .execute(
-                "INSERT INTO runs VALUES ('r', 'missing', 'running', 'user', 0, 0, NULL, NULL)",
+                "INSERT INTO runs (id, session_id, status, trigger, started_at, updated_at) VALUES ('r', 'missing', 'running', 'user', 0, 0)",
                 [],
             )
             .unwrap_err();

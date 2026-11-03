@@ -2,6 +2,8 @@ mod cli;
 mod config_cmd;
 mod doctor;
 mod logging;
+mod run_cmd;
+mod runtime;
 
 use std::process::ExitCode;
 
@@ -23,6 +25,14 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let home = TernHome::resolve()?;
+    // Commands that run the agent own the data directory; create it before
+    // logging starts so their first invocation is logged too.
+    if matches!(
+        cli.command,
+        Some(Command::Run { .. } | Command::Resume { .. })
+    ) {
+        home.ensure_layout()?;
+    }
     // Only log to file when the data directory already exists, so read-only
     // commands like `doctor` don't create ~/.tern as a side effect.
     let _log_guard = logging::init(&home);
@@ -39,8 +49,21 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         None => not_yet("the TUI", "M3"),
-        Some(Command::Run { .. }) => not_yet("`tern run`", "M1"),
-        Some(Command::Resume { .. }) => not_yet("`tern resume`", "M2"),
+        Some(Command::Run {
+            prompt,
+            session,
+            model,
+            yes,
+        }) => run_cmd::run(
+            &home,
+            run_cmd::RunArgs {
+                prompt: &prompt,
+                session: session.as_deref(),
+                model: model.as_deref(),
+                yes,
+            },
+        ),
+        Some(Command::Resume { run_id, yes }) => run_cmd::resume(&home, &run_id, yes),
         Some(Command::Daemon) => not_yet("`tern daemon`", "M5"),
         Some(Command::Gateway { .. }) => not_yet("`tern gateway`", "M5"),
         Some(Command::Sessions { .. }) => not_yet("`tern sessions`", "M2"),
