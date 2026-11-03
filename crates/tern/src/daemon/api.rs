@@ -20,9 +20,13 @@
 //! | GET | `/v1/approvals` | approvals waiting for an API client |
 //! | POST | `/v1/approvals/{id}` | answer `{decision: "once" \| "always" \| "deny"}` |
 //!
+//! Agent events on `/v1/events` carry `session_id` as well as `run_id`.
+//! Schedules are in `api_schedules.rs`; session runs and journal steps in
+//! `api_runs.rs`; secrets in `api_secrets.rs`.
 //! Pairing, devices and uploads are in `auth.rs` and `uploads.rs`. TCP
 //! listeners (`listen.rs`) serve this same router behind device-token auth.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::Path;
 use std::sync::Arc;
@@ -45,9 +49,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::manager::{ApiApproval, Manager};
 
-type Shared = Arc<Manager>;
+pub(super) type Shared = Arc<Manager>;
 
-struct ApiError(StatusCode, String);
+pub(super) struct ApiError(StatusCode, String);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -55,19 +59,19 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn bad(e: impl std::fmt::Display) -> ApiError {
+pub(super) fn bad(e: impl std::fmt::Display) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, format!("{e:#}"))
 }
 
-fn internal(e: impl std::fmt::Display) -> ApiError {
+pub(super) fn internal(e: impl std::fmt::Display) -> ApiError {
     ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
 }
 
-fn not_found(what: &str) -> ApiError {
+pub(super) fn not_found(what: &str) -> ApiError {
     ApiError(StatusCode::NOT_FOUND, format!("{what} not found"))
 }
 
-type ApiResult<T> = Result<Json<T>, ApiError>;
+pub(super) type ApiResult<T> = Result<Json<T>, ApiError>;
 
 /// Bind the socket (replacing a stale one) and serve until `shutdown`.
 /// `socket` is the advertised path; `bind` is where it really lives. They
@@ -149,6 +153,9 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/events", get(events))
         .route("/v1/approvals", get(pending_approvals))
         .route("/v1/approvals/{id}", post(approve))
+        .merge(super::api_schedules::routes())
+        .merge(super::api_runs::routes())
+        .merge(super::api_secrets::routes())
         .merge(super::auth::routes())
         .with_state(manager)
 }
@@ -359,6 +366,7 @@ async fn sessions(State(m): State<Shared>, Query(q): Query<Limit>) -> ApiResult<
 #[derive(Serialize, Deserialize)]
 pub struct SessionMessage {
     pub role: String,
+    pub run_id: Option<String>,
     pub content: Vec<ContentBlock>,
     pub summary: bool,
 }
@@ -387,6 +395,7 @@ async fn session(
             .into_iter()
             .map(|row| SessionMessage {
                 role: row.role,
+                run_id: row.run_id,
                 content: serde_json::from_str(&row.content_json).unwrap_or_default(),
                 summary: row.summary_of.is_some(),
             })
@@ -434,8 +443,8 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
     let agent = m.rt.agent.subscribe();
     let approvals = m.routes.api.subscribe();
     let stream = futures::stream::unfold(
-        (agent, approvals),
-        |(mut agent, mut approvals)| async move {
+        (agent, approvals, m, HashMap::<String, String>::new()),
+        |(mut agent, mut approvals, m, mut sessions)| async move {
             loop {
                 let ev = tokio::select! {
                     e = agent.recv() => match e {
@@ -449,12 +458,45 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
                         Err(RecvError::Closed) => return None,
                     },
                 };
-                let data = serde_json::to_string(&ev).unwrap_or_default();
-                return Some((Ok(Event::default().data(data)), (agent, approvals)));
+                let mut data = serde_json::to_value(&ev).unwrap_or_default();
+                if let ApiEvent::Agent(_) = ev {
+                    with_session(&m, &mut sessions, &mut data);
+                }
+                let data = serde_json::to_string(&data).unwrap_or_default();
+                return Some((
+                    Ok(Event::default().data(data)),
+                    (agent, approvals, m, sessions),
+                ));
             }
         },
     );
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Add `session_id` to an agent event, so a client that attached mid-run
+/// can place it. Run → session lookups are cached per connection.
+fn with_session(m: &Shared, cache: &mut HashMap<String, String>, data: &mut Value) {
+    let Some(obj) = data.as_object_mut() else {
+        return;
+    };
+    if obj.contains_key("session_id") {
+        return;
+    }
+    let Some(run) = obj.get("run_id").and_then(Value::as_str) else {
+        return;
+    };
+    if !cache.contains_key(run) {
+        let Ok(Some(r)) = m.rt.store.run(run) else {
+            return;
+        };
+        if cache.len() > 1000 {
+            cache.clear();
+        }
+        cache.insert(run.to_owned(), r.session_id);
+    }
+    if let Some(s) = cache.get(run) {
+        obj.insert("session_id".into(), Value::String(s.clone()));
+    }
 }
 
 async fn pending_approvals(State(m): State<Shared>) -> Json<Vec<ApiApproval>> {

@@ -4,6 +4,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
+import 'secrets.dart';
 import 'widgets.dart';
 
 class Sidebar extends StatefulWidget {
@@ -300,24 +301,38 @@ class _StatusFooter extends StatelessWidget {
       Link.connecting => (c.muted, 'Connecting…'),
       Link.offline => (c.warn, 'Reconnecting…'),
     };
-    return Tooltip(
-      message: store.linkError ?? store.client.endpoint.describe(),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(18, 10, 18, 12),
-        child: Row(
-          children: [
-            _Dot(color: color),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                text,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 4, 8, 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Tooltip(
+              message: store.linkError ?? store.client.endpoint.describe(),
+              child: Row(
+                children: [
+                  _Dot(color: color),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
+          ),
+          QuietIconButton(
+            icon: Icons.key,
+            size: 16,
+            tooltip: 'Secrets (⌘,)',
+            onPressed: store.link == Link.online
+                ? () => showSecretsDialog(context, store)
+                : null,
+          ),
+        ],
       ),
     );
   }

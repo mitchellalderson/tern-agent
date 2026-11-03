@@ -252,12 +252,14 @@ class ToolResultBlock extends ContentBlock {
 class SessionMessage {
   const SessionMessage({
     required this.role,
+    this.runId,
     required this.content,
     required this.summary,
   });
 
   factory SessionMessage.fromJson(Json j) => SessionMessage(
     role: j['role'] as String,
+    runId: j['run_id'] as String?,
     content: [
       for (final b in j['content'] as List) ContentBlock.fromJson(b as Json),
     ],
@@ -265,6 +267,10 @@ class SessionMessage {
   );
 
   final String role;
+
+  /// The run that wrote it; null for messages from before runs were
+  /// recorded, or a user message that started no run.
+  final String? runId;
   final List<ContentBlock> content;
 
   /// A compaction summary rather than something anyone said.
@@ -369,6 +375,14 @@ sealed class TernEvent {
       return ApprovalRequested(Approval.fromJson(a));
     }
     final run = j['run_id'] as String? ?? '';
+    final event = _agentEvent(j, run);
+    if (event is RunEvent) {
+      if (j['session_id'] case final String s) _sessions[event] = s;
+    }
+    return event;
+  }
+
+  static TernEvent _agentEvent(Json j, String run) {
     return switch (j['type']) {
       'run_started' => RunStarted(
         runId: run,
@@ -423,7 +437,15 @@ sealed class TernEvent {
 sealed class RunEvent extends TernEvent {
   const RunEvent(this.runId);
   final String runId;
+
+  /// The run's session, which the daemon adds to every event it sends.
+  /// Null for events built by hand.
+  String? get sessionId => _sessions[this];
 }
+
+// Kept beside the event rather than in every constructor, so events can
+// stay const for tests and hand-built values.
+final _sessions = Expando<String>('session_id');
 
 class RunStarted extends RunEvent {
   const RunStarted({required String runId, required this.sessionId})
@@ -528,3 +550,169 @@ class UnknownEvent extends TernEvent {
   const UnknownEvent(this.json);
   final Json json;
 }
+
+/// A routine: a prompt the daemon runs on a cron schedule.
+class Schedule {
+  const Schedule({
+    required this.id,
+    required this.cron,
+    required this.prompt,
+    required this.sessionId,
+    this.deliverTo,
+    required this.enabled,
+    this.nextRunAt,
+    this.lastRunAt,
+    this.lastStatus,
+  });
+
+  factory Schedule.fromJson(Json j) => Schedule(
+    id: j['id'] as String,
+    cron: j['cron'] as String,
+    prompt: j['prompt'] as String,
+    sessionId: j['session_id'] as String,
+    deliverTo: j['deliver_to'] as String?,
+    enabled: j['enabled'] as bool,
+    nextRunAt: _maybeTime(j['next_run_at']),
+    lastRunAt: _maybeTime(j['last_run_at']),
+    lastStatus: j['last_status'] as String?,
+  );
+
+  final String id;
+  final String cron;
+  final String prompt;
+
+  /// Each schedule runs in a session of its own (source `cron`).
+  final String sessionId;
+
+  /// Null keeps results in the session; else `telegram:<chat_id>`.
+  final String? deliverTo;
+  final bool enabled;
+  final DateTime? nextRunAt;
+  final DateTime? lastRunAt;
+  final String? lastStatus;
+}
+
+class CronPreview {
+  const CronPreview({required this.cron, required this.next});
+
+  factory CronPreview.fromJson(Json j) => CronPreview(
+    cron: j['cron'] as String,
+    next: [for (final t in j['next'] as List) _time(t as int)],
+  );
+
+  /// The expression as the daemon normalizes it.
+  final String cron;
+  final List<DateTime> next;
+}
+
+class RunItem {
+  const RunItem({
+    required this.id,
+    required this.status,
+    required this.trigger,
+    this.model,
+    required this.startedAt,
+    this.finishedAt,
+    this.error,
+  });
+
+  factory RunItem.fromJson(Json j) => RunItem(
+    id: j['id'] as String,
+    status: j['status'] as String,
+    trigger: j['trigger'] as String,
+    model: j['model'] as String?,
+    startedAt: _time(j['started_at'] as int),
+    finishedAt: _maybeTime(j['finished_at']),
+    error: j['error'] as String?,
+  );
+
+  final String id;
+
+  /// `running`, `completed`, `failed` or `interrupted`.
+  final String status;
+
+  /// Who started it: `user`, `cron`, …
+  final String trigger;
+  final String? model;
+  final DateTime startedAt;
+  final DateTime? finishedAt;
+  final String? error;
+}
+
+/// One journal step of a run.
+class StepItem {
+  const StepItem({
+    required this.idx,
+    required this.kind,
+    required this.status,
+    required this.input,
+    this.output,
+    this.usage,
+    this.error,
+    required this.startedAt,
+    this.finishedAt,
+  });
+
+  factory StepItem.fromJson(Json j) => StepItem(
+    idx: j['idx'] as int,
+    kind: j['kind'] as String,
+    status: j['status'] as String,
+    input: j['input'],
+    output: j['output'],
+    usage: j['usage'] is Json ? Usage.fromJson(j['usage'] as Json) : null,
+    error: j['error'] as String?,
+    startedAt: _time(j['started_at'] as int),
+    finishedAt: _maybeTime(j['finished_at']),
+  );
+
+  final int idx;
+
+  /// `llm`, `tool`, `approval`, `compaction`, …
+  final String kind;
+
+  /// `started`, `completed` or `failed`.
+  final String status;
+  final Object? input;
+  final Object? output;
+  final Usage? usage;
+  final String? error;
+  final DateTime startedAt;
+  final DateTime? finishedAt;
+
+  Duration? get duration => finishedAt?.difference(startedAt);
+}
+
+/// A secret tern knows about. The API never returns values.
+class SecretStatus {
+  const SecretStatus({
+    required this.name,
+    required this.inFile,
+    required this.inEnv,
+    required this.usedBy,
+  });
+
+  factory SecretStatus.fromJson(Json j) => SecretStatus(
+    name: j['name'] as String,
+    inFile: j['in_file'] as bool,
+    inEnv: j['in_env'] as bool,
+    usedBy: [for (final u in j['used_by'] as List) u as String],
+  );
+
+  final String name;
+
+  /// Stored in `secrets.toml`.
+  final bool inFile;
+
+  /// Set in the daemon's environment, which takes precedence over the file.
+  final bool inEnv;
+
+  /// What refers to it, e.g. `provider anthropic` or `connector hubspot`.
+  final List<String> usedBy;
+
+  bool get isSet => inFile || inEnv;
+}
+
+/// Secret names double as environment variable names.
+final secretName = RegExp(r'^[A-Za-z_][A-Za-z0-9_]{0,127}$');
+
+DateTime? _maybeTime(Object? t) => t is int ? _time(t) : null;

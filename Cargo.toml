@@ -69,7 +69,9 @@ wiremock = "0.6.5"
 lto = "thin"
 codegen-units = 16
 strip = true
-panic = "abort"
+# Keep the default `panic = "unwind"`: Luau raises Lua errors as C++
+# exceptions that unwind through mlua's Rust frames, and with "abort" any
+# connector error (even `error("...")`) terminates the process.
 
 # Shipped binaries (`--profile dist`): smallest output, but the final
 # codegen runs on a single core, so it's slow to build.

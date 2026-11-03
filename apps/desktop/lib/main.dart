@@ -1,12 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:tern_client/tern_client.dart';
 
+import 'state/notifier.dart';
 import 'state/store.dart';
 import 'theme.dart';
 import 'ui/home.dart';
 
 void main() {
-  final store = TernStore(TernClient(Endpoint.local()))..connect();
+  WidgetsFlutterBinding.ensureInitialized();
+  final store = TernStore(
+    TernClient(Endpoint.local()),
+    notifier: Notifier.platform(),
+  )..connect();
   runApp(TernApp(store: store));
 }
 

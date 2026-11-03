@@ -30,6 +30,7 @@ clap.workspace = true
 futures.workspace = true
 qrcode.workspace = true
 rcgen.workspace = true
+regex.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true

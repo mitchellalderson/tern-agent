@@ -83,20 +83,33 @@ impl Config {
 
     /// Every secret name the config refers to (for redaction).
     pub fn secret_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .providers
-            .values()
-            .filter_map(|p| p.api_key_secret.clone())
-            .collect();
-        if let Some(t) = &self.gateway.telegram {
-            names.push(t.bot_token_secret.clone());
-        }
-        for s in self.mcp.servers.values() {
-            names.extend(s.env_secrets.iter().cloned());
-        }
+        let mut names: Vec<String> = self.secret_uses().into_iter().map(|(n, _)| n).collect();
         names.sort();
         names.dedup();
         names
+    }
+
+    /// `(secret, what uses it)` for every secret the config refers to.
+    pub fn secret_uses(&self) -> Vec<(String, String)> {
+        let mut uses: Vec<(String, String)> = self
+            .providers
+            .iter()
+            .filter_map(|(name, p)| {
+                let secret = p.api_key_secret.clone()?;
+                Some((secret, format!("provider {name}")))
+            })
+            .collect();
+        if let Some(t) = &self.gateway.telegram {
+            uses.push((t.bot_token_secret.clone(), "telegram".into()));
+        }
+        for (name, s) in &self.mcp.servers {
+            uses.extend(
+                s.env_secrets
+                    .iter()
+                    .map(|secret| (secret.clone(), format!("mcp {name}"))),
+            );
+        }
+        uses
     }
 
     pub fn default_model_ref(&self) -> Option<Result<ModelRef, ConfigError>> {

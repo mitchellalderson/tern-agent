@@ -70,6 +70,26 @@ fn string_list(t: Option<Table>, what: &str) -> Result<Vec<String>, LoadError> {
         .map_err(|_| invalid(format!("{what} must be a list of strings")))
 }
 
+/// `api.example.com` or `*.example.com`; nothing broader.
+fn check_hosts(hosts: &[String]) -> Result<(), LoadError> {
+    for h in hosts {
+        let bare = h.strip_prefix("*.").unwrap_or(h);
+        let valid = !bare.is_empty()
+            && bare.contains('.')
+            && bare
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+            || bare.parse::<std::net::IpAddr>().is_ok()
+            || bare == "localhost";
+        if !valid {
+            return Err(invalid(format!(
+                "capabilities.http entry {h:?} must be a host name like \"api.example.com\" or \"*.example.com\" (no \"*\" on its own, schemes, ports, or paths)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(lua: &Lua, t: &Table) -> Result<(ConnectorSpec, Vec<(String, Function)>), LoadError> {
     let get_str = |key: &str| -> Result<String, LoadError> {
         match t.raw_get::<Value>(key) {
@@ -103,6 +123,8 @@ pub fn parse(lua: &Lua, t: &Table) -> Result<(ConnectorSpec, Vec<(String, Functi
             )?,
         },
     };
+
+    check_hosts(&capabilities.http)?;
 
     let tools: Table = t
         .raw_get::<Option<Table>>("tools")
@@ -227,6 +249,22 @@ mod tests {
                 .contains("\"a\"")
         );
         assert!(check_schema(&json!({"type": "object", "properties": {"a": 1}})).is_err());
+    }
+
+    #[test]
+    fn host_entries_must_be_hosts() {
+        let ok = |h: &str| check_hosts(&[h.to_owned()]).is_ok();
+        assert!(ok("api.linear.app") && ok("*.ghost.io") && ok("127.0.0.1") && ok("localhost"));
+        for bad in [
+            "*",
+            "*.",
+            "https://api.x.com",
+            "api.x.com/v1",
+            "x.com:443",
+            "",
+        ] {
+            assert!(!ok(bad), "{bad:?} should be rejected");
+        }
     }
 
     #[test]

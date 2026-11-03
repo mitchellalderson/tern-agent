@@ -258,6 +258,20 @@ impl Connectors {
             .flat_map(|s| s.capabilities.secrets)
             .collect()
     }
+
+    /// `(secret, "connector <name>")` for every secret an active connector declares.
+    pub fn secret_uses(&self) -> Vec<(String, String)> {
+        self.specs()
+            .into_iter()
+            .flat_map(|s| {
+                let user = format!("connector {}", s.name);
+                s.capabilities
+                    .secrets
+                    .into_iter()
+                    .map(move |secret| (secret, user.clone()))
+            })
+            .collect()
+    }
 }
 
 #[async_trait]

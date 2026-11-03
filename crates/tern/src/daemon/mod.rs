@@ -2,6 +2,9 @@
 //! scheduler, gateways, and the local API on `~/.tern/tern.sock`.
 
 pub mod api;
+mod api_runs;
+mod api_schedules;
+mod api_secrets;
 pub mod auth;
 pub mod listen;
 pub mod manager;

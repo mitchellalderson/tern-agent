@@ -57,4 +57,54 @@ void main() {
     expect(d.messages[0].content[1], isA<ToolUseBlock>());
     expect((d.messages[1].content[0] as ToolResultBlock).isError, isFalse);
   });
+
+  test('events carry their session when the daemon sends it', () {
+    final e = ev(
+      '{"type":"text_delta","run_id":"r","session_id":"s","text":"x"}',
+    );
+    expect((e as RunEvent).sessionId, 's');
+    expect(
+      (ev('{"type":"text_delta","run_id":"r","text":"x"}') as RunEvent)
+          .sessionId,
+      isNull,
+    );
+  });
+
+  test('decodes schedules, runs and steps', () {
+    final s = Schedule.fromJson(
+      jsonDecode(
+            '{"id":"sch_1","cron":"0 8 * * 1-5",'
+            '"prompt":"p","session_id":"s","deliver_to":null,"enabled":false,'
+            '"next_run_at":null,"last_run_at":1762185600000,"last_status":"completed"}',
+          )
+          as Json,
+    );
+    expect(s.nextRunAt, isNull);
+    expect(s.lastRunAt!.year, 2025);
+    final step = StepItem.fromJson(
+      jsonDecode(
+            '{"idx":0,"kind":"llm","status":"completed",'
+            '"input":{"model":"m"},"output":null,"usage":{"input_tokens":5,"output_tokens":1},'
+            '"error":null,"started_at":1762185600000,"finished_at":1762185602500}',
+          )
+          as Json,
+    );
+    expect(step.duration, const Duration(milliseconds: 2500));
+    expect(step.usage!.total, 6);
+  });
+
+  test('decodes secrets and validates names', () {
+    final s = SecretStatus.fromJson(
+      jsonDecode(
+            '{"name":"ANTHROPIC_API_KEY","in_file":false,"in_env":true,'
+            '"used_by":["provider anthropic"]}',
+          )
+          as Json,
+    );
+    expect(s.isSet, isTrue);
+    expect(s.usedBy, ['provider anthropic']);
+    expect(secretName.hasMatch('GITHUB_TOKEN'), isTrue);
+    expect(secretName.hasMatch('9LIVES'), isFalse);
+    expect(secretName.hasMatch('A-B'), isFalse);
+  });
 }

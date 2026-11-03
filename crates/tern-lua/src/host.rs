@@ -17,6 +17,12 @@ pub const DEFAULT_MEMORY: usize = 64 * 1024 * 1024;
 /// Largest HTTP response body a connector can read.
 const MAX_HTTP_BODY: usize = 5 * 1024 * 1024;
 
+/// How users provide secrets; shown when one is missing so the model
+/// relays the real mechanism instead of inventing one (like a `.env` file).
+pub const SECRETS_HELP: &str = "The user sets secrets as environment variables or in ~/.tern/secrets.toml \
+(TOML lines like {key} = \"...\", file mode 0600), then restarts tern (or uses /reload in the chat UI). \
+tern does not read .env files. Never ask the user to paste a secret into the chat.";
+
 /// Globals removed before sandboxing: code loading and environment access.
 const REMOVED_GLOBALS: &[&str] = &[
     "require",
@@ -290,9 +296,12 @@ fn make_ctx(
                         "secret {key:?} is not declared in {name}'s capabilities.secrets"
                     )));
                 }
-                secrets
-                    .get(&key)
-                    .ok_or_else(|| mlua::Error::runtime(format!("secret {key:?} is not set")))
+                secrets.get(&key).ok_or_else(|| {
+                    mlua::Error::runtime(format!(
+                        "secret {key:?} is not set. {}",
+                        SECRETS_HELP.replace("{key}", &key)
+                    ))
+                })
             })?,
         )?;
     }

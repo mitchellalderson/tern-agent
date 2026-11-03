@@ -65,6 +65,16 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<ConnectorsCommand>,
     },
+    /// Write a redacted bug report: environment, doctor, config, the last
+    /// problem run, crashes, and recent logs.
+    Report {
+        /// Where to write it (`-` for stdout). Default: logs/report-<time>.md.
+        #[arg(long, short)]
+        output: Option<std::path::PathBuf>,
+        /// Include this run's journal instead of the latest unfinished one.
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Check configuration, providers, database, and integrations.
     Doctor(DoctorArgs),
     /// Read and write config.toml.

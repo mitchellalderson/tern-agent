@@ -142,6 +142,90 @@ class TernClient {
       Approval.fromJson(a as Json),
   ];
 
+  Future<List<Schedule>> schedules() async => [
+    for (final s in await _json('GET', '/v1/schedules') as List)
+      Schedule.fromJson(s as Json),
+  ];
+
+  /// `deliverTo`: null keeps results in the routine's session; else
+  /// `telegram:<chat_id>`.
+  Future<Schedule> createSchedule({
+    required String cron,
+    required String prompt,
+    String? deliverTo,
+  }) async => Schedule.fromJson(
+    await _json('POST', '/v1/schedules', {
+      'cron': cron,
+      'prompt': prompt,
+      'deliver_to': ?deliverTo,
+    }),
+  );
+
+  /// Pass `deliverTo: 'none'` to stop delivering.
+  Future<Schedule> updateSchedule(
+    String id, {
+    String? cron,
+    String? prompt,
+    bool? enabled,
+    String? deliverTo,
+  }) async => Schedule.fromJson(
+    await _json('PATCH', '/v1/schedules/$id', {
+      'cron': ?cron,
+      'prompt': ?prompt,
+      'enabled': ?enabled,
+      'deliver_to': ?deliverTo,
+    }),
+  );
+
+  Future<void> deleteSchedule(String id) =>
+      _json('DELETE', '/v1/schedules/$id');
+
+  /// Run a routine now; its next scheduled run doesn't move.
+  Future<Started> runSchedule(String id) async {
+    final j = await _json('POST', '/v1/schedules/$id/run') as Json;
+    return Started.fromJson({...j, 'model': ''});
+  }
+
+  /// Validate `cron` and get its next three runs. Throws [TernException]
+  /// with the reason if it's invalid.
+  Future<CronPreview> previewCron(String cron) async => CronPreview.fromJson(
+    await _json('POST', '/v1/schedules/preview', {'cron': cron}),
+  );
+
+  Future<List<RunItem>> runs(String session) async => [
+    for (final r in await _json('GET', '/v1/sessions/$session/runs') as List)
+      RunItem.fromJson(r as Json),
+  ];
+
+  Future<List<StepItem>> steps(String run) async => [
+    for (final s in await _json('GET', '/v1/runs/$run/steps') as List)
+      StepItem.fromJson(s as Json),
+  ];
+
+  /// Every secret in `secrets.toml` or referred to by config or a
+  /// connector. Values are never returned.
+  Future<List<SecretStatus>> secrets() async => [
+    for (final s in await _json('GET', '/v1/secrets') as List)
+      SecretStatus.fromJson(s as Json),
+  ];
+
+  /// Store `value` in `secrets.toml`. Takes effect without a restart.
+  Future<SecretStatus> setSecret(String name, String value) async =>
+      SecretStatus.fromJson(
+        await _json('PUT', '/v1/secrets/$name', {'value': value}),
+      );
+
+  /// Remove `name` from `secrets.toml`. Returns false if it wasn't there.
+  Future<bool> removeSecret(String name) async {
+    try {
+      await _json('DELETE', '/v1/secrets/$name');
+      return true;
+    } on TernException catch (e) {
+      if (e.status == 404) return false;
+      rethrow;
+    }
+  }
+
   Future<void> answer(String approval, Decision decision) =>
       _json('POST', '/v1/approvals/$approval', {'decision': decision.wire});
 

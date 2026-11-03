@@ -12,6 +12,7 @@ use tern_core::types::Usage;
 
 use crate::history;
 use crate::input::Input;
+use crate::secrets::SecretsPanel;
 use crate::{Backend, BackendResult, PendingApproval, SessionInfo};
 
 /// Two Ctrl+C presses within this window quit.
@@ -77,6 +78,8 @@ pub struct App {
     pub approval: Option<PendingApproval>,
     pub last_usage: Option<Usage>,
     pub hint: Option<String>,
+    /// The `/secrets` panel, drawn over the transcript while open.
+    pub secrets: Option<SecretsPanel>,
     queued: Option<String>,
     last_ctrl_c: Option<Instant>,
 }
@@ -90,6 +93,7 @@ Commands:
   /tools            list available tools
   /stop             cancel the current run
   /reload           re-read config and rebuild tools
+  /secrets [NAME]   manage API keys and tokens in secrets.toml
   /usage            token usage for this session
   /quit             exit
 Keys: Enter send · Shift/Alt+Enter or Ctrl+J newline · Ctrl+O expand tool output
@@ -110,6 +114,7 @@ impl App {
             approval: None,
             last_usage: None,
             hint: None,
+            secrets: None,
             queued: None,
             last_ctrl_c: None,
         }
@@ -133,6 +138,15 @@ impl App {
             return self.ctrl_c(now);
         }
         self.hint = None;
+
+        // The panel takes every key, so a value being typed can't answer
+        // an approval or land in the chat input.
+        if let Some(panel) = &mut self.secrets {
+            if !panel.on_key(key, self.backend.as_ref()) {
+                self.secrets = None;
+            }
+            return vec![];
+        }
 
         if self.approval.is_some() {
             let decision = match key.code {
@@ -195,7 +209,9 @@ impl App {
     }
 
     pub fn on_paste(&mut self, text: &str) {
-        if self.approval.is_none() {
+        if let Some(panel) = &mut self.secrets {
+            panel.on_paste(text);
+        } else if self.approval.is_none() {
             self.input
                 .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
         }
@@ -210,6 +226,9 @@ impl App {
         }
         self.last_ctrl_c = Some(now);
         self.hint = Some("press Ctrl+C again to quit".into());
+        if self.secrets.take().is_some() {
+            return vec![];
+        }
         if self.approval.is_some() {
             self.answer_approval(Decision::Deny);
         }
@@ -379,6 +398,13 @@ impl App {
                         self.notice(msg);
                         return vec![Effect::Resubscribe];
                     }
+                    Err(e) => self.error(e),
+                }
+            }
+            "secrets" => {
+                let name = (!arg.is_empty()).then_some(arg);
+                match SecretsPanel::open(self.backend.as_ref(), name) {
+                    Ok(panel) => self.secrets = Some(panel),
                     Err(e) => self.error(e),
                 }
             }

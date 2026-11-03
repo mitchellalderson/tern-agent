@@ -4,6 +4,12 @@
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
+/// The binary under test: `TERN_TEST_BIN` (e.g. a `--profile dist` build,
+/// whose settings can differ from test builds) or this crate's build.
+fn tern_bin() -> std::path::PathBuf {
+    std::env::var_os("TERN_TEST_BIN").map_or_else(|| env!("CARGO_BIN_EXE_tern").into(), Into::into)
+}
+
 use serde_json::json;
 
 struct Env {
@@ -33,7 +39,7 @@ impl Env {
     }
 
     fn tern(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_tern"))
+        Command::new(tern_bin())
             .args(args)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())

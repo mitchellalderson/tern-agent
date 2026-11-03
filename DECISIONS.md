@@ -156,6 +156,22 @@ An independent review of the trust boundaries found these; all are fixed with te
   - Clients only follow the link if the target socket and its directory are owned by them and the directory is mode 0700; otherwise they don't attach.
 - **Not reproduced**: the review suspected Luau's C pattern matcher could run past the time limit (catastrophic backtracking). A test shows Luau's interrupt fires inside it too, and the call stops at the limit; the test stays as a regression check.
 
+### Post-v1 fixes
+
+- **`panic = "abort"` removed from the release profiles.** Luau raises Lua errors as C++ exceptions that unwind through mlua's Rust frames. Under `abort` any connector error, even an ordinary `error("…")` or a missing secret, terminated the process with `libc++abi: terminating due to uncaught exception of type lua_exception`. No test caught it because cargo builds test binaries with `panic = "unwind"` whatever the profile says. The end-to-end tests now accept `TERN_TEST_BIN`, and CI runs them against the `--profile dist` binary. Unwind tables cost about 2 MB (dist: 16 MB).
+- **Secrets guidance for the model**: the system prompt and `connector_write` docs say secrets come from the environment or `~/.tern/secrets.toml`, take effect after a restart or `/reload`, and are never read from `.env` files or pasted into chat. A missing `ctx.secret` says how to add it. (A model had told a user to put an API key in `~/.tern/.env`.)
+- **`capabilities.http` entries are validated**: a host name, `*.suffix`, an IP, or `localhost`. A bare `"*"` (which a model wrote, meaning "anything") matched nothing; it, schemes, ports and paths are now rejected with an explanation.
+- **Diagnostics** (added after a crash left no trace):
+  - **Unbuffered logs.** File logging is synchronous; the non-blocking writer lost the lines before the abort.
+  - **Crash files.** A panic hook writes `logs/crash-<time>.txt` (message, location, thread, backtrace, version, OS) and prints its path. ratatui's hook wraps it, so the terminal is restored first.
+  - **Native aborts** (like the Luau one) can't be hooked without `unsafe` signal handling; the unbuffered log is what survives them.
+  - **Log lines** record run start and finish (with redacted errors) and each tool call's outcome; a failure includes the first line of its output, redacted.
+  - **Test switch.** `TERN_TEST_PANIC` makes tern panic at startup, to test the hook.
+- **`tern report`** (not in §12.1) writes one Markdown file: environment, `tern doctor --offline`, `config.toml`, `tern connectors list`, the newest unfinished run's journal (or `--run`), up to two crash files, and the last 200 log lines.
+  - It runs those commands as subprocesses of the same binary, so the output matches what the user sees.
+  - **Redaction**: every value in `secrets.toml`, plus env secrets named by config or connectors, then patterns for well-known token formats (`sk-`, `sk-ant-`, `ghp_`, `github_pat_`, `xox*-`, `glpat-`, AWS keys, Telegram bot tokens), `key=`/`token:`/`password=`-style values, and `Bearer`/`Basic` credentials.
+  - Saved with mode 0600, and the user is told to review it before sharing.
+
 ## D1
 
 Remote core, from `docs/deployment-spec.md` §6–§7.
@@ -171,7 +187,7 @@ Remote core, from `docs/deployment-spec.md` §6–§7.
 - **Revocation closes event streams** by wrapping `text/event-stream` responses for device callers in `take_until(token)`, with one cancellation token per device in a process-wide map. `tern devices revoke` goes through the daemon's socket when it's running (so streams close at once) and falls back to the database otherwise.
 - **401 vs 403**: an unknown or revoked token is 401 with `WWW-Authenticate: Bearer` and an error saying the device was signed out. A valid token with too little scope is 403. Clients treat 401 as "signed out" and don't retry; a bad pairing code is also 401 but on the pairing route, which clients don't map to signed out.
 - **Hardening as specified**: pairing is limited to 5 attempts per minute per client IP (sliding window, in memory), and TCP request bodies are capped at 1 MB except `/v1/uploads` (25 MB plus multipart framing; a route-level `DefaultBodyLimit` overrides the router's). There are no CORS headers. `audit`-target log lines record pairing, failed codes, rate-limit hits, revocations, and owner-scope writes from devices. With `trust_proxy`, `X-Forwarded-For` is honoured only when the peer is loopback.
-- **`/v1/health` capabilities**: `api` (1), `deployment` (`local` on the socket, `server` over TCP; `cloud` is for D5), `store` (`sqlite`), `library` (`fs`), `auth {kind, scope}` and `features` (`devices`, `uploads`). `pid` and `version` stay for older clients. Deployment is chosen per connection, not per core, because what the GUI needs to know is whether *it* can reach the files. `GET /healthz` answers `ok` without auth.
+- **`/v1/health` capabilities**: `api` (1), `deployment` (`local` on the socket, `server` over TCP; `cloud` is for D5), `store` (`sqlite`), `library` (`fs`), `auth {kind, scope}` and `features` (`devices`, `schedules`, `uploads`). `pid` and `version` stay for older clients. Deployment is chosen per connection, not per core, because what the GUI needs to know is whether *it* can reach the files. `GET /healthz` answers `ok` without auth.
 - **Pairing links** are `tern://pair?u=…&c=…&fp=sha256:<HEX>&n=<host>` with the URL percent-encoded. `fp` appears only for `tls = "auto"`. The URL is `api.public_url` (new key), else `tern devices pair --url`, else the first TCP listener, with the host name substituted for `0.0.0.0`. The owner can also make a code over the API (`POST /v1/devices/pair`), for the desktop app's Add device.
 - **`tern devices`**: `pair [--scope chat|owner|read] [--name] [--url]` prints a QR code when stdout is a terminal, then the link; `list`, `revoke`, `rename`; and `join <link>`, which redeems a link from this machine (pinned) and prints the token. `chat` is the default scope, as the spec recommends for phones.
 - **`tern --remote <url> [--pin sha256:…]`** attaches the TUI to a remote core. The token comes only from `$TERN_REMOTE_TOKEN`, so it doesn't appear in `ps`. `remote.rs` gained a base URL and default headers; nothing in the TUI changed. Errors include the cause chain, because reqwest's message hides TLS failures such as a pin mismatch.

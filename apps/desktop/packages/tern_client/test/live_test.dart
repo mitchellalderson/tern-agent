@@ -94,6 +94,7 @@ void main() {
     await client.answer(approval.approval.id, Decision.once);
     final tool = await events.firstWhere<ToolFinished>();
     expect(tool.output, contains('from-dart'));
+    expect(tool.sessionId, started.sessionId);
     final done = await events.firstWhere<RunFinished>();
     expect(done.status, 'completed');
 
@@ -103,7 +104,56 @@ void main() {
       'All done.',
     );
     expect((await client.sessions()).single.id, started.sessionId);
+    expect(session.messages.last.runId, started.runId);
+    final steps = await client.steps(started.runId);
+    expect(steps.map((s) => s.kind), containsAll(['llm', 'approval', 'tool']));
+    expect((await client.runs(started.sessionId)).single.status, 'completed');
     await events.cancel();
+  }, skip: bin == null ? 'set TERN_BIN to run' : false);
+
+  test('routines: preview, create, run now, edit, delete', () async {
+    final preview = await client.previewCron('0 8 * * mon-fri');
+    expect(preview.next, hasLength(3));
+    await expectLater(
+      client.previewCron('nope'),
+      throwsA(isA<TernException>().having((e) => e.status, 'status', 400)),
+    );
+
+    final s = await client.createSchedule(
+      cron: '0 8 * * 1-5',
+      prompt: 'brief me',
+    );
+    expect(s.enabled, isTrue);
+    expect(s.nextRunAt, isNotNull);
+    final started = await client.runSchedule(s.id);
+    expect(started.sessionId, s.sessionId);
+
+    final off = await client.updateSchedule(s.id, enabled: false);
+    expect(off.nextRunAt, isNull);
+    expect((await client.schedules()).single.enabled, isFalse);
+    await client.deleteSchedule(s.id);
+    expect(await client.schedules(), isEmpty);
+  }, skip: bin == null ? 'set TERN_BIN to run' : false);
+
+  test('secrets: set, list without values, remove', () async {
+    final before = await client.secrets();
+    expect(before.where((s) => s.name == 'DART_TEST_TOKEN'), isEmpty);
+
+    final set = await client.setSecret('DART_TEST_TOKEN', 'dart-secret-value');
+    expect(set.inFile, isTrue);
+    final file = File('${tmp.path}/.tern/secrets.toml');
+    expect(await file.readAsString(), contains('dart-secret-value'));
+    expect(
+      jsonEncode((await client.secrets()).map((s) => s.name).toList()),
+      contains('DART_TEST_TOKEN'),
+    );
+
+    await expectLater(
+      client.setSecret('bad-name', 'x'),
+      throwsA(isA<TernException>().having((e) => e.status, 'status', 400)),
+    );
+    expect(await client.removeSecret('DART_TEST_TOKEN'), isTrue);
+    expect(await client.removeSecret('DART_TEST_TOKEN'), isFalse);
   }, skip: bin == null ? 'set TERN_BIN to run' : false);
 
   test(
