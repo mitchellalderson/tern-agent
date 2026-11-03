@@ -64,7 +64,9 @@ tern                                                       # chat
 
 With no subcommand, tern opens the chat TUI. If a daemon is running it attaches to it over `~/.tern/tern.sock`, so the conversation, schedules, and approvals are shared with Telegram; otherwise it starts its own runtime in-process.
 
-Chat commands: `/new` · `/model [provider:model]` · `/sessions` · `/resume <session or run id>` · `/tools` · `/stop` · `/reload` · `/usage` · `/help`.
+Chat commands: `/new` · `/model [provider:model]` · `/sessions` · `/resume <session or run id>` · `/tools` · `/secrets [NAME]` · `/stop` · `/reload` · `/usage` · `/help`.
+
+`/secrets` opens a panel listing every secret tern knows about: those in `secrets.toml` and those that config or an active connector refers to, with where each is set (file, environment) and what uses it. `n` adds one, Enter or `e` sets the selected one's value, `d` removes it from `secrets.toml` (confirm with `y`), and Esc closes the panel. `/secrets NAME` goes straight to entering NAME's value. Values are shown only as a character count and never reach the transcript, input history, or model.
 
 Keys: Enter sends; Shift+Enter, Alt+Enter, or Ctrl+J adds a newline; Ctrl+O expands tool output; Ctrl+C cancels the current run (twice to quit).
 
@@ -220,6 +222,21 @@ Secrets are looked up by name in the environment first, then in `~/.tern/secrets
 ANTHROPIC_API_KEY = "sk-ant-..."
 TELEGRAM_BOT_TOKEN = "123456:..."
 ```
+
+Rather than editing the file by hand, use `/secrets` in the chat, or the daemon API on `~/.tern/tern.sock`:
+
+| Method | Path | |
+|---|---|---|
+| `GET` | `/v1/secrets` | Every known secret as `{name, in_file, in_env, used_by}`. Values are never returned. |
+| `PUT` | `/v1/secrets/{name}` | Store `{"value": "..."}` in `secrets.toml`. |
+| `DELETE` | `/v1/secrets/{name}` | Remove it from `secrets.toml` (`404` if it isn't there). |
+
+```sh
+curl --unix-socket ~/.tern/tern.sock -X PUT http://tern/v1/secrets/ANTHROPIC_API_KEY \
+  -H 'content-type: application/json' -d '{"value": "sk-ant-..."}'
+```
+
+Both create `secrets.toml` with mode 0600 if needed, keep its comments, and take effect without a restart for providers, connectors, and newly started MCP servers. The Telegram gateway reads its token only when the daemon starts. A secret set in the environment takes precedence over the file.
 
 Environment variables: `TERN_HOME` (data directory, default `~/.tern`) and `TERN_LOG` (log level, e.g. `debug`).
 
