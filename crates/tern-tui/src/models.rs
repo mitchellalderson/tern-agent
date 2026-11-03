@@ -188,10 +188,14 @@ fn model_row(provider: &str, id: &str, info: Option<&ModelInfo>, current: bool) 
     }
 }
 
-/// Case-insensitive subsequence match on `provider:id` or the display name.
+/// Case-insensitive subsequence match on the id or display name. The
+/// provider counts only when the filter names one (`ollama:`), so "opus"
+/// doesn't match every Anthropic model through "anthropic".
 fn matches(filter: &str, provider: &str, m: &ModelInfo) -> bool {
-    let full = format!("{provider}:{}", m.id);
-    subsequence(filter, &full) || m.name.as_deref().is_some_and(|n| subsequence(filter, n))
+    if filter.contains(':') {
+        return subsequence(filter, &format!("{provider}:{}", m.id));
+    }
+    subsequence(filter, &m.id) || m.name.as_deref().is_some_and(|n| subsequence(filter, n))
 }
 
 fn subsequence(needle: &str, hay: &str) -> bool {
@@ -304,6 +308,12 @@ mod tests {
             l.on_key(key(KeyCode::Char(c)));
         }
         assert_eq!(l.choices(), ["anthropic:claude-b", "cb"]);
+        // The provider name alone doesn't match.
+        l.filter = "opic".into();
+        assert_eq!(l.choices(), ["opic"]);
+        l.filter = "openai:mini".into();
+        assert_eq!(l.choices(), ["openai:gpt-4o-mini", "openai:mini"]);
+        l.filter = "cb".into();
         l.on_key(key(KeyCode::Down));
         assert_eq!(l.on_key(key(KeyCode::Enter)), ListKey::Chosen("cb".into()));
         l.on_key(key(KeyCode::Down));
