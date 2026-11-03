@@ -166,7 +166,7 @@ impl Backend for TuiBackend {
         let fresh = Runtime::open(&self.home, self.approvals.clone()).map_err(chain)?;
         let summary = format!(
             "reloaded: {} tools, {} providers configured",
-            fresh.agent.tools().names().count(),
+            fresh.agent.tools().names().len(),
             fresh.config.providers.len()
         );
         match self.rt.write() {

@@ -56,11 +56,30 @@ pub trait Tool: Send + Sync {
     /// writes outside the workspace need approval, writes inside don't).
     fn policy(&self, ctx: &ToolCtx, args: &Value) -> ToolPolicy;
     async fn call(&self, ctx: &ToolCtx, args: Value) -> ToolResult;
+    /// One-line description of a call, shown in the UI and approval prompts.
+    /// `None` uses a generic summary.
+    fn summary(&self, _args: &Value) -> Option<String> {
+        None
+    }
+}
+
+/// Tools that come from somewhere that has to be started first (an MCP
+/// server). `prepare` runs before each run; `tools` returns what is
+/// currently available.
+#[async_trait]
+pub trait ToolSource: Send + Sync {
+    async fn prepare(&self);
+    fn tools(&self) -> Vec<Arc<dyn Tool>>;
+    /// Short human-readable status lines for the system prompt and `/tools`.
+    fn describe(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 #[derive(Default, Clone)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, Arc<dyn Tool>>,
+    sources: Vec<Arc<dyn ToolSource>>,
 }
 
 impl ToolRegistry {
@@ -72,22 +91,64 @@ impl ToolRegistry {
         self.tools.insert(tool.spec().name, tool);
     }
 
-    pub fn get(&self, name: &str) -> Option<&Arc<dyn Tool>> {
-        self.tools.get(name)
+    pub fn add_source(&mut self, source: Arc<dyn ToolSource>) {
+        self.sources.push(source);
     }
 
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.tools.keys().map(String::as_str)
+    /// Start lazy sources (e.g. MCP servers) so their tools are listed.
+    pub async fn prepare(&self) {
+        for s in &self.sources {
+            s.prepare().await;
+        }
+    }
+
+    pub fn describe_sources(&self) -> Vec<String> {
+        self.sources.iter().flat_map(|s| s.describe()).collect()
+    }
+
+    /// Every tool by name; built-ins win over source tools with the same name.
+    fn all(&self) -> BTreeMap<String, Arc<dyn Tool>> {
+        let mut all = BTreeMap::new();
+        for s in &self.sources {
+            for t in s.tools() {
+                all.insert(t.spec().name, t);
+            }
+        }
+        for (name, t) in &self.tools {
+            all.insert(name.clone(), t.clone());
+        }
+        all
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        match self.tools.get(name) {
+            Some(t) => Some(t.clone()),
+            None => self
+                .sources
+                .iter()
+                .flat_map(|s| s.tools())
+                .find(|t| t.spec().name == name),
+        }
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.all().into_keys().collect()
     }
 
     /// Specs sorted by name, so requests (and their journal hashes) are stable.
     pub fn specs(&self) -> Vec<ToolSpec> {
-        self.tools.values().map(|t| t.spec()).collect()
+        self.all().values().map(|t| t.spec()).collect()
+    }
+
+    pub fn summarize(&self, call: &ToolCall) -> String {
+        self.get(&call.name)
+            .and_then(|t| t.summary(&call.input))
+            .unwrap_or_else(|| crate::agent::summarize(call))
     }
 
     /// Unknown tools need no approval: calling them just returns an error.
     pub fn policy(&self, ctx: &ToolCtx, call: &ToolCall) -> ToolPolicy {
-        match self.tools.get(&call.name) {
+        match self.get(&call.name) {
             Some(t) => t.policy(ctx, &call.input),
             None => ToolPolicy {
                 idempotent: true,
@@ -97,7 +158,7 @@ impl ToolRegistry {
     }
 
     pub async fn call(&self, ctx: &ToolCtx, call: &ToolCall) -> ToolResult {
-        let Some(tool) = self.tools.get(&call.name) else {
+        let Some(tool) = self.get(&call.name) else {
             return ToolResult::error(format!("unknown tool {:?}", call.name));
         };
         let mut result = tool.call(ctx, call.input.clone()).await;

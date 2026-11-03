@@ -73,3 +73,31 @@ Choices made where the spec was ambiguous or silent. Newest at the bottom of eac
 - **Sessions are created lazily** on the first message, so opening and quitting the TUI leaves no empty session.
 - **`tern` without a terminal** (stdin or stdout not a TTY) refuses and points to `tern run`.
 - **`scripts/tui-smoke.py`** drives the real binary in a pty with the mock provider (chat, approval, `/usage`, double Ctrl+C, cancel and `/resume`), using a minimal VT100 screen model. It runs in CI after the unit tests. Standard library only, Unix only.
+
+## M4
+
+- **Tool sources.** `ToolRegistry` now combines fixed tools with `ToolSource`s (MCP servers, Luau connectors). A source's `prepare()` runs at the start of every run, before the first model call, and its tools are listed from then on. This is how MCP servers start lazily ("on first use") and how activated connectors appear without `/reload`. Built-in tools win name collisions.
+- **`Tool::summary(args)`** lets a tool describe a call itself for UIs and approval prompts. `connector_activate` and `connector_test` use it to show the connector's capabilities. `runs show` still uses the generic summary, since it works from the journal without loading tools.
+- **Skills** are read from `~/.tern/skills/*/SKILL.md` with a small `key: value` frontmatter parser (no YAML dependency; skills only need `name` and `description`). Skills are discovered again whenever a run starts, so new ones need no restart. `skill_read` returns the body plus a list of the skill's other files.
+- **System prompt** gains `## Skills` (name: description) and `## Integrations` (one line per MCP server and connector). Servers that haven't started yet are listed without a status.
+
+### Luau
+
+- **mlua 0.12 with `luau`, `async`, `serialize`, `send`.** One VM per connector. Before `sandbox(true)`, `require` (mlua's default reads from disk), `loadstring`, `load`, `dofile`, `loadfile`, `getfenv` and `setfenv` are removed, and `print` is routed to the log (stdout belongs to the TUI). Luau has no `io` and only `os.time`/`os.clock`/`os.date`.
+- **Time limit (5 s per call) is enforced twice:** a Luau interrupt checks a per-VM deadline, so CPU loops stop, and a tokio timeout around the call stops slow awaited HTTP. Loading a connector (its top-level code) is also time-limited. Memory is capped at 64 MB per VM with `set_memory_limit`. Calls into one VM are serialized.
+- **`capabilities.http` entries** are exact hosts or `*.suffix` wildcards, compared case-insensitively; only `http`/`https` URLs are allowed. Response bodies are capped at 5 MB. `ctx.http` also has `put`, `patch` and `delete` shorthands beyond the spec's `get`/`post`. Responses include `ok` (2xx).
+- **`ctx.kv` stores JSON values** under namespace `lua:<connector>`. Setting `nil` deletes.
+- **Validation** covers the table's shape, identifiers (`[a-z][a-z0-9_]*`, max 32 chars), and a pragmatic JSON Schema subset: top-level `type: "object"`, `properties` holds schemas, and every `required` entry exists. An active connector's `name` must match its file name. Invalid files are skipped with an error that `tern connectors list` shows.
+- **Connector tools default to `idempotent = false` and `requires_approval = false`**, overridable per tool.
+- **Agent-authored connectors:** `connector_write` (draft and validate), `connector_test` (run a draft tool), and `connector_activate`, which the spec doesn't list but needed something to promote a draft. Activation always requires approval, and the prompt shows hosts, secrets and tools. Testing a draft requires approval too when it declares any HTTP host or secret: it is code the model just wrote.
+- **Redaction now covers every value in `secrets.toml`**, plus env-provided secrets named by config or by an active connector.
+- **`tern connectors test <name>`** loads and validates (active first, then draft) and prints the tools; it doesn't run any. `list` shows active connectors and drafts, their capabilities, and missing secrets.
+
+### MCP
+
+- **rmcp 3.8 client** (`client`, `transport-child-process`, `transport-streamable-http-client-reqwest`). It shares our reqwest 0.13, so there is no second HTTP stack.
+- **stdio servers get a scrubbed environment** (PATH, HOME, locale and the like) plus only their declared `env_secrets`. A missing secret is a start error. Server stderr is piped into the log at debug level, never to the terminal.
+- **Restart policy:** a failed start or a lost connection marks the server unavailable, with backoff of 1 s doubling to 60 s. The next call or run start reconnects after that. A call cut off by a disconnect returns an error saying it may or may not have taken effect; it is not retried.
+- **Tool names** are `mcp__<server>__<tool>` cleaned to `[A-Za-z0-9_-]`; names over 64 characters (the strictest provider limit) are cut and given a stable FNV-1a suffix. Results join text content; images and audio become `[image content: <mime>]`; other blocks are JSON; `structuredContent` is used when there's no text.
+- **Test fixture is a stdlib-only Python MCP server** (`crates/tern-mcp/tests/fixtures/mcp_server.py`, stdio and streamable HTTP) instead of the npm reference server. Tests then run offline with no package downloads, and they exercise rmcp against an implementation that isn't rmcp. CI runners already have `python3`.
+- **Open question for M6:** Luau is C++ built by `cc`; the musl cross builds via `cargo-zigbuild` haven't been run yet with it in the tree.

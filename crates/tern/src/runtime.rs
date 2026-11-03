@@ -38,13 +38,15 @@ impl Runtime {
             .with_context(|| format!("creating workspace {}", workspace.display()))?;
 
         let (providers, mock) = provider_factory(&config, &secrets)?;
-        let tools = Arc::new(build_tools(&config, &store)?);
+        let (tools, connectors) = build_tools(home, &config, &store, &secrets)?;
+        let tools = Arc::new(tools);
 
-        let redactions = config
-            .secret_names()
-            .iter()
-            .filter_map(|n| secrets.get(n))
-            .collect::<Vec<_>>();
+        // Every value in secrets.toml, plus env-provided secrets the config
+        // or a connector names.
+        let mut names = config.secret_names();
+        names.extend(connectors.secret_names());
+        let mut redactions = secrets.file_values();
+        redactions.extend(names.iter().filter_map(|n| secrets.get(n)));
         let journal = Journal::new(store.clone())
             .with_redactions(redactions)
             .with_crash_after_from_env();
@@ -125,10 +127,17 @@ impl Runtime {
             self.store
                 .set_session_model(&session.id, &model.to_string())?;
         }
+        let skills: Vec<(String, String)> = tern_core::skills::discover(&self.home.skills_dir())
+            .into_iter()
+            .map(|s| (s.name, s.description))
+            .collect();
+        let integrations = self.agent.tools().describe_sources();
         let system = tern_core::prompt::system_prompt(&tern_core::prompt::PromptInputs {
             home: &self.home,
             now: chrono::Local::now(),
             workspace: &self.config.workspace_dir(),
+            skills: &skills,
+            integrations: &integrations,
         });
         let run = self
             .agent
@@ -172,7 +181,12 @@ fn provider_factory(config: &Config, secrets: &Secrets) -> anyhow::Result<(Provi
     Ok((factory, false))
 }
 
-fn build_tools(config: &Config, store: &Store) -> anyhow::Result<ToolRegistry> {
+fn build_tools(
+    home: &TernHome,
+    config: &Config,
+    store: &Store,
+    secrets: &Secrets,
+) -> anyhow::Result<(ToolRegistry, Arc<tern_lua::Connectors>)> {
     if config.sandbox.backend == SandboxBackendKind::Docker {
         bail!("sandbox.backend = \"docker\" is not implemented yet (milestone M6); use \"host\"");
     }
@@ -181,10 +195,36 @@ fn build_tools(config: &Config, store: &Store) -> anyhow::Result<ToolRegistry> {
         &mut registry,
         tern_tools::BuiltinOptions {
             store: store.clone(),
+            skills_dir: home.skills_dir(),
             sandbox: Arc::new(tern_sandbox::HostBackend),
             shell_timeout: Duration::from_secs(config.sandbox.shell_timeout_secs),
         },
     )
     .map_err(anyhow::Error::msg)?;
-    Ok(registry)
+
+    let lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
+    let dirs = tern_lua::tools::Dirs {
+        active: home.connectors_dir(),
+        drafts: home.drafts_dir(),
+    };
+    let connectors = Arc::new(tern_lua::Connectors::open(lua.clone(), dirs.active.clone()));
+    registry.add_source(connectors.clone());
+    registry.register(Arc::new(tern_lua::tools::ConnectorWrite {
+        host: lua.clone(),
+        dirs: dirs.clone(),
+    }));
+    registry.register(Arc::new(tern_lua::tools::ConnectorTest {
+        host: lua.clone(),
+        dirs: dirs.clone(),
+    }));
+    registry.register(Arc::new(tern_lua::tools::ConnectorActivate {
+        host: lua,
+        dirs,
+    }));
+
+    registry.add_source(Arc::new(tern_mcp::McpServers::from_config(
+        &config.mcp.servers,
+        Arc::new(secrets.clone()),
+    )));
+    Ok((registry, connectors))
 }

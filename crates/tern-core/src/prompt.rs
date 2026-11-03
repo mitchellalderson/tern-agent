@@ -12,6 +12,10 @@ pub struct PromptInputs<'a> {
     pub home: &'a TernHome,
     pub now: DateTime<Local>,
     pub workspace: &'a Path,
+    /// (name, description) of each skill.
+    pub skills: &'a [(String, String)],
+    /// One line per connected MCP server or Luau connector.
+    pub integrations: &'a [String],
 }
 
 pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
@@ -35,6 +39,22 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
         "Relative file paths and shell commands run in {}.",
         inp.workspace.display()
     ));
+
+    if !inp.skills.is_empty() {
+        out.push_str(
+            "\n\n## Skills\n\nLoad a skill's instructions with `skill_read` before using it.\n",
+        );
+        for (name, description) in inp.skills {
+            out.push_str(&format!("\n- {name}: {description}"));
+        }
+    }
+
+    if !inp.integrations.is_empty() {
+        out.push_str("\n\n## Integrations\n");
+        for line in inp.integrations {
+            out.push_str(&format!("\n- {line}"));
+        }
+    }
     out
 }
 
@@ -70,16 +90,22 @@ mod tests {
         let home = TernHome::new(tmp.path());
         std::fs::write(home.persona_path(), "I am tern.").unwrap();
         std::fs::write(home.user_path(), defaults::USER_MD).unwrap();
+        let skills = vec![("pdf".to_owned(), "Work with PDFs".to_owned())];
+        let integrations = vec!["MCP server github: 12 tools (mcp__github__*)".to_owned()];
         let inp = PromptInputs {
             home: &home,
             now: Local::now(),
             workspace: Path::new("/ws"),
+            skills: &skills,
+            integrations: &integrations,
         };
         let p = system_prompt(&inp);
         assert!(p.starts_with("I am tern."));
         assert!(!p.contains("About the user"));
         assert!(p.contains("## Current time"));
         assert!(p.contains("/ws"));
+        assert!(p.contains("## Skills") && p.contains("- pdf: Work with PDFs"));
+        assert!(p.contains("## Integrations\n\n- MCP server github"));
 
         std::fs::write(home.user_path(), "<!-- note -->\nName: Sam").unwrap();
         assert!(system_prompt(&inp).contains("## About the user\n\nName: Sam"));
@@ -93,7 +119,10 @@ mod tests {
             home: &home,
             now: Local::now(),
             workspace: Path::new("/ws"),
+            skills: &[],
+            integrations: &[],
         });
         assert!(p.starts_with("You are tern"));
+        assert!(!p.contains("## Skills"));
     }
 }

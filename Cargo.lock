@@ -318,6 +318,7 @@ checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
  "num-traits",
+ "serde",
  "windows-link",
 ]
 
@@ -670,6 +671,17 @@ name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
+
+[[package]]
+name = "erased-serde"
+version = "0.4.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e59b668157f32d3459d4bd634861a06ffa2503a461ca5f0916b9f0252605e66"
+dependencies = [
+ "serde",
+ "serde_core",
+ "typeid",
+]
 
 [[package]]
 name = "errno"
@@ -1268,6 +1280,8 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -1493,6 +1507,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
+name = "luau0-src"
+version = "0.22.0+luau740"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ea012e8a8aaff2f7b6c788fad41a60630003b6a0932bcf045f7d14952c9bd31"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "mac_address"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1559,6 +1582,38 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mlua"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a7ae6b65bf54b7fdd4cf5b6f44f60862350ebf3fe3779b3a9cc005e7fa14f81"
+dependencies = [
+ "bstr",
+ "either",
+ "erased-serde",
+ "futures-util",
+ "libc",
+ "mlua-sys",
+ "num-traits",
+ "parking_lot",
+ "rustc-hash",
+ "serde",
+ "serde-value",
+]
+
+[[package]]
+name = "mlua-sys"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1631cda17bd6486410ab751d91f5fd4484f441589278cdad879eb3afc721a285"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "luau0-src",
+ "pkg-config",
 ]
 
 [[package]]
@@ -1682,6 +1737,15 @@ name = "openssl-probe"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
+
+[[package]]
+name = "ordered-float"
+version = "2.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "ordered-float"
@@ -1944,6 +2008,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "process-wrap"
+version = "10.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f21b97672d2dc848e7b25701ab4535618b92f4861c13cc3f7f7bed52ad3c8da"
+dependencies = [
+ "futures",
+ "indexmap",
+ "nix 0.31.3",
+ "tokio",
+ "tracing",
+ "windows",
 ]
 
 [[package]]
@@ -2270,6 +2348,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmcp"
+version = "3.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8be15815186873ea063bf005011d16c356804973489e40c39116ae3a2878d1f"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "chrono",
+ "futures",
+ "http",
+ "indexmap",
+ "libc",
+ "pin-project-lite",
+ "process-wrap",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sse-stream",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "rsqlite-vfs"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2472,6 +2576,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-value"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
+dependencies = [
+ "ordered-float 2.10.1",
+ "serde",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2622,6 +2736,19 @@ checksum = "36bd8e29bf08189a005b2df1df99823aa0861cabe9044e5f31ed54ca292ee618"
 dependencies = [
  "cc",
  "rsqlite-vfs",
+]
+
+[[package]]
+name = "sse-stream"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c25ac7aff0abd1dbc474536e40416e1102c7dd9bfba0b9861c6d357f835dcfb4"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http-body",
+ "http-body-util",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -2842,7 +2969,7 @@ dependencies = [
  "nix 0.29.0",
  "num-derive",
  "num-traits",
- "ordered-float",
+ "ordered-float 4.6.0",
  "pest",
  "pest_derive",
  "phf 0.11.3",
@@ -2875,6 +3002,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tern-core",
+ "tern-lua",
+ "tern-mcp",
  "tern-providers",
  "tern-sandbox",
  "tern-store",
@@ -2917,10 +3046,36 @@ version = "0.1.0"
 [[package]]
 name = "tern-lua"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "mlua",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "tern-core",
+ "tern-store",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "wiremock",
+]
 
 [[package]]
 name = "tern-mcp"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "rmcp",
+ "serde_json",
+ "tempfile",
+ "tern-core",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
 
 [[package]]
 name = "tern-providers"
@@ -3131,6 +3286,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-stream"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3320,6 +3486,12 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "typeid"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 
 [[package]]
 name = "typenum"
@@ -3625,7 +3797,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f2ab60e120fd6eaa68d9567f3226e876684639d22a4219b313ff69ec0ccd5ac"
 dependencies = [
  "log",
- "ordered-float",
+ "ordered-float 4.6.0",
  "strsim",
  "thiserror 1.0.69",
  "wezterm-dynamic-derive",
@@ -3687,6 +3859,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
+name = "windows"
+version = "0.62.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "527fadee13e0c05939a6a05d5bd6eec6cd2e3dbd648b9f8e447c6518133d8580"
+dependencies = [
+ "windows-collections",
+ "windows-core",
+ "windows-future",
+ "windows-numerics",
+]
+
+[[package]]
+name = "windows-collections"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23b2d95af1a8a14a3c7367e1ed4fc9c20e0a26e79551b1454d72583c97cc6610"
+dependencies = [
+ "windows-core",
+]
+
+[[package]]
 name = "windows-core"
 version = "0.62.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3697,6 +3890,17 @@ dependencies = [
  "windows-link",
  "windows-result",
  "windows-strings",
+]
+
+[[package]]
+name = "windows-future"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1d6f90251fe18a279739e78025bd6ddc52a7e22f921070ccdc67dde84c605cb"
+dependencies = [
+ "windows-core",
+ "windows-link",
+ "windows-threading",
 ]
 
 [[package]]
@@ -3726,6 +3930,16 @@ name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "windows-numerics"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26"
+dependencies = [
+ "windows-core",
+ "windows-link",
+]
 
 [[package]]
 name = "windows-result"
@@ -3777,6 +3991,15 @@ dependencies = [
  "windows_x86_64_gnu",
  "windows_x86_64_gnullvm",
  "windows_x86_64_msvc",
+]
+
+[[package]]
+name = "windows-threading"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37"
+dependencies = [
+ "windows-link",
 ]
 
 [[package]]

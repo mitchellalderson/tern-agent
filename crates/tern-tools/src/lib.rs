@@ -5,6 +5,7 @@ pub mod http;
 pub mod memory;
 pub mod paths;
 pub mod shell;
+pub mod skills;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +18,7 @@ use tern_sandbox::SandboxBackend;
 
 pub struct BuiltinOptions {
     pub store: tern_store::Store,
+    pub skills_dir: std::path::PathBuf,
     pub sandbox: Arc<dyn SandboxBackend>,
     pub shell_timeout: Duration,
 }
@@ -36,6 +38,7 @@ pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> R
     registry.register(Arc::new(memory::MemorySave::new(opts.store.clone())));
     registry.register(Arc::new(memory::MemorySearch::new(opts.store.clone())));
     registry.register(Arc::new(memory::SessionSearch::new(opts.store)));
+    registry.register(Arc::new(skills::SkillRead::new(opts.skills_dir)));
     Ok(())
 }
 

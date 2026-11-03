@@ -11,6 +11,8 @@ workspace = true
 
 [dependencies]
 tern-core.workspace = true
+tern-lua.workspace = true
+tern-mcp.workspace = true
 tern-store.workspace = true
 tern-providers.workspace = true
 tern-sandbox.workspace = true

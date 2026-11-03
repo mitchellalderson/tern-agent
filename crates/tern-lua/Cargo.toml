@@ -9,3 +9,19 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+tern-core.workspace = true
+tern-store.workspace = true
+
+async-trait.workspace = true
+futures.workspace = true
+mlua.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio-util.workspace = true
+wiremock.workspace = true

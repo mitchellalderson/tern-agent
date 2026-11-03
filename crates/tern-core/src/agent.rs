@@ -273,6 +273,7 @@ impl Agent {
             cancel: cancel.clone(),
         };
 
+        self.tools.prepare().await;
         let tools = self.tools.specs();
         let window = self.cfg.context_window(&model.provider);
         let mut idx: u32 = 0;
@@ -380,7 +381,7 @@ impl Agent {
                     run_id: run.id.clone(),
                     id: call.id.clone(),
                     name: call.name.clone(),
-                    summary: summarize(&call),
+                    summary: self.tools.summarize(&call),
                 });
                 let in_flight = if policy.idempotent {
                     InFlight::Retry
@@ -481,7 +482,7 @@ impl Agent {
         }
         let req = ApprovalRequest {
             call: call.clone(),
-            summary: summarize(call),
+            summary: self.tools.summarize(call),
             pattern: approval::pattern_for(call),
         };
         let asked = tokio::time::timeout(self.cfg.approval_timeout, self.approvals.ask(&req));

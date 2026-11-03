@@ -472,6 +472,36 @@ impl Store {
         Ok((row.0 as u64, row.1 as u64, row.2 as u64, row.3 as u64))
     }
 
+    // ---- kv ----
+
+    pub fn kv_get(&self, namespace: &str, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()?
+            .query_row(
+                "SELECT value FROM kv WHERE namespace = ?1 AND key = ?2",
+                params![namespace, key],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn kv_set(&self, namespace: &str, key: &str, value: &str) -> Result<()> {
+        self.conn()?.execute(
+            "INSERT INTO kv (namespace, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![namespace, key, value, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn kv_delete(&self, namespace: &str, key: &str) -> Result<()> {
+        self.conn()?.execute(
+            "DELETE FROM kv WHERE namespace = ?1 AND key = ?2",
+            params![namespace, key],
+        )?;
+        Ok(())
+    }
+
     // ---- memories ----
 
     pub fn save_memory(&self, content: &str, tags: &[String]) -> Result<i64> {
@@ -737,6 +767,18 @@ mod tests {
         .unwrap();
         assert_eq!(s.session_usage("s").unwrap(), (15, 4, 0, 0));
         assert_eq!(s.session_usage("nope").unwrap(), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn kv_is_namespaced() {
+        let (s, _) = setup();
+        s.kv_set("a", "k", "1").unwrap();
+        s.kv_set("b", "k", "2").unwrap();
+        s.kv_set("a", "k", "3").unwrap();
+        assert_eq!(s.kv_get("a", "k").unwrap().as_deref(), Some("3"));
+        assert_eq!(s.kv_get("b", "k").unwrap().as_deref(), Some("2"));
+        s.kv_delete("a", "k").unwrap();
+        assert_eq!(s.kv_get("a", "k").unwrap(), None);
     }
 
     #[test]

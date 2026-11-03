@@ -83,6 +83,11 @@ impl Secrets {
         self.lookup(name).map(|(v, _)| v)
     }
 
+    /// Every value in `secrets.toml` (for redaction).
+    pub fn file_values(&self) -> Vec<String> {
+        self.file.values().cloned().collect()
+    }
+
     pub fn source(&self, name: &str) -> Option<SecretSource> {
         self.lookup(name).map(|(_, s)| s)
     }

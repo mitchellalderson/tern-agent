@@ -1,5 +1,6 @@
 mod cli;
 mod config_cmd;
+mod connectors_cmd;
 mod doctor;
 mod inspect;
 mod logging;
@@ -12,7 +13,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use tern_core::TernHome;
 
-use cli::{Cli, Command, ConfigCommand, RunsCommand, SessionsCommand};
+use cli::{Cli, Command, ConfigCommand, ConnectorsCommand, RunsCommand, SessionsCommand};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -82,7 +83,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Some(Command::Connectors { .. }) => not_yet("`tern connectors`", "M4"),
+        Some(Command::Connectors { command }) => match command.unwrap_or(ConnectorsCommand::List) {
+            ConnectorsCommand::List => connectors_cmd::list(&home),
+            ConnectorsCommand::Test { name } => connectors_cmd::test(&home, &name),
+        },
     }
 }
 
