@@ -932,6 +932,7 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 | **3. Organize and surface** | Make background work visible and tidy. Mostly UI plus straightforward store work. | **T2** channels, home, posts, reply-to-act, Telegram topics · **T6b** activity ledger with hash chain, Tasks view, `tern security audit` · **T8b** `tern tray` on macOS (helper bundle, notifications with actions, login items, quit escalation, `tern://` links) · **T5b** skill capture | M each | Stage 2 (routines, outbox) |
 | **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) · **T4b-ii** gateway connectors (ntfy, then Slack) | L | Stage 2 (taint before any external input); secret-requests spec built |
 | **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` · **T6d** `tern mcp serve` · **T4c** OpenAPI-to-connector and recorded test fixtures · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
+| **6. Multiplayer** (later) | Several people with one agent: group rooms first, then members on one core, then hosted workspaces (§15) | **M0** Telegram, Slack and Discord group rooms with guests · **M1** members, per-member connections, approvals and memory · **M2** tern Cloud workspaces, invites, seats | M0 S–M, M1 L, M2 M | Stages 2–3 (taint, channels); M2 needs tern Cloud |
 
 Why this order:
 - **Stage 1** delivers visible quality of life immediately: quiet routines, cost caps, easy stop. It costs almost
@@ -944,6 +945,8 @@ Why this order:
 - **Stage 4** is the hardest *engineering*: OAuth edge cases, per-provider quirks, account routing, migrations of
   secrets. Connections go in with OAuth, not later, to avoid a second migration of secrets and grants.
 - **Stage 5** is content and optional features that reuse everything above.
+- **Stage 6** is multiplayer. Its schema hooks (`author_id`, connection owner, ledger actor) go into stages 2–4 so
+  the stage needs no migration later. See §15.4.
 
 ### 12.2 Phases by area
 
@@ -1030,3 +1033,113 @@ Acceptance highlights (each phase also passes clippy `-D warnings` and `cargo te
   separating work and personal?
 - Pricing line: is "webhooks plus always-on watches" the free/paid boundary on Cloud, or does tier 3 self-hosting make
   that moot, so we sell convenience only (deployment-spec §10.1)?
+
+## 15. Multiplayer: several people, one agent (future; hosted first)
+
+Status: research and sizing only. Not in stages 1–5. Raised 2026-11-03 from creator feedback on Grok Bot ("7 Grok
+Bot agents I use every day", https://www.youtube.com/watch?v=QBmgF1kJSK4): the creator wants **several people in the
+same chat with the same agent**, and finds Grok Bot's lack of that a real downside. The transcript wasn't available;
+this section works from that summary plus the vendors' documentation
+([research/personal-agents-2026.md](research/personal-agents-2026.md) §4).
+
+### 15.1 What others do (November 2026)
+
+| Product | Several humans, one conversation? | How |
+|---|---|---|
+| **Grok Bot** | Only on Cursor **Team/Enterprise** plans, and only in group chats or Slack | A "shared Bot" has owner, Manager and Collaborator roles. Each person's 1:1 chat with it stays private, even from the owner. In group chats and Slack threads the Bot **acts for whoever asked**: their usage, their connected accounts (it asks before using them), and only they can answer its approvals. The Bot saves team memory but keeps what it learns about you private. An individual user can't invite a partner into a chat, which is likely the gap the creator hit. |
+| **ChatGPT group chats** | Yes, up to 20 people, consumer plans | Personal memory and custom instructions are **switched off** in groups. The group has its own instructions. Agent mode, voice and Deep Research aren't available in groups. It replies when mentioned or when it judges it should. |
+| **Claude Duet** | No (reviewers call this out) | Single-user. |
+| **Claude Tag / Slackbot / Dust** | Yes, inside Slack | The agent lives in the team's existing channels, and anyone can tag it. |
+
+What the category teaches:
+- **Shared room, per-person authority.** The conversation is shared. Accounts, approvals and billing belong to the
+  person who asked.
+- **Private memory stays private.** Either it is disabled in groups (ChatGPT) or split into team and personal (Grok
+  Bot).
+- Cross-user contamination is the known failure mode: one member's data or injected instructions leaking into
+  another's results.
+
+### 15.2 What it would take in tern
+
+tern assumes **one owner per core** throughout. deployment-spec §1 lists multi-user as a non-goal, and devices have
+scopes (owner, chat, read) but all act as that one person. These parts would change:
+
+| Area | Today | Multiplayer needs |
+|---|---|---|
+| Identity | devices and Telegram pairings belong to "the owner" | a `members(id, name, role: owner/member/guest)` table. Devices, gateway pairings and Cloud logins point at a member. API auth resolves to (member, device scope). |
+| Conversations | one author per session; **a new message cancels the running run** (M5) | messages carry `author_id`, and the model sees `[Dana] …`. In shared channels a new message **queues or steers** (through the inbox step that sub-agents already use) instead of cancelling someone else's run. |
+| Channels (§4.2) | single-user | channel membership (who can read and post), per-channel instructions, and group mention rules (reply when @-mentioned or asked a question) |
+| Connections (§6.8) | the owner's | each connection has an **owner member**. A run uses the requester's connections. Using someone else's needs that person's grant, on the Grok Bot model. Shared connections (a team Linear) are explicit. |
+| Approvals (§5) | routed to the owner | routed to the **requester**. A shared connection's writes go to its owner. The outbox records who approved. |
+| Memory (§7) | one store | scopes: `personal(member)`, `channel`, `core`. Personal memory is never injected into a run another member started. Default for group channels: channel memory only, as ChatGPT does. |
+| Taint (§5.3) | messages from non-paired senders are tainted | every other member's message is **untrusted with respect to me**. A run started by Dana that touches my connection is tainted for me. This is the hardest rule to get right, and it's why the taint machinery must land first. |
+| Budgets (§8.3), ledger (§8.1) | per routine, global | per member as well, and every ledger row names the acting member and the requester |
+| Secrets | one `secrets.toml` | per member (`member/<id>/…`) plus core-wide. With connections (§6.8) this is mostly a namespace change. |
+| Sandbox / shell | one workspace | a per-member workspace directory at least. On a shared core, shell stays off for non-owners by default. |
+
+### 15.3 Levels, cheapest first
+
+**M0: Group gateway rooms.** S–M, any tier, no accounts.
+- The owner adds tern to a **Telegram group** (or a Slack or Discord channel through a gateway connector, §6.4) and
+  pairs that room to a channel.
+- The other people in it are **guests**. They can talk to tern there, and their messages are tainted. tern uses only
+  the connections the owner has allowed for that channel, and only the owner can approve.
+- Telegram's bot privacy mode already limits a bot in a group to @-mentions, replies and commands.
+- This gets the "several of us in one chat with the agent" experience with almost no identity work. It is a good test
+  of demand.
+- Needs: T2 channels, T3 taint, the queue-instead-of-cancel rule, `author` on messages, and a per-channel connection
+  allowlist.
+
+**M1: Members on one core.** L. Self-hosted or Cloud.
+- Everything in §15.2: members, invites (a pairing code issued to a person rather than a device), per-member
+  connections, approvals, memory scopes, budgets, and a membership UI.
+- It fits **households and small teams** sharing one always-on core.
+- It reuses the Cloud architecture as it stands: deployment-spec §10.2 already recommends **one core per tenant**. A
+  multiplayer workspace is just a tenant whose core has several members. No shared multi-tenant cores (§10.7), no
+  `tenant_id` everywhere.
+
+**M2: Hosted workspaces (the paid feature).** M on top of M1, Cloud only.
+- Sign-in with tern Cloud accounts, plus email invites to a workspace.
+- Roles: owner, admin, member, guest.
+- Per-seat billing and metering: each reply is charged to the person it answers, as Grok Bot does.
+- Push to every member's phone.
+- Admin policy: which connectors are allowed, whether shell is on, the autonomy ceiling.
+- An audit export.
+- SSO and SCIM later, for Enterprise.
+
+### 15.4 How hard, honestly
+
+| | Effort (rough) | Main risk |
+|---|---|---|
+| M0 | 1–2 weeks after T2 and T3 | concurrent posters in one session; noisy groups (mention rules handle it) |
+| M1 | 5–8 weeks engine + 2–3 weeks UI | **cross-member leakage** through memory, connections or injected instructions. Every store query that today means "the owner's" has to be scoped. Migration of single-owner data to an owner member. |
+| M2 | 3–4 weeks once tern Cloud exists | identity and billing plumbing. It depends on deployment-spec D-phases (accounts, edge auth, control plane), which aren't built. |
+
+What makes it tractable:
+- **Connections (§6.8)** already separate an account from its connector, so "whose Gmail" is one more foreign key.
+- **Taint (§5.3)** already treats non-owner messages as untrusted.
+- **Channels (§4.2)** are the natural shared room.
+- **One core per tenant** means no new isolation layer in the cloud.
+
+What makes it expensive:
+- Memory scoping is threaded through prompts, tools and compaction.
+- Approvals have to route to people instead of devices.
+- The UI needs membership and "acting as" everywhere.
+
+**Recommendation:**
+- Keep it after stage 5, but **design T2, T3 and T4a with a member id in the schema from the start**: `author_id` on
+  messages, an `owner_member` on connections, and `actor` / `requester` in the ledger, all defaulting to the owner.
+  That costs almost nothing now and avoids a painful migration later.
+- Ship **M0** soon after T2 and T3 to test demand cheaply.
+- Sell **M2** as the multiplayer tier of tern Cloud.
+- Keep **M1** in the open-source engine, so self-hosted households get it too. The paid part is the hosting,
+  invites, seats and admin, not the capability. That keeps faith with "export and move back to local are features"
+  (deployment-spec §1).
+
+Open questions:
+- Can a guest in an M0 group trigger any `write` effect at all? Proposed: no; writes from guest-started runs always
+  go to the owner's outbox.
+- In shared channels, do members see each other's tool calls, or only the answers? Proposed: tool calls are visible
+  to the channel, but their inputs and outputs are redacted when they touch a connection the viewer doesn't own.
+- Is the creator's need "my partner and I share one assistant" (M1, household) or "my team uses one bot" (M2)? That
+  decides which level to build first. Worth asking her audience.

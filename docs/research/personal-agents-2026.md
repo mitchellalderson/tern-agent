@@ -93,6 +93,32 @@ and agent loops.
 - connectors that are short sandboxed scripts the agent writes and you approve;
 - self-hostable, with a native desktop app.
 
+## 4. Multiplayer (several people, one agent)
+
+Prompted by a creator video ("7 Grok Bot agents I use every day", https://www.youtube.com/watch?v=QBmgF1kJSK4; the
+transcript wasn't retrievable). According to the user's summary, she wants several people in one chat with the agent.
+
+- **Grok Bot shared Bots** (Cursor Team/Enterprise only):
+  - Roles are owner, Manager and Collaborator. Sharing doesn't copy the Bot: everyone uses the same one.
+  - Each person's 1:1 chat stays private, even from the owner.
+  - In group chats and Slack the Bot acts for whoever mentioned it. Their usage is billed, their connected accounts
+    are used (after asking), and only they can approve.
+  - Team memory is shared, but what it learns about you stays private.
+  - Each user gets a Firecracker microVM. Group and Slack chats use a separate shared computer.
+  - Individual (non-team) users have no multiplayer.
+- **ChatGPT group chats**: up to 20 people. Personal memory and custom instructions are off in groups; the group gets
+  its own instructions. Agent mode, voice and Deep Research aren't available there.
+- **Claude Duet**: single-user only (Lenny's Newsletter).
+- **Claude Tag, Slackbot, Dust**: multiplayer by living in Slack channels. Superconductor's framing: shared sessions
+  and shared learnings, but "joining a coworker's chat shouldn't give you their email".
+- A 2026 arXiv scoping review (2609.14062) names cross-user contamination as the main risk of shared-state
+  assistants.
+
+Sources: https://docs.x.ai/grok-bot/shared-bots · https://docs.x.ai/grok-bot/teams-and-enterprises ·
+https://help.openai.com/en/articles/12703475-group-chats · https://openai.com/index/group-chats-in-chatgpt/ ·
+https://www.salesforceben.com/multiplayer-agents-the-next-wave-of-collaborative-agentic-ai/ ·
+https://www.superconductor.com/blog/multiplayer-ai · https://arxiv.org/pdf/2609.14062
+
 ## Sources
 
 - Claude Duet: https://support.claude.com/en/articles/17631495-get-started-with-claude-duet ·
