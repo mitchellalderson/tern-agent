@@ -36,7 +36,7 @@ Everything here is required before the post. None of it is product work.
 | **Employer side-project check** | Mitchell works at Inngest; the hosted control plane is meant to run on Inngest. Confirm the side-project and IP policy in writing before anything is public. | Written OK, or a clear boundary |
 | **Name and repo** | The checkout is `ox_agent`, the product is `tern`. Check the name is free on GitHub, crates.io and as a domain. | Public repo `owner/tern`, domain registered |
 | **LICENSE file** | `Cargo.toml` says `MIT OR Apache-2.0` but no LICENSE file exists. HN readers check within the first minute. | `LICENSE-MIT` and `LICENSE-APACHE` at the root |
-| **install.sh pointed at the repo** | It still dies with "set TERN_REPO=owner/name". | `curl ... | sh` works on a clean macOS and Linux box |
+| **install.sh pointed at the repo** | It still dies with "set TERN_REPO=owner/name". | the one-line curl install works on a clean macOS and Linux box |
 | **A tagged release with binaries** | `release.yml` exists; it needs a tag and a checked download on all four targets. | `v0.1.0` with 4 assets and checksums |
 | **README first screen** | The first 20 lines must say what it is, show the demo, and give the one-line install. Today they start with install, which is right, but there is no picture. | A GIF or screenshot above the fold |
 | **SECURITY.md** | The pitch is "the safe small one". A reporting address and a one-paragraph threat model (what the sandbox covers, what it doesn't) make the claim credible. | File exists, links from README |
@@ -83,7 +83,9 @@ command has been tested by someone other than the author.
 
 ### 4.3 What to have ready on launch day
 
-- Answers to the predictable questions, in `docs/faq.md`: why not OpenClaw, why Luau and not WASM, why Telegram and
+- Answers to the predictable questions, in `docs/faq.md`: why not OpenClaw, **why not ZeroClaw or IronClaw** (the
+  two Rust claws; the honest answer is the journal, host-sandboxed agent-written connectors with capability approval,
+  and the same engine local or hosted), why Luau and not WASM (IronClaw chose WASM; expect this one), why Telegram and
   not Slack, why no browser, what the sandbox does on macOS versus Linux, is my data sent anywhere, how is this
   different from Claude Duet.
 - An "Inngest" answer that is true and short: the core has no Inngest dependency; a future hosted control plane may
@@ -92,17 +94,27 @@ command has been tested by someone other than the author.
 
 ## 5. Phase 2: measuring interest (weeks 1–3)
 
-Numbers are targets to set now and adjust after the first launch, not predictions.
+Numbers are targets to set now and adjust after the first launch, not predictions. They are calibrated against the
+category as of 2026-11-03 (research notes §2 and §6): OpenClaw has 394k stars, Hermes Agent 260k, ZeroClaw 33k.
+ZeroClaw, the closest comparable (a Rust single-binary claw from an unknown team), drew about 3,400 stars within days
+of its February 2026 launch, riding the OpenClaw wave. Hermes reached about 100k in seven weeks with a known lab
+behind it. Treat ZeroClaw's first days as the ceiling for an unbranded solo launch into a now-mature category, not
+the expectation.
 
 | Signal | Source | Weak | Good | Strong |
 |---|---|---|---|---|
-| Stars, 7 days | GitHub | < 200 | 500 | 1,500+ |
-| Release downloads, 14 days | GitHub release assets | < 100 | 300 | 1,000+ |
-| Installs that got to a first run | Issues, discussions and replies mentioning a working setup (no telemetry, so this is a count by hand) | < 10 | 30 | 100+ |
-| Telegram pairings | Same, by hand | | 10 | 40+ |
+| Stars, 7 days | GitHub | < 300 | 1,000 | 3,000+ (ZeroClaw's first days) |
+| Release downloads, 14 days | GitHub release assets | < 150 | 500 | 2,000+ |
+| Installs that got to a first run | Issues, discussions and replies mentioning a working setup (no telemetry, so this is a count by hand) | < 15 | 50 | 200+ |
+| Telegram pairings | Same, by hand | < 5 | 15 | 60+ |
 | Connectors written by users | PRs, gists, discussion posts | 0 | 3 | 10+ |
-| Waitlist signups at the stated prices | Form | < 20 | 50 | 200+ |
+| Waitlist signups at the stated prices | Form | < 20 | 50 | 300+ |
 | Inbound from businesses or agencies | Email, DMs | 0 | 2 | 5+ |
+
+Why stars moved up and the money rows didn't: the claw numbers show the self-hosted audience is far larger than the
+original targets assumed, so a post that lands should clear 1,000 in a week. Nothing in the category gives evidence
+about paying for a $5–20 tier, so the waitlist and inbound rows stay where they were; they are the test, not the
+calibration.
 
 What the rows mean:
 
@@ -137,13 +149,14 @@ $20/mo for ChatGPT or Claude (which now includes an agent) and $0 for running te
 
 Decided now so the launch result is read calmly.
 
-- **Continue to Phase 3** if two of: 500 stars, 300 downloads, 50 priced waitlist signups, 3 user-written connectors.
+- **Continue to Phase 3** if two of: 1,000 stars, 500 downloads, 50 priced waitlist signups, 3 user-written
+  connectors. The connector and waitlist rows count double: either one alone, at "good", is enough to continue.
 - **Relaunch once** if the install or demo visibly failed (issues say so) but the story got reach. Fix, wait four
   weeks, post again with "what changed".
 - **Stop building the paid tier, keep the open-source project** if the launch gets reach but fewer than 20 priced
   signups after two posts. Interest without intent is a fine outcome for a side project; it just isn't a business.
-- **Shelve** if two launches produce under 200 stars each. The category has moved on, or the story isn't landing,
-  and more features won't fix either.
+- **Shelve** if two launches produce under 300 stars each. In a category where the fourth-place project has 33k,
+  that means the story isn't landing, and more features won't fix it.
 
 ## 8. Product work that strengthens the launch
 
@@ -175,5 +188,7 @@ Do **not** do before launch: routines with watches (T1b), channels (T2), the out
 - The invoice tool for the demo and the example connector: pick one with a free tier and a plain API.
 - Whether to publish on crates.io at v0.1.0 (easy, but the binary is the product and `cargo install` builds slowly).
 - The name check: `tern` on GitHub, crates.io and a `.dev` or `.sh` domain.
+- Read the Show HN threads for ZeroClaw and IronClaw before posting (web search didn't surface them; use HN's own
+  search). The first-day comments are the FAQ we'll get.
 - Who else can run the install on a clean machine before the post.
 - The exact waitlist copy and the two prices to show. Defaults: $5 relay, $15 hosted.
