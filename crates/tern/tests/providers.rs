@@ -450,3 +450,122 @@ async fn stale_model_lists_are_served_then_refreshed() {
     let v = api.ok(Method::GET, "/v1/models?refresh=true", None).await;
     assert_eq!(ids(&v), ["gpt-latest"]);
 }
+
+/// `tern <args>` with no daemon running, so it uses an embedded runtime.
+fn cli(tern_home: &std::path::Path, args: &[&str], stdin: &str) -> (bool, String, String) {
+    use std::io::Write;
+    let mut child = Command::new(tern_bin())
+        .args(args)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", tern_home.parent().unwrap())
+        .env("TERN_HOME", tern_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let o = child.wait_with_output().unwrap();
+    (
+        o.status.success(),
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn providers_from_the_command_line() {
+    let fake = fake_provider().await;
+    let root = fake.uri();
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home/.tern");
+
+    let (ok, out, _) = cli(&home, &["providers"], "");
+    assert!(ok);
+    assert!(out.contains("tern setup"), "{out}");
+
+    // A rejected key from stdin saves nothing.
+    let add = [
+        "providers",
+        "add",
+        "openai-compat",
+        "--url",
+        &root,
+        "--name",
+        "fake",
+    ];
+    let (ok, _, err) = cli(&home, &add, "sk-bad\n");
+    assert!(!ok);
+    assert!(err.contains("rejected that key"), "{err}");
+    assert!(!home.join("secrets.toml").exists());
+
+    let (ok, out, err) = cli(&home, &add, "export FAKE_API_KEY=sk-good\n");
+    assert!(ok, "{out}{err}");
+    assert!(err.contains("added /v1"), "{err}");
+    assert!(out.contains("added fake (2 models"), "{out}");
+    assert!(out.contains("default model: fake:gpt-new"), "{out}");
+    assert!(!out.contains("sk-good") && !err.contains("sk-good"));
+
+    let (ok, out, _) = cli(&home, &["providers", "list"], "");
+    assert!(ok);
+    assert!(out.contains("fake") && out.contains("[default]"), "{out}");
+    assert!(out.contains("(FAKE_API_KEY)"), "{out}");
+
+    let (ok, out, _) = cli(&home, &["models", "--json"], "");
+    assert!(ok);
+    let lists: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(lists[0]["models"][0]["id"], "gpt-new");
+    let (ok, out, _) = cli(&home, &["models"], "");
+    assert!(ok);
+    assert!(out.contains("fake:gpt-old"), "{out}");
+
+    let (ok, out, _) = cli(&home, &["providers", "rm", "fake"], "");
+    assert!(ok, "{out}");
+    let secrets = std::fs::read_to_string(home.join("secrets.toml")).unwrap();
+    assert!(!secrets.contains("FAKE_API_KEY"), "{secrets}");
+    let (_, out, _) = cli(&home, &["providers"], "");
+    assert!(out.contains("No providers yet"), "{out}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_command_line_goes_through_a_running_daemon() {
+    let fake = fake_provider().await;
+    let base = format!("{}/v1", fake.uri());
+    let d = daemon();
+    let api = Api::new(&d);
+    let home = d.tern_home();
+
+    let add = [
+        "providers",
+        "add",
+        "openai-compat",
+        "--url",
+        &base,
+        "--name",
+        "fake",
+    ];
+    let (ok, out, err) = cli(&home, &add, "sk-good");
+    assert!(ok, "{out}{err}");
+    // The daemon picked it up without a restart.
+    let info = api.ok(Method::GET, "/v1/info", None).await;
+    assert_eq!(info["default_model"], "fake:gpt-new");
+
+    let (ok, out, _) = cli(&home, &["models", "fake", "--refresh"], "");
+    assert!(ok);
+    assert!(out.contains("fake:gpt-old"), "{out}");
+    let (ok, _, _) = cli(&home, &["providers", "rm", "fake", "--keep-key"], "");
+    assert!(ok);
+    let info = api.ok(Method::GET, "/v1/info", None).await;
+    assert_eq!(info["setup_needed"], true);
+    let secrets = std::fs::read_to_string(home.join("secrets.toml")).unwrap();
+    assert!(
+        secrets.contains("FAKE_API_KEY"),
+        "--keep-key kept it: {secrets}"
+    );
+}

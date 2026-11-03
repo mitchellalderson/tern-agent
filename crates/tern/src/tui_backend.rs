@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use tern_core::agent::RunOutcome;
 use tern_core::approval::ApprovalHandler;
 use tern_core::events::AgentEvent;
+use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
 use tern_core::subagent::ChildRun;
 use tern_core::types::{ContentBlock, Role, Usage};
 use tern_core::{SecretStatus, TernHome};
@@ -194,6 +195,63 @@ impl Backend for TuiBackend {
         self.rt().secrets.remove(name).map_err(err)
     }
 
+    fn resolve_model(&self, model: &str) -> BackendResult<Resolved> {
+        self.rt().resolve_model(model).map_err(chain)
+    }
+
+    fn setup_needed(&self) -> bool {
+        self.rt().setup_needed()
+    }
+
+    fn providers(&self) -> BackendResult<Vec<ProviderStatus>> {
+        Ok(self.rt().provider_statuses())
+    }
+
+    async fn models(
+        &self,
+        provider: Option<String>,
+        refresh: bool,
+    ) -> BackendResult<Vec<ProviderModels>> {
+        self.rt()
+            .models(provider.as_deref(), refresh)
+            .await
+            .map_err(chain)
+    }
+
+    async fn verify_provider(
+        &self,
+        draft: ProviderDraft,
+        existing: Option<String>,
+    ) -> BackendResult<Verified> {
+        self.rt()
+            .verify_provider(&draft, existing.as_deref())
+            .await
+            .map_err(chain)
+    }
+
+    async fn save_provider(
+        &self,
+        draft: ProviderDraft,
+        existing: Option<String>,
+        default_model: Option<String>,
+    ) -> BackendResult<ProviderStatus> {
+        self.rt()
+            .save_provider(&draft, existing.as_deref(), default_model.as_deref())
+            .await
+            .map(|(status, _)| status)
+            .map_err(chain)
+    }
+
+    fn remove_provider(&self, name: &str, remove_secret: bool) -> BackendResult<()> {
+        self.rt()
+            .remove_provider(name, remove_secret)
+            .map_err(chain)
+    }
+
+    fn set_default_model(&self, model: &str) -> BackendResult<Resolved> {
+        self.rt().set_default_model(model).map_err(chain)
+    }
+
     fn children(&self, run_id: &str) -> BackendResult<Vec<ChildRun>> {
         crate::subagents::children_of(&self.rt().store, run_id, false).map_err(chain)
     }
@@ -214,10 +272,11 @@ pub struct RemoteTarget {
 }
 
 /// `tern` with no subcommand: attach to `remote` if given, else to a
-/// running daemon, else run embedded.
+/// running daemon, else run embedded. `command` runs first (`/setup`).
 pub fn run(
     home: &TernHome,
     remote: Option<RemoteTarget>,
+    command: Option<&str>,
 ) -> anyhow::Result<std::process::ExitCode> {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
@@ -227,31 +286,39 @@ pub fn run(
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        if let Some(t) = remote {
-            let (remote, approvals) =
-                crate::remote::connect_url(&t.url, &t.token, t.pin.as_deref()).await?;
-            tracing::info!(url = %t.url, "attached to a remote core");
-            return tern_tui::run(remote, approvals, None)
-                .await
-                .map_err(anyhow::Error::from);
-        }
-        let socket = home
-            .socket_connect_path()
-            .inspect_err(|e| tracing::warn!("not attaching to the daemon: {e}"));
-        if let Some((remote, approvals)) = match &socket {
-            Ok(p) => crate::remote::connect(p).await,
-            Err(_) => None,
-        } {
-            tracing::info!("attached to the running daemon");
-            return tern_tui::run(remote, approvals, None)
-                .await
-                .map_err(anyhow::Error::from);
-        }
-        let (approver, approvals) = tern_tui::TuiApprover::new();
-        let backend = Arc::new(TuiBackend::open(home, approver)?);
-        tern_tui::run(backend, approvals, None)
+        let (backend, approvals) = connect(home, remote).await?;
+        tern_tui::run(backend, approvals, command.map(str::to_owned))
             .await
             .map_err(anyhow::Error::from)
     })?;
     Ok(std::process::ExitCode::SUCCESS)
+}
+
+/// A backend for `remote` if given, else the running daemon, else an
+/// embedded runtime whose approvals arrive on the returned receiver.
+pub async fn connect(
+    home: &TernHome,
+    remote: Option<RemoteTarget>,
+) -> anyhow::Result<(
+    Arc<dyn tern_tui::Backend>,
+    tokio::sync::mpsc::Receiver<tern_tui::PendingApproval>,
+)> {
+    if let Some(t) = remote {
+        let (remote, approvals) =
+            crate::remote::connect_url(&t.url, &t.token, t.pin.as_deref()).await?;
+        tracing::info!(url = %t.url, "attached to a remote core");
+        return Ok((remote as Arc<dyn tern_tui::Backend>, approvals));
+    }
+    let socket = home
+        .socket_connect_path()
+        .inspect_err(|e| tracing::warn!("not attaching to the daemon: {e}"));
+    if let Some((remote, approvals)) = match &socket {
+        Ok(p) => crate::remote::connect(p).await,
+        Err(_) => None,
+    } {
+        tracing::info!("attached to the running daemon");
+        return Ok((remote as Arc<dyn tern_tui::Backend>, approvals));
+    }
+    let (approver, approvals) = tern_tui::TuiApprover::new();
+    Ok((Arc::new(TuiBackend::open(home, approver)?), approvals))
 }

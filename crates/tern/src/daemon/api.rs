@@ -510,7 +510,7 @@ async fn usage(
 #[serde(untagged)]
 pub enum ApiEvent {
     Approval { approval_requested: ApiApproval },
-    Change(crate::providers::Change),
+    Change(tern_core::models::Change),
     Agent(tern_core::events::AgentEvent),
 }
 

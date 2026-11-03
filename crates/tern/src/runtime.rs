@@ -9,6 +9,7 @@ use tern_core::agent::{Agent, AgentConfig, ProviderFactory};
 use tern_core::approval::ApprovalHandler;
 use tern_core::config::{ModelRef, SandboxBackendKind};
 use tern_core::journal::Journal;
+use tern_core::models::Change;
 use tern_core::prompt::{AgentRole, SubagentPrompt};
 use tern_core::subagent::HostSlot;
 use tern_core::tool::ToolRegistry;
@@ -18,8 +19,7 @@ use tern_providers::{MockProvider, PROVIDER_ENV};
 use tern_store::Store;
 use tokio::sync::broadcast;
 
-use crate::providers::{Change, ModelCache};
-
+use crate::providers::ModelCache;
 use crate::subagents::{LocalDriver, Subagents};
 
 /// Builds system prompts, for runs the user starts and for sub-agents.
@@ -242,7 +242,7 @@ impl Runtime {
             Some(m) => Ok(m?),
             None if self.mock => Ok("mock:mock".parse()?),
             None => bail!(
-                "no model selected: pass --model provider:model or run `tern config set default_model provider:model`"
+                "no model selected: run `tern setup` to connect a provider, or pass --model provider:model"
             ),
         }
     }

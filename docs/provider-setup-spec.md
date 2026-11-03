@@ -1,6 +1,6 @@
 # Provider, API key and model setup
 
-Status: P0 (engine and API) built; P1 (TUI, CLI) and P2 (desktop) not started. Covers the engine, TUI, desktop app and CLI.
+Status: P0 (engine and API) and P1 (TUI, CLI) built; P2 (desktop) not started. Covers the engine, TUI, desktop app and CLI.
 
 ## 1. Problem
 
@@ -152,11 +152,11 @@ OpenAI-compatible ─▶ Base URL + name ─▶ Key (optional) ─┘           
 - **`/setup`** (alias **`/providers`**) opens a panel built like `SecretsPanel`, with modes `List → Kind → Endpoint (URL, name) → Key → Verifying → Model`. ↑↓/jk to move, Enter to choose, Tab to move between fields, Esc to go back one step, q to close from the list.
 - **Key mode** uses the existing masked input, but shows `sk-ant…a1B2` instead of a character count. Bracketed paste must be on, so newlines inside a paste don't submit early.
 - **`/model` with no argument** opens a picker instead of only printing the model:
-  - Models grouped by provider; the current model and recent models (the last 5 used, across sessions) at the top.
+  - Models grouped by provider, with the current model at the top. (Built without the "recent models" row; add it if the list gets long.)
   - Typing filters with a fuzzy match on id and display name. The last row is always `Use "<typed text>"`, so free text is one Enter away.
   - Enter sets the model for this session. `ctrl+d` sets it as the default as well.
   - A provider whose list failed shows one dim row: `openrouter — couldn't list models (key rejected) · /setup to fix`.
-- **`/model <text>`** keeps working, with provider-less resolution (§4.4). Tab completes from the cached lists.
+- **`/model <text>`** keeps working, with provider-less resolution (§4.4). (Tab completion from the cached lists is not built; the picker covers it.)
 - **Remote TUI**: `RemoteBackend` implements the new methods over the API (§9), so the attached TUI has the same panels. Its `reload` calls `POST /v1/config/reload` instead of telling the user to restart the daemon.
 
 `Backend` trait additions (both the embedded and remote backends implement these):
@@ -191,7 +191,7 @@ fn set_default_model(&self, model: &str) -> BackendResult<()>;
 
 ### 7.3 CLI
 
-- **`tern setup`**: the same flow, with plain line prompts and hidden key input. It works against the embedded runtime, or against the daemon when one is running.
+- **`tern setup`**: opens the TUI on the `/setup` panel, so there is one flow to maintain and the user lands in the chat when done. Scripts use `tern providers add`, which asks for the key hidden (or reads it from stdin). Both work against the embedded runtime, or against the daemon when one is running.
 - **`tern providers [list | add anthropic | add openai-compat --url URL [--name N] | rm NAME]`**, for scripts. `add` reads the key from stdin when stdin isn't a TTY, so `pbpaste | tern providers add anthropic` works and the key never appears in the process list.
 - **`tern models [provider] [--refresh] [--json]`** prints the lists.
 

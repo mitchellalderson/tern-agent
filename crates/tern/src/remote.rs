@@ -13,6 +13,7 @@ use tern_core::SecretStatus;
 use tern_core::agent::RunOutcome;
 use tern_core::approval::{ApprovalRequest, Decision};
 use tern_core::events::AgentEvent;
+use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
 use tern_core::subagent::ChildRun;
 use tern_core::types::{Role, ToolCall, Usage};
 use tern_store::{SessionRow, SessionSummary};
@@ -370,6 +371,86 @@ impl Backend for Remote {
 
     fn secrets(&self) -> BackendResult<Vec<SecretStatus>> {
         self.get("/v1/secrets")
+    }
+
+    fn resolve_model(&self, model: &str) -> BackendResult<Resolved> {
+        let v: Value = self.send_json(
+            reqwest::Method::POST,
+            "/v1/models/check",
+            json!({ "model": model }),
+        )?;
+        Ok(Resolved {
+            model: v["resolved"].as_str().unwrap_or(model).to_owned(),
+            warning: v["warning"].as_str().map(str::to_owned),
+        })
+    }
+
+    fn setup_needed(&self) -> bool {
+        self.get::<api::Info>("/v1/info")
+            .is_ok_and(|i| i.setup_needed)
+    }
+
+    fn providers(&self) -> BackendResult<Vec<ProviderStatus>> {
+        self.get("/v1/providers")
+    }
+
+    async fn models(
+        &self,
+        provider: Option<String>,
+        refresh: bool,
+    ) -> BackendResult<Vec<ProviderModels>> {
+        // Provider names are `[a-z0-9_-]`, so they need no escaping.
+        let mut path = format!("/v1/models?refresh={refresh}");
+        if let Some(p) = provider {
+            path.push_str(&format!("&provider={p}"));
+        }
+        self.request(self.http.get(self.url(&path))).await
+    }
+
+    async fn verify_provider(
+        &self,
+        draft: ProviderDraft,
+        existing: Option<String>,
+    ) -> BackendResult<Verified> {
+        let path = match existing {
+            Some(name) => format!("/v1/providers/{name}/verify"),
+            None => "/v1/providers/verify".into(),
+        };
+        self.request(self.http.post(self.url(&path)).json(&draft))
+            .await
+    }
+
+    async fn save_provider(
+        &self,
+        draft: ProviderDraft,
+        existing: Option<String>,
+        default_model: Option<String>,
+    ) -> BackendResult<ProviderStatus> {
+        let mut body = serde_json::to_value(&draft).map_err(|e| e.to_string())?;
+        body["default_model"] = json!(default_model);
+        let req = match existing {
+            Some(name) => self.http.patch(self.url(&format!("/v1/providers/{name}"))),
+            None => self.http.post(self.url("/v1/providers")),
+        };
+        let v: Value = self.request(req.json(&body)).await?;
+        serde_json::from_value(v["provider"].clone()).map_err(|e| format!("daemon: {e}"))
+    }
+
+    fn remove_provider(&self, name: &str, remove_secret: bool) -> BackendResult<()> {
+        self.send_json::<Value>(
+            reqwest::Method::DELETE,
+            &format!("/v1/providers/{name}?remove_secret={remove_secret}"),
+            json!({}),
+        )
+        .map(|_| ())
+    }
+
+    fn set_default_model(&self, model: &str) -> BackendResult<Resolved> {
+        self.send_json(
+            reqwest::Method::PUT,
+            "/v1/config/default_model",
+            json!({ "model": model }),
+        )
     }
 
     fn set_secret(&self, name: &str, value: &str) -> BackendResult<()> {

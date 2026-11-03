@@ -53,12 +53,7 @@ impl Report {
     }
 }
 
-const PROVIDER_HINT: &str = "\
-Add a provider to config.toml, for example:
-  [providers.anthropic]
-  kind = \"anthropic\"
-  api_key_secret = \"ANTHROPIC_API_KEY\"
-and set default_model = \"anthropic:<model>\".";
+const PROVIDER_HINT: &str = "Run `tern setup` to connect one.";
 
 pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
     let mut r = Report { fails: 0, warns: 0 };
@@ -142,7 +137,7 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
         None => r.check(
             Status::Warn,
             "default_model is not set",
-            Some("Set it with `tern config set default_model provider:model`."),
+            Some("Pick one with `tern setup` (or `/model` in the chat)."),
         ),
         Some(Err(e)) => r.check(Status::Fail, e.to_string(), None),
         Some(Ok(m)) if !config.providers.contains_key(&m.provider) => r.check(
@@ -332,7 +327,7 @@ async fn probe(name: &str, p: &ProviderConfig, key: Option<&str>) -> (Status, St
                 ListError::RateLimited | ListError::NotFound | ListError::Forbidden => Status::Warn,
                 _ => Status::Fail,
             };
-            (status, crate::providers::describe(&e, name, Some(base)))
+            (status, tern_core::models::describe(&e, name, Some(base)))
         }
     }
 }

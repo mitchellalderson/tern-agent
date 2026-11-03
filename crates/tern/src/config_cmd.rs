@@ -34,7 +34,7 @@ pub fn init(home: &TernHome, force: bool) -> anyhow::Result<()> {
     std::fs::create_dir_all(&workspace)
         .with_context(|| format!("creating workspace {}", workspace.display()))?;
     println!("ready   {} (workspace)", workspace.display());
-    println!("\nNext: add a provider to config.toml, then run `tern doctor`.");
+    println!("\nNext: run `tern setup` to connect a model provider.");
     Ok(())
 }
 

@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 
 use super::api::{ApiError, ApiResult, Shared, bad, internal};
 use super::auth::Auth;
-use crate::providers::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
+use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
 
 /// Verifications allowed per device (or local client) per minute, so a
 /// paired device can't be used to test keys in bulk.

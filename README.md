@@ -17,14 +17,11 @@ cargo build --profile dist -p tern    # → target/dist/tern
 ## Quick start
 
 ```sh
-tern config init                                           # creates ~/.tern with a commented config
-tern config set providers.anthropic.kind anthropic
-tern config set providers.anthropic.api_key_secret ANTHROPIC_API_KEY
-tern config set default_model anthropic:claude-sonnet-5-5
-export ANTHROPIC_API_KEY=sk-ant-...                        # or put it in ~/.tern/secrets.toml (mode 0600)
-tern doctor                                                # checks everything and says what's missing
-tern                                                       # chat
+tern setup     # choose Anthropic or an OpenAI-compatible server, paste a key, pick a model
+tern           # chat
 ```
+
+`tern setup` checks the key with the provider before saving it (to `~/.tern/secrets.toml`, mode 0600) and lists the provider's models to choose from. Running `tern` with nothing set up opens the same setup first. For scripts: `pbpaste | tern providers add anthropic`. `tern doctor` checks everything and says what's missing.
 
 `tern run "<prompt>"` runs one prompt non-interactively and prints the answer on stdout (`--yes` auto-approves tools, for scripts). Every command is described under [Commands](#commands).
 
@@ -54,6 +51,9 @@ tern                                                       # chat
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
 | [`tern connectors`](#tern-connectors) | List or validate Luau connectors. |
+| [`tern setup`](#tern-setup) | Connect a model provider: paste a key, pick a model. |
+| [`tern providers`](#tern-providers) | List, add, or remove model providers (for scripts). |
+| [`tern models`](#tern-providers) | List the models each provider offers. |
 | [`tern config`](#tern-config) | Create, read, and edit `config.toml`. |
 | [`tern doctor`](#tern-doctor) | Check configuration, providers, database, daemon, and integrations. |
 | [`tern report`](#tern-report) | Write a redacted bug report. |
@@ -64,7 +64,11 @@ tern                                                       # chat
 
 With no subcommand, tern opens the chat TUI. If a daemon is running it attaches to it over `~/.tern/tern.sock`, so the conversation, schedules, and approvals are shared with Telegram; otherwise it starts its own runtime in-process.
 
-Chat commands: `/new` · `/model [provider:model]` · `/sessions` · `/resume <session or run id>` · `/tools` · `/secrets [NAME]` · `/stop` · `/reload` · `/usage` · `/help`.
+Chat commands: `/new` · `/model [model]` · `/setup` · `/sessions` · `/resume <session or run id>` · `/tools` · `/secrets [NAME]` · `/stop` · `/reload` · `/usage` · `/help`.
+
+`/setup` (or `/providers`) opens a panel for model providers: add one (Anthropic, or any OpenAI-compatible server by base URL), change its API key, choose its default model, or remove it. Keys are checked with the provider before they're saved, shown only masked (`sk-ant…a1B2`), and never reach the transcript, input history, or model. Ctrl+E uses a key already set in the environment. Changes apply to the next message, with no restart, including when attached to the daemon.
+
+`/model` with no argument opens a picker of every provider's models (fetched from the providers and cached): type to filter, Enter to use one for this conversation, Ctrl+D to also make it the default, Ctrl+R to refresh. A model the list doesn't have can still be typed and used. `/model <id>` sets one directly; the provider can be left off when only one provider offers that model.
 
 `/secrets` opens a panel listing every secret tern knows about: those in `secrets.toml` and those that config or an active connector refers to, with where each is set (file, environment) and what uses it. `n` adds one, Enter or `e` sets the selected one's value, `d` removes it from `secrets.toml` (confirm with `y`), and Esc closes the panel. `/secrets NAME` goes straight to entering NAME's value. Values are shown only as a character count and never reach the transcript, input history, or model.
 
@@ -149,6 +153,22 @@ tern connectors test <name>
 `list` loads every `.luau` file in `~/.tern/connectors/` (active) and `~/.tern/connectors/drafts/` (written by the agent, not yet activated) and prints each one's description, declared hosts and secrets, and any secrets that aren't set. Files that fail to load are marked `✗` with the error.
 
 `test <name>` validates `<name>.luau` (active first, then drafts) and lists the tools it exposes, with their idempotent and requires-approval flags. It exits non-zero if the connector doesn't exist or doesn't load. Neither command writes anything.
+
+### `tern setup`
+
+Opens the chat TUI on the `/setup` panel (see [`tern`](#tern)): choose a provider, paste its API key, pick a model. Uses the running daemon when there is one, so it picks up the change at once.
+
+### `tern providers`
+
+```sh
+tern providers [list]                                  # providers, key source (masked), default
+tern providers add anthropic [--default-model M]       # key from stdin, or asked for hidden
+tern providers add openai-compat --url URL [--name N] [--default-model M] [--no-key | --env-key]
+tern providers rm NAME [--keep-key]
+tern models [PROVIDER] [--refresh] [--json]
+```
+
+`add` checks the key with the provider before saving anything and exits non-zero if it's rejected. The key goes to `secrets.toml` as `<NAME>_API_KEY`; `--env-key` uses one already set in the environment instead. Without `--default-model`, the first listed model becomes the default when there's no usable default yet. `rm` also deletes the provider's key unless `--keep-key` or something else uses it. Like `tern setup`, these go through the running daemon when there is one.
 
 ### `tern config`
 

@@ -17,11 +17,12 @@ use tokio_util::sync::CancellationToken;
 use crate::app::{App, Effect};
 use crate::{Backend, PendingApproval, ui};
 
-/// Run the TUI until the user quits. Restores the terminal on exit and on panic.
+/// Run the TUI until the user quits. Restores the terminal on exit and on
+/// panic. `command` is a slash command to run first (`/setup`, `/resume <id>`).
 pub async fn run(
     backend: Arc<dyn Backend>,
     mut approvals: mpsc::Receiver<PendingApproval>,
-    open: Option<String>,
+    command: Option<String>,
 ) -> io::Result<()> {
     let mut terminal = ratatui::init();
     let mut stdout = io::stdout();
@@ -35,7 +36,7 @@ pub async fn run(
         );
     }
 
-    let result = event_loop(&mut terminal, backend, &mut approvals, open).await;
+    let result = event_loop(&mut terminal, backend, &mut approvals, command).await;
 
     if enhanced {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
@@ -49,17 +50,20 @@ async fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     backend: Arc<dyn Backend>,
     approvals: &mut mpsc::Receiver<PendingApproval>,
-    open: Option<String>,
+    command: Option<String>,
 ) -> io::Result<()> {
     let mut app = App::new(backend.clone());
     let mut agent_rx = backend.subscribe();
     let mut keys = EventStream::new();
     let (done_tx, mut done_rx) = mpsc::unbounded_channel();
+    let (task_tx, mut task_rx) = mpsc::unbounded_channel();
     let mut cancel: Option<CancellationToken> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
 
-    let mut effects = match open {
-        Some(id) => app.on_key_command(&format!("/resume {id}")),
+    let mut effects = match command {
+        // First-run setup may already be open; don't stack another.
+        Some(c) if c == "/setup" && app.setup.is_some() => vec![],
+        Some(c) => app.on_key_command(&c),
         None => vec![],
     };
 
@@ -80,6 +84,12 @@ async fn event_loop(
                     }
                 }
                 Effect::Resubscribe => agent_rx = backend.subscribe(),
+                Effect::Task(task) => {
+                    let (backend, tx) = (backend.clone(), task_tx.clone());
+                    tokio::spawn(async move {
+                        let _ = tx.send(task.run(backend.as_ref()).await);
+                    });
+                }
                 Effect::Drive { run_id, resume } => {
                     let token = CancellationToken::new();
                     cancel = Some(token.clone());
@@ -116,7 +126,8 @@ async fn event_loop(
                 cancel = None;
                 effects = app.on_run_done(result);
             }
-            _ = tick.tick(), if app.is_running() => {}
+            Some(done) = task_rx.recv() => effects = app.on_task_done(done),
+            _ = tick.tick(), if app.is_running() || app.is_busy() => {}
         }
     }
 }
