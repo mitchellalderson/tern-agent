@@ -1,22 +1,54 @@
 name: release
 
-# Push a tag like v0.1.0 to build every target and publish a GitHub release
-# with `tern-<target>.tar.gz` archives and their `.sha256` checksums (the
-# names `install.sh` downloads).
+# Push a tag like v0.1.0 to check the commit, build every target and publish
+# a GitHub release with:
+#   tern-<target>.tar.gz (+ .sha256)   the CLI/daemon, what install.sh downloads
+#   tern-desktop-macos.dmg (+ .sha256) the desktop app, with tern inside
+# Every asset also gets a build provenance attestation
+# (`gh attestation verify <file> --repo <owner>/<repo>`).
+#
+# The macOS app is signed and notarized when these repository secrets exist,
+# and ad-hoc signed otherwise: MACOS_CERTIFICATE (base64 .p12),
+# MACOS_CERTIFICATE_PASSWORD, MACOS_SIGN_IDENTITY, APPLE_ID, APPLE_TEAM_ID,
+# APPLE_APP_PASSWORD.
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version:
+    name: tag matches the versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the tag with Cargo.toml and pubspec.yaml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          pubspec=$(sed -n 's/^version: \([^+]*\).*/\1/p' apps/desktop/pubspec.yaml)
+          echo "tag=$tag Cargo.toml=$cargo pubspec.yaml=$pubspec"
+          [ "$tag" = "$cargo" ] && [ "$tag" = "$pubspec" ] || { echo "::error::tag v$tag doesn't match Cargo.toml ($cargo) and apps/desktop/pubspec.yaml ($pubspec)"; exit 1; }
+
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    with:
+      skip_builds: true
+
   build:
     name: build ${{ matrix.target }}
+    needs: ci
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: true
       matrix:
@@ -53,14 +85,79 @@ jobs:
           tar -C target/${{ matrix.target }}/dist -czf out/tern-${{ matrix.target }}.tar.gz tern
           cd out
           if command -v sha256sum >/dev/null; then sha256sum tern-${{ matrix.target }}.tar.gz; else shasum -a 256 tern-${{ matrix.target }}.tar.gz; fi > tern-${{ matrix.target }}.tar.gz.sha256
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: out/tern-${{ matrix.target }}.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: tern-${{ matrix.target }}
           path: out/*
 
-  publish:
+  desktop-macos:
+    name: desktop app (macOS, universal)
     needs: build
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.x
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tern-*-apple-darwin
+          path: in
+          merge-multiple: true
+      - name: Universal tern binary
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            mkdir -p "in/$t" && tar -xzf "in/tern-$t.tar.gz" -C "in/$t"
+          done
+          lipo -create -output in/tern in/aarch64-apple-darwin/tern in/x86_64-apple-darwin/tern
+          lipo -archs in/tern
+      - name: Import the signing certificate
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          pass="$(openssl rand -hex 16)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pass" "$keychain"
+          # shellcheck disable=SC2046 # one keychain path per word
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+      - name: Build, sign and package
+        run: |
+          scripts/package-macos-app.sh in/tern out
+          cd out && shasum -a 256 tern-desktop-macos.dmg > tern-desktop-macos.dmg.sha256
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: out/tern-desktop-macos.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tern-desktop-macos
+          path: out/*
+
+  publish:
+    needs: [build, desktop-macos]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -70,4 +167,20 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" out/* --title "tern ${GITHUB_REF_NAME}" --generate-notes
+        run: |
+          cat > notes.md <<EOF
+          ## Install
+
+          CLI and daemon (macOS, Linux):
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/install.sh | sh
+          \`\`\`
+
+          Desktop app (macOS 11+, Apple Silicon and Intel): download **tern-desktop-macos.dmg** below and drag tern to
+          Applications. It includes the \`tern\` daemon, so **Start tern** works without installing the CLI.
+
+          Verify any download: \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`
+          EOF
+          gh release create "${GITHUB_REF_NAME}" out/* --verify-tag --title "tern ${GITHUB_REF_NAME}" \
+            --notes-file notes.md --generate-notes

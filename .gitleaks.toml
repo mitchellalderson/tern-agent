@@ -1,0 +1,15 @@
+# Secret scanning for CI (.github/workflows/ci.yml, job "secrets").
+# Run locally: gitleaks git . --redact
+[extend]
+useDefault = true
+
+# The built-in Anthropic rules only know the api03/admin01 prefixes.
+[[rules]]
+id = "anthropic-api-key-any"
+description = "Anthropic API key (any sk-ant- prefix)"
+regex = '''sk-ant-[a-z]{2,8}\d{0,2}-[A-Za-z0-9_\-]{40,}'''
+keywords = ["sk-ant-"]
+
+[[allowlists]]
+description = "Self-signed TLS fixture for the tern_client remote tests"
+paths = ['''^apps/desktop/packages/tern_client/test/fixtures/(cert|key)\.pem$''']

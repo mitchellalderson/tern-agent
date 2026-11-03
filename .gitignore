@@ -1,1 +1,11 @@
 /target
+
+# Local secrets: never commit these. `.env.example` documents the variables.
+.env
+.env.*
+!.env.example
+*.pem
+!apps/desktop/packages/tern_client/test/fixtures/*.pem
+
+.DS_Store
+/dist

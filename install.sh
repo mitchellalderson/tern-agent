@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install tern: one static binary, no dependencies.
 #
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/tern/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/mitchellalderson/tern-agent/main/install.sh | sh
 #
 # Downloads tern-<target>.tar.gz and its .sha256 from a GitHub release (the
 # assets .github/workflows/release.yml publishes), checks the checksum, and
@@ -14,10 +14,7 @@
 #   TERN_DOWNLOAD_URL download from this base URL instead of GitHub (a mirror)
 set -eu
 
-# TODO(owner): set this to the public repository, e.g. DEFAULT_REPO="owner/tern",
-# and replace OWNER in the curl line above and in README.md. Until then the
-# script refuses to run unless TERN_REPO or TERN_DOWNLOAD_URL is set.
-DEFAULT_REPO=""
+DEFAULT_REPO="mitchellalderson/tern-agent"
 
 REPO="${TERN_REPO:-$DEFAULT_REPO}"
 VERSION="${TERN_VERSION:-latest}"
@@ -28,7 +25,7 @@ die() { say "error: $*"; exit 1; }
 
 if [ -z "${TERN_DOWNLOAD_URL:-}" ]; then
   case "$REPO" in
-    "" | OWNER/*) die "set TERN_REPO=owner/name (this script hasn't been pointed at a repository yet)" ;;
+    "") die "set TERN_REPO=owner/name" ;;
     */*) ;;
     *) die "TERN_REPO must look like owner/name, got '$REPO'" ;;
   esac

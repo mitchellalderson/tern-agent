@@ -19,7 +19,7 @@ below the first section is built; order can change, and items may be cut. The to
 - Sub-agents: delegation, fan-out and coordination ([subagents-design.md](docs/subagents-design.md)).
 - Remote core over TCP with TLS, QR device pairing and scoped tokens (D1 in
   [deployment-spec.md](docs/deployment-spec.md)).
-- A Flutter desktop app (build from source): conversations, approvals, routines, run inspector, provider and secret
+- A macOS desktop app (download, daemon included): conversations, approvals, routines, run inspector, provider and secret
   settings (G0–G2 in [gui-spec.md](docs/gui-spec.md)).
 
 ## Next: quick wins (Stage 1)

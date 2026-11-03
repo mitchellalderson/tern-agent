@@ -84,8 +84,9 @@ backends. Details: [docs/sandbox-design.md](docs/sandbox-design.md).
 - **Remote access done badly.** `tls = "off"` is allowed only on loopback behind a proxy you declare with
   `trust_proxy`; exposing a core to the internet is your call, and an `owner` device can do anything you can.
 - **The desktop app** is a client of the same API with no extra privileges; it is not separately hardened or
-  notarized yet.
-- **Supply chain.** Release archives are checksummed by `install.sh` but not signed.
+  notarized yet (release builds are ad-hoc signed until a Developer ID is set up).
+- **Supply chain.** Release archives are checksummed by `install.sh` and carry GitHub build provenance attestations
+  (`gh attestation verify`), but are not signed with a release key.
 
 The design notes behind these choices, including an independent review of the trust boundaries and its fixes, are in
 [DECISIONS.md](DECISIONS.md) ("M4", "M6: Security review fixes" and "D1").

@@ -1,6 +1,6 @@
 # tern
 
-A personal AI agent you run yourself, shipped as **one static binary**: no Python, no Node, no Docker required. It chats in your terminal and on Telegram (and in a desktop app you build from [apps/desktop](apps/desktop/README.md)), runs scheduled routines, writes its own sandboxed connectors for APIs nobody built one for, and asks before it runs commands. It survives crashes: every model call and tool result is journaled, so a killed run resumes where it stopped without repeating completed work.
+A personal AI agent you run yourself, shipped as **one static binary**: no Python, no Node, no Docker required. It chats in your terminal and on Telegram (and in a [macOS desktop app](#desktop-app)), runs scheduled routines, writes its own sandboxed connectors for APIs nobody built one for, and asks before it runs commands. It survives crashes: every model call and tool result is journaled, so a killed run resumes where it stopped without repeating completed work.
 
 <!-- TODO(launch): replace this screenshot with docs/assets/demo.gif, the 90-second demo in docs/launch-plan.md §4.1
      (routine, Telegram approval, kill -9 and resume, agent-written connector). The screenshot is the desktop app
@@ -11,7 +11,7 @@ A personal AI agent you run yourself, shipped as **one static binary**: no Pytho
 </picture>
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/OWNER/tern/main/install.sh | sh   # TODO(owner): real repo
+curl -fsSL https://raw.githubusercontent.com/mitchellalderson/tern-agent/main/install.sh | sh
 tern setup     # paste a model provider key, pick a model
 ```
 
@@ -20,13 +20,31 @@ macOS and Linux. Anthropic or any OpenAI-compatible model, including local ones.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/OWNER/tern/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mitchellalderson/tern-agent/main/install.sh | sh
 ```
 
 The script picks the right build (Linux x86_64/aarch64, static musl; macOS Apple Silicon/Intel), verifies its SHA-256 checksum, and installs to `~/.local/bin` (`TERN_INSTALL_DIR` to change; `TERN_VERSION=v0.1.0` pins a release, `TERN_REPO=owner/name` installs from a fork). Or build from source with Rust 1.89+:
 
 ```sh
 cargo build --profile dist -p tern    # → target/dist/tern
+```
+
+### Desktop app
+
+macOS 11+ (Apple Silicon and Intel): download [tern-desktop-macos.dmg](https://github.com/mitchellalderson/tern-agent/releases/latest/download/tern-desktop-macos.dmg) and drag tern to Applications. The app carries its own `tern`, so on first launch press **Start tern** and add a model; you don't need the CLI. To also use that binary from a terminal:
+
+```sh
+ln -s /Applications/tern.app/Contents/Helpers/tern ~/.local/bin/tern
+```
+
+Until the app is notarized, macOS blocks the first open: open it once, then allow it under **System Settings → Privacy & Security → Open Anyway**.
+
+### Verify a download
+
+Every release asset has a `.sha256` next to it and a GitHub build provenance attestation:
+
+```sh
+gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 ```
 
 ## Quick start
@@ -412,7 +430,7 @@ Only one daemon can use a data directory. If `tern daemon` says another is alrea
 
 ### Make sure the app starts your build
 
-When no daemon is running, the app's **Start tern** button looks for a binary in this order: `$TERN_BIN`, your `PATH`, `~/.cargo/bin`, `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`. If you've installed a release `tern`, that is what it starts, not your build. Point the app at your build explicitly:
+When no daemon is running, the app's **Start tern** button looks for a binary in this order: `$TERN_BIN`, the one inside the app bundle (release builds only), your `PATH`, `~/.cargo/bin`, `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`. If you've installed a release `tern`, that is what it starts, not your build. Point the app at your build explicitly:
 
 ```sh
 cd apps/desktop

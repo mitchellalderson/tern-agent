@@ -27,7 +27,7 @@ Said first, because you'll find out anyway:
   boundary and the SSRF filter; see [SECURITY.md](../SECURITY.md) for what that leaves open.
 - **No OAuth sign-in.** Connectors and MCP servers use API keys or tokens you provide.
 - **No Windows build**, and no bundled model: you need an API key or a local model server on day one.
-- **The desktop app is macOS-first and built from source.** No packaged, signed download yet.
+- **The desktop app is macOS-only** and not notarized yet, so macOS asks you to allow it on first open.
 
 ## Why not OpenClaw?
 

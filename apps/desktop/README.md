@@ -30,7 +30,16 @@ The macOS app runs outside the App Sandbox (see `macos/Runner/*.entitlements`). 
 - Model chip: a searchable picker over every provider's models (fetched by the daemon and cached), with the current model first, a refresh button, **Also make it the default**, and a `Use "<typed>"` row for models the list doesn't have. It works before the first message too: the choice is sent with it.
 - Notifications: when the window doesn't have focus, or you're in another conversation, a finished run and an approval each post a system notification. Approvals have **Allow once** and **Deny** buttons that answer straight from the notification. The dock badge counts pending approvals. On macOS this uses `UserNotifications` through the `tern/window` channel; on Linux, `notify-send` (no buttons).
 
-Not yet: agent profiles, channels, connectors/MCP/skills/memory views, menu bar extra, packaging. Those need the engine APIs in gui-spec §7.1, and the phases are in §10.
+Not yet: agent profiles, channels, connectors/MCP/skills/memory views, menu bar extra, notarization, a Linux build. Those need the engine APIs in gui-spec §7.1, and the phases are in §10.
+
+## Release build
+
+`scripts/package-macos-app.sh <tern-binary> <out-dir>` builds the release app, puts the binary in `tern.app/Contents/Helpers/tern` (which **Start tern** prefers over `PATH`), signs it and writes `tern-desktop-macos.dmg`. The release workflow passes a universal `tern`; with `MACOS_SIGN_IDENTITY` and the `APPLE_*` variables set it signs with a Developer ID and notarizes, otherwise it ad-hoc signs.
+
+```sh
+cargo build --release -p tern
+scripts/package-macos-app.sh target/release/tern dist    # from the repo root
+```
 
 ## Layout
 
