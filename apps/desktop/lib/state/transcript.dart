@@ -395,7 +395,10 @@ class Transcript {
         if (status != 'completed') {
           items.add(RunEndItem(runId: runId, status: status, error: error));
         }
-      case UsageEvent() || UnknownEvent():
+      case UsageEvent() ||
+          UnknownEvent() ||
+          ProvidersChanged() ||
+          ModelsChanged():
         return false;
     }
     return true;

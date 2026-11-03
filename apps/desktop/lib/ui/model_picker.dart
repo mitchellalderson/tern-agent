@@ -1,0 +1,504 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:tern_client/tern_client.dart';
+
+import '../state/store.dart';
+import '../theme.dart';
+
+/// A line of the model list.
+sealed class ModelRow {
+  const ModelRow();
+}
+
+class ModelHeader extends ModelRow {
+  const ModelHeader(this.title, [this.note]);
+  final String title;
+
+  /// Why the list is missing or stale.
+  final String? note;
+}
+
+class ModelChoice extends ModelRow {
+  const ModelChoice(this.full, this.info, {this.current = false});
+
+  /// `provider:id`.
+  final String full;
+  final ModelInfo? info;
+  final bool current;
+
+  String get id => full.substring(full.indexOf(':') + 1);
+}
+
+/// Use the filter text as typed.
+class TypedChoice extends ModelRow {
+  const TypedChoice(this.text);
+  final String text;
+}
+
+/// The rows for `lists` filtered by `filter`: the current model first, then
+/// each provider's matches, then the typed text (docs/provider-setup-spec.md
+/// §7.2). Pure, for tests.
+List<ModelRow> modelRows(
+  List<ProviderModels> lists,
+  String filter, {
+  String? current,
+}) {
+  final f = filter.trim();
+  final rows = <ModelRow>[];
+  if (f.isEmpty && current != null) {
+    final colon = current.indexOf(':');
+    final provider = colon < 0 ? '' : current.substring(0, colon);
+    final id = current.substring(colon + 1);
+    final info = lists
+        .where((l) => l.provider == provider)
+        .expand((l) => l.models)
+        .where((m) => m.id == id)
+        .firstOrNull;
+    rows
+      ..add(const ModelHeader('Current'))
+      ..add(ModelChoice(current, info, current: true));
+  }
+  for (final l in lists) {
+    final models = [
+      for (final m in l.models)
+        if (f.isEmpty || _matches(f, l.provider, m)) m,
+    ];
+    if (models.isEmpty && f.isNotEmpty) continue;
+    final note = switch ((l.message, l.models.isEmpty)) {
+      (final m?, true) => "Couldn't list models: $m",
+      (final m?, false) => 'Showing the last list: $m',
+      (null, true) => 'No models listed; type a model id',
+      (null, false) => null,
+    };
+    rows.add(ModelHeader(l.provider, note));
+    for (final m in models) {
+      final full = '${l.provider}:${m.id}';
+      rows.add(ModelChoice(full, m, current: full == current));
+    }
+  }
+  if (f.isNotEmpty) rows.add(TypedChoice(f));
+  return rows;
+}
+
+bool _matches(String filter, String provider, ModelInfo m) =>
+    _subsequence(filter, '$provider:${m.id}') ||
+    (m.name != null && _subsequence(filter, m.name!));
+
+bool _subsequence(String needle, String hay) {
+  final h = hay.toLowerCase();
+  var i = 0;
+  for (final c in needle.toLowerCase().split('')) {
+    i = h.indexOf(c, i);
+    if (i < 0) return false;
+    i++;
+  }
+  return true;
+}
+
+String? _choiceOf(ModelRow r) => switch (r) {
+  ModelChoice(:final full) => full,
+  TypedChoice(:final text) => text,
+  ModelHeader() => null,
+};
+
+/// A searchable list of models: type to filter, ↑↓ to move, ⏎ to choose.
+/// The typed text is always a choice, so unlisted models work too.
+class ModelList extends StatefulWidget {
+  const ModelList({
+    super.key,
+    required this.lists,
+    required this.onChoose,
+    this.current,
+    this.loading = false,
+    this.maxHeight = 340,
+    this.autofocus = true,
+  });
+
+  final List<ProviderModels>? lists;
+  final String? current;
+  final bool loading;
+  final double maxHeight;
+  final bool autofocus;
+  final ValueChanged<String> onChoose;
+
+  @override
+  State<ModelList> createState() => ModelListState();
+}
+
+class ModelListState extends State<ModelList> {
+  final _filter = TextEditingController();
+  final _scroll = ScrollController();
+  var _selected = 0;
+
+  @override
+  void dispose() {
+    _filter.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  List<ModelRow> get _rows => modelRows(
+    widget.lists ?? const [],
+    _filter.text,
+    current: widget.current,
+  );
+
+  /// The highlighted choice, if any.
+  String? get chosen {
+    final choices = _rows.map(_choiceOf).nonNulls.toList();
+    return choices.isEmpty
+        ? null
+        : choices[_selected.clamp(0, choices.length - 1)];
+  }
+
+  void _move(int by) {
+    final n = _rows.map(_choiceOf).nonNulls.length;
+    if (n == 0) return;
+    setState(() => _selected = (_selected + by).clamp(0, n - 1));
+  }
+
+  KeyEventResult _onKey(FocusNode _, KeyEvent e) {
+    if (e is! KeyDownEvent && e is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    switch (e.logicalKey) {
+      case LogicalKeyboardKey.arrowDown:
+        _move(1);
+      case LogicalKeyboardKey.arrowUp:
+        _move(-1);
+      case LogicalKeyboardKey.enter || LogicalKeyboardKey.numpadEnter:
+        if (chosen case final c?) widget.onChoose(c);
+      default:
+        return KeyEventResult.ignored;
+    }
+    return KeyEventResult.handled;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final rows = _rows;
+    var choice = -1;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Focus(
+          onKeyEvent: _onKey,
+          child: TextField(
+            key: const ValueKey('model-filter'),
+            controller: _filter,
+            autofocus: widget.autofocus,
+            autocorrect: false,
+            enableSuggestions: false,
+            style: mono.copyWith(fontSize: 13),
+            onChanged: (_) => setState(() => _selected = 0),
+            decoration: InputDecoration(
+              hintText: 'Search, or type a model id',
+              hintStyle: TextStyle(color: c.muted),
+              prefixIcon: Icon(Icons.search, size: 17, color: c.muted),
+              isDense: true,
+              contentPadding: const EdgeInsets.all(10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(color: c.hairline),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(color: c.hairline),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(color: c.accent),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: widget.maxHeight),
+          child: widget.lists == null && widget.loading
+              ? const Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Center(
+                    child: SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                )
+              : rows.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Text(
+                    'No models listed. Type a model id.',
+                    style: TextStyle(fontSize: 12.5, color: c.muted),
+                  ),
+                )
+              : ListView(
+                  controller: _scroll,
+                  shrinkWrap: true,
+                  children: [
+                    for (final r in rows)
+                      switch (r) {
+                        ModelHeader(:final title, :final note) => _Header(
+                          title: title,
+                          note: note,
+                        ),
+                        _ => () {
+                          choice++;
+                          final i = choice;
+                          return _Choice(
+                            row: r,
+                            selected: i == _selected,
+                            onTap: () => widget.onChoose(_choiceOf(r)!),
+                            onHover: () => setState(() => _selected = i),
+                          );
+                        }(),
+                      },
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _Header extends StatelessWidget {
+  const _Header({required this.title, this.note});
+
+  final String title;
+  final String? note;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 10, 8, 4),
+      child: Row(
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: c.muted,
+            ),
+          ),
+          if (note case final n?) ...[
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                n,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 11.5, color: c.warn),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _Choice extends StatelessWidget {
+  const _Choice({
+    required this.row,
+    required this.selected,
+    required this.onTap,
+    required this.onHover,
+  });
+
+  final ModelRow row;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onHover;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final (label, note, current) = switch (row) {
+      ModelChoice(:final id, :final info, :final current) => (
+        id,
+        [
+          if (info?.name case final n? when n != id) n,
+          if (info?.contextWindow case final w?) '${w ~/ 1000}k context',
+        ].join(' · '),
+        current,
+      ),
+      TypedChoice(:final text) => ('Use "$text"', 'as typed', false),
+      ModelHeader() => ('', '', false),
+    };
+    return MouseRegion(
+      onEnter: (_) => onHover(),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          decoration: BoxDecoration(
+            color: selected ? c.selection : null,
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Row(
+            children: [
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: row is TypedChoice
+                      ? const TextStyle(fontSize: 13)
+                      : mono.copyWith(fontSize: 13),
+                ),
+              ),
+              if (note.isNotEmpty) ...[
+                const SizedBox(width: 10),
+                Flexible(
+                  child: Text(
+                    note,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11.5, color: c.muted),
+                  ),
+                ),
+              ],
+              const Spacer(),
+              if (current) Icon(Icons.check, size: 15, color: c.accent),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The conversation's model chip opens this.
+Future<void> showModelPicker(BuildContext context, TernStore store) {
+  if (store.modelLists == null && !store.loadingModels) {
+    store.loadModels();
+  }
+  return showDialog<void>(
+    context: context,
+    builder: (_) => ModelPickerDialog(store: store),
+  );
+}
+
+class ModelPickerDialog extends StatefulWidget {
+  const ModelPickerDialog({super.key, required this.store, this.onManage});
+
+  final TernStore store;
+
+  /// Opens provider settings; defaults to doing nothing when absent.
+  final VoidCallback? onManage;
+
+  @override
+  State<ModelPickerDialog> createState() => _ModelPickerDialogState();
+}
+
+class _ModelPickerDialogState extends State<ModelPickerDialog> {
+  var _makeDefault = false;
+  var _busy = false;
+  String? _error;
+
+  Future<void> _choose(String model) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final err = await widget.store.setModel(model, makeDefault: _makeDefault);
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() {
+        _busy = false;
+        _error = err;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final store = widget.store;
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 16, 18, 10),
+          child: ListenableBuilder(
+            listenable: store,
+            builder: (context, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Model',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Ask the providers again',
+                      icon: store.loadingModels
+                          ? const SizedBox.square(
+                              dimension: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Icon(Icons.refresh, size: 17, color: c.muted),
+                      onPressed: store.loadingModels
+                          ? null
+                          : () => store.loadModels(refresh: true),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                ModelList(
+                  lists: store.modelLists,
+                  loading: store.loadingModels,
+                  current: store.modelFor(store.selected),
+                  onChoose: _busy ? (_) {} : _choose,
+                ),
+                if (_error case final e?) ...[
+                  const SizedBox(height: 8),
+                  Text(e, style: TextStyle(fontSize: 12.5, color: c.error)),
+                ],
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Checkbox(
+                      value: _makeDefault,
+                      visualDensity: VisualDensity.compact,
+                      onChanged: (v) => setState(() => _makeDefault = v!),
+                    ),
+                    Text(
+                      'Also make it the default',
+                      style: TextStyle(fontSize: 12.5, color: c.muted),
+                    ),
+                    const Spacer(),
+                    if (widget.onManage case final manage?)
+                      TextButton(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          manage();
+                        },
+                        child: const Text('Manage providers…'),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

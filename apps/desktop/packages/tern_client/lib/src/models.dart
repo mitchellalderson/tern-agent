@@ -123,10 +123,15 @@ class PairingOffer {
 }
 
 class Info {
-  const Info({this.defaultModel, required this.tools});
+  const Info({
+    this.defaultModel,
+    required this.tools,
+    this.setupNeeded = false,
+  });
 
   factory Info.fromJson(Json j) => Info(
     defaultModel: j['default_model'] as String?,
+    setupNeeded: j['setup_needed'] as bool? ?? false,
     tools: [
       for (final t in j['tools'] as List)
         (name: (t as List)[0] as String, description: t[1] as String),
@@ -135,6 +140,9 @@ class Info {
 
   final String? defaultModel;
   final List<({String name, String description})> tools;
+
+  /// No usable model yet: offer provider setup.
+  final bool setupNeeded;
 }
 
 class Started {
@@ -397,6 +405,10 @@ sealed class TernEvent {
   factory TernEvent.fromJson(Json j) {
     if (j['approval_requested'] case final Json a) {
       return ApprovalRequested(Approval.fromJson(a));
+    }
+    if (j.containsKey('providers_changed')) return const ProvidersChanged();
+    if (j['models_changed'] case final Json m) {
+      return ModelsChanged(m['provider'] as String? ?? '');
     }
     final run = j['run_id'] as String? ?? '';
     final event = _agentEvent(j, run);
@@ -662,6 +674,17 @@ class RunFinished extends RunEvent {
 class ApprovalRequested extends TernEvent {
   const ApprovalRequested(this.approval);
   final Approval approval;
+}
+
+/// Providers or the default model changed; re-read them.
+class ProvidersChanged extends TernEvent {
+  const ProvidersChanged();
+}
+
+/// A provider's model list was refreshed.
+class ModelsChanged extends TernEvent {
+  const ModelsChanged(this.provider);
+  final String provider;
 }
 
 class UnknownEvent extends TernEvent {

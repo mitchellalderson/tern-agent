@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'endpoint.dart';
 import 'models.dart';
+import 'providers.dart';
 import 'sse.dart';
 import 'subagents.dart';
 import 'tools.dart';
@@ -106,9 +107,80 @@ class TernClient {
       ToolSpec.fromJson(t as Json),
   ];
 
-  /// Throws [TernException] with the daemon's reason if `model` is unusable.
-  Future<void> checkModel(String model) =>
-      _json('POST', '/v1/models/check', {'model': model});
+  /// Resolve `model` (the provider may be left off when only one lists
+  /// it). Throws [TernException] with the daemon's reason if it's unusable.
+  Future<Resolved> checkModel(String model) async => Resolved.fromJson(
+    await _json('POST', '/v1/models/check', {'model': model}),
+    model,
+  );
+
+  /// Configured providers, with masked keys.
+  Future<List<ProviderStatus>> providers() async => [
+    for (final p in await _json('GET', '/v1/providers') as List)
+      ProviderStatus.fromJson(p as Json),
+  ];
+
+  /// Model lists, from the daemon's cache unless `refresh`.
+  Future<List<ProviderModels>> models({
+    String? provider,
+    bool refresh = false,
+  }) async {
+    final q = [
+      if (provider != null) 'provider=${Uri.encodeQueryComponent(provider)}',
+      if (refresh) 'refresh=true',
+    ].join('&');
+    return [
+      for (final m
+          in await _json('GET', '/v1/models${q.isEmpty ? '' : '?$q'}') as List)
+        ProviderModels.fromJson(m as Json),
+    ];
+  }
+
+  /// Check a new provider, or a change to `existing`, with the provider
+  /// itself. Saves nothing.
+  Future<Verified> verifyProvider(
+    ProviderDraft draft, {
+    String? existing,
+  }) async => Verified.fromJson(
+    await _json(
+      'POST',
+      existing == null
+          ? '/v1/providers/verify'
+          : '/v1/providers/$existing/verify',
+      draft.toJson(),
+    ),
+  );
+
+  /// Verify, store the key, write the config and reload providers. Throws
+  /// [TernException] with the reason when the key is rejected.
+  Future<ProviderStatus> saveProvider(
+    ProviderDraft draft, {
+    String? existing,
+    String? defaultModel,
+  }) async {
+    final body = {...draft.toJson(), 'default_model': ?defaultModel};
+    final j =
+        await _json(
+              existing == null ? 'POST' : 'PATCH',
+              existing == null ? '/v1/providers' : '/v1/providers/$existing',
+              body,
+            )
+            as Json;
+    return ProviderStatus.fromJson(j['provider'] as Json);
+  }
+
+  /// Remove a provider and, with `removeSecret`, its key (unless
+  /// something else uses it).
+  Future<void> removeProvider(String name, {bool removeSecret = true}) =>
+      _json('DELETE', '/v1/providers/$name?remove_secret=$removeSecret');
+
+  /// Make `model` the default for new conversations.
+  Future<Resolved> setDefaultModel(String model) async {
+    final j =
+        await _json('PUT', '/v1/config/default_model', {'model': model})
+            as Json;
+    return Resolved.fromJson(j, model);
+  }
 
   Future<List<SessionItem>> sessions({int limit = 50}) async => [
     for (final s in await _json('GET', '/v1/sessions?limit=$limit') as List)
