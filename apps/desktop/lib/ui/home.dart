@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../state/store.dart';
 import 'conversation.dart';
 import 'offline.dart';
+import 'providers.dart';
 import 'secrets.dart';
 import 'side_panel.dart';
 import 'sidebar.dart';
@@ -92,7 +93,7 @@ class _HomeState extends State<Home> {
             alt: true,
           ): _togglePanel,
           const SingleActivator(LogicalKeyboardKey.comma, control: true): () {
-            if (store.health != null) showSecretsDialog(context, store);
+            if (store.health != null) showProvidersDialog(context, store);
           },
         },
         child: Focus(autofocus: true, child: body),
@@ -113,11 +114,17 @@ class _HomeState extends State<Home> {
             PlatformMenuItemGroup(
               members: [
                 PlatformMenuItem(
-                  label: 'Secrets…',
+                  label: 'Models…',
                   shortcut: const SingleActivator(
                     LogicalKeyboardKey.comma,
                     meta: true,
                   ),
+                  onSelected: store.health == null
+                      ? null
+                      : () => showProvidersDialog(context, store),
+                ),
+                PlatformMenuItem(
+                  label: 'Secrets…',
                   onSelected: store.health == null
                       ? null
                       : () => showSecretsDialog(context, store),

@@ -47,6 +47,13 @@ class TernStore extends ChangeNotifier {
   final _secretSession = <String, String>{};
   final usage = <String, Usage>{};
   List<Schedule> schedules = [];
+
+  /// Model lists per provider, loaded on demand by the pickers.
+  List<ProviderModels>? modelLists;
+  bool loadingModels = false;
+
+  /// The model a new conversation will use, when chosen before sending.
+  String? draftModel;
   String? error;
   var _badge = 0;
 
@@ -78,9 +85,13 @@ class TernStore extends ChangeNotifier {
       health?.features.contains('secret_requests') ?? false;
 
   String? modelFor(String? session) {
+    if (session == null) return draftModel ?? info?.defaultModel;
     final s = sessions.where((x) => x.id == session).firstOrNull;
     return s?.model ?? info?.defaultModel;
   }
+
+  /// No usable model yet: show provider setup instead of the composer.
+  bool get setupNeeded => info?.setupNeeded ?? false;
 
   Future<void> connect() async {
     _retry?.cancel();
@@ -260,6 +271,13 @@ class TernStore extends ChangeNotifier {
         session = sessionId ?? _runSession[runId];
         if (sessionId != null) _runSession[runId] = sessionId;
         if (e.parentRunId case final p?) _parentOf[runId] ??= p;
+      case ProvidersChanged():
+        unawaited(refreshInfo());
+        return;
+      case ModelsChanged():
+        // Only re-fetch lists someone is looking at.
+        if (modelLists != null) unawaited(loadModels());
+        return;
       case UnknownEvent():
         return;
     }
@@ -468,6 +486,7 @@ class TernStore extends ChangeNotifier {
   void newConversation() {
     selected = null;
     draft = true;
+    draftModel = null;
     error = null;
     notifyListeners();
   }
@@ -480,7 +499,11 @@ class TernStore extends ChangeNotifier {
       notifyListeners();
     }
     try {
-      final started = await client.send(text, session: session);
+      final started = await client.send(
+        text,
+        session: session,
+        model: session == null ? draftModel : null,
+      );
       _runSession[started.runId] = started.sessionId;
       if (session == null) {
         // Events may have arrived for the new session already.
@@ -488,6 +511,7 @@ class TernStore extends ChangeNotifier {
         t.items.insert(0, UserItem(text));
         selected = started.sessionId;
         draft = false;
+        draftModel = null;
         sessions = await client.sessions();
       }
       _transcriptFor(started.sessionId)!.activeRun ??= started.runId;
@@ -631,17 +655,55 @@ class TernStore extends ChangeNotifier {
   }
 
   /// Validate and set the model for the open conversation.
-  Future<String?> setModel(String model) async {
+  /// Use `model` for this conversation (or the next new one), and with
+  /// `makeDefault` for new conversations too. Returns the daemon's reason
+  /// on failure; a warning (unlisted model) lands in [modelWarning].
+  Future<String?> setModel(String model, {bool makeDefault = false}) async {
     try {
-      await client.checkModel(model);
+      final r = await client.checkModel(model);
+      modelWarning = r.warning;
       if (selected case final id?) {
-        await client.setModel(id, model);
+        await client.setModel(id, r.model);
         sessions = await client.sessions();
-        notifyListeners();
+      } else {
+        draftModel = r.model;
       }
+      if (makeDefault) {
+        await client.setDefaultModel(r.model);
+        await refreshInfo(notify: false);
+      }
+      notifyListeners();
       return null;
     } on TernException catch (e) {
       return e.message;
+    }
+  }
+
+  /// Set when the last model chosen isn't in its provider's list.
+  String? modelWarning;
+
+  /// Re-read the default model and whether setup is needed.
+  Future<void> refreshInfo({bool notify = true}) async {
+    try {
+      info = await client.info();
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    if (notify) notifyListeners();
+  }
+
+  /// Fetch every provider's models (cached by the daemon unless `refresh`).
+  Future<void> loadModels({bool refresh = false}) async {
+    loadingModels = true;
+    notifyListeners();
+    try {
+      modelLists = await client.models(refresh: refresh);
+    } on TernException catch (e) {
+      error = e.message;
+      modelLists ??= [];
+    } finally {
+      loadingModels = false;
+      if (!_disposed) notifyListeners();
     }
   }
 

@@ -4,7 +4,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
-import 'secrets.dart';
+import 'providers.dart';
 import 'widgets.dart';
 
 class Sidebar extends StatefulWidget {
@@ -167,7 +167,7 @@ class _AgentRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final model = store.info?.defaultModel ?? 'no default model';
+    final model = store.info?.defaultModel;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 18),
       child: Row(
@@ -179,12 +179,25 @@ class _AgentRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('tern', style: Theme.of(context).textTheme.titleSmall),
-                Text(
-                  model,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+                if (model != null)
+                  Text(
+                    model,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  )
+                else
+                  InkWell(
+                    onTap: store.link == Link.online
+                        ? () => showProvidersDialog(context, store)
+                        : null,
+                    child: Text(
+                      'Set up a model…',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: context.colors.accent,
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -331,9 +344,9 @@ class _StatusFooter extends StatelessWidget {
           QuietIconButton(
             icon: Icons.key,
             size: 16,
-            tooltip: 'Secrets (⌘,)',
+            tooltip: 'Models and API keys (⌘,)',
             onPressed: store.link == Link.online
-                ? () => showSecretsDialog(context, store)
+                ? () => showProvidersDialog(context, store)
                 : null,
           ),
         ],

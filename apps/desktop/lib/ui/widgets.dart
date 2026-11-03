@@ -9,6 +9,16 @@ import '../theme.dart';
 
 const _window = MethodChannel('tern/window');
 
+/// Open `url` in the default browser.
+Future<void> openUrl(String url) async {
+  final opener = Platform.isMacOS ? 'open' : 'xdg-open';
+  try {
+    await Process.run(opener, [url]);
+  } on ProcessException {
+    // No browser launcher; the link text is still visible.
+  }
+}
+
 /// Space the macOS traffic lights need above the sidebar.
 double get titleBarInset => Platform.isMacOS ? 40 : 8;
 

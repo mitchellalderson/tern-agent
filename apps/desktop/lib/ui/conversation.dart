@@ -5,6 +5,8 @@ import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
 import 'items.dart';
+import 'model_picker.dart';
+import 'providers.dart';
 import 'widgets.dart';
 
 class ConversationView extends StatefulWidget {
@@ -56,7 +58,9 @@ class _ConversationViewState extends State<ConversationView> {
         ),
         const Hairline(),
         Expanded(
-          child: items.isEmpty
+          child: items.isEmpty && store.setupNeeded
+              ? _Welcome(store: store)
+              : items.isEmpty
               ? const _Empty()
               // Reversed, so the newest content stays pinned to the bottom
               // while it streams.
@@ -143,15 +147,23 @@ class _Header extends StatelessWidget {
                 ),
               ),
             ),
-            if (model != null)
+            if (store.modelWarning case final w?)
+              Tooltip(
+                message: w,
+                child: Icon(Icons.info_outline, size: 15, color: c.warn),
+              ),
+            if (store.link == Link.online)
               TextButton.icon(
-                onPressed: store.selected == null
-                    ? null
-                    : () => _pickModel(context, model),
+                onPressed: () => model == null
+                    ? showProvidersDialog(context, store)
+                    : _pickModel(context),
                 icon: Icon(Icons.memory, size: 15, color: c.muted),
                 label: Text(
-                  model,
-                  style: TextStyle(fontSize: 12.5, color: c.muted),
+                  model ?? 'Set up a model',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: model == null ? c.warn : c.muted,
+                  ),
                 ),
                 style: TextButton.styleFrom(
                   shape: RoundedRectangleBorder(
@@ -172,77 +184,69 @@ class _Header extends StatelessWidget {
     );
   }
 
-  Future<void> _pickModel(BuildContext context, String current) async {
-    await showDialog<void>(
+  Future<void> _pickModel(BuildContext context) {
+    if (store.modelLists == null && !store.loadingModels) store.loadModels();
+    return showDialog<void>(
       context: context,
-      builder: (_) => _ModelDialog(store: store, current: current),
+      builder: (dialog) => ModelPickerDialog(
+        store: store,
+        onManage: () => showProvidersDialog(context, store),
+      ),
     );
   }
 }
 
-class _ModelDialog extends StatefulWidget {
-  const _ModelDialog({required this.store, required this.current});
+/// First run: no usable model yet, so set one up right here.
+class _Welcome extends StatelessWidget {
+  const _Welcome({required this.store});
 
   final TernStore store;
-  final String current;
 
   @override
-  State<_ModelDialog> createState() => _ModelDialogState();
-}
-
-class _ModelDialogState extends State<_ModelDialog> {
-  late final _text = TextEditingController(text: widget.current);
-  String? _error;
-  var _busy = false;
-
-  @override
-  void dispose() {
-    _text.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    setState(() => _busy = true);
-    final err = await widget.store.setModel(_text.text.trim());
-    if (!mounted) return;
-    if (err == null) {
-      Navigator.of(context).pop();
-    } else {
-      setState(() {
-        _busy = false;
-        _error = err;
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Model for this conversation'),
-    content: SizedBox(
-      width: 380,
-      child: TextField(
-        controller: _text,
-        autofocus: true,
-        onSubmitted: (_) => _save(),
-        style: mono.copyWith(fontSize: 13),
-        decoration: InputDecoration(
-          hintText: 'provider:model',
-          errorText: _error,
-          errorMaxLines: 3,
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Center(child: AgentAvatar(name: 'tern', size: 48)),
+              const SizedBox(height: 16),
+              Text(
+                'Connect a model to get started',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'tern needs a model provider and its API key. The key stays '
+                'on this computer, in ~/.tern/secrets.toml.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: c.card,
+                  border: Border.all(color: c.hairline),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: ProviderSetup(
+                  store: store,
+                  onDone: (_) => store.refreshInfo(),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.of(context).pop(),
-        child: const Text('Cancel'),
-      ),
-      FilledButton(
-        onPressed: _busy ? null : _save,
-        child: const Text('Use model'),
-      ),
-    ],
-  );
+    );
+  }
 }
 
 class _Empty extends StatelessWidget {
