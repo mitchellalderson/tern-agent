@@ -2,7 +2,7 @@
 
 Status: draft, 2026-11-03. Not built. This is the next set of tooling after S0–S1, D1 and P0. It was derived from a
 survey of Claude Duet, Grok Bot, Meta Muse, ChatGPT, Google CC, Poke, OpenClaw and its forks
-([research/personal-agents-2026.md](research/personal-agents-2026.md)). Phases are T0–T8, with T4 split into T4a and T4b (§12).
+([research/personal-agents-2026.md](research/personal-agents-2026.md)). Phases are T0–T8 by area (§12.2), built in five stages from quick wins to the hardest integrations (§12.1).
 
 Related:
 - [subagents-design.md](subagents-design.md): goals (§6) build on sub-agent runs.
@@ -919,6 +919,34 @@ with one **Start tern** button. Off is always visible as off.
 
 ## 12. Phases
 
+The phases below (T0–T8) group the work **by area**. §12.1 orders the same items into **stages by complexity and
+dependency**. Build stage by stage: each stage is shippable alone, and nothing in a stage needs a later one. Where a
+phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and so on).
+
+### 12.1 Stages
+
+| Stage | Theme | Items | Complexity | Needs |
+|---|---|---|---|---|
+| **1. Quick wins** | Small changes to what exists. No new data model, no new protocols. Each item is days, not weeks. | **T0** effects on every tool, money-movement deny · **T1a** on today's schedules: `NO_REPLY`, quiet hours, per-schedule run caps and budget · **T5a** memory flush before compaction, capped `user.md`/`memory.md` · **T6a** provider fallback chains · **T8a** `/v1/status`, `/v1/shutdown`, `tern start`/`stop`, `tern service install` with `SuccessfulExit = false`, "Quit tern completely" in the app (one-click stop for non-technical users, before the tray exists) · **T7a** browser via an MCP recipe (docs only) | S each | nothing |
+| **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits | L / M / S–M | Stage 1 (effects, budgets) |
+| **3. Organize and surface** | Make background work visible and tidy. Mostly UI plus straightforward store work. | **T2** channels, home, posts, reply-to-act, Telegram topics · **T6b** activity ledger with hash chain, Tasks view, `tern security audit` · **T8b** `tern tray` on macOS (helper bundle, notifications with actions, login items, quit escalation, `tern://` links) · **T5b** skill capture | M each | Stage 2 (routines, outbox) |
+| **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) · **T4b-ii** gateway connectors (ntfy, then Slack) | L | Stage 2 (taint before any external input); secret-requests spec built |
+| **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` · **T6d** `tern mcp serve` · **T4c** OpenAPI-to-connector and recorded test fixtures · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
+
+Why this order:
+- **Stage 1** delivers visible quality of life immediately: quiet routines, cost caps, easy stop. It costs almost
+  nothing and de-risks the effect model before anything depends on it.
+- **Stage 2** is where the hard *design* lives (routines, taint, outbox). Doing it before connections means every
+  external input that arrives later is already tainted and every write already goes through the outbox. Rule from
+  W1: no email or webhook watch is on by default until T3 ships.
+- **Stage 3** is mostly presentation of data Stage 2 creates. The tray waits until here because before routines and
+  the outbox it has little to show (T8a already covers start and stop).
+- **Stage 4** is the hardest *engineering*: OAuth edge cases, per-provider quirks, account routing, migrations of
+  secrets. Connections go in with OAuth, not later, to avoid a second migration of secrets and grants.
+- **Stage 5** is content and optional features that reuse everything above.
+
+### 12.2 Phases by area
+
 | Phase | Scope | Engine | Clients | Size |
 |---|---|---|---|---|
 | **T0** | `effect` on all tools; Luau `effect`/`untrusted`; MCP hint mapping; money-movement deny | approval.rs, tool.rs, tern-lua spec | approval prompts show effect | S |
@@ -932,7 +960,7 @@ with one **Start tern** button. Off is always visible as off.
 | **T7** | Browser: MCP recipe now, native CDP behind a feature later | optional crate | | S / M |
 | **T8** | `tern tray` (macOS and Linux), one-click Quit with escalation, `tern start`/`stop`, `tern service install`, login items, `/v1/status`, `/v1/shutdown`, `/v1/initiative`, `/v1/clients`, `tern://` deep links | `tray` cargo feature (tray-icon, muda, ksni, notify-rust) | app quits with its window, stops posting notifications when a tray is attached, handles `tern://` | M |
 
-Order rationale:
+Order rationale by phase (the stages in §12.1 apply it):
 - T0 is small and everything else leans on effects.
 - T1 is the largest user-visible win.
 - T3 must land **before** watches on email or webhooks are enabled by default. Until then, `watch` and `webhook`
