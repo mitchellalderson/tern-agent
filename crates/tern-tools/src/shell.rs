@@ -130,7 +130,7 @@ mod tests {
             session_id: "s".into(),
             cancel: CancellationToken::new(),
         };
-        let shell = Shell::new(Arc::new(HostBackend), Duration::from_secs(10));
+        let shell = Shell::new(Arc::new(HostBackend::default()), Duration::from_secs(10));
         let chunks = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink: ProgressSink = {
             let chunks = chunks.clone();

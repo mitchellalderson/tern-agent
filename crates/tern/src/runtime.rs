@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use tern_core::agent::{Agent, AgentConfig, ProviderFactory};
 use tern_core::approval::ApprovalHandler;
-use tern_core::config::{ModelRef, SandboxBackendKind};
+use tern_core::config::{ConfineMode, ModelRef, SandboxBackendKind};
 use tern_core::journal::Journal;
 use tern_core::models::Change;
 use tern_core::prompt::{AgentRole, SubagentPrompt};
@@ -353,6 +353,35 @@ fn secret_uses(
     }))
 }
 
+/// The host backend's sandbox from `[sandbox]`. tern's data dir is never
+/// reachable from a shell command.
+pub(crate) fn host_policy(config: &Config, home: &TernHome) -> tern_sandbox::HostPolicy {
+    let sb = &config.sandbox;
+    tern_sandbox::HostPolicy {
+        confine: match sb.confine {
+            ConfineMode::Auto => tern_sandbox::Confine::Auto,
+            ConfineMode::Required => tern_sandbox::Confine::Required,
+            ConfineMode::Off => tern_sandbox::Confine::Off,
+        },
+        network: sb.network,
+        read_paths: sb.read_paths(),
+        write_paths: sb.write_paths(),
+        deny_paths: vec![home.root().to_path_buf()],
+        helper: None,
+    }
+}
+
+fn docker_settings(config: &Config) -> tern_sandbox::DockerSettings {
+    let sb = &config.sandbox;
+    tern_sandbox::DockerSettings {
+        image: sb.docker_image.clone(),
+        network: sb.network,
+        memory: Some(sb.docker_memory.clone()).filter(|m| !m.is_empty()),
+        cpus: Some(sb.docker_cpus).filter(|c| *c > 0.0),
+        pids: Some(sb.docker_pids).filter(|p| *p > 0),
+    }
+}
+
 fn build_tools(
     home: &TernHome,
     config: &Config,
@@ -361,11 +390,13 @@ fn build_tools(
     subagents: &HostSlot,
 ) -> anyhow::Result<(ToolRegistry, Arc<tern_lua::Connectors>)> {
     let sandbox: Arc<dyn tern_sandbox::SandboxBackend> = match config.sandbox.backend {
-        SandboxBackendKind::Host => Arc::new(tern_sandbox::HostBackend),
+        SandboxBackendKind::Host => {
+            Arc::new(tern_sandbox::HostBackend::new(host_policy(config, home)))
+        }
         SandboxBackendKind::Docker => Arc::new(tern_sandbox::DockerBackend::new(
             "docker",
-            &config.sandbox.docker_image,
             &config.workspace_dir(),
+            docker_settings(config),
         )),
     };
     let mut registry = ToolRegistry::new();

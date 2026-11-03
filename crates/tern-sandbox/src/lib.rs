@@ -2,12 +2,16 @@
 //! backend, and the docker backend.
 
 mod docker;
+mod helper;
+mod policy;
 
-pub use docker::DockerBackend;
+pub use docker::{DockerBackend, DockerSettings};
+pub use helper::{HELPER_ARG, run_if_requested as run_helper_if_requested};
+pub use policy::{Confine, HostPolicy};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -21,6 +25,8 @@ pub enum SandboxError {
     Spawn(std::io::Error),
     #[error("waiting for command: {0}")]
     Wait(std::io::Error),
+    #[error("refusing to run unconfined (sandbox.confine = \"required\"): {0}")]
+    Unconfined(String),
 }
 
 /// Receives output text (stdout and stderr interleaved) while a command runs.
@@ -90,8 +96,192 @@ const PASSTHROUGH_ENV: &[&str] = &[
     "USERPROFILE",
 ];
 
-/// Runs commands directly on this machine; approvals are the safety layer.
-pub struct HostBackend;
+/// How the host backend confines commands on this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Confinement {
+    /// `sandbox.confine = "off"`.
+    Off,
+    /// macOS Seatbelt via `sandbox-exec`.
+    Seatbelt,
+    /// Linux Landlock at this ABI level (1–6), through the helper.
+    Landlock { abi: u8 },
+    /// Wanted but not possible here; commands run unconfined (or not at all
+    /// with `confine = "required"`).
+    Unavailable(String),
+}
+
+impl std::fmt::Display for Confinement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Off => f.write_str("off (sandbox.confine = \"off\")"),
+            Self::Seatbelt => f.write_str("macOS Seatbelt"),
+            Self::Landlock { abi } => write!(f, "Linux Landlock (ABI {abi})"),
+            Self::Unavailable(why) => write!(f, "unavailable: {why}"),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
+/// Runs commands on this machine, inside the OS sandbox `HostPolicy`
+/// describes (see `docs/sandbox-design.md`). Approvals come first.
+pub struct HostBackend {
+    policy: HostPolicy,
+    confinement: OnceLock<Confinement>,
+    warned: std::sync::atomic::AtomicBool,
+}
+
+impl HostBackend {
+    pub fn new(policy: HostPolicy) -> Self {
+        Self {
+            policy,
+            confinement: OnceLock::new(),
+            warned: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// No OS sandbox: approvals and the scrubbed environment only.
+    pub fn unconfined() -> Self {
+        Self::new(HostPolicy::unconfined())
+    }
+
+    pub fn policy(&self) -> &HostPolicy {
+        &self.policy
+    }
+
+    /// What confines commands here (probed once; on Linux this runs the
+    /// helper).
+    pub fn confinement(&self) -> &Confinement {
+        self.confinement.get_or_init(|| detect(&self.policy))
+    }
+
+    /// The program and arguments that run `cmd` in `cwd` under the sandbox.
+    fn argv(&self, cmd: &str, cwd: &Path) -> Result<Vec<std::ffi::OsString>, SandboxError> {
+        let shell: Vec<std::ffi::OsString> = if cfg!(windows) {
+            vec!["cmd".into(), "/C".into(), cmd.into()]
+        } else {
+            vec!["sh".into(), "-c".into(), cmd.into()]
+        };
+        match self.confinement() {
+            Confinement::Off => Ok(shell),
+            Confinement::Unavailable(why) => {
+                if self.policy.confine == Confine::Required {
+                    return Err(SandboxError::Unconfined(why.clone()));
+                }
+                if !self.warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        "shell commands run without an OS sandbox: {why} (set sandbox.confine = \"off\" to silence this)"
+                    );
+                }
+                Ok(shell)
+            }
+            #[cfg(target_os = "macos")]
+            Confinement::Seatbelt => {
+                let mut argv: Vec<std::ffi::OsString> = vec![
+                    SANDBOX_EXEC.into(),
+                    "-p".into(),
+                    policy::seatbelt_profile(&self.policy, cwd).into(),
+                ];
+                argv.extend(shell);
+                Ok(argv)
+            }
+            #[cfg(target_os = "linux")]
+            Confinement::Landlock { .. } => {
+                let grants = policy::linux_grants(&self.policy, cwd);
+                if !grants.dropped.is_empty()
+                    && !self.warned.swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    tracing::warn!(
+                        dropped = ?grants.dropped,
+                        "sandbox paths that contain tern's data dir are not granted"
+                    );
+                }
+                let mut argv: Vec<std::ffi::OsString> =
+                    vec![helper_path(&self.policy)?.into(), HELPER_ARG.into()];
+                argv.extend(policy::helper_args(&self.policy, &grants));
+                argv.push("--".into());
+                argv.extend(shell);
+                Ok(argv)
+            }
+            #[allow(unreachable_patterns)]
+            other => Err(SandboxError::Unconfined(format!(
+                "{other} is not supported on this platform"
+            ))),
+        }
+    }
+}
+
+impl Default for HostBackend {
+    fn default() -> Self {
+        Self::new(HostPolicy::confined())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn helper_path(policy: &HostPolicy) -> Result<PathBuf, SandboxError> {
+    match &policy.helper {
+        Some(p) => Ok(p.clone()),
+        None => std::env::current_exe().map_err(SandboxError::Spawn),
+    }
+}
+
+fn detect(policy: &HostPolicy) -> Confinement {
+    if policy.confine == Confine::Off {
+        return Confinement::Off;
+    }
+    detect_os(policy)
+}
+
+#[cfg(target_os = "macos")]
+fn detect_os(_policy: &HostPolicy) -> Confinement {
+    if Path::new(SANDBOX_EXEC).exists() {
+        Confinement::Seatbelt
+    } else {
+        Confinement::Unavailable(format!("{SANDBOX_EXEC} not found"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn detect_os(policy: &HostPolicy) -> Confinement {
+    let helper = match helper_path(policy) {
+        Ok(h) => h,
+        Err(e) => return Confinement::Unavailable(format!("can't find the tern binary: {e}")),
+    };
+    let out = std::process::Command::new(&helper)
+        .args([HELPER_ARG, "--probe"])
+        .stdin(Stdio::null())
+        .output();
+    let out = match out {
+        Ok(o) => o,
+        Err(e) => return Confinement::Unavailable(format!("running {}: {e}", helper.display())),
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    // "landlock <abi> <status>"
+    let mut words = text.split_whitespace();
+    match (
+        words.next(),
+        words.next().and_then(|a| a.parse::<u8>().ok()),
+    ) {
+        (Some("landlock"), Some(abi)) if out.status.success() && abi > 0 => {
+            Confinement::Landlock { abi }
+        }
+        (Some("landlock"), Some(_)) => Confinement::Unavailable(
+            "the kernel has no Landlock (needs Linux 5.13+ with landlock in the lsm= boot list)"
+                .into(),
+        ),
+        _ => Confinement::Unavailable(format!(
+            "the sandbox helper {} didn't answer: {}",
+            helper.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn detect_os(_policy: &HostPolicy) -> Confinement {
+    Confinement::Unavailable("no OS sandbox on this platform".into())
+}
 
 #[async_trait]
 impl SandboxBackend for HostBackend {
@@ -101,15 +291,12 @@ impl SandboxBackend for HostBackend {
         opts: ExecOpts,
         cancel: CancellationToken,
     ) -> Result<ExecOutput, SandboxError> {
-        let mut command = if cfg!(windows) {
-            let mut c = tokio::process::Command::new("cmd");
-            c.arg("/C").arg(cmd);
-            c
-        } else {
-            let mut c = tokio::process::Command::new("sh");
-            c.arg("-c").arg(cmd);
-            c
-        };
+        let argv = self.argv(cmd, &opts.cwd)?;
+        let (program, args) = argv
+            .split_first()
+            .ok_or_else(|| SandboxError::Spawn(std::io::Error::other("empty command")))?;
+        let mut command = tokio::process::Command::new(program);
+        command.args(args);
         command.current_dir(&opts.cwd).env_clear().envs(
             PASSTHROUGH_ENV
                 .iter()
@@ -137,7 +324,12 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // Its own process group, so a timeout or cancel can kill everything the
+    // command started, not just its shell.
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command.spawn().map_err(SandboxError::Spawn)?;
+    let pgid = child.id();
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -159,10 +351,12 @@ where
         }
         () = tokio::time::sleep(opts.timeout) => {
             result.timed_out = true;
+            kill_group(pgid);
             let _ = child.kill().await;
         }
         () = cancel.cancelled() => {
             result.cancelled = true;
+            kill_group(pgid);
             let _ = child.kill().await;
         }
     }
@@ -192,6 +386,19 @@ where
     result.truncated = out_trunc || err_trunc;
     Ok(result)
 }
+
+/// SIGKILL the process group led by `pgid` (the command's shell).
+#[cfg(unix)]
+fn kill_group(pgid: Option<u32>) {
+    use nix::sys::signal::{Signal, killpg};
+    use nix::unistd::Pid;
+    if let Some(pid) = pgid.and_then(|p| i32::try_from(p).ok()) {
+        let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_group(_pgid: Option<u32>) {}
 
 /// Batch chunks from the readers and hand them to `sink` at most once per
 /// `STREAM_INTERVAL`. Ends (after a final flush) when every sender is gone.
@@ -297,7 +504,7 @@ mod tests {
     #[tokio::test]
     async fn runs_in_cwd_and_captures_output() {
         let tmp = tempfile::tempdir().unwrap();
-        let out = HostBackend
+        let out = HostBackend::default()
             .exec(
                 "pwd; echo err >&2; exit 3",
                 opts(tmp.path()),
@@ -315,7 +522,7 @@ mod tests {
     async fn environment_is_scrubbed() {
         let tmp = tempfile::tempdir().unwrap();
         // CARGO_* vars are set for every test process; none may leak through.
-        let out = HostBackend
+        let out = HostBackend::default()
             .exec("env", opts(tmp.path()), CancellationToken::new())
             .await
             .unwrap();
@@ -328,12 +535,61 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut o = opts(tmp.path());
         o.timeout = Duration::from_millis(200);
-        let out = HostBackend
+        let out = HostBackend::default()
             .exec("sleep 5", o, CancellationToken::new())
             .await
             .unwrap();
         assert!(out.timed_out);
         assert_eq!(out.exit_code, None);
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_background_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut o = opts(tmp.path());
+        o.timeout = Duration::from_millis(500);
+        let out = HostBackend::default()
+            .exec(
+                "sleep 30 & echo $! > child.pid; wait",
+                o,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(out.timed_out);
+        let pid: i32 = std::fs::read_to_string(tmp.path().join("child.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // Killed children linger as zombies until init reaps them.
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!alive, "background child {pid} outlived the timeout");
+    }
+
+    #[tokio::test]
+    async fn required_confinement_refuses_when_unavailable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backend = HostBackend::new(HostPolicy {
+            confine: Confine::Required,
+            helper: Some(tmp.path().join("no-such-helper")),
+            ..HostPolicy::confined()
+        });
+        if *backend.confinement() == Confinement::Seatbelt {
+            return; // macOS doesn't use the helper.
+        }
+        let err = backend
+            .exec("true", opts(tmp.path()), CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SandboxError::Unconfined(_)), "{err}");
     }
 
     #[tokio::test]
@@ -345,7 +601,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
             c.cancel();
         });
-        let out = HostBackend
+        let out = HostBackend::default()
             .exec("sleep 5", opts(tmp.path()), cancel)
             .await
             .unwrap();
@@ -355,7 +611,7 @@ mod tests {
     #[tokio::test]
     async fn caps_output() {
         let tmp = tempfile::tempdir().unwrap();
-        let out = HostBackend
+        let out = HostBackend::default()
             .exec(
                 "head -c 5000 /dev/zero | tr '\\0' a",
                 opts(tmp.path()),

@@ -159,7 +159,21 @@ impl ProviderConfig {
 pub struct SandboxConfig {
     pub backend: SandboxBackendKind,
     pub shell_timeout_secs: u64,
+    /// IP networking for shell commands (both backends).
+    pub network: bool,
+    /// Host backend: what to do when the OS sandbox isn't available.
+    pub confine: ConfineMode,
+    /// Host backend: extra read-only paths (`~` expands).
+    pub read_paths: Vec<String>,
+    /// Host backend: extra writable paths (`~` expands).
+    pub write_paths: Vec<String>,
     pub docker_image: String,
+    /// `docker run --memory`; empty for no limit.
+    pub docker_memory: String,
+    /// `docker run --cpus`; 0 for no limit.
+    pub docker_cpus: f64,
+    /// `docker run --pids-limit`; 0 for no limit.
+    pub docker_pids: u32,
 }
 
 impl Default for SandboxConfig {
@@ -167,9 +181,46 @@ impl Default for SandboxConfig {
         Self {
             backend: SandboxBackendKind::Host,
             shell_timeout_secs: 120,
+            network: true,
+            confine: ConfineMode::Auto,
+            // git refuses to run when it can't read its config.
+            read_paths: vec!["~/.gitconfig".into(), "~/.config/git".into()],
+            write_paths: Vec::new(),
             docker_image: "debian:stable-slim".into(),
+            docker_memory: "2g".into(),
+            docker_cpus: 2.0,
+            docker_pids: 512,
         }
     }
+}
+
+impl SandboxConfig {
+    pub fn read_paths(&self) -> Vec<PathBuf> {
+        self.read_paths
+            .iter()
+            .map(|p| expand_tilde(Path::new(p)))
+            .collect()
+    }
+
+    pub fn write_paths(&self) -> Vec<PathBuf> {
+        self.write_paths
+            .iter()
+            .map(|p| expand_tilde(Path::new(p)))
+            .collect()
+    }
+}
+
+/// `sandbox.confine` (host backend; see `docs/sandbox-design.md`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfineMode {
+    /// Confine when the OS can; otherwise warn and run unconfined.
+    #[default]
+    Auto,
+    /// Refuse to run commands that can't be confined.
+    Required,
+    /// No OS sandbox.
+    Off,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -393,6 +444,31 @@ env_secrets = ["GITHUB_TOKEN"]
         let m = c.default_model_ref().unwrap().unwrap();
         assert_eq!(m.provider, "anthropic");
         assert_eq!(m.to_string(), "anthropic:claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn sandbox_settings() {
+        let c = Config::parse(
+            r#"
+[sandbox]
+network = false
+confine = "required"
+read_paths = ["~/.cargo", "/opt/sdk"]
+docker_cpus = 1.5
+"#,
+            Path::new("config.toml"),
+        )
+        .unwrap();
+        assert!(!c.sandbox.network);
+        assert_eq!(c.sandbox.confine, ConfineMode::Required);
+        assert_eq!(c.sandbox.docker_cpus, 1.5);
+        assert_eq!(c.sandbox.docker_pids, 512);
+        assert_eq!(c.sandbox.read_paths()[1], PathBuf::from("/opt/sdk"));
+        assert!(!c.sandbox.read_paths()[0].starts_with("~"));
+        let d = SandboxConfig::default();
+        assert!(d.network);
+        assert_eq!(d.confine, ConfineMode::Auto);
+        assert_eq!(d.read_paths, ["~/.gitconfig", "~/.config/git"]);
     }
 
     #[test]

@@ -14,10 +14,69 @@ use crate::{ExecOpts, ExecOutput, SandboxBackend, SandboxError, run_captured};
 
 pub const CONTAINER_WORKSPACE: &str = "/workspace";
 const LABEL: &str = "tern.sandbox=1";
+/// Fingerprint of the settings a container was created with.
+const CONFIG_LABEL: &str = "tern.sandbox.config";
+
+/// How the container is created. Changing any of it replaces the container.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockerSettings {
+    pub image: String,
+    /// `false` runs the container with `--network none`.
+    pub network: bool,
+    /// `--memory`, e.g. `"2g"`.
+    pub memory: Option<String>,
+    /// `--cpus`.
+    pub cpus: Option<f64>,
+    /// `--pids-limit`.
+    pub pids: Option<u32>,
+}
+
+impl Default for DockerSettings {
+    fn default() -> Self {
+        Self {
+            image: "debian:stable-slim".into(),
+            network: true,
+            memory: Some("2g".into()),
+            cpus: Some(2.0),
+            pids: Some(512),
+        }
+    }
+}
+
+impl DockerSettings {
+    /// `docker run` flags these settings add (besides the image).
+    fn run_flags(&self) -> Vec<String> {
+        let mut f: Vec<String> = ["--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
+            .map(String::from)
+            .to_vec();
+        if let Some(m) = &self.memory {
+            f.extend(["--memory".into(), m.clone()]);
+        }
+        if let Some(c) = self.cpus {
+            f.extend(["--cpus".into(), c.to_string()]);
+        }
+        if let Some(p) = self.pids {
+            f.extend(["--pids-limit".into(), p.to_string()]);
+        }
+        if !self.network {
+            f.extend(["--network".into(), "none".into()]);
+        }
+        f
+    }
+
+    fn fingerprint(&self) -> String {
+        let mut text = self.image.clone();
+        for flag in self.run_flags() {
+            text.push(' ');
+            text.push_str(&flag);
+        }
+        format!("{:016x}", fnv1a(text.as_bytes()))
+    }
+}
 
 pub struct DockerBackend {
     docker: PathBuf,
-    image: String,
+    settings: DockerSettings,
     workspace: PathBuf,
     container: String,
     /// Serializes container creation.
@@ -26,12 +85,12 @@ pub struct DockerBackend {
 
 impl DockerBackend {
     /// `docker` is the CLI to call (normally just `docker`).
-    pub fn new(docker: impl Into<PathBuf>, image: &str, workspace: &Path) -> Self {
+    pub fn new(docker: impl Into<PathBuf>, workspace: &Path, settings: DockerSettings) -> Self {
         let workspace =
             std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
         Self {
             docker: docker.into(),
-            image: image.to_owned(),
+            settings,
             container: container_name(&workspace),
             workspace,
             ready: tokio::sync::Mutex::new(false),
@@ -63,20 +122,18 @@ impl DockerBackend {
         if *ready {
             return Ok(());
         }
+        let format =
+            format!("{{{{.State.Running}}}} {{{{index .Config.Labels \"{CONFIG_LABEL}\"}}}}");
         let (exists, state) = self
-            .docker(&[
-                "inspect",
-                "-f",
-                "{{.State.Running}} {{.Config.Image}}",
-                &self.container,
-            ])
+            .docker(&["inspect", "-f", &format, &self.container])
             .await?;
         let fail = |what: &str, out: String| {
             SandboxError::Spawn(std::io::Error::other(format!("docker {what}: {out}")))
         };
+        let fingerprint = self.settings.fingerprint();
         match state.split_once(' ') {
-            Some(("true", image)) if exists && image == self.image => {}
-            Some(("false", image)) if exists && image == self.image => {
+            Some(("true", fp)) if exists && fp == fingerprint => {}
+            Some(("false", fp)) if exists && fp == fingerprint => {
                 let (ok, out) = self.docker(&["start", &self.container]).await?;
                 if !ok {
                     return Err(fail("start", out));
@@ -84,10 +141,11 @@ impl DockerBackend {
             }
             _ => {
                 if exists {
-                    // Image changed in config: replace the container.
+                    // Settings changed in config: replace the container.
                     let _ = self.docker(&["rm", "-f", &self.container]).await?;
                 }
                 let mount = format!("{}:{CONTAINER_WORKSPACE}", self.workspace.display());
+                let config_label = format!("{CONFIG_LABEL}={fingerprint}");
                 let mut args = vec![
                     "run",
                     "-d",
@@ -96,17 +154,21 @@ impl DockerBackend {
                     &self.container,
                     "--label",
                     LABEL,
+                    "--label",
+                    &config_label,
                     "-v",
                     &mount,
                     "-w",
                     CONTAINER_WORKSPACE,
                 ];
+                let flags = self.settings.run_flags();
+                args.extend(flags.iter().map(String::as_str));
                 let user = owner(&self.workspace);
                 if let Some(u) = &user {
                     // Files the sandbox writes stay owned by the user.
                     args.extend(["--user", u.as_str()]);
                 }
-                args.extend([self.image.as_str(), "sleep", "infinity"]);
+                args.extend([self.settings.image.as_str(), "sleep", "infinity"]);
                 let (ok, out) = self.docker(&args).await?;
                 if !ok {
                     return Err(fail("run", out));
@@ -129,14 +191,21 @@ impl DockerBackend {
     }
 }
 
-/// Stable per workspace, so every run reuses the same container.
-fn container_name(workspace: &Path) -> String {
+fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
-    for b in workspace.as_os_str().as_encoded_bytes() {
+    for b in bytes {
         h ^= u64::from(*b);
         h = h.wrapping_mul(0x100000001b3);
     }
-    format!("tern-sandbox-{:08x}", h as u32)
+    h
+}
+
+/// Stable per workspace, so every run reuses the same container.
+fn container_name(workspace: &Path) -> String {
+    format!(
+        "tern-sandbox-{:08x}",
+        fnv1a(workspace.as_os_str().as_encoded_bytes()) as u32
+    )
 }
 
 #[cfg(unix)]
@@ -253,7 +322,7 @@ mod tests {
 echo "$*" >> "{log}"
 case "$1" in
   inspect) if [ -f "{state}" ]; then cat "{state}"; else echo "Error: No such object" >&2; exit 1; fi ;;
-  run) echo "true $(for a in "$@"; do last=$prev; prev=$a; done; echo $last)" > "{state}"; echo cid ;;
+  run) for a in "$@"; do case "$a" in tern.sandbox.config=*) echo "true ${{a#tern.sandbox.config=}}" > "{state}" ;; esac; done; echo cid ;;
   start) exit 0 ;;
   rm) rm -f "{state}" ;;
   exec)
@@ -274,6 +343,13 @@ esac
         path
     }
 
+    fn settings(image: &str) -> DockerSettings {
+        DockerSettings {
+            image: image.into(),
+            ..DockerSettings::default()
+        }
+    }
+
     fn opts(cwd: &Path, secs: u64) -> ExecOpts {
         ExecOpts {
             cwd: cwd.to_path_buf(),
@@ -289,7 +365,7 @@ esac
         let ws = tmp.path().join("ws");
         std::fs::create_dir_all(ws.join("sub")).unwrap();
         let docker = fake_docker(tmp.path(), &ws);
-        let backend = DockerBackend::new(&docker, "debian:stable-slim", &ws);
+        let backend = DockerBackend::new(&docker, &ws, DockerSettings::default());
 
         let out = backend
             .exec(
@@ -319,7 +395,12 @@ esac
         assert!(
             runs[0].contains("--init")
                 && runs[0].contains("--user ")
-                && runs[0].contains("debian:stable-slim sleep infinity")
+                && runs[0].contains("--cap-drop ALL --security-opt no-new-privileges")
+                && runs[0].contains("--memory 2g --cpus 2 --pids-limit 512")
+                && !runs[0].contains("--network")
+                && runs[0].contains("debian:stable-slim sleep infinity"),
+            "{}",
+            runs[0]
         );
         assert!(
             log.contains("exec -w /workspace/sub -e TERN_EXEC_ID="),
@@ -334,7 +415,7 @@ esac
         let ws = tmp.path().join("ws");
         std::fs::create_dir_all(&ws).unwrap();
         let docker = fake_docker(tmp.path(), &ws);
-        let backend = DockerBackend::new(&docker, "img", &ws);
+        let backend = DockerBackend::new(&docker, &ws, settings("img"));
         let out = backend
             .exec("sleep 30", opts(&ws, 1), CancellationToken::new())
             .await
@@ -354,11 +435,11 @@ esac
         let ws = tmp.path().join("ws");
         std::fs::create_dir_all(&ws).unwrap();
         let docker = fake_docker(tmp.path(), &ws);
-        DockerBackend::new(&docker, "old:1", &ws)
+        DockerBackend::new(&docker, &ws, settings("old:1"))
             .exec("true", opts(&ws, 5), CancellationToken::new())
             .await
             .unwrap();
-        DockerBackend::new(&docker, "new:2", &ws)
+        DockerBackend::new(&docker, &ws, settings("new:2"))
             .exec("true", opts(&ws, 5), CancellationToken::new())
             .await
             .unwrap();
@@ -370,12 +451,40 @@ esac
         assert_eq!(log.lines().filter(|l| l.starts_with("run ")).count(), 2);
     }
 
+    #[tokio::test]
+    async fn network_off_and_limit_changes_replace_the_container() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let docker = fake_docker(tmp.path(), &ws);
+        for _ in 0..2 {
+            DockerBackend::new(&docker, &ws, DockerSettings::default())
+                .exec("true", opts(&ws, 5), CancellationToken::new())
+                .await
+                .unwrap();
+        }
+        let offline = DockerSettings {
+            network: false,
+            pids: None,
+            ..DockerSettings::default()
+        };
+        DockerBackend::new(&docker, &ws, offline)
+            .exec("true", opts(&ws, 5), CancellationToken::new())
+            .await
+            .unwrap();
+        let log = std::fs::read_to_string(tmp.path().join("log")).unwrap();
+        let runs: Vec<&str> = log.lines().filter(|l| l.starts_with("run ")).collect();
+        assert_eq!(runs.len(), 2, "same settings reuse the container:\n{log}");
+        assert!(runs[1].contains("--network none"), "{}", runs[1]);
+        assert!(!runs[1].contains("--pids-limit"), "{}", runs[1]);
+    }
+
     /// Needs a real Docker daemon: `cargo test -p tern-sandbox -- --ignored docker`.
     #[tokio::test]
     #[ignore = "needs a Docker daemon"]
     async fn real_docker_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
-        let backend = DockerBackend::new("docker", "debian:stable-slim", tmp.path());
+        let backend = DockerBackend::new("docker", tmp.path(), DockerSettings::default());
         let out = backend
             .exec(
                 "echo inside > made.txt && cat /etc/os-release | head -1",

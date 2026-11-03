@@ -44,8 +44,9 @@ for when you want something small that keeps working and that you can reason abo
 
 They're the two Rust claws, and both are good. Honestly:
 
-- **ZeroClaw** has a real OS sandbox (Landlock, bubblewrap, Seatbelt, Docker), 30+ channels, and an SOP engine with
-  resumable runs. tern has none of that breadth, and no OS-level sandbox.
+- **ZeroClaw** has an OS sandbox with more backends (Landlock, bubblewrap, Seatbelt, Docker), 30+ channels, and an
+  SOP engine with resumable runs. tern sandboxes shell commands with Seatbelt, Landlock or Docker, but has none of
+  that channel breadth.
 - **IronClaw** has the agent build its own tools too (as WASM), injects credentials at the host boundary so tools never
   see them, and has routines with webhooks. tern's credential injection and webhooks are still roadmap.
 
@@ -99,16 +100,25 @@ the roadmap behind a build flag. Chromium will never be bundled.
 
 ## What does the sandbox do on macOS versus Linux?
 
-The same thing on both, and less than the word "sandbox" may suggest:
+The same policy on both, enforced by each OS's own mechanism:
 
 - **Default (`sandbox.backend = "host"`):** `shell` commands run on your machine as you, after you approve them, with a
-  scrubbed environment (no secrets), a timeout, and no OS-level isolation. tern doesn't use Seatbelt on macOS or
-  Landlock, seccomp or namespaces on Linux.
+  scrubbed environment (no secrets) and a timeout, inside an OS sandbox: **Seatbelt** on macOS, **Landlock** (plus
+  seccomp for network-off) on Linux 5.13+. Writes are limited to the workspace and temp directories; `~/.tern` is
+  never readable or writable; `~/.ssh` and the rest of your home directory are unreadable except the workspace,
+  `~/.gitconfig` and whatever you add to `sandbox.read_paths`. The one difference: macOS lets commands read
+  everything outside your home directory, while Linux allows only system directories (`/usr`, `/etc`, `/proc`, …).
+  `sandbox.network = false` turns off IP networking on both. Timeout or cancel kills the command's whole process
+  group. On a Linux kernel without Landlock, commands run unconfined with a warning (`tern doctor` says so), or not
+  at all with `sandbox.confine = "required"`.
 - **`sandbox.backend = "docker"`:** commands run in one long-lived container per workspace, as your uid, with only the
-  workspace mounted. It has Docker's default network and no resource limits. On macOS that container lives in your
-  Docker runtime's Linux VM.
+  workspace mounted, no capabilities, and memory, CPU and process limits (2 GB, 2 CPUs, 512 by default).
+  `sandbox.network = false` gives it no network. On macOS that container lives in your Docker runtime's Linux VM.
 - **Luau connectors** are sandboxed in-process the same way on every platform (previous answer).
 - **File tools** are confined by tern itself: free inside the workspace, approval outside it, never `~/.tern`.
+
+Tools that need more of your home directory (a `~/.cargo` registry, `~/.npm`) need it in `sandbox.read_paths` or
+`sandbox.write_paths`. How it works: [docs/sandbox-design.md](sandbox-design.md).
 
 MCP stdio servers run unsandboxed on the host. The full list of what's covered and what isn't is in
 [SECURITY.md](../SECURITY.md).

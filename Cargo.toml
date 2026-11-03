@@ -57,6 +57,10 @@ tokio-util = "0.7.20"
 toml = "1.1.8"
 toml_edit = "0.25.17"
 tracing = "0.1.44"
+landlock = "0.4.7"
+libc = "0.2"
+nix = { version = "0.31", default-features = false, features = ["signal"] }
+seccompiler = "0.5"
 tracing-appender = "0.2.5"
 unicode-width = "0.2.3"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

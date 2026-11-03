@@ -213,7 +213,7 @@ tern config set mcp.servers.github.args '["stdio"]'
 tern doctor [--offline]
 ```
 
-Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; the database's schema version and integrity; whether the daemon is running; the sandbox backend (Docker on `PATH` for `docker`); the Telegram gateway; and each MCP server's command or URL and secrets. Each problem comes with a hint for fixing it.
+Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; the database's schema version and integrity; whether the daemon is running; the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each MCP server's command or URL and secrets. Each problem comes with a hint for fixing it.
 
 It exits `1` if anything failed, `0` otherwise (warnings are things not set up yet). It is read-only and doesn't create `~/.tern`.
 
@@ -241,7 +241,12 @@ See [Troubleshooting](#troubleshooting).
 | `providers.<name>.context_window` | | Overrides `context_window` for this provider. |
 | `sandbox.backend` | `host` | `host` or `docker`. |
 | `sandbox.shell_timeout_secs` | `120` | Per shell command. |
+| `sandbox.network` | `true` | IP networking for shell commands (both backends). |
+| `sandbox.confine` | `auto` | Host backend: `auto` (sandbox when the OS can, else warn), `required` (refuse to run unconfined), `off`. |
+| `sandbox.read_paths` | `["~/.gitconfig", "~/.config/git"]` | Host backend: extra read-only paths. |
+| `sandbox.write_paths` | `[]` | Host backend: extra writable paths. |
 | `sandbox.docker_image` | `debian:stable-slim` | Image for the `docker` backend. |
+| `sandbox.docker_memory` / `docker_cpus` / `docker_pids` | `2g` / `2.0` / `512` | Container limits; empty or 0 for none. |
 | `gateway.telegram.enabled` | `false` | |
 | `gateway.telegram.bot_token_secret` | | Name of the secret holding the bot token. |
 | `mcp.servers.<name>.transport` | | `stdio` or `http` (streamable HTTP). |
@@ -305,7 +310,16 @@ Restart `tern daemon`, then run `tern devices pair` (default scope `chat`: conve
 
 ## Sandboxing
 
-By default `shell` runs on this machine with a scrubbed environment (no secrets), a timeout, and an approval prompt. To run it in a container instead:
+By default `shell` runs on this machine after an approval prompt, with a scrubbed environment (no secrets), a timeout, and an OS sandbox (Seatbelt on macOS, Landlock on Linux): it can write only to the workspace and temp directories, can't read `~/.ssh`, `~/.tern` or the rest of your home directory, and loses IP networking with `network = false`. Add paths a toolchain needs:
+
+```toml
+[sandbox]
+read_paths = ["~/.gitconfig", "~/.config/git", "~/.rustup"]
+write_paths = ["~/.cargo/registry"]
+network = true
+```
+
+To run it in a container instead:
 
 ```toml
 [sandbox]
@@ -313,7 +327,7 @@ backend = "docker"
 docker_image = "debian:stable-slim"
 ```
 
-Commands then run in one long-lived container per workspace, with the workspace mounted at `/workspace` and files owned by you.
+Commands then run in one long-lived container per workspace, with the workspace mounted at `/workspace`, files owned by you, no capabilities, and limits from `docker_memory`, `docker_cpus` and `docker_pids`. What each backend confines, per platform, is in [docs/sandbox-design.md](docs/sandbox-design.md).
 
 ## Security model
 
@@ -323,6 +337,7 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 - **File tools** can't modify `~/.tern` and can't read `secrets.toml` or the database. Reads and writes outside the workspace need approval, and paths that escape the workspace through `..` or symlinks are refused.
 - **`http_fetch`** refuses loopback, private, link-local, and cloud-metadata addresses, checking every redirect hop and pinning DNS between the check and the connection.
 - **Luau connectors** run in sandboxed VMs (no files, processes, or `require`; 5 s and 64 MB per call) and can only reach the hosts and secrets they declare, including across redirects. An activated connector that changes, or that declares different capabilities than you approved, isn't loaded.
+- **`shell`** runs in an OS sandbox (Seatbelt on macOS, Landlock on Linux) that confines writes to the workspace and keeps your home directory and `~/.tern` unreadable; see [Sandboxing](#sandboxing).
 - **"Always allow"** is never offered for commands that run other commands (`bash`, `env`, `sudo`, `find`, interpreters, …) or for activating connectors, and allowlisted shell commands can't chain (`;`, `|`, `$( )`, …).
 
 ## Measurements

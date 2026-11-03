@@ -11,7 +11,7 @@ below the first section is built; order can change, and items may be cut. The to
   daemon).
 - Anthropic and any OpenAI-compatible endpoint; guided setup and model picker
   ([provider-setup-spec.md](docs/provider-setup-spec.md)).
-- Tools: files, shell (with approvals and a Docker option), `http_fetch`, memory, conversation search, skills, MCP
+- Tools: files, shell (with approvals, an OS sandbox, and a Docker option), `http_fetch`, memory, conversation search, skills, MCP
   servers, schedules from natural language.
 - Luau connectors the agent writes, tests and activates only with your approval of their hosts and secrets.
 - The agent can ask you for a secret without seeing it ([secret-requests-spec.md](docs/secret-requests-spec.md)).

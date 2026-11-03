@@ -30,7 +30,17 @@ secret_request_timeout_secs = 900
 [sandbox]
 backend = "host"           # "host" | "docker"
 shell_timeout_secs = 120
+network = true             # false: no IP networking for shell commands
+# Host backend: shell commands run in an OS sandbox (Seatbelt on macOS,
+# Landlock on Linux): write only to the workspace and temp dirs, no reads of
+# your home directory beyond these paths. See docs/sandbox-design.md.
+confine = "auto"           # "auto" | "required" | "off"
+read_paths = ["~/.gitconfig", "~/.config/git"]
+write_paths = []           # e.g. ["~/.cache", "~/.npm"]
 docker_image = "debian:stable-slim"
+docker_memory = "2g"       # "" for no limit
+docker_cpus = 2.0          # 0 for no limit
+docker_pids = 512          # 0 for no limit
 
 # [gateway.telegram]
 # enabled = true

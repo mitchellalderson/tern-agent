@@ -5,7 +5,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use tern_core::config::{McpTransport, ProviderConfig, ProviderKind, SandboxBackendKind};
+use tern_core::config::{
+    ConfineMode, McpTransport, ProviderConfig, ProviderKind, SandboxBackendKind,
+};
 use tern_core::secrets::SecretSource;
 use tern_core::{Config, Secrets, TernHome};
 use tern_providers::ListError;
@@ -165,11 +167,36 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
 
     r.section("Sandbox");
     match config.sandbox.backend {
-        SandboxBackendKind::Host => r.check(
-            Status::Ok,
-            "host backend (shell commands run on this machine, gated by approvals)",
-            None,
-        ),
+        SandboxBackendKind::Host => {
+            let backend =
+                tern_sandbox::HostBackend::new(crate::runtime::host_policy(&config, home));
+            let net = if config.sandbox.network {
+                "network on"
+            } else {
+                "network off"
+            };
+            match backend.confinement() {
+                tern_sandbox::Confinement::Off => r.check(
+                    Status::Warn,
+                    "host backend without an OS sandbox (sandbox.confine = \"off\"): approved commands can read and write anything you can",
+                    Some("Set sandbox.confine = \"auto\"."),
+                ),
+                tern_sandbox::Confinement::Unavailable(why) => r.check(
+                    if config.sandbox.confine == ConfineMode::Required {
+                        Status::Fail
+                    } else {
+                        Status::Warn
+                    },
+                    format!("host backend, OS sandbox unavailable: {why}"),
+                    Some("Shell commands run unconfined (or not at all with confine = \"required\"). Use a kernel with Landlock, or sandbox.backend = \"docker\"."),
+                ),
+                c => r.check(
+                    Status::Ok,
+                    format!("host backend in {c}, {net} (writes: workspace and temp dirs)"),
+                    None,
+                ),
+            }
+        }
         SandboxBackendKind::Docker => match find_on_path("docker") {
             Some(p) => r.check(
                 Status::Ok,

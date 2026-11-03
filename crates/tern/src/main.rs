@@ -25,6 +25,10 @@ use tern_core::TernHome;
 use cli::{Cli, Command, ConfigCommand, ConnectorsCommand, RunsCommand, SessionsCommand};
 
 fn main() -> ExitCode {
+    // `tern __sandbox-exec …`: confine this process, then exec a shell command.
+    if let Some(code) = tern_sandbox::run_helper_if_requested() {
+        return code;
+    }
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => code,
