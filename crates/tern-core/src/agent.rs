@@ -224,6 +224,7 @@ impl Agent {
             .store
             .run(run_id)?
             .ok_or_else(|| AgentError::RunNotFound(run_id.into()))?;
+        tracing::info!(run = %run.id, session = %run.session_id, model = ?run.model, "run started");
         self.emit(AgentEvent::RunStarted {
             run_id: run.id.clone(),
             session_id: run.session_id.clone(),
@@ -246,6 +247,12 @@ impl Agent {
         }
         self.store
             .set_run_status(&run.id, outcome.status.as_str(), outcome.error.as_deref())?;
+        match &outcome.error {
+            Some(e) => {
+                tracing::warn!(run = %run.id, status = outcome.status.as_str(), error = %self.journal.redact_text(e), "run finished")
+            }
+            None => tracing::info!(run = %run.id, status = outcome.status.as_str(), "run finished"),
+        }
         self.emit(AgentEvent::RunFinished {
             run_id: run.id.clone(),
             status: outcome.status.as_str().into(),
@@ -401,6 +408,13 @@ impl Agent {
                     })
                     .await?;
                 idx += 1;
+                if result.value.is_error {
+                    // The first line of a tool error is usually the reason.
+                    let reason = self.journal.redact_text(&preview(&result.value.content));
+                    tracing::warn!(run = %run.id, tool = %call.name, replayed = result.replayed, %reason, "tool call failed");
+                } else {
+                    tracing::info!(run = %run.id, tool = %call.name, replayed = result.replayed, "tool call finished");
+                }
                 self.emit(AgentEvent::ToolFinished {
                     run_id: run.id.clone(),
                     id: call.id.clone(),

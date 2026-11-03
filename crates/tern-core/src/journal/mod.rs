@@ -327,6 +327,11 @@ impl Journal {
         }
     }
 
+    /// `s` with every known secret value replaced (for logs).
+    pub fn redact_text(&self, s: &str) -> String {
+        self.redact_str(s)
+    }
+
     fn redact_str(&self, s: &str) -> String {
         crate::secrets::redact_with(&self.redaction_values(), s)
     }

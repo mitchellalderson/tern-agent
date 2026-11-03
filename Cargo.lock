@@ -3085,6 +3085,7 @@ dependencies = [
  "chrono",
  "clap",
  "futures",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

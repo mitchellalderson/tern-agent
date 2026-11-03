@@ -93,6 +93,22 @@ Release build (`--profile dist`) on an Apple M4 Max, macOS; Linux sizes from the
 | Idle daemon RSS | < 30 MB | 11.9 MB (`ps -o rss` 5 s after start, no gateways) |
 | `tern --version`, cold | < 50 ms | 4.8 ms median, 6.8 ms max (30 runs; first run after linking is slower while macOS checks the binary) |
 
+## Troubleshooting
+
+```sh
+tern report        # writes ~/.tern/logs/report-<time>.md and prints its path
+```
+
+The report gathers what's needed to debug a problem in one file:
+- your environment, `tern doctor`, and `config.toml`;
+- your connectors;
+- the journal of the most recent run that didn't finish (or `--run <id>`);
+- any crash files, and the last 200 log lines.
+
+Secret values tern knows about, and strings that look like API keys or tokens, are replaced with `[REDACTED]`. Review it before sharing; `-o -` prints it instead.
+
+If tern hits an internal error it writes `~/.tern/logs/crash-<time>.txt` (message, backtrace, version) and tells you where. Logs are written synchronously, so the lines leading up to a crash are kept; `TERN_LOG=debug` makes them more detailed.
+
 ## Data
 
 Everything lives in `~/.tern` (`TERN_HOME` to move it): `config.toml`, `secrets.toml`, `tern.db` (SQLite, WAL), `persona.md` and `user.md` (included in the system prompt), `skills/`, `connectors/`, `logs/` (daily rotated; set `TERN_LOG=debug` for more).

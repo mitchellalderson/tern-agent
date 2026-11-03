@@ -36,6 +36,51 @@ fn here(store: &Store, session_id: &str) -> Option<String> {
     }
 }
 
+/// Validate and save a schedule with its own `cron` session. `deliver_to`
+/// is already resolved (`None` = keep results in the session).
+pub fn create_schedule(
+    store: &Store,
+    cron: &str,
+    prompt: &str,
+    deliver_to: Option<String>,
+) -> Result<ScheduleRow, String> {
+    let cron: Cron = cron.parse().map_err(|e: tern_core::cron::CronError| e.to_string())?;
+    if prompt.trim().is_empty() {
+        return Err("prompt is empty".into());
+    }
+    if let Some(t) = &deliver_to {
+        check_deliver_to(t)?;
+    }
+    let next = cron
+        .next_after(chrono::Local::now())
+        .ok_or("that schedule never fires")?;
+    let row = ScheduleRow {
+        id: format!("sch_{}", &tern_core::agent::new_id()[20..]),
+        cron: cron.to_string(),
+        prompt: prompt.trim().to_owned(),
+        session_id: tern_core::agent::new_id(),
+        deliver_to,
+        enabled: true,
+        next_run_at: next.timestamp_millis(),
+        last_run_at: None,
+    };
+    store
+        .create_session(&row.session_id, "cron", None)
+        .and_then(|_| store.create_schedule(&row))
+        .map_err(|e| format!("saving schedule: {e}"))?;
+    Ok(row)
+}
+
+/// A concrete delivery target: `telegram:<chat_id>`.
+pub fn check_deliver_to(t: &str) -> Result<(), String> {
+    match t.strip_prefix("telegram:") {
+        Some(chat) if chat.parse::<i64>().is_ok() => Ok(()),
+        _ => Err(format!(
+            "deliver_to {t:?} must be \"here\", \"none\", or \"telegram:<chat_id>\""
+        )),
+    }
+}
+
 pub struct ScheduleCreate {
     pub store: Store,
 }
@@ -74,53 +119,19 @@ impl Tool for ScheduleCreate {
             Ok(a) => a,
             Err(e) => return e,
         };
-        let cron: Cron = match a.cron.parse() {
-            Ok(c) => c,
-            Err(e) => return ToolResult::error(e.to_string()),
-        };
-        if a.prompt.trim().is_empty() {
-            return ToolResult::error("prompt is empty");
-        }
         let deliver_to = match a.deliver_to.as_deref().map(str::trim) {
             None | Some("here") | Some("") => here(&self.store, &ctx.session_id),
             Some("none") => None,
-            Some(t)
-                if t.starts_with("telegram:") && t["telegram:".len()..].parse::<i64>().is_ok() =>
-            {
-                Some(t.to_owned())
-            }
-            Some(t) => {
-                return ToolResult::error(format!(
-                    "deliver_to {t:?} must be \"here\", \"none\", or \"telegram:<chat_id>\""
-                ));
-            }
+            Some(t) => Some(t.to_owned()),
         };
-        let Some(next) = cron.next_after(chrono::Local::now()) else {
-            return ToolResult::error("that schedule never fires");
+        let row = match create_schedule(&self.store, &a.cron, &a.prompt, deliver_to.clone()) {
+            Ok(r) => r,
+            Err(e) => return ToolResult::error(e),
         };
-        let id = format!("sch_{}", &tern_core::agent::new_id()[20..]);
-        let session_id = tern_core::agent::new_id();
-        let created = self
-            .store
-            .create_session(&session_id, "cron", None)
-            .and_then(|_| {
-                self.store.create_schedule(&ScheduleRow {
-                    id: id.clone(),
-                    cron: cron.to_string(),
-                    prompt: a.prompt.trim().to_owned(),
-                    session_id,
-                    deliver_to: deliver_to.clone(),
-                    enabled: true,
-                    next_run_at: next.timestamp_millis(),
-                    last_run_at: None,
-                })
-            });
-        if let Err(e) = created {
-            return ToolResult::error(format!("saving schedule: {e}"));
-        }
+        let (id, cron, next) = (row.id, row.cron, row.next_run_at);
         ToolResult::ok(format!(
             "created schedule {id} ({cron}); next run {}; results go to {}",
-            fmt_time(next.timestamp_millis()),
+            fmt_time(next),
             deliver_to
                 .as_deref()
                 .unwrap_or("nowhere (check with `tern sessions`)")

@@ -1,12 +1,14 @@
 mod cli;
 mod config_cmd;
 mod connectors_cmd;
+mod crash;
 mod daemon;
 mod doctor;
 mod gateway_cmd;
 mod inspect;
 mod logging;
 mod remote;
+mod report_cmd;
 mod run_cmd;
 mod runtime;
 mod tui_backend;
@@ -35,13 +37,22 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     // logging starts so their first invocation is logged too.
     if matches!(
         cli.command,
-        Some(Command::Run { .. } | Command::Resume { .. })
+        None | Some(
+            Command::Run { .. }
+                | Command::Resume { .. }
+                | Command::Daemon
+                | Command::Gateway { .. }
+        )
     ) {
         home.ensure_layout()?;
     }
     // Only log to file when the data directory already exists, so read-only
     // commands like `doctor` don't create ~/.tern as a side effect.
-    let _log_guard = logging::init(&home);
+    logging::init(&home);
+    crash::install(&home);
+    if std::env::var_os(crash::TEST_PANIC_ENV).is_some() {
+        panic!("{} is set", crash::TEST_PANIC_ENV);
+    }
     tracing::debug!(command = ?cli.command, "starting");
 
     match cli.command {
@@ -71,6 +82,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         ),
         Some(Command::Resume { run_id, yes }) => run_cmd::resume(&home, &run_id, yes),
         Some(Command::Daemon) => daemon::run(&home),
+        Some(Command::Report { output, run }) => {
+            report_cmd::run(&home, output.as_deref(), run.as_deref())
+        }
         Some(Command::Gateway {
             command: cli::GatewayCommand::Pair,
         }) => gateway_cmd::pair(&home),

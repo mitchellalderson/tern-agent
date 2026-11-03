@@ -79,6 +79,15 @@ impl Store {
         Ok(())
     }
 
+    /// Replace a schedule's editable fields (everything but its id and session).
+    pub fn update_schedule(&self, s: &ScheduleRow) -> Result<bool> {
+        Ok(self.conn()?.execute(
+            "UPDATE schedules SET cron = ?2, prompt = ?3, deliver_to = ?4, enabled = ?5, next_run_at = ?6
+             WHERE id = ?1",
+            params![s.id, s.cron, s.prompt, s.deliver_to, s.enabled as i64, s.next_run_at],
+        )? > 0)
+    }
+
     pub fn delete_schedule(&self, id: &str) -> Result<bool> {
         Ok(self
             .conn()?

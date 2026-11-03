@@ -8,6 +8,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// The binary under test: `TERN_TEST_BIN` (e.g. a `--profile dist` build,
+/// whose settings can differ from test builds) or this crate's build.
+fn tern_bin() -> std::path::PathBuf {
+    std::env::var_os("TERN_TEST_BIN").map_or_else(|| env!("CARGO_BIN_EXE_tern").into(), Into::into)
+}
+
 use serde_json::{Value, json};
 
 const CHAT: i64 = 4242;
@@ -136,7 +142,7 @@ impl Env {
     }
 
     fn cmd(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_tern"));
+        let mut c = Command::new(tern_bin());
         c.args(args)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())

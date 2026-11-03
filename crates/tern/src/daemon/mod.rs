@@ -2,6 +2,8 @@
 //! scheduler, gateways, and the local API on `~/.tern/tern.sock`.
 
 pub mod api;
+mod api_runs;
+mod api_schedules;
 pub mod manager;
 
 use std::collections::HashMap;

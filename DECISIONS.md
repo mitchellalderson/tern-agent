@@ -155,3 +155,19 @@ An independent review of the trust boundaries found these; all are fixed with te
   - The uid is the process's real one (owner of a probe file) rather than `$HOME`'s owner.
   - Clients only follow the link if the target socket and its directory are owned by them and the directory is mode 0700; otherwise they don't attach.
 - **Not reproduced**: the review suspected Luau's C pattern matcher could run past the time limit (catastrophic backtracking). A test shows Luau's interrupt fires inside it too, and the call stops at the limit; the test stays as a regression check.
+
+### Post-v1 fixes
+
+- **`panic = "abort"` removed from the release profiles.** Luau raises Lua errors as C++ exceptions that unwind through mlua's Rust frames. Under `abort` any connector error, even an ordinary `error("…")` or a missing secret, terminated the process with `libc++abi: terminating due to uncaught exception of type lua_exception`. No test caught it because cargo builds test binaries with `panic = "unwind"` whatever the profile says. The end-to-end tests now accept `TERN_TEST_BIN`, and CI runs them against the `--profile dist` binary. Unwind tables cost about 2 MB (dist: 16 MB).
+- **Secrets guidance for the model**: the system prompt and `connector_write` docs say secrets come from the environment or `~/.tern/secrets.toml`, take effect after a restart or `/reload`, and are never read from `.env` files or pasted into chat. A missing `ctx.secret` says how to add it. (A model had told a user to put an API key in `~/.tern/.env`.)
+- **`capabilities.http` entries are validated**: a host name, `*.suffix`, an IP, or `localhost`. A bare `"*"` (which a model wrote, meaning "anything") matched nothing; it, schemes, ports and paths are now rejected with an explanation.
+- **Diagnostics** (added after a crash left no trace):
+  - **Unbuffered logs.** File logging is synchronous; the non-blocking writer lost the lines before the abort.
+  - **Crash files.** A panic hook writes `logs/crash-<time>.txt` (message, location, thread, backtrace, version, OS) and prints its path. ratatui's hook wraps it, so the terminal is restored first.
+  - **Native aborts** (like the Luau one) can't be hooked without `unsafe` signal handling; the unbuffered log is what survives them.
+  - **Log lines** record run start and finish (with redacted errors) and each tool call's outcome; a failure includes the first line of its output, redacted.
+  - **Test switch.** `TERN_TEST_PANIC` makes tern panic at startup, to test the hook.
+- **`tern report`** (not in §12.1) writes one Markdown file: environment, `tern doctor --offline`, `config.toml`, `tern connectors list`, the newest unfinished run's journal (or `--run`), up to two crash files, and the last 200 log lines.
+  - It runs those commands as subprocesses of the same binary, so the output matches what the user sees.
+  - **Redaction**: every value in `secrets.toml`, plus env secrets named by config or connectors, then patterns for well-known token formats (`sk-`, `sk-ant-`, `ghp_`, `github_pat_`, `xox*-`, `glpat-`, AWS keys, Telegram bot tokens), `key=`/`token:`/`password=`-style values, and `Bearer`/`Basic` credentials.
+  - Saved with mode 0600, and the user is told to review it before sharing.
