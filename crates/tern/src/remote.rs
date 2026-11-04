@@ -745,6 +745,68 @@ impl Backend for Remote {
     }
 
     /// A core without the `agents` feature answers 404: no profiles.
+    fn channels(&self) -> BackendResult<Vec<tern_tui::ChannelInfo>> {
+        let list: Vec<crate::daemon::api_channels::Channel> = self.get("/v1/channels")?;
+        Ok(list.into_iter().map(channel_info).collect())
+    }
+
+    fn create_channel(&self, slug: &str, title: Option<&str>) -> BackendResult<tern_tui::ChannelInfo> {
+        let c: crate::daemon::api_channels::Channel = self.send_json(
+            reqwest::Method::POST,
+            "/v1/channels",
+            json!({ "slug": slug, "title": title }),
+        )?;
+        Ok(channel_info(c))
+    }
+
+    fn send_to_channel(&self, id: &str, text: &str, model: Option<&str>) -> BackendResult<Started> {
+        let sent: crate::daemon::channels::Sent = self.send_json(
+            reqwest::Method::POST,
+            &format!("/v1/channels/{id}/posts"),
+            json!({ "text": text, "model": model }),
+        )?;
+        Ok(Started {
+            session_id: sent.session_id,
+            run_id: sent.run_id,
+            model: model
+                .map(str::to_owned)
+                .or_else(|| self.default_model())
+                .unwrap_or_default(),
+        })
+    }
+
+    fn channel_posts(&self, id: &str, limit: usize) -> BackendResult<Vec<tern_tui::PostLine>> {
+        let mut posts: Vec<tern_core::channels::Post> =
+            self.get(&format!("/v1/channels/{id}/posts?limit={limit}"))?;
+        posts.reverse();
+        Ok(posts.into_iter().map(post_line).collect())
+    }
+
+    fn decide_suggestion(&self, id: i64, accept: bool) -> BackendResult<String> {
+        if accept {
+            let a: crate::daemon::suggestions::Accepted = self.send_json(
+                reqwest::Method::POST,
+                &format!("/v1/suggestions/{id}/accept"),
+                json!({}),
+            )?;
+            let mut how = format!("created #{}", a.channel.slug);
+            if !a.moved.is_empty() {
+                how.push_str(" and moved this conversation there");
+            }
+            if let Some(why) = a.not_moved {
+                how.push_str(&format!(" (the conversation stayed: {why})"));
+            }
+            Ok(how)
+        } else {
+            self.send_json::<Value>(
+                reqwest::Method::POST,
+                &format!("/v1/suggestions/{id}/decline"),
+                json!({}),
+            )?;
+            Ok("declined".into())
+        }
+    }
+
     fn agents(&self) -> BackendResult<Vec<AgentInfo>> {
         let list: Vec<crate::daemon::api_agents::Agent> = match self.get("/v1/agents") {
             Ok(l) => l,
@@ -806,3 +868,29 @@ impl Backend for Remote {
         }
     }
 }
+
+fn channel_info(c: crate::daemon::api_channels::Channel) -> tern_tui::ChannelInfo {
+    tern_tui::ChannelInfo {
+        id: c.id,
+        slug: c.slug,
+        title: c.title,
+        kind: c.kind,
+        needs_you: c.needs_you,
+        active_runs: c.active_runs,
+    }
+}
+
+/// A post as the TUI prints it.
+pub(crate) fn post_line(p: tern_core::channels::Post) -> tern_tui::PostLine {
+    tern_tui::PostLine {
+        needs_you: matches!(p.kind.as_str(), "needs_you" | "pointer") && p.resolved_at.is_none(),
+        suggestion: p.suggestion.map(|s| (s.id, s.slug, s.state == "pending")),
+        id: p.id,
+        author: p.author,
+        author_kind: p.author_kind,
+        kind: p.kind,
+        text: p.text,
+        run_id: p.run_id,
+    }
+}
+

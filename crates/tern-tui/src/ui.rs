@@ -787,7 +787,18 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .unwrap_or_else(|| "new session".into());
     let session: String = session.chars().take(40).collect();
     let agent = app.profile.as_ref().map_or("tern", |p| p.name.as_str());
-    let left = format!(" {agent} · {model} · {session}");
+    // Where the composer posts, and everything waiting on the user.
+    let place = app
+        .channel
+        .as_ref()
+        .map(|c| format!("#{} · ", c.slug))
+        .unwrap_or_default();
+    let waiting = if app.needs_you > 0 {
+        format!(" · {} need you", app.needs_you)
+    } else {
+        String::new()
+    };
+    let left = format!(" {place}{agent} · {model} · {session}{waiting}");
     let right = if let Some(h) = &app.hint {
         h.clone()
     } else if app.secret_prompt.is_some() {

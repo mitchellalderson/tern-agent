@@ -20,8 +20,8 @@ use crate::secret_prompt::{Done, SecretPrompt};
 use crate::secrets::SecretsPanel;
 use crate::setup::{SetupAction, SetupPanel, Task, TaskDone};
 use crate::{
-    AgentInfo, Backend, BackendResult, PendingApproval, PendingAuth, PendingSecret, SessionInfo,
-    UserPrompt,
+    AgentInfo, Backend, BackendResult, ChannelInfo, PendingApproval, PendingAuth, PendingSecret,
+    PostLine, SessionInfo, UserPrompt,
 };
 
 /// Two Ctrl+C presses within this window quit.
@@ -176,6 +176,28 @@ pub struct App {
     pub profile: Option<AgentInfo>,
     /// The next send to `profile` starts a new thread in its DM (`/new`).
     new_topic: bool,
+    /// The topic channel the composer posts to (`/channel <slug>`);
+    /// `None` is Home (or `profile`'s DM).
+    pub channel: Option<ChannelInfo>,
+    /// The newest post of `channel` already shown.
+    channel_seen: i64,
+    /// Everything waiting on the user (Home's needs-you count), for the
+    /// status line; refreshed after runs and channel commands.
+    pub needs_you: usize,
+}
+
+/// "Research: …" (a card: "▲ needs you", a suggestion: how to decide).
+fn post_line(p: &PostLine) -> String {
+    let text = p.text.trim();
+    match (&p.suggestion, p.kind.as_str()) {
+        (Some((_, slug, true)), _) => format!(
+            "{}: {text}\n  /channel accept {slug} creates it (and moves this conversation there), /channel decline {slug}",
+            p.author
+        ),
+        (_, "note") => format!("· {text}"),
+        _ if p.needs_you => format!("{} (needs you): {text}", p.author),
+        _ => format!("{}: {text}", p.author),
+    }
 }
 
 const HELP: &str = "\
@@ -195,6 +217,10 @@ Commands:
   /connections      accounts of connectors and MCP servers (tern connections
                     adds, removes and reconnects them)
   /usage            token usage for this session
+  /channels         list channels with what needs you
+  /channel <slug>   post to a topic channel (/channel home: back to Home)
+  /channel new <slug> [title]  make a channel and switch to it
+  /channel accept|decline <slug>  answer an agent's channel suggestion
   /agents           list your agents and the last run's sub-agents
   /agent <name>     talk to one of your agents in its DM (/agent tern: back)
   /agent <label>    show a sub-agent's transcript (Esc closes)
@@ -244,6 +270,9 @@ impl App {
             last_ctrl_c: None,
             profile: None,
             new_topic: false,
+            channel: None,
+            channel_seen: 0,
+            needs_you: 0,
         }
     }
 
@@ -653,7 +682,11 @@ impl App {
 
     fn send(&mut self, text: String) -> Vec<Effect> {
         let session = self.session.as_ref().map(|s| s.id.clone());
-        let started = match &self.profile {
+        let started = match (&self.channel, &self.profile) {
+            (Some(c), _) => self
+                .backend
+                .send_to_channel(&c.id, &text, self.model.as_deref()),
+            (None, profile) => match profile {
             Some(p) => {
                 let new_topic = std::mem::take(&mut self.new_topic);
                 let r = self
@@ -667,6 +700,7 @@ impl App {
             None => self
                 .backend
                 .start_run(session.as_deref(), self.model.as_deref(), &text),
+            },
         };
         match started {
             Ok(started) => {
@@ -851,6 +885,13 @@ impl App {
                     Err(e) => self.error(e),
                 },
             },
+            "channels" => self.list_channels(),
+            "channel" => {
+                if self.running.is_some() {
+                    return busy(self);
+                }
+                return self.channel_command(arg);
+            }
             "agents" => {
                 self.list_profiles();
                 self.list_agents();
@@ -905,6 +946,7 @@ impl App {
     /// Talk to `p` from now on: its DM (the default agent: the TUI's own
     /// sessions, as before).
     fn switch_profile(&mut self, p: AgentInfo) {
+        self.channel = None;
         self.entries.clear();
         self.session = None;
         self.last_usage = None;
@@ -920,6 +962,221 @@ impl App {
                 "talking to {name} in its DM; /new starts a new topic there, /agent tern goes back"
             ));
         }
+    }
+
+    fn list_channels(&mut self) {
+        let list = match self.backend.channels() {
+            Ok(l) => l,
+            Err(e) => return self.error(e),
+        };
+        let current = self.channel.as_ref().map(|c| c.id.as_str());
+        let lines: Vec<String> = list
+            .iter()
+            .filter(|c| c.kind == "topic" || c.slug == "home")
+            .map(|c| {
+                let here = match current {
+                    Some(id) if id == c.id => "▸",
+                    None if c.slug == "home" => "▸",
+                    _ => " ",
+                };
+                let name = if c.kind == "topic" {
+                    format!("#{}", c.slug)
+                } else {
+                    c.title.clone()
+                };
+                let mut extra = Vec::new();
+                if c.active_runs > 0 {
+                    extra.push("working".to_owned());
+                }
+                if c.needs_you > 0 {
+                    extra.push(format!("{} need you", c.needs_you));
+                }
+                let extra = if extra.is_empty() {
+                    String::new()
+                } else {
+                    format!("  ({})", extra.join(", "))
+                };
+                format!("{here} {name}{extra}")
+            })
+            .collect();
+        self.needs_you = list
+            .iter()
+            .find(|c| c.slug == "home")
+            .map_or(0, |c| c.needs_you);
+        self.notice(format!(
+            "channels (switch with /channel <slug>, /channel home to go back; /channel new <slug> [title]):\n{}",
+            lines.join("\n")
+        ));
+    }
+
+    /// `/channel <slug> [message]`, `/channel home`, `/channel new <slug>
+    /// [title]`, `/channel accept|decline <slug>`.
+    fn channel_command(&mut self, arg: &str) -> Vec<Effect> {
+        let (first, rest) = match arg.split_once(char::is_whitespace) {
+            Some((f, r)) => (f, r.trim()),
+            None => (arg, ""),
+        };
+        match first {
+            "" => {
+                match &self.channel {
+                    Some(c) => {
+                        let slug = c.slug.clone();
+                        self.notice(format!("posting to #{slug}; /channel home goes back"));
+                    }
+                    None => self.notice("in Home; /channel <slug> switches, /channels lists them"),
+                }
+                vec![]
+            }
+            "home" => {
+                self.channel = None;
+                self.entries.clear();
+                self.session = None;
+                self.notice("back in Home");
+                vec![]
+            }
+            "new" => {
+                let (slug, title) = match rest.split_once(char::is_whitespace) {
+                    Some((s, t)) => (s, Some(t.trim())),
+                    None => (rest, None),
+                };
+                if slug.is_empty() {
+                    self.error("usage: /channel new <slug> [title]");
+                    return vec![];
+                }
+                match self.backend.create_channel(slug.trim_start_matches('#'), title) {
+                    Ok(c) => self.switch_channel(c),
+                    Err(e) => self.error(e),
+                }
+                vec![]
+            }
+            "accept" | "decline" => {
+                self.decide_suggestion(rest.trim_start_matches('#'), first == "accept");
+                vec![]
+            }
+            slug => {
+                let slug = slug.trim_start_matches('#');
+                let found = match self.backend.channels() {
+                    Ok(l) => l.into_iter().find(|c| c.slug == slug || c.id == slug),
+                    Err(e) => {
+                        self.error(e);
+                        return vec![];
+                    }
+                };
+                match found {
+                    Some(c) if c.kind == "topic" => {
+                        self.switch_channel(c);
+                        if !rest.is_empty() {
+                            return self.send(rest.to_owned());
+                        }
+                    }
+                    Some(c) if c.slug == "home" => {
+                        return self.channel_command("home");
+                    }
+                    Some(c) => self.error(format!(
+                        "{} is an agent's DM: talk to it with /agent",
+                        c.title
+                    )),
+                    None => self.error(format!(
+                        "no channel #{slug}; /channels lists them, /channel new {slug} makes it"
+                    )),
+                }
+                vec![]
+            }
+        }
+    }
+
+    /// Post to `c` from now on, showing its recent posts.
+    fn switch_channel(&mut self, c: ChannelInfo) {
+        self.profile = None;
+        self.entries.clear();
+        self.session = None;
+        self.last_usage = None;
+        self.new_topic = false;
+        let slug = c.slug.clone();
+        self.channel = Some(c);
+        self.channel_seen = 0;
+        self.notice(format!(
+            "posting to #{slug}; the lead answers, @name asks another agent. /channel home goes back"
+        ));
+        self.show_new_posts(None);
+        self.refresh_needs_you();
+    }
+
+    /// Print the channel's posts newer than the last shown, leaving out the
+    /// user's own and the answer of `driven` (shown as it streamed).
+    fn show_new_posts(&mut self, driven: Option<&str>) {
+        let Some(c) = &self.channel else {
+            return;
+        };
+        let id = c.id.clone();
+        let posts = match self.backend.channel_posts(&id, 20) {
+            Ok(p) => p,
+            Err(e) => return self.error(e),
+        };
+        let fresh: Vec<PostLine> = posts
+            .into_iter()
+            .filter(|p| p.id > self.channel_seen)
+            .collect();
+        let first = self.channel_seen == 0;
+        if let Some(last) = fresh.last() {
+            self.channel_seen = last.id;
+        }
+        for p in fresh {
+            if !first && (p.author_kind == "user" || (driven.is_some() && p.run_id.as_deref() == driven)) {
+                continue;
+            }
+            self.notice(post_line(&p));
+        }
+    }
+
+    fn refresh_needs_you(&mut self) {
+        if let Ok(list) = self.backend.channels() {
+            self.needs_you = list
+                .iter()
+                .find(|c| c.slug == "home")
+                .map_or(0, |c| c.needs_you);
+            if let Some(cur) = &self.channel
+                && let Some(c) = list.into_iter().find(|c| c.id == cur.id)
+            {
+                self.channel = Some(c);
+            }
+        }
+    }
+
+    /// Accept or decline the pending suggestion of channel `slug` shown in
+    /// Home or the current channel.
+    fn decide_suggestion(&mut self, slug: &str, accept: bool) {
+        let mut places = vec!["home".to_owned()];
+        if let Some(c) = &self.channel {
+            places.push(c.id.clone());
+        }
+        let found = places.iter().find_map(|place| {
+            self.backend.channel_posts(place, 50).ok()?.into_iter().find_map(|p| {
+                p.suggestion
+                    .filter(|(_, s, pending)| *pending && (slug.is_empty() || s == slug))
+                    .map(|(id, s, _)| (id, s))
+            })
+        });
+        let Some((id, s)) = found else {
+            return self.error(if slug.is_empty() {
+                "no channel suggestion waiting".to_owned()
+            } else {
+                format!("no suggestion of #{slug} waiting")
+            });
+        };
+        match self.backend.decide_suggestion(id, accept) {
+            Ok(how) => {
+                self.notice(how);
+                if accept
+                    && let Ok(list) = self.backend.channels()
+                    && let Some(c) = list.into_iter().find(|c| c.slug == s)
+                {
+                    self.switch_channel(c);
+                }
+            }
+            Err(e) => self.error(e),
+        }
+        self.refresh_needs_you();
     }
 
     fn list_profiles(&mut self) {
@@ -1435,6 +1692,10 @@ impl App {
                 )),
             },
         }
+        // What else was said in the channel meanwhile (other agents,
+        // routines), and what waits on the user now.
+        self.show_new_posts(Some(&run_id));
+        self.refresh_needs_you();
         match self.queued.take() {
             Some(text) => self.send(text),
             None => vec![],
