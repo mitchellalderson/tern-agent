@@ -51,6 +51,8 @@ pub struct Config {
     pub subagents: SubagentsConfig,
     pub schedules: SchedulesConfig,
     pub memory: crate::memory::MemoryConfig,
+    /// Skill capture offers (T5b).
+    pub skills: crate::skill_capture::SkillsConfig,
     /// How main channels (Home and each agent's DM) are cut into segments.
     /// `[main]` is accepted too (agent profiles §3).
     #[serde(alias = "main")]
@@ -208,6 +210,7 @@ impl Default for Config {
             subagents: SubagentsConfig::default(),
             schedules: SchedulesConfig::default(),
             memory: crate::memory::MemoryConfig::default(),
+            skills: crate::skill_capture::SkillsConfig::default(),
             home: crate::channels::HomeConfig::default(),
             agent_chains: Vec::new(),
             autonomy: crate::approval::Autonomy::default(),

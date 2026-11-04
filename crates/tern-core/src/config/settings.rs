@@ -245,6 +245,7 @@ fn meta(key: &str) -> Meta {
             ..at_least(0.0)
         },
         "memory.user_md_tokens" | "memory.memory_md_tokens" => at_least(0.0),
+        "skills.capture_min_tool_calls" => at_least(1.0),
         "home.idle_hours" => Meta {
             live: true,
             ..at_least(0.0)
@@ -762,6 +763,7 @@ mod tests {
                 "schedules",
                 "memory",
                 "home",
+                "skills",
                 "outbox",
                 "taint",
                 "connectors",

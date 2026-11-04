@@ -16,6 +16,7 @@ mod api_providers;
 mod api_runs;
 mod api_schedules;
 mod api_secrets;
+pub mod api_skills;
 mod api_subagents;
 pub mod api_tasks;
 mod api_webhooks;

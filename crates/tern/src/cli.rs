@@ -100,6 +100,12 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<LedgerCommand>,
     },
+    /// Skills, and turning a good run into one: after a long, clean run tern
+    /// offers once; `save` writes a draft you review and `publish`.
+    Skills {
+        #[command(subcommand)]
+        command: Option<SkillsCommand>,
+    },
     /// Writes waiting for your approval (deferred because nobody answered).
     Outbox {
         #[command(subcommand)]
@@ -489,6 +495,32 @@ pub struct LedgerArgs {
     pub limit: u32,
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SkillsCommand {
+    /// Skills and drafts.
+    List,
+    /// A skill's SKILL.md.
+    Show { name: String },
+    /// Runs offered as skills and waiting for your answer (`--all`: decided too).
+    Offers {
+        #[arg(long)]
+        all: bool,
+    },
+    /// Accept offer ID: one model call writes a draft skill from that run.
+    Save {
+        id: i64,
+        /// Name the skill yourself instead of using the model's.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Decline offer ID; that run is not offered again.
+    Dismiss { id: i64 },
+    /// Make a draft a skill: the next run lists it.
+    Publish { name: String },
+    /// Delete a draft.
+    Discard { name: String },
 }
 
 #[derive(Debug, Subcommand)]

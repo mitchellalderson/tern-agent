@@ -45,6 +45,8 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 
 **Memory and models**
 - **Memory flush before compaction**, with capped `user.md` and `memory.md` (T5a).
+- **Skill capture** (T5b): after a long, clean run tern offers once to save it as a skill; accepting writes a draft you
+  review and publish (`tern skills`).
 - **Provider fallback chains**: if one model fails, the next takes over (T6a).
 - **A browser through an existing MCP server**, documented as a recipe (T7a).
 
@@ -91,7 +93,6 @@ Being built on other branches right now; not done until merged.
 
 | Stage | What | Spec |
 |---|---|---|
-| 3. Organize | Skill capture (T5b). | tooling §8 |
 | 5. Ecosystem | Recipes (morning brief, follow-ups, meeting prep) and goals (T6c). Native browser behind a feature flag (T7b). Tray on Linux (T8c, done). | tooling §6.5, §9, §10 |
 | Agent profiles | The rest of AP3: "Let agents decide" routing, a Telegram bot per agent, a per-agent autonomy ceiling, templates as signed bundles. | [agent-profiles-design.md](docs/agent-profiles-design.md) |
 | 6. Multiplayer | Group rooms with guests (M0), then several members on one core (M1), then hosted workspaces (M2). | tooling §15 |
