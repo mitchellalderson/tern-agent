@@ -11,7 +11,6 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tern_client/tern_client.dart';
-import 'package:tern_desktop/state/store.dart';
 import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/home.dart';
 import 'package:tern_desktop/ui/security.dart';
