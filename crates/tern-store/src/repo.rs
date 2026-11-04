@@ -31,6 +31,8 @@ pub struct SessionRow {
     pub segment_reason: Option<String>,
     /// A side thread: `message:<id>` or `post:<id>` it branched from.
     pub branched_from: Option<String>,
+    /// Moved here from this channel (DECISIONS.md "T2 moves").
+    pub moved_from: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,7 +159,7 @@ pub struct NewRun<'a> {
 pub const SPAWNED_BY_TAINTED: &str = "spawned by a tainted run";
 
 pub(crate) const SESSION_COLS: &str = "id, title, source, external_ref, model, created_at, updated_at, \
-    channel_id, prev_session_id, segment_reason, branched_from";
+    channel_id, prev_session_id, segment_reason, branched_from, moved_from";
 pub(crate) const RUN_COLS: &str = "id, session_id, status, trigger, model, system_prompt, \
     input_message_id, started_at, updated_at, finished_at, error, parent_run_id, parent_call_id, \
     label, depth, tool_scope, budget_tokens, max_iterations, quiet, input_taint, taint";
@@ -179,6 +181,7 @@ pub(crate) fn session_row(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
         prev_session_id: r.get(8)?,
         segment_reason: r.get(9)?,
         branched_from: r.get(10)?,
+        moved_from: r.get(11)?,
     })
 }
 
@@ -583,8 +586,8 @@ impl Store {
         let rows = stmt.query_map(params![limit as i64, source], |r| {
             Ok(SessionSummary {
                 session: session_row(r)?,
-                messages: r.get(11)?,
-                runs: r.get(12)?,
+                messages: r.get(12)?,
+                runs: r.get(13)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)

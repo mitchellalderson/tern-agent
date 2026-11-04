@@ -213,6 +213,7 @@ class SessionItem {
     this.prevSessionId,
     this.segmentReason,
     this.branchedFrom,
+    this.movedFrom,
   });
 
   factory SessionItem.fromJson(Json j) => SessionItem(
@@ -227,6 +228,7 @@ class SessionItem {
     prevSessionId: j['prev_session_id'] as String?,
     segmentReason: j['segment_reason'] as String?,
     branchedFrom: j['branched_from'] as String?,
+    movedFrom: j['moved_from'] as String?,
   );
 
   final String id;
@@ -249,6 +251,9 @@ class SessionItem {
 
   /// A side chat: `message:<id>` or `post:<id>`.
   final String? branchedFrom;
+
+  /// Moved here from this channel.
+  final String? movedFrom;
 }
 
 /// Store timestamps are Unix seconds; accept milliseconds too.

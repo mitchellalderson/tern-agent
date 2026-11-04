@@ -332,6 +332,13 @@ otherwise `#slug ·` prefixes in the one chat. A reply in a topic goes to that c
 C1 stands on its own even if topic channels wait. C0 to C2 together look like the channel view; C3 is what makes it
 more than a grouping.
 
+### 6.1 Moving conversations into channels (built after C4)
+
+A topic that started in Home (a segment of the stream or a side chat), a thread in another channel, or anything in
+History can be moved into a topic channel, new or existing, one at a time or several together. It becomes a thread
+there with its history intact; where it was, a "Moved to #slug" note takes its place, and the channel gets a
+"Moved here from …" post, which its agents see in their next digest. Details in DECISIONS.md "T2 moves".
+
 ## 7. Open questions
 
 1. ~~**What "main channel" should mean.**~~ Decided 2026-11-03: a main channel is the user's direct line to an

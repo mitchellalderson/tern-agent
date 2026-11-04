@@ -14,6 +14,7 @@ import 'package:tern_desktop/state/store.dart';
 import 'package:tern_desktop/state/transcript.dart';
 import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/home.dart';
+import 'package:tern_desktop/ui/move_dialog.dart';
 
 Future<void> _font(String family, List<String> paths) async {
   for (final p in paths) {
@@ -111,6 +112,21 @@ TernStore _store() {
             'Two meetings today: design review at 10:00, Nora at 15:30. '
             'One invoice needs a decision.',
         createdAt: _now.subtract(const Duration(minutes: 140)),
+      ),
+    ),
+    StreamPost(
+      Post(
+        id: 4,
+        channelId: 'home',
+        sessionId: 'moved',
+        authorKind: 'user',
+        authorId: 'owner',
+        author: 'you',
+        kind: 'moved',
+        text: 'Moved to #launch: Book the venue for the offsite',
+        pointsTo: 12,
+        pointsToChannel: 'launch',
+        createdAt: _now.subtract(const Duration(minutes: 100)),
       ),
     ),
     StreamCut(
@@ -252,6 +268,19 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
       expect(tester.takeException(), isNull);
       await _shot(tester, key, 'home_${dark ? 'dark' : 'light'}');
+
+      // Moving the current topic: the dialog over Home.
+      showMoveDialog(tester.element(find.byType(Home)), store, [
+        'h2',
+      ], what: 'this topic');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byType(MoveDialog), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await _shot(tester, key, 'move_${dark ? 'dark' : 'light'}');
+      Navigator.of(tester.element(find.byType(MoveDialog))).pop();
+      await tester.pump(const Duration(milliseconds: 400));
 
       // #finances, with a side thread open beside it, and the approval its
       // run is waiting on answered in Home.

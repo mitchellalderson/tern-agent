@@ -464,6 +464,9 @@ pub struct SessionItem {
     /// A side thread: `message:<id>` or `post:<id>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branched_from: Option<String>,
+    /// Moved here from this channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<String>,
 }
 
 impl SessionItem {
@@ -480,6 +483,7 @@ impl SessionItem {
             prev_session_id: s.prev_session_id,
             segment_reason: s.segment_reason,
             branched_from: s.branched_from,
+            moved_from: s.moved_from,
         }
     }
 }

@@ -184,6 +184,32 @@ class TernStore extends ChangeNotifier {
     ];
   }
 
+  /// Move conversations into a topic channel, or a new one titled
+  /// `newTitle`, and open it. Returns the daemon's reason on failure.
+  Future<String?> moveToChannel(
+    List<String> sessions, {
+    String? channelId,
+    String? newTitle,
+  }) async {
+    try {
+      final r = await client.moveToChannel(
+        sessions,
+        channel: channelId,
+        newChannelTitle: newTitle,
+      );
+      for (final s in sessions) {
+        _homeSessions.remove(s);
+      }
+      channels = await client.channels();
+      this.sessions = await client.sessions();
+      posts.remove(r.channel.id);
+      await openChannelView(r.channel.id);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
   /// Mark a needs-you post (or its pointer in Home) done.
   Future<void> resolvePost(Post post) async {
     try {

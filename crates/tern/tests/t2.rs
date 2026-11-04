@@ -1062,3 +1062,329 @@ async fn active_runs_name_their_channel_and_author() {
     );
     wait_run(&s, sent["run_id"].as_str().unwrap()).await;
 }
+
+// ---- Moving conversations into channels ----
+
+async fn messages_of(s: &Path, session: &str) -> Vec<String> {
+    get(s, &format!("/v1/sessions/{session}")).await.1["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["content"][0]["text"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topics_from_home_a_side_chat_and_another_channel_move_into_a_new_channel() {
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            // Later topics first: a new segment's message quotes the last.
+            { "matches": "Budget for launch", "turns": [{ "text": "Budget: 12k." }, { "text": "Raised to 15k." }] },
+            { "matches": "Book the venue", "turns": [
+                { "text": "", "tool_calls": [{ "name": "mcp_list", "input": {} }] },
+                { "text": "Venue options listed." },
+                { "text": "The second venue is free." }
+            ]},
+            { "matches": "Caterer?", "turns": [{ "text": "Three caterers." }] },
+            { "matches": "Server costs", "turns": [{ "text": "Servers cost 400." }] },
+            { "matches": "Weekly sync", "turns": [{ "text": "Sync notes." }] }
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let send_home = |text: &'static str, topic: bool| {
+        let s = s.clone();
+        async move {
+            let (_, r) = post(
+                &s,
+                "/v1/channels/home/posts",
+                json!({ "text": text, "new_topic": topic }),
+            )
+            .await;
+            wait_run(&s, r["run_id"].as_str().unwrap()).await;
+            r
+        }
+    };
+    // Home: three segments; the middle one reads untrusted content.
+    let a = send_home("Weekly sync", false).await;
+    let b = send_home("Book the venue", true).await;
+    let c = send_home("Budget for launch", true).await;
+    let (a, b, c) = (
+        a["session_id"].as_str().unwrap().to_owned(),
+        b["session_id"].as_str().unwrap().to_owned(),
+        c["session_id"].as_str().unwrap().to_owned(),
+    );
+    let (_, side) = post(
+        &s,
+        "/v1/runs",
+        json!({ "text": "Caterer?", "channel": "home", "branched_from": "message:1" }),
+    )
+    .await;
+    wait_run(&s, side["run_id"].as_str().unwrap()).await;
+    post(&s, "/v1/channels", json!({ "slug": "ops" })).await;
+    let (_, ops) = post(
+        &s,
+        "/v1/channels/ops/posts",
+        json!({ "text": "Server costs" }),
+    )
+    .await;
+    wait_run(&s, ops["run_id"].as_str().unwrap()).await;
+    let b_before = messages_of(&s, &b).await;
+
+    // Refusals change nothing.
+    let cron: String = {
+        let (_, sch) = post(
+            &s,
+            "/v1/schedules",
+            json!({ "cron": "0 8 * * *", "prompt": "x" }),
+        )
+        .await;
+        sch["session_id"].as_str().unwrap().to_owned()
+    };
+    for (body, want) in [
+        (
+            json!({ "sessions": [cron], "new_channel": { "title": "Launch" } }),
+            400,
+        ),
+        (json!({ "sessions": [b], "channel": "home" }), 400),
+        (json!({ "sessions": [b] }), 400),
+        (
+            json!({ "sessions": ["nope"], "new_channel": { "title": "Launch" } }),
+            400,
+        ),
+    ] {
+        assert_eq!(post(&s, "/v1/channels/move", body).await.0, want);
+    }
+    assert_eq!(
+        get(&s, "/v1/channels").await.1.as_array().unwrap().len(),
+        2,
+        "no channel left behind"
+    );
+
+    let side_id = side["session_id"].as_str().unwrap().to_owned();
+    let ops_id = ops["session_id"].as_str().unwrap().to_owned();
+    let (code, moved) = post(
+        &s,
+        "/v1/channels/move",
+        json!({ "sessions": [b, side_id, ops_id], "new_channel": { "title": "Launch!" } }),
+    )
+    .await;
+    assert_eq!(code, 200, "{moved}");
+    let launch = moved["channel"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(moved["channel"]["slug"], "launch");
+    assert_eq!(moved["moved"].as_array().unwrap().len(), 3);
+
+    // The Home stream closed around the middle segment: c continues a.
+    let prev: String = env.query(&format!(
+        "SELECT prev_session_id FROM sessions WHERE id = '{c}'"
+    ));
+    assert_eq!(prev, a);
+    let (_, home) = get(&s, "/v1/channels").await;
+    assert_eq!(
+        home[0]["main_session_id"],
+        c.as_str(),
+        "the current segment wasn't moved"
+    );
+    // The ops channel's main thread left: its next send starts a new one.
+    let ops_main = home
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ch| ch["slug"] == "ops")
+        .unwrap()["main_session_id"]
+        .clone();
+    assert_eq!(ops_main, Value::Null);
+
+    // Where b was, a marker; its messages are gone from the stream.
+    let (_, page) = get(&s, "/v1/channels/home/stream").await;
+    let types = stream_types(&page);
+    assert!(
+        !types.iter().any(|t| t == "user:Book the venue"),
+        "{types:#?}"
+    );
+    let marker = types
+        .iter()
+        .position(|t| t == "post:Moved to #launch: Book the venue")
+        .unwrap();
+    let c_start = types
+        .iter()
+        .position(|t| t == "user:Budget for launch")
+        .unwrap();
+    let a_end = types
+        .iter()
+        .position(|t| t == "assistant:Sync notes.")
+        .unwrap();
+    assert!(
+        c_start < marker && marker < a_end,
+        "between a and c: {types:#?}"
+    );
+    assert!(!types.iter().any(|t| t == "side_chat"), "{types:#?}");
+
+    // History moved intact, and b is a thread of #launch.
+    assert_eq!(messages_of(&s, &b).await, b_before);
+    let (_, threads) = get(&s, "/v1/sessions?channel=launch").await;
+    let ids: Vec<&str> = threads
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 3, "{threads:#}");
+    assert!(
+        threads
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["moved_from"].is_string())
+    );
+
+    // Arrival posts, tainted where the conversation was.
+    let (_, posts) = get(&s, "/v1/channels/launch/posts").await;
+    let arrival = |needle: &str| {
+        posts
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["text"].as_str().unwrap().contains(needle))
+            .unwrap()
+            .clone()
+    };
+    let venue = arrival("Book the venue");
+    assert!(
+        venue["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Moved here from Home: Book the venue\nLast reply: Venue options listed."),
+        "{venue}"
+    );
+    assert_eq!(
+        (venue["kind"].as_str(), venue["tainted"].as_bool()),
+        (Some("moved"), Some(true))
+    );
+    assert_eq!(
+        arrival("Server costs")["text"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .next(),
+        Some("Moved here from #ops: Server costs")
+    );
+    assert_eq!(arrival("Caterer?").get("tainted"), None);
+    let (_, home_posts) = get(&s, "/v1/channels/home/posts").await;
+    let m = home_posts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["text"] == "Moved to #launch: Book the venue")
+        .unwrap();
+    assert_eq!(
+        (m["tainted"].as_bool(), m["points_to"].clone()),
+        (Some(true), venue["id"].clone())
+    );
+    assert_eq!(m["points_to_channel"], launch.as_str());
+
+    // b goes on in its new channel: its answer is posted there.
+    let (_, more) = post(
+        &s,
+        "/v1/runs",
+        json!({ "text": "And the second venue?", "session_id": b }),
+    )
+    .await;
+    wait_run(&s, more["run_id"].as_str().unwrap()).await;
+    wait_get(&s, "/v1/channels/launch/posts", |v| {
+        v.as_array().is_some_and(|a| a.len() == 4)
+    })
+    .await;
+
+    // The same move again is refused: they're there already.
+    assert_eq!(
+        post(
+            &s,
+            "/v1/channels/move",
+            json!({ "sessions": [b], "channel": "launch" })
+        )
+        .await
+        .0,
+        400
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_homes_current_topic_starts_a_fresh_one_and_running_work_blocks_a_move() {
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "matches": "Slow one", "turns": [{ "text": "Done slowly.", "delay_ms": 1500 }] },
+            { "matches": "Next thing", "turns": [{ "text": "On it." }] },
+            { "matches": "Plan the trip", "turns": [{ "text": "Trip planned." }] },
+            { "matches": "Earlier topic", "turns": [{ "text": "Earlier answer." }] }
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let (_, a) = post(
+        &s,
+        "/v1/channels/home/posts",
+        json!({ "text": "Earlier topic" }),
+    )
+    .await;
+    wait_run(&s, a["run_id"].as_str().unwrap()).await;
+    let (_, b) = post(
+        &s,
+        "/v1/channels/home/posts",
+        json!({ "text": "Plan the trip", "new_topic": true }),
+    )
+    .await;
+    wait_run(&s, b["run_id"].as_str().unwrap()).await;
+    post(&s, "/v1/channels", json!({ "slug": "travel" })).await;
+
+    let (code, moved) = post(
+        &s,
+        "/v1/channels/move",
+        json!({ "sessions": [b["session_id"]], "channel": "travel" }),
+    )
+    .await;
+    assert_eq!(code, 200, "{moved}");
+    let fresh = moved["moved"][0]["fresh_session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (_, chans) = get(&s, "/v1/channels").await;
+    assert_eq!(chans[0]["main_session_id"], fresh.as_str());
+
+    // Home's next message goes to the fresh segment, which carries on
+    // from the topic before the moved one.
+    let (_, n) = post(
+        &s,
+        "/v1/channels/home/posts",
+        json!({ "text": "Next thing" }),
+    )
+    .await;
+    assert_eq!(n["session_id"], fresh.as_str());
+    wait_run(&s, n["run_id"].as_str().unwrap()).await;
+    let carry: String = env.query(&format!(
+        "SELECT text FROM messages WHERE run_id = '{}' AND step_idx = 0",
+        n["run_id"].as_str().unwrap()
+    ));
+    assert!(
+        carry.contains("you: Earlier topic") && !carry.contains("Plan the trip"),
+        "{carry}"
+    );
+
+    // Something running blocks a move of its conversation.
+    let (_, slow) = post(
+        &s,
+        "/v1/channels/home/posts",
+        json!({ "text": "Slow one", "new_topic": true }),
+    )
+    .await;
+    let (code, why) = post(
+        &s,
+        "/v1/channels/move",
+        json!({ "sessions": [slow["session_id"]], "channel": "travel" }),
+    )
+    .await;
+    assert_eq!(code, 409, "{why}");
+    wait_run(&s, slow["run_id"].as_str().unwrap()).await;
+}

@@ -6,14 +6,18 @@ import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
 import 'channel_view.dart' show NeedsYouTag;
+import 'move_dialog.dart';
 import 'widgets.dart';
 
 /// Where Home's stream was cut into a new session: a thin line, with the
 /// summary that was carried over a click away (docs/channels-design.md §2.6).
 class CutDivider extends StatefulWidget {
-  const CutDivider({super.key, required this.item});
+  const CutDivider({super.key, required this.item, this.onMove});
 
   final CutItem item;
+
+  /// Moves the topic that starts here to a channel.
+  final VoidCallback? onMove;
 
   /// Why the cut happened, in words.
   static String reason(String? r) => switch (r) {
@@ -86,6 +90,12 @@ class _CutDividerState extends State<CutDivider> {
                 ),
               ),
               line,
+              if (widget.onMove case final move?)
+                _SmallIcon(
+                  icon: Icons.drive_file_move_outline,
+                  tooltip: 'Move this topic to a channel',
+                  onTap: move,
+                ),
             ],
           ),
         ),
@@ -244,6 +254,77 @@ class _CardButton extends StatelessWidget {
   );
 }
 
+class _SmallIcon extends StatelessWidget {
+  const _SmallIcon({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: tooltip,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(4),
+        child: Icon(icon, size: 14, color: context.colors.muted),
+      ),
+    ),
+  );
+}
+
+/// Where a conversation was before it moved to a channel: a quiet line
+/// that goes there.
+class MovedMarker extends StatelessWidget {
+  const MovedMarker({super.key, required this.post, required this.store});
+
+  final Post post;
+  final TernStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final to = post.pointsToChannel;
+    return Center(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: to == null ? null : () => store.openChannelView(to),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.drive_file_move_outline, size: 14, color: c.muted),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  post.text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12.5, color: c.muted),
+                ),
+              ),
+              if (post.tainted) ...[
+                const SizedBox(width: 4),
+                Tooltip(
+                  message: 'Read untrusted content',
+                  child: Icon(Icons.shield_outlined, size: 12, color: c.muted),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// A side chat that branched off Home's stream.
 class SideChatCard extends StatelessWidget {
   const SideChatCard({super.key, required this.chat, required this.store});
@@ -281,6 +362,14 @@ class SideChatCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 12.5, color: c.muted),
                 ),
+              ),
+              const SizedBox(width: 6),
+              _SmallIcon(
+                icon: Icons.drive_file_move_outline,
+                tooltip: 'Move to a channel',
+                onTap: () => showMoveDialog(context, store, [
+                  chat.sessionId,
+                ], what: 'this side chat'),
               ),
             ],
           ),

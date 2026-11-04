@@ -7,6 +7,7 @@ import '../state/transcript.dart';
 import '../theme.dart';
 import 'history.dart';
 import 'items.dart';
+import 'move_dialog.dart';
 import 'model_picker.dart';
 import 'providers.dart';
 import 'widgets.dart';
@@ -180,6 +181,14 @@ class _Header extends StatelessWidget {
                 used: contextTokens,
                 window: contextWindow,
                 compactAt: compactAt,
+              ),
+            if (store.homeOpen && store.selected != null)
+              QuietIconButton(
+                icon: Icons.drive_file_move_outline,
+                tooltip: 'Move this topic to a channel',
+                onPressed: () => showMoveDialog(context, store, [
+                  store.selected!,
+                ], what: 'this topic'),
               ),
             if (store.homeOpen)
               TextButton.icon(

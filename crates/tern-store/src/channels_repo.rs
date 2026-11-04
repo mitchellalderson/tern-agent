@@ -70,6 +70,30 @@ pub struct NewPost<'a> {
     /// Makes the write idempotent: a second post with the same key returns
     /// the first.
     pub dedupe_key: Option<&'a str>,
+    /// When it happened, if not now (a marker placed where a moved
+    /// conversation was).
+    pub created_at: Option<i64>,
+}
+
+/// What [`Store::move_thread`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    /// The channel it left.
+    pub from: String,
+    /// That was a main channel (Home, later an agent's DM).
+    pub from_main: bool,
+    /// It was that channel's main thread.
+    pub was_main: bool,
+    /// The empty segment that took its place in a stream.
+    pub fresh: Option<String>,
+}
+
+fn self_posts_seen(tx: &rusqlite::Transaction<'_>, session: &str) -> rusqlite::Result<i64> {
+    tx.query_row(
+        "SELECT posts_seen FROM sessions WHERE id = ?1",
+        [session],
+        |r| r.get(0),
+    )
 }
 
 /// Values for a new thread (a session in a channel).
@@ -269,6 +293,7 @@ impl Store {
             segment_reason: t.segment_reason.map(Into::into),
             branched_from: t.branched_from.map(Into::into),
             title: None,
+            moved_from: None,
         })
     }
 
@@ -410,7 +435,7 @@ impl Store {
                     p.reply_to,
                     p.points_to,
                     p.dedupe_key,
-                    now,
+                    p.created_at.unwrap_or(now),
                     p.tainted,
                 ],
             )
@@ -454,6 +479,119 @@ impl Store {
     /// The pointer in Home to post `id`, if it has one.
     pub fn pointer_to(&self, id: i64) -> Result<Option<PostRow>> {
         self.post_by_key(&format!("pointer:{id}"))
+    }
+
+    /// Move thread `session_id` into channel `target` (a topic channel),
+    /// in one transaction:
+    /// - a stream it was a segment of closes around it: its successor
+    ///   continues its predecessor. Its own `prev_session_id` stays, so the
+    ///   journaled carry step of its first run still replays;
+    /// - if it was its channel's main thread (Home: the current segment),
+    ///   a main channel gets a fresh empty segment `fresh_id` after its
+    ///   predecessor, a topic channel none (the next send makes one); a
+    ///   gateway chat's current segment is replaced the same way, and the
+    ///   moved thread no longer belongs to the chat;
+    /// - it and its sub-agents' sessions join `target`, and its digest
+    ///   cursor starts at the newest post, so it isn't shown the channel's
+    ///   past as news.
+    pub fn move_thread(&self, session_id: &str, target: &str, fresh_id: &str) -> Result<Moved> {
+        let now = now_ms();
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let sql = format!("SELECT {SESSION_COLS} FROM sessions WHERE id = ?1");
+        let s = tx.query_row(&sql, [session_id], session_row)?;
+        let from = s.channel_id.clone().unwrap_or_else(|| HOME.into());
+        let (kind, main): (String, Option<String>) = tx.query_row(
+            "SELECT kind, main_session_id FROM channels WHERE id = ?1",
+            [&from],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        tx.execute(
+            "UPDATE sessions SET prev_session_id = ?2
+             WHERE prev_session_id = ?1 AND channel_id = ?3 AND id <> ?1",
+            params![s.id, s.prev_session_id, from],
+        )?;
+        let chat_head = match &s.external_ref {
+            Some(r) => {
+                let latest: Option<String> = tx
+                    .query_row(
+                        "SELECT id FROM sessions WHERE source = ?1 AND external_ref = ?2
+                         ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+                        params![s.source, r],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                latest.as_deref() == Some(s.id.as_str())
+            }
+            None => false,
+        };
+        let was_main = main.as_deref() == Some(s.id.as_str());
+        let mut fresh = None;
+        if (was_main && kind == "main") || chat_head {
+            tx.execute(
+                "INSERT INTO sessions (id, source, model, external_ref, channel_id, prev_session_id,
+                   segment_reason, posts_seen, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'moved', ?7, ?8, ?8)",
+                params![
+                    fresh_id,
+                    s.source,
+                    s.model,
+                    s.external_ref,
+                    from,
+                    s.prev_session_id,
+                    self_posts_seen(&tx, &s.id)?,
+                    now
+                ],
+            )?;
+            fresh = Some(fresh_id.to_owned());
+        }
+        if was_main {
+            let next = if kind == "main" { fresh.clone() } else { None };
+            tx.execute(
+                "UPDATE channels SET main_session_id = ?2, updated_at = ?3 WHERE id = ?1",
+                params![from, next, now],
+            )?;
+        }
+        tx.execute(
+            "UPDATE sessions SET channel_id = ?2, external_ref = NULL, moved_from = ?3, moved_at = ?4,
+               posts_seen = (SELECT COALESCE(max(id), 0) FROM posts)
+             WHERE id = ?1",
+            params![s.id, target, from, now],
+        )?;
+        // Its sub-agents' sessions, any depth, follow it.
+        tx.execute(
+            "WITH RECURSIVE tree(id) AS (
+               SELECT id FROM runs WHERE session_id = ?1
+               UNION SELECT r.id FROM runs r JOIN tree t ON r.parent_run_id = t.id
+             )
+             UPDATE sessions SET channel_id = ?2
+             WHERE id IN (SELECT session_id FROM runs WHERE id IN tree) AND id <> ?1",
+            params![s.id, target],
+        )?;
+        tx.execute(
+            "UPDATE channels SET updated_at = ?2 WHERE id = ?1",
+            params![target, now],
+        )?;
+        tx.commit()?;
+        Ok(Moved {
+            from,
+            from_main: kind == "main",
+            was_main,
+            fresh,
+        })
+    }
+
+    /// Why some run in the session is tainted, if one is.
+    pub fn session_taint(&self, session_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()?
+            .query_row(
+                "SELECT taint FROM runs WHERE session_id = ?1 AND taint IS NOT NULL
+                 ORDER BY started_at LIMIT 1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     /// Mark a `needs_you` post or a pointer done, with its counterpart.
@@ -855,6 +993,127 @@ mod tests {
             })
             .unwrap();
         assert!(s.pointer_to(home.id).unwrap().is_none());
+    }
+
+    fn seg(s: &Store, id: &'static str, prev: Option<&'static str>) {
+        s.create_thread(&NewThread {
+            id,
+            source: "api",
+            channel_id: HOME,
+            prev_session_id: prev,
+            segment_reason: prev.map(|_| "idle"),
+            ..NewThread::default()
+        })
+        .unwrap();
+    }
+
+    fn prev(s: &Store, id: &str) -> Option<String> {
+        s.session(id).unwrap().unwrap().prev_session_id
+    }
+
+    #[test]
+    fn moving_a_middle_segment_closes_the_stream_around_it() {
+        let s = Store::open_in_memory().unwrap();
+        let c = topic(&s, "launch");
+        seg(&s, "a", None);
+        seg(&s, "b", Some("a"));
+        seg(&s, "c", Some("b"));
+        s.set_main_session(HOME, "c").unwrap();
+        let m = s.move_thread("b", &c.id, "fresh").unwrap();
+        assert_eq!(
+            (m.from.as_str(), m.from_main, m.was_main, m.fresh),
+            (HOME, true, false, None)
+        );
+        assert_eq!(prev(&s, "c").as_deref(), Some("a"), "c continues a");
+        // b keeps its own link, so its journaled carry step replays.
+        assert_eq!(prev(&s, "b").as_deref(), Some("a"));
+        let b = s.session("b").unwrap().unwrap();
+        assert_eq!(
+            (b.channel_id, b.moved_from),
+            (Some(c.id.clone()), Some(HOME.into()))
+        );
+        assert_eq!(
+            s.channel(HOME).unwrap().unwrap().main_session_id.as_deref(),
+            Some("c")
+        );
+    }
+
+    #[test]
+    fn moving_the_current_segment_starts_a_fresh_one_after_its_predecessor() {
+        let s = Store::open_in_memory().unwrap();
+        let c = topic(&s, "launch");
+        seg(&s, "a", None);
+        seg(&s, "b", Some("a"));
+        s.set_main_session(HOME, "b").unwrap();
+        s.advance_posts_seen("b", 0).unwrap();
+        let m = s.move_thread("b", &c.id, "fresh").unwrap();
+        assert_eq!((m.was_main, m.fresh.as_deref()), (true, Some("fresh")));
+        let fresh = s.session("fresh").unwrap().unwrap();
+        assert_eq!(
+            (
+                fresh.prev_session_id.as_deref(),
+                fresh.segment_reason.as_deref(),
+                fresh.channel_id.as_deref()
+            ),
+            (Some("a"), Some("moved"), Some(HOME))
+        );
+        assert_eq!(
+            s.channel(HOME).unwrap().unwrap().main_session_id.as_deref(),
+            Some("fresh")
+        );
+
+        // A topic channel's main thread leaves no fresh one: the next send
+        // makes it.
+        let other = topic(&s, "ops");
+        s.create_thread(&NewThread {
+            id: "t",
+            source: "api",
+            channel_id: &other.id,
+            ..NewThread::default()
+        })
+        .unwrap();
+        s.set_main_session(&other.id, "t").unwrap();
+        let m = s.move_thread("t", &c.id, "unused").unwrap();
+        assert_eq!((m.from_main, m.was_main, m.fresh), (false, true, None));
+        assert_eq!(s.channel(&other.id).unwrap().unwrap().main_session_id, None);
+    }
+
+    #[test]
+    fn a_chats_current_segment_is_replaced_and_its_sub_agents_follow() {
+        let s = Store::open_in_memory().unwrap();
+        let c = topic(&s, "launch");
+        s.create_thread(&NewThread {
+            id: "tg",
+            source: "telegram",
+            channel_id: HOME,
+            external_ref: Some("555"),
+            ..NewThread::default()
+        })
+        .unwrap();
+        let msg = NewMessage {
+            role: "user".into(),
+            content_json: "[]".into(),
+            text: "hi".into(),
+            summary_of: None,
+        };
+        let run = |id: &'static str, session: &'static str, parent: Option<&'static str>| NewRun {
+            id,
+            session_id: session,
+            trigger: "user",
+            model: "mock:m",
+            system_prompt: "",
+            parent_run_id: parent,
+            ..NewRun::default()
+        };
+        s.create_run(&run("r", "tg", None), &msg).unwrap();
+        s.create_session("child", "subagent", None).unwrap();
+        s.create_run(&run("rc", "child", Some("r")), &msg).unwrap();
+        let m = s.move_thread("tg", &c.id, "tg2").unwrap();
+        assert_eq!(m.fresh.as_deref(), Some("tg2"));
+        let now = s.latest_session_for("telegram", "555").unwrap().unwrap();
+        assert_eq!(now.id, "tg2", "the chat goes on in a fresh segment");
+        assert_eq!(s.session("tg").unwrap().unwrap().external_ref, None);
+        assert_eq!(s.session("child").unwrap().unwrap().channel_id, Some(c.id));
     }
 
     #[test]

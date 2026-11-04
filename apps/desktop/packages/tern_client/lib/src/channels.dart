@@ -296,3 +296,27 @@ class Sent {
 
 DateTime _time(int t) =>
     DateTime.fromMillisecondsSinceEpoch(t > 100000000000 ? t : t * 1000);
+
+/// What `POST /v1/channels/move` did.
+class MoveResult {
+  const MoveResult({required this.channel, required this.moved});
+
+  factory MoveResult.fromJson(Json j) => MoveResult(
+    channel: Channel.fromJson(j['channel'] as Json),
+    moved: [
+      for (final m in j['moved'] as List)
+        (
+          sessionId: (m as Json)['session_id'] as String,
+          from: m['from'] as String,
+          fresh: m['fresh_session_id'] as String?,
+        ),
+    ],
+  );
+
+  /// Where they went.
+  final Channel channel;
+
+  /// Each conversation, the channel it left, and the empty segment that
+  /// took its place in a stream (Home's current one).
+  final List<({String sessionId, String from, String? fresh})> moved;
+}
