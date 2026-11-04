@@ -502,6 +502,16 @@ async fn resolve(
                 format!("this is outbox #{item}: approve or reject it instead"),
             ));
         }
+        // Dismissing a channel suggestion's card declines it.
+        if post.resolved_at.is_none()
+            && let Some(s) = tern_core::channels::suggestion_of(&m.rt.store, &post)
+            && s.state == "pending"
+            && let Some(row) = m.rt.store.suggestion(s.id).map_err(internal)?
+        {
+            m.decline_suggestion(&row).map_err(internal)?;
+            m.channels_changed();
+            return Ok(Json(serde_json::json!({ "ok": true })));
+        }
         if post.resolved_at.is_none()
             && let Some((what, _)) = super::waiting::waiting_of(&m.rt.store, &post)
         {

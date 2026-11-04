@@ -242,8 +242,9 @@ Tools (all `idempotent: true`, no approval: they only touch tern's own store):
   channel's posts, or searches them via FTS. Defaults to the run's own channel.
 - **`channel_post`**: `{"text": string, "needs_you"?: bool, "channel"?: slug}`. Posts an update. Posting to another
   channel is allowed ("put this in #finances"). Limited to 10 posts per run, so a looping agent can't flood a channel.
-- **`channel_suggest`**: `{"slug", "title", "why"}`, from the spec. Shows a card; the user accepts or doesn't. Later
-  phase.
+- **`channel_suggest`**: `{"slug", "title"?, "why", "routines"?}`, from the spec. A `needs_you` card in the run's
+  conversation; the user accepts (the channel is created, and the conversation and routines can move there) or
+  declines. Built in C5 (DECISIONS.md "T2 C5").
 
 **Taint.** A post written by a tainted run (one that read an email, a web page, etc.) is marked `tainted`, and a
 digest containing one taints the reading run under the spec's taint rules (§5 there). That stops an injected

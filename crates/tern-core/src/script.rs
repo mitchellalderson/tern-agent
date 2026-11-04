@@ -32,6 +32,7 @@ pub const NOT_IN_SCRIPTS: &[&str] = &[
     "agent_wait",
     "agent_ask_parent",
     "channel_post",
+    "channel_suggest",
     "secret_request",
     "connector_write",
     "connector_test",

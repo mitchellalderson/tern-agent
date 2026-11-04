@@ -167,13 +167,25 @@ impl Runtime {
         tools.register(Arc::new(tern_tools::channels::ChannelRead::new(
             store.clone(),
         )));
+        let announce = |changes: tokio::sync::broadcast::Sender<Change>,
+                        store: tern_store::Store| {
+            Arc::new(move |row: tern_store::PostRow| {
+                let suggestion = tern_core::channels::suggestion_of(&store, &row).map(Box::new);
+                let _ = changes.send(Change::PostCreated {
+                    post: Box::new(tern_core::channels::Post {
+                        suggestion,
+                        ..tern_core::channels::Post::from(row)
+                    }),
+                });
+            }) as tern_tools::channels::OnPost
+        };
         tools.register(Arc::new(tern_tools::channels::ChannelPost::new(
             store.clone(),
-            Some(Arc::new(move |row| {
-                let _ = post_changes.send(Change::PostCreated {
-                    post: Box::new(tern_core::channels::Post::from(row)),
-                });
-            })),
+            Some(announce(post_changes.clone(), store.clone())),
+        )));
+        tools.register(Arc::new(tern_tools::channels::ChannelSuggest::new(
+            store.clone(),
+            Some(announce(post_changes, store.clone())),
         )));
         tools.register(Arc::new(tern_tools::secret_request::SecretRequest::new(
             approvals.clone(),

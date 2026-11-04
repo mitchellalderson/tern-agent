@@ -6,6 +6,7 @@ import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
 import 'agent_face.dart';
+import 'channel_items.dart' show SuggestionActions;
 import 'conversation.dart';
 import 'routines.dart';
 import 'items.dart';
@@ -652,6 +653,8 @@ class TimelinePost extends StatelessWidget {
               ),
               for (final id in routineLinksIn(post.text))
                 RoutineCard(item: RoutineItem(id), store: store),
+              if (post.suggestion case final sg?)
+                SuggestionActions(suggestion: sg, store: store),
               Row(
                 children: [
                   // An outbox item: decide it here (topic channels have no
@@ -670,7 +673,9 @@ class TimelinePost extends StatelessWidget {
                         onTap: () => store.decideOutbox(item, approve: false),
                       ),
                     ],
-                  ] else if (post.needsYou && !post.isRequest)
+                  ] else if (post.suggestion != null)
+                    const SizedBox.shrink()
+                  else if (post.needsYou && !post.isRequest)
                     _Action(label: 'Done', onTap: () => store.resolvePost(post))
                   else if (post.kind == 'needs_you')
                     const _Action(label: 'Done ✓', onTap: null),

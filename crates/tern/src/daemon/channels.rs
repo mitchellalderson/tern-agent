@@ -61,11 +61,13 @@ pub fn view(store: &Store, row: tern_store::PostRow) -> Post {
         Some((_, id)) => (None, Some(id)),
         None => (None, None),
     };
+    let suggestion = tern_core::channels::suggestion_of(store, &row).map(Box::new);
     Post {
         points_to_channel,
         outbox_id,
         approval_id,
         secret_request_id,
+        suggestion,
         ..Post::from(row)
     }
 }

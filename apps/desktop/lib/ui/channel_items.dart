@@ -142,6 +142,8 @@ class PostCard extends StatelessWidget {
     };
     final elsewhere =
         post.kind == 'pointer' && (post.isRequest || post.outboxId != null);
+    // A channel suggestion is decided with its own buttons, below.
+    final suggestion = post.suggestion;
     return Container(
       decoration: BoxDecoration(
         color: c.card,
@@ -200,7 +202,7 @@ class PostCard extends StatelessWidget {
               ),
               // A pointer: go to what waits, or mark it done here. One to
               // a request or outbox item has its buttons under the text.
-              if (elsewhere)
+              if (elsewhere || suggestion != null)
                 const SizedBox.shrink()
               else if (post.outboxId != null)
                 // Decided in the outbox cards above the composer.
@@ -264,7 +266,9 @@ class PostCard extends StatelessWidget {
           ),
           for (final id in routineLinksIn(post.text))
             RoutineCard(item: RoutineItem(id), store: store),
-          if (elsewhere) ...[
+          if (suggestion != null)
+            SuggestionActions(suggestion: suggestion, store: store)
+          else if (elsewhere) ...[
             const SizedBox(height: 4),
             Wrap(spacing: 4, children: _waitingElsewhere(context)),
           ],
@@ -416,6 +420,124 @@ class MovedMarker extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// A `channel_suggest` card's choices: create the channel (moving this
+/// conversation and the suggested routines there, each can be left out)
+/// or not now. Decided, it says how.
+class SuggestionActions extends StatefulWidget {
+  const SuggestionActions({
+    super.key,
+    required this.suggestion,
+    required this.store,
+  });
+
+  final ChannelSuggestion suggestion;
+  final TernStore store;
+
+  @override
+  State<SuggestionActions> createState() => _SuggestionActionsState();
+}
+
+class _SuggestionActionsState extends State<SuggestionActions> {
+  late var _move = widget.suggestion.sessionId != null;
+  late final _routines = {for (final r in widget.suggestion.routines) r.id};
+  var _busy = false;
+  String? _error;
+
+  Future<void> _decide(bool accept) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final s = widget.suggestion;
+    final err = accept
+        ? await widget.store.acceptSuggestion(
+            s,
+            moveConversation: _move,
+            routines: _routines.toList(),
+          )
+        : await widget.store.declineSuggestion(s);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _error = err;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final s = widget.suggestion;
+    if (!s.pending) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: s.channelId == null
+            ? const _CardButton(label: 'Declined', onPressed: null)
+            : _CardButton(
+                label: 'Go to #${s.slug}',
+                onPressed: () => widget.store.openChannelView(s.channelId!),
+              ),
+      );
+    }
+    Widget check(String label, bool value, ValueChanged<bool> on) => InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: _busy ? null : () => on(!value),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Checkbox(
+            value: value,
+            visualDensity: VisualDensity.compact,
+            onChanged: _busy ? null : (v) => on(v ?? false),
+          ),
+          Flexible(child: Text(label, style: const TextStyle(fontSize: 12.5))),
+        ],
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 2),
+        if (s.sessionId != null)
+          check(
+            'Move this conversation there',
+            _move,
+            (v) => setState(() => _move = v),
+          ),
+        for (final r in s.routines)
+          check(
+            'Move the routine "${r.title}" there',
+            _routines.contains(r.id),
+            (v) => setState(
+              () => v ? _routines.add(r.id) : _routines.remove(r.id),
+            ),
+          ),
+        if (_error case final e?)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Text(e, style: TextStyle(color: c.error, fontSize: 12)),
+          ),
+        const SizedBox(height: 4),
+        Wrap(
+          spacing: 6,
+          children: [
+            FilledButton(
+              onPressed: _busy ? null : () => _decide(true),
+              style: FilledButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+              ),
+              child: Text('Create #${s.slug}'),
+            ),
+            TextButton(
+              onPressed: _busy ? null : () => _decide(false),
+              child: const Text('Not now'),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

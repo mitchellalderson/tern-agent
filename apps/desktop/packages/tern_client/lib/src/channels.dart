@@ -133,6 +133,53 @@ class ChannelMember {
   final DateTime addedAt;
 }
 
+/// A channel an agent suggested with `channel_suggest`.
+class ChannelSuggestion {
+  const ChannelSuggestion({
+    required this.id,
+    required this.slug,
+    required this.title,
+    required this.why,
+    this.routines = const [],
+    this.state = 'pending',
+    this.channelId,
+    this.sessionId,
+  });
+
+  factory ChannelSuggestion.fromJson(Json j) => ChannelSuggestion(
+    id: j['id'] as int,
+    slug: j['slug'] as String,
+    title: j['title'] as String,
+    why: j['why'] as String,
+    routines: [
+      for (final r in j['routines'] as List? ?? const [])
+        (id: (r as Json)['id'] as String, title: r['title'] as String),
+    ],
+    state: j['state'] as String? ?? 'pending',
+    channelId: j['channel_id'] as String?,
+    sessionId: j['session_id'] as String?,
+  );
+
+  final int id;
+  final String slug;
+  final String title;
+  final String why;
+
+  /// Routines accepting would move there.
+  final List<({String id, String title})> routines;
+
+  /// `pending`, `accepted` or `declined`.
+  final String state;
+
+  /// The channel accepting created.
+  final String? channelId;
+
+  /// The conversation it was suggested in, which accepting can move.
+  final String? sessionId;
+
+  bool get pending => state == 'pending';
+}
+
 /// What an agent, a routine or the user said in a channel.
 class Post {
   const Post({
@@ -155,6 +202,7 @@ class Post {
     this.outboxId,
     this.approvalId,
     this.secretRequestId,
+    this.suggestion,
     required this.createdAt,
   });
 
@@ -181,6 +229,9 @@ class Post {
     outboxId: j['outbox_id'] as int?,
     approvalId: j['approval_id'] as String?,
     secretRequestId: j['secret_request_id'] as String?,
+    suggestion: j['suggestion'] is Json
+        ? ChannelSuggestion.fromJson(j['suggestion'] as Json)
+        : null,
     createdAt: _time(j['created_at'] as int),
   );
 
@@ -233,6 +284,9 @@ class Post {
   /// when the request is answered; "Done" alone is refused.
   final String? approvalId;
   final String? secretRequestId;
+
+  /// A `channel_suggest` card (or its pointer): accept or decline it.
+  final ChannelSuggestion? suggestion;
   final DateTime createdAt;
 
   /// Stands for an approval or a secret request.
@@ -268,6 +322,7 @@ class Post {
     approvalId: approvalId,
     secretRequestId: secretRequestId,
     createdAt: createdAt,
+    suggestion: suggestion,
   );
 }
 

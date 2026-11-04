@@ -498,6 +498,24 @@ class TernClient {
     }),
   );
 
+  /// Accept a channel suggestion: create the channel and, unless told
+  /// not to, move the conversation and the suggested routines there.
+  /// Returns the new channel's id.
+  Future<String> acceptSuggestion(
+    int id, {
+    bool moveConversation = true,
+    List<String>? routines,
+  }) async {
+    final j = await _json('POST', '/v1/suggestions/$id/accept', {
+      'move_conversation': moveConversation,
+      'routines': ?routines,
+    });
+    return ((j as Json)['channel'] as Json)['id'] as String;
+  }
+
+  Future<void> declineSuggestion(int id) =>
+      _json('POST', '/v1/suggestions/$id/decline');
+
   /// Mark a `needs_you` post or its pointer in Home done (both close).
   Future<void> resolvePost(int id) => _json('POST', '/v1/posts/$id/resolve');
 
@@ -526,17 +544,14 @@ class TernClient {
   /// Send a message. Without `session` the daemon starts a new
   /// conversation. A run already in progress in that session is cancelled
   /// first. (Conversations in a channel go through [sendToChannel].)
-  Future<Started> send(
-    String text, {
-    String? session,
-    String? model,
-  }) async => Started.fromJson(
-    await _json('POST', '/v1/runs', {
-      'text': text,
-      'session_id': ?session,
-      'model': ?model,
-    }),
-  );
+  Future<Started> send(String text, {String? session, String? model}) async =>
+      Started.fromJson(
+        await _json('POST', '/v1/runs', {
+          'text': text,
+          'session_id': ?session,
+          'model': ?model,
+        }),
+      );
 
   Future<bool> cancel(String run) async =>
       (await _json('POST', '/v1/runs/$run/cancel'))['cancelled'] as bool;
