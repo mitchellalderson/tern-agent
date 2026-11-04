@@ -126,9 +126,16 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
         for line in inp.integrations {
             out.push_str(&format!("\n- {line}"));
         }
+        out.push_str("\n\n");
+        out.push_str(INTEGRATIONS_RULE);
     }
     out
 }
+
+/// Under the integrations list: a script calling the API directly would
+/// skip the connector's host allowlist, its effect, taint and the journal.
+const INTEGRATIONS_RULE: &str = "Fetch data an integration provides through its tools, never with \
+     `shell`, `curl` or scripts; for many lookups, call the tool repeatedly.";
 
 /// For a run with the `agent_*` tools: delegate proactively, and how.
 fn subagents_section(sub: &SubagentPrompt) -> String {
@@ -309,6 +316,7 @@ mod tests {
         assert!(p.contains("/ws"));
         assert!(p.contains("## Skills") && p.contains("- pdf: Work with PDFs"));
         assert!(p.contains("## Integrations\n\n- MCP server github"));
+        assert!(p.contains(INTEGRATIONS_RULE));
 
         std::fs::write(home.user_path(), "<!-- note -->\nName: Sam").unwrap();
         assert!(system_prompt(&inp).contains("## About the user\n\nName: Sam"));
@@ -330,6 +338,7 @@ mod tests {
         });
         assert!(p.starts_with("You are tern"));
         assert!(!p.contains("## Skills"));
+        assert!(!p.contains("## Integrations") && !p.contains(INTEGRATIONS_RULE));
         assert!(!p.contains("## Sub-agents") && !p.contains("agent_spawn"));
     }
 

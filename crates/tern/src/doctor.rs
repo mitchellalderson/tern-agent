@@ -248,6 +248,8 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
         },
     }
 
+    check_shell_network(&mut r, home, &config);
+
     r.section("Autonomy");
     check_autonomy(&mut r, home, &config);
 
@@ -523,6 +525,37 @@ fn check_database(r: &mut Report, path: &Path) {
             (Err(e), _) | (_, Err(e)) => r.check(Status::Fail, e.to_string(), None),
         },
     }
+}
+
+/// With integrations active, a shell that reaches the network is a way
+/// around them: a script can call the same API directly, skipping the
+/// connector's host allowlist, effect and the journal.
+fn check_shell_network(r: &mut Report, home: &TernHome, config: &Config) {
+    if !config.sandbox.network {
+        return;
+    }
+    let luau = std::fs::read_dir(home.connectors_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_file() && e.path().extension().is_some_and(|x| x == "luau"))
+        .count();
+    let mcp = config.mcp.servers.values().filter(|s| s.enabled).count();
+    if luau + mcp == 0 {
+        return;
+    }
+    r.check(
+        Status::Info,
+        format!(
+            "shell commands can reach the network directly ([sandbox] network = true), \
+             bypassing the allowlists of your {} active connector(s) and MCP server(s)",
+            luau + mcp
+        ),
+        Some(
+            "Set network = false under [sandbox] so integrations go through their tools. \
+             Shell output is treated as untrusted while the network is on.",
+        ),
+    );
 }
 
 const YOLO_HINT: &str = "Nothing asks before acting, even after reading a web page or an email that could \

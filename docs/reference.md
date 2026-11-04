@@ -316,7 +316,7 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `memory.flush` | `true` | Before older context is summarized, give the agent one silent turn to save durable facts with `memory_save`. |
 | `sandbox.backend` | `host` | `host` or `docker`. |
 | `sandbox.shell_timeout_secs` | `120` | Per shell command. |
-| `sandbox.network` | `true` | IP networking for shell commands (both backends). |
+| `sandbox.network` | `true` | IP networking for shell commands (both backends). While commands can reach the network, `shell` output is untrusted and taints the run ([Taint](#taint)); with connectors or MCP servers active, `false` keeps integrations going through their tools (`tern doctor` says so). |
 | `sandbox.confine` | `auto` | Host backend: `auto` (sandbox when the OS can, else warn), `required` (refuse to run unconfined), `off`. |
 | `sandbox.read_paths` | `["~/.gitconfig", "~/.config/git"]` | Host backend: extra read-only paths. |
 | `sandbox.write_paths` | `[]` | Host backend: extra writable paths. |
@@ -482,7 +482,7 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 
 A run is **tainted** once untrusted content reaches it (docs/personal-agent-tooling-spec.md §5.3):
 
-- **What taints**: the result of a tool marked untrusted (`http_fetch`, `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
+- **What taints**: the result of a tool marked untrusted (`http_fetch`, `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`, and `shell` while commands can reach the network: `sandbox.network = true`, the default, or no OS sandbox to enforce `false`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
 - **It sticks** for the rest of the run, survives a crash and `tern resume` exactly (it's rebuilt from the journal), and doesn't carry to the next run in the conversation.
 - **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, memory, schedules), and "always" isn't offered. The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) and `channel_post` keep their grants, since what they reach is tainted too. With nobody to ask (a routine at night), the call goes to the [outbox](#outbox). A network read (`http_fetch`) to a host the run hasn't reached yet asks too, so a page can't have the agent send what it knows somewhere new. A tainted run also skips the memory flush before compaction. Only `autonomy = "yolo"` turns this off.
 - **What the model sees**: untrusted results arrive as `<untrusted source="http_fetch">…</untrusted>`, and the system prompt says text inside is data, not instructions.

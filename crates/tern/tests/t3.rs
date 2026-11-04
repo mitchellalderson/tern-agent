@@ -185,3 +185,37 @@ async fn a_routine_runs_under_its_own_autonomy() {
     .await;
     assert_eq!(sch.get("autonomy"), None, "{sch}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_output_taints_the_run_when_the_network_is_on() {
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "matches": "Compare", "turns": [
+                { "text": "Fetching.", "tool_calls": [{ "name": "shell", "input": { "command": "echo prices" } }] },
+                { "text": "Done." }
+            ]}
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    env.db()
+        .execute(
+            "INSERT INTO approval_allowlist (tool, pattern, created_at) VALUES ('shell', 'echo *', 0)",
+            [],
+        )
+        .unwrap();
+    let (_, r) = post(&s, "/v1/runs", json!({ "text": "Compare the area" })).await;
+    let run = r["run_id"].as_str().unwrap().to_owned();
+    let (_, done) = get(&s, &format!("/v1/runs/{run}/wait")).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    let taint: Option<String> = env
+        .db()
+        .query_row("SELECT taint FROM runs WHERE id = ?1", [&run], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        taint.as_deref(),
+        Some("result of shell"),
+        "network is on by default"
+    );
+}
