@@ -187,6 +187,11 @@ impl Agent {
         &self.tools
     }
 
+    /// Context window for `provider`, the one compaction measures against.
+    pub fn context_window(&self, provider: &str) -> u64 {
+        self.cfg.context_window(provider)
+    }
+
     fn emit(&self, ev: AgentEvent) {
         let _ = self.events.send(ev);
     }

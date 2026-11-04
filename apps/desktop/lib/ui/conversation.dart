@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../state/transcript.dart';
@@ -151,6 +152,18 @@ class _Header extends StatelessWidget {
               Tooltip(
                 message: w,
                 child: Icon(Icons.info_outline, size: 15, color: c.warn),
+              ),
+            if (store.usage[store.selected]
+                case Usage(
+                  :final contextTokens?,
+                  :final contextWindow?,
+                  :final compactAt,
+                )
+                when contextWindow > 0)
+              ContextMeter(
+                used: contextTokens,
+                window: contextWindow,
+                compactAt: compactAt,
               ),
             if (store.link == Link.online)
               TextButton.icon(

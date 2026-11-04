@@ -206,5 +206,69 @@ String relativeTime(DateTime t, [DateTime? now]) {
   return '${t.month}/${t.day}';
 }
 
-String formatTokens(int n) =>
-    n >= 1000 ? '${(n / 1000).toStringAsFixed(n >= 10000 ? 0 : 1)}k' : '$n';
+String formatTokens(int n) => n >= 1000000
+    ? '${(n / 1000000).toStringAsFixed(n % 1000000 == 0 ? 0 : 1)}M'
+    : n >= 1000
+    ? '${(n / 1000).toStringAsFixed(n >= 10000 ? 0 : 1)}k'
+    : '$n';
+
+/// How full a conversation's context is: a small ring and a percentage.
+/// Turns amber near [compactAt], where the agent summarizes older messages.
+class ContextMeter extends StatelessWidget {
+  const ContextMeter({
+    super.key,
+    required this.used,
+    required this.window,
+    this.compactAt,
+  });
+
+  final int used;
+  final int window;
+  final int? compactAt;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final fraction = (used / window).clamp(0.0, 1.0);
+    final near = compactAt != null && used >= compactAt! * 0.85;
+    final color = fraction >= 0.95
+        ? c.error
+        : near
+        ? c.warn
+        : c.muted;
+    final pct = (fraction * 100).round();
+    return Tooltip(
+      message: [
+        'Context: ${formatTokens(used)} of ${formatTokens(window)} tokens',
+        if (compactAt case final at?)
+          'Older messages are summarized at ${formatTokens(at)}',
+      ].join('\n'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox.square(
+              dimension: 14,
+              child: CircularProgressIndicator(
+                value: fraction,
+                strokeWidth: 2.2,
+                color: color,
+                backgroundColor: c.hairline,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              '${pct == 0 && used > 0 ? '<1' : pct}%',
+              style: TextStyle(
+                fontSize: 12.5,
+                color: color,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

@@ -46,3 +46,6 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Output of `flutter test` in packages/
+/packages/*/build/

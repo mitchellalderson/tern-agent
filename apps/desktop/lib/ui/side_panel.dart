@@ -187,6 +187,14 @@ class SidePanel extends StatelessWidget {
                   _Stat('Output', formatTokens(usage.outputTokens)),
                   if (usage.cacheReadTokens > 0)
                     _Stat('Cache read', formatTokens(usage.cacheReadTokens)),
+                  if ((usage.contextTokens, usage.contextWindow) case (
+                    final used?,
+                    final window?,
+                  ))
+                    _Stat(
+                      'Context',
+                      '${formatTokens(used)} / ${formatTokens(window)}',
+                    ),
                 ],
                 const SizedBox(height: 22),
                 ToolsSection(store: store),

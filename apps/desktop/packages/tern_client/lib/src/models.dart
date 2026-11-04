@@ -327,6 +327,9 @@ class Usage {
     this.outputTokens = 0,
     this.cacheReadTokens = 0,
     this.cacheWriteTokens = 0,
+    this.contextTokens,
+    this.contextWindow,
+    this.compactAt,
   });
 
   factory Usage.fromJson(Json j) => Usage(
@@ -334,12 +337,24 @@ class Usage {
     outputTokens: j['output_tokens'] as int? ?? 0,
     cacheReadTokens: j['cache_read_tokens'] as int? ?? 0,
     cacheWriteTokens: j['cache_write_tokens'] as int? ?? 0,
+    contextTokens: j['context_tokens'] as int?,
+    contextWindow: j['context_window'] as int?,
+    compactAt: j['compact_at'] as int?,
   );
 
   final int inputTokens;
   final int outputTokens;
   final int cacheReadTokens;
   final int cacheWriteTokens;
+
+  /// How full the context was at the latest model call, out of
+  /// [contextWindow]; only from `GET /v1/sessions/{id}/usage`, and absent
+  /// before the first call or from an older daemon.
+  final int? contextTokens;
+  final int? contextWindow;
+
+  /// Where the agent starts summarizing older messages.
+  final int? compactAt;
 
   int get total =>
       inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;

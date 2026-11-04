@@ -302,6 +302,8 @@ class TernStore extends ChangeNotifier {
       changed = _onChildEvent(e, session) || changed;
     } else if (e is RunFinished) {
       unawaited(_afterRun(session, e));
+    } else if (e is UsageEvent) {
+      unawaited(_refreshUsage(session));
     }
     if (e is ApprovalRequested) _notifyApproval(e.approval);
     if (e is SecretRequested) _notifySecret(e.request, session);
@@ -464,6 +466,16 @@ class TernStore extends ChangeNotifier {
       notifyListeners();
     } on TernException {
       // The event stream will report the connection problem.
+    }
+  }
+
+  /// After each model call, so the context meter moves during a run.
+  Future<void> _refreshUsage(String session) async {
+    try {
+      usage[session] = await client.usage(session);
+      notifyListeners();
+    } on TernException {
+      // Refreshed again when the run finishes.
     }
   }
 

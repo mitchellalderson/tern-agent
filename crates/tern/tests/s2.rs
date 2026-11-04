@@ -240,6 +240,11 @@ async fn the_api_shows_sub_agents_their_events_and_their_approvals() {
     .await;
     let n = |v: &Value| v["input_tokens"].as_u64().unwrap();
     assert!(n(&tree) > n(&own), "{own} {tree}");
+    // The context meter: the parent's last call against its window.
+    let ctx = own["context_tokens"].as_u64().unwrap();
+    let window = own["context_window"].as_u64().unwrap();
+    assert!(ctx > 0 && ctx <= n(&own), "{own}");
+    assert!(own["compact_at"].as_u64().unwrap() < window, "{own}");
 
     // Only running sub-agents take messages.
     let (status, body) = post(

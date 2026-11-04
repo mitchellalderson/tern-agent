@@ -562,6 +562,30 @@ impl Store {
         Ok((row.0 as u64, row.1 as u64, row.2 as u64, row.3 as u64))
     }
 
+    /// How full the context was at the session's latest model call: that
+    /// run's `provider:model` and the tokens it sent plus the reply (which
+    /// the next call carries). `None` before the first call.
+    pub fn session_context(&self, session_id: &str) -> Result<Option<(Option<String>, u64)>> {
+        let conn = self.conn()?;
+        let row = conn
+            .query_row(
+                "SELECT r.model,
+                   COALESCE(json_extract(s.usage_json, '$.input_tokens'), 0)
+                   + COALESCE(json_extract(s.usage_json, '$.cache_read_tokens'), 0)
+                   + COALESCE(json_extract(s.usage_json, '$.cache_write_tokens'), 0)
+                   + COALESCE(json_extract(s.usage_json, '$.output_tokens'), 0)
+                 FROM steps s JOIN runs r ON r.id = s.run_id
+                 WHERE r.session_id = ?1 AND r.parent_run_id IS NULL
+                   AND s.kind = 'llm' AND s.usage_json IS NOT NULL
+                 ORDER BY s.finished_at DESC, s.idx DESC
+                 LIMIT 1",
+                [session_id],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(model, tokens)| (model, tokens as u64)))
+    }
+
     // ---- kv ----
 
     pub fn kv_get(&self, namespace: &str, key: &str) -> Result<Option<String>> {

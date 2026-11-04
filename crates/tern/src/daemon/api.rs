@@ -18,7 +18,7 @@
 //! | GET | `/v1/sessions[?source=]` | recent sessions; sub-agent sessions only with `?source=subagent` |
 //! | GET | `/v1/sessions/{id}` | a session and its messages |
 //! | PUT | `/v1/sessions/{id}/model` | set `{model}` |
-//! | GET | `/v1/sessions/{id}/usage[?include=subagents]` | token usage (with sub-agents': the run trees) |
+//! | GET | `/v1/sessions/{id}/usage[?include=subagents]` | token usage (with sub-agents': the run trees) and how full the context is |
 //! | GET | `/v1/sessions/{id}/subagents` | every sub-agent under the session's runs (`api_subagents.rs`) |
 //! | GET | `/v1/sessions/{id}/runs[?include=subagents]` | runs, with the flag their sub-agent runs (`api_runs.rs`) |
 //! | GET | `/v1/events` | Server-Sent Events: agent events and approval requests |
@@ -59,6 +59,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tern_core::agent::RunOutcome;
 use tern_core::approval::Decision;
+use tern_core::config::ModelRef;
 use tern_core::types::{ContentBlock, Usage};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
@@ -516,22 +517,47 @@ impl Include {
     }
 }
 
+/// A session's token totals, plus how full its context was at the latest
+/// model call (absent before the first).
+#[derive(Serialize, Deserialize)]
+pub struct SessionUsage {
+    #[serde(flatten)]
+    pub usage: Usage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// Where the agent starts summarizing older messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_at: Option<u64>,
+}
+
 async fn usage(
     State(m): State<Shared>,
     UrlPath(id): UrlPath<String>,
     Query(q): Query<Include>,
-) -> ApiResult<Usage> {
+) -> ApiResult<SessionUsage> {
     let (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) = if q.subagents() {
         m.rt.store.session_tree_usage(&id)
     } else {
         m.rt.store.session_usage(&id)
     }
     .map_err(internal)?;
-    Ok(Json(Usage {
-        input_tokens,
-        output_tokens,
-        cache_read_tokens,
-        cache_write_tokens,
+    let context = m.rt.store.session_context(&id).map_err(internal)?;
+    let window = context
+        .as_ref()
+        .and_then(|(model, _)| model.as_deref()?.parse::<ModelRef>().ok())
+        .map(|model| m.rt.agent.context_window(&model.provider));
+    Ok(Json(SessionUsage {
+        usage: Usage {
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        },
+        context_tokens: context.map(|(_, tokens)| tokens),
+        context_window: window,
+        compact_at: window.map(|w| (w as f64 * tern_core::compaction::THRESHOLD) as u64),
     }))
 }
 
