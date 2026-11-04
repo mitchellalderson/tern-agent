@@ -8,6 +8,7 @@ mod devices_cmd;
 mod doctor;
 mod gateway_cmd;
 mod grants_cmd;
+mod hooks_cmd;
 mod inspect;
 mod lifecycle;
 mod logging;
@@ -181,6 +182,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Some(Command::Outbox { command }) => outbox_cmd::run(&home, command),
+        Some(Command::Hooks { command }) => hooks_cmd::run(&home, command),
         Some(Command::Grants { command }) => grants_cmd::run(&home, command),
         Some(Command::Runs { command }) => {
             match command {

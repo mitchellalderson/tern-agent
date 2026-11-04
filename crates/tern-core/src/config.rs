@@ -47,6 +47,7 @@ pub struct Config {
     pub gateway: GatewayConfig,
     pub mcp: McpConfig,
     pub api: ApiConfig,
+    pub webhooks: WebhooksConfig,
     pub subagents: SubagentsConfig,
     pub schedules: SchedulesConfig,
     pub memory: crate::memory::MemoryConfig,
@@ -128,6 +129,7 @@ impl Default for Config {
             gateway: GatewayConfig::default(),
             mcp: McpConfig::default(),
             api: ApiConfig::default(),
+            webhooks: WebhooksConfig::default(),
             subagents: SubagentsConfig::default(),
             schedules: SchedulesConfig::default(),
             memory: crate::memory::MemoryConfig::default(),
@@ -551,6 +553,42 @@ pub enum TlsMode {
     Files,
     /// Plain HTTP: only behind a TLS-terminating proxy on loopback.
     Off,
+}
+
+/// `[webhooks]`: the listener webhook routines are reached on (tooling
+/// spec §3.1, T1c). Its own port, never the device API's: the two take
+/// different credentials and are exposed to different networks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebhooksConfig {
+    /// `"tcp://host:port"` listeners. Empty (the default): no webhook can
+    /// reach this core; `tern hooks fire` still works locally.
+    pub listen: Vec<String>,
+    /// TLS on those listeners; unset = `[api] tls`, with its certificate
+    /// files. `off` needs loopback listeners and `[api] trust_proxy`.
+    pub tls: Option<TlsMode>,
+    /// The URL senders use, shown with each hook's path. Defaults to the
+    /// first listener (this host's name for `0.0.0.0`).
+    pub public_url: Option<String>,
+    /// Largest body accepted, in KB.
+    pub max_body_kb: u64,
+    /// Deliveries one routine accepts per minute; more get 429.
+    pub per_minute: u32,
+    /// How far a signed timestamp (`X-Tern-Signature: t=`) may be from now.
+    pub tolerance_secs: u64,
+}
+
+impl Default for WebhooksConfig {
+    fn default() -> Self {
+        Self {
+            listen: Vec::new(),
+            tls: None,
+            public_url: None,
+            max_body_kb: 256,
+            per_minute: 30,
+            tolerance_secs: 300,
+        }
+    }
 }
 
 /// `[subagents]`: delegation to child runs (docs/subagents-design.md §1.6).

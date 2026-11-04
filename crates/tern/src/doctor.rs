@@ -256,6 +256,9 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
     r.section("Remote access");
     check_listeners(&mut r, &config);
 
+    r.section("Webhooks");
+    check_webhooks(&mut r, &runtime, home, &config, args.offline);
+
     r.section("Sub-agents");
     check_subagents(&mut r, &config);
 
@@ -872,6 +875,115 @@ fn check_listeners(r: &mut Report, config: &tern_core::Config) {
             "the API is reachable over TCP and sandbox.backend = \"host\": approved shell commands from paired devices run on this machine",
             Some("Consider sandbox.backend = \"docker\", or pair phones with --scope read."),
         );
+    }
+}
+
+/// `[webhooks]` (T1c): whether a sender out there can reach this core's
+/// webhook routines.
+fn check_webhooks(
+    r: &mut Report,
+    runtime: &tokio::runtime::Runtime,
+    home: &TernHome,
+    config: &Config,
+    offline: bool,
+) {
+    let path = home.db_path();
+    let active = path
+        .exists()
+        .then(|| Store::open(&path).ok())
+        .flatten()
+        .and_then(|s| s.webhooks().ok())
+        .map_or(0, |w| w.iter().filter(|w| w.secret.is_some()).count());
+    let addrs = match crate::daemon::hooks::check(config) {
+        Ok(a) => a,
+        Err(e) => return r.check(Status::Fail, format!("{e:#}"), None),
+    };
+    if addrs.is_empty() {
+        if active > 0 {
+            r.check(
+                Status::Warn,
+                format!("{active} webhook routine(s), but no [webhooks] listener: senders can't reach them"),
+                Some("Add [webhooks] listen = [\"tcp://127.0.0.1:8712\"] behind a tunnel or reverse proxy, and set webhooks.public_url."),
+            );
+        } else {
+            r.check(
+                Status::Info,
+                "off (no [webhooks] listener); `tern hooks fire` works locally",
+                None,
+            );
+        }
+        return;
+    }
+    let tls = config.webhooks.tls.unwrap_or(config.api.tls);
+    let list: Vec<String> = addrs.iter().map(|a| format!("tcp://{a}")).collect();
+    r.check(
+        Status::Ok,
+        format!(
+            "listening on {} ({tls:?} TLS), {active} active hook(s)",
+            list.join(", ")
+        ),
+        None,
+    );
+    for addr in &addrs {
+        let mut local = *addr;
+        if local.ip().is_unspecified() {
+            local.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+        }
+        if std::net::TcpStream::connect_timeout(&local, std::time::Duration::from_secs(1)).is_err()
+        {
+            r.check(
+                Status::Warn,
+                format!("nothing answers on tcp://{local}"),
+                Some("Is the daemon running? `tern start`."),
+            );
+        }
+    }
+    let Some(public) = &config.webhooks.public_url else {
+        if addrs.iter().all(|a| a.ip().is_loopback()) {
+            r.check(
+                Status::Warn,
+                "the listener is on loopback and no public_url is set: only this machine can deliver",
+                Some("Put a tunnel (Cloudflare Tunnel, Tailscale Funnel) or a reverse proxy in front,\nand set webhooks.public_url to its address."),
+            );
+        } else if let Some(base) = crate::daemon::hooks::base_url(config) {
+            r.check(Status::Info, format!("senders use {base}"), None);
+        }
+        return;
+    };
+    if offline {
+        r.check(
+            Status::Info,
+            format!("public URL {public} (not probed: --offline)"),
+            None,
+        );
+        return;
+    }
+    let probe = format!("{}/healthz", public.trim_end_matches('/'));
+    let answer = runtime.block_on(async {
+        let resp = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()?
+            .get(&probe)
+            .send()
+            .await?;
+        resp.text().await
+    });
+    match answer {
+        Ok(t) if t.trim() == "tern webhooks" => r.check(
+            Status::Ok,
+            format!("reachable from outside at {public}"),
+            None,
+        ),
+        Ok(_) => r.check(
+            Status::Warn,
+            format!("{public} answered, but not as this core's webhook listener"),
+            Some("Check that the tunnel or proxy points at the [webhooks] listener, not the API."),
+        ),
+        Err(e) => r.check(
+            Status::Warn,
+            format!("{public} is not reachable: {e}"),
+            Some("Senders will fail too. Check the tunnel, proxy or DNS, and that the certificate is valid."),
+        ),
     }
 }
 

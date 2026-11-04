@@ -88,6 +88,13 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<OutboxCommand>,
     },
+    /// Webhook routines: create one (its URL and secret are shown once),
+    /// rotate or revoke its secret, or fire it locally.
+    #[command(alias = "hook")]
+    Hooks {
+        #[command(subcommand)]
+        command: Option<HooksCommand>,
+    },
     /// Manage Luau connectors.
     Connectors {
         #[command(subcommand)]
@@ -394,6 +401,54 @@ pub enum OutboxCommand {
         id: i64,
         #[arg(long)]
         note: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HooksCommand {
+    /// Every webhook routine's URL, auth and state (never secrets).
+    List,
+    /// A routine that runs `prompt` on each delivery, with the event
+    /// attached as untrusted input.
+    Create {
+        prompt: String,
+        /// `hmac` (default: senders sign the body) or `bearer` (senders
+        /// send the secret itself).
+        #[arg(long)]
+        auth: Option<String>,
+        /// The agent whose job it is (id or slug).
+        #[arg(long)]
+        agent: Option<String>,
+        /// Where results are posted (channel slug or id).
+        #[arg(long)]
+        channel: Option<String>,
+        /// Luau run on each event first: false drops it with no model
+        /// call; a table replaces it (`event.body`, `event.headers`).
+        #[arg(long)]
+        gate: Option<String>,
+        /// The active connector whose hosts and tools the gate gets.
+        #[arg(long)]
+        gate_connector: Option<String>,
+        /// silent, digest, notify or interrupt.
+        #[arg(long)]
+        initiative: Option<String>,
+    },
+    /// A new secret, at once; the old one stops working.
+    Rotate {
+        id: String,
+        #[arg(long)]
+        auth: Option<String>,
+    },
+    /// Stop the URL working (until `rotate`).
+    Revoke { id: String },
+    /// Deliver a body locally, as a sender would (no secret: you are the
+    /// owner). Reads `--body`, else `--file`, else `{}`.
+    Fire {
+        id: String,
+        #[arg(long)]
+        body: Option<String>,
+        #[arg(long, conflicts_with = "body")]
+        file: Option<std::path::PathBuf>,
     },
 }
 

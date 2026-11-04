@@ -18,3 +18,4 @@ export 'src/secret_requests.dart';
 export 'src/sse.dart';
 export 'src/subagents.dart';
 export 'src/tools.dart';
+export 'src/webhooks.dart';

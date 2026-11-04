@@ -28,19 +28,24 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The `tcp://host:port` entries of `[api] listen`.
 pub fn tcp_addrs(api: &ApiConfig) -> anyhow::Result<Vec<SocketAddr>> {
+    parse_tcp(&api.listen, "api.listen")
+}
+
+/// `tcp://host:port` entries (and `unix`, skipped) of setting `key`.
+pub fn parse_tcp(entries: &[String], key: &str) -> anyhow::Result<Vec<SocketAddr>> {
     let mut out = Vec::new();
-    for entry in &api.listen {
+    for entry in entries {
         if entry == "unix" {
             continue;
         }
         let Some(hostport) = entry.strip_prefix("tcp://") else {
-            bail!("api.listen entry {entry:?} must be \"unix\" or \"tcp://host:port\"");
+            bail!("{key} entry {entry:?} must be \"unix\" or \"tcp://host:port\"");
         };
         let addr = hostport
             .to_socket_addrs()
-            .with_context(|| format!("api.listen entry {entry:?}"))?
+            .with_context(|| format!("{key} entry {entry:?}"))?
             .next()
-            .with_context(|| format!("api.listen entry {entry:?} resolves to nothing"))?;
+            .with_context(|| format!("{key} entry {entry:?} resolves to nothing"))?;
         out.push(addr);
     }
     Ok(out)
@@ -117,7 +122,11 @@ pub struct Accepted {
 }
 
 impl Accepted {
-    fn spawn(tcp: TcpListener, tls: Option<TlsAcceptor>, shutdown: CancellationToken) -> Self {
+    pub(super) fn spawn(
+        tcp: TcpListener,
+        tls: Option<TlsAcceptor>,
+        shutdown: CancellationToken,
+    ) -> Self {
         let local = tcp
             .local_addr()
             .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));

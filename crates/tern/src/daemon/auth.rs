@@ -59,6 +59,8 @@ pub const FEATURES: &[&str] = &[
     "agents",
     // `/v1/outbox` and `outbox_changed` events (tooling spec §5.2).
     "outbox",
+    // `/v1/webhooks`: webhook routines, their secrets and local fires (T1c).
+    "webhooks",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";
@@ -115,6 +117,8 @@ const OWNER_ONLY: &[&str] = &[
     "/v1/shutdown",
     // Moving conversations between channels rearranges what everyone sees.
     "/v1/channels/move",
+    // Webhook secrets let the internet start (tainted) runs.
+    "/v1/webhooks",
 ];
 
 /// Paths a `chat` device may change. Any other non-GET route is owner-only,
@@ -188,7 +192,7 @@ fn deny(status: StatusCode, msg: &str) -> Response {
 /// peer, the last `X-Forwarded-For` entry. A proxy appends the address it
 /// saw to whatever the client sent, so the first entry is the client's own
 /// claim and any value there could be made up per request.
-fn client_ip(peer: SocketAddr, headers: &HeaderMap, trust_proxy: bool) -> IpAddr {
+pub(super) fn client_ip(peer: SocketAddr, headers: &HeaderMap, trust_proxy: bool) -> IpAddr {
     if trust_proxy
         && peer.ip().is_loopback()
         && let Some(ip) = headers
@@ -234,6 +238,15 @@ pub async fn require_auth(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim);
+    if token.is_some_and(|t| t.starts_with(super::hooks::SECRET_PREFIX)) {
+        // W6: a webhook secret is for its hook's path on the webhook
+        // listener, never a credential for the API.
+        tracing::warn!(target: "audit", %ip, %path, "webhook secret sent to the API; refused");
+        return deny(
+            StatusCode::UNAUTHORIZED,
+            "webhook secrets are not accepted on the API; use a device token",
+        );
+    }
     let Some(token) = token.filter(|t| t.starts_with(TOKEN_PREFIX)) else {
         return deny(
             StatusCode::UNAUTHORIZED,
@@ -318,15 +331,15 @@ impl Streams {
     }
 }
 
-/// A sliding-window limit per IP.
-struct RateLimit {
+/// A sliding-window limit per key (an IP, by default).
+pub(super) struct RateLimit<K = IpAddr> {
     max: usize,
     window: Duration,
-    hits: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+    hits: Mutex<HashMap<K, VecDeque<Instant>>>,
 }
 
-impl RateLimit {
-    fn new(max: usize, window: Duration) -> Self {
+impl<K: std::hash::Hash + Eq> RateLimit<K> {
+    pub(super) fn new(max: usize, window: Duration) -> Self {
         Self {
             max,
             window,
@@ -334,7 +347,24 @@ impl RateLimit {
         }
     }
 
-    fn allow(&self, ip: IpAddr) -> bool {
+    pub(super) fn allow(&self, key: K) -> bool {
+        self.allow_up_to(key, self.max)
+    }
+
+    /// Whether `key` has used up its window, without counting a hit.
+    pub(super) fn exceeded(&self, key: &K) -> bool {
+        let now = Instant::now();
+        let hits = self.hits.lock().unwrap_or_else(|p| p.into_inner());
+        hits.get(key).is_some_and(|q| {
+            q.iter()
+                .filter(|t| now.duration_since(**t) < self.window)
+                .count()
+                >= self.max
+        })
+    }
+
+    /// [`Self::allow`] with a limit that may change between calls.
+    pub(super) fn allow_up_to(&self, key: K, max: usize) -> bool {
         let now = Instant::now();
         let mut hits = self.hits.lock().unwrap_or_else(|p| p.into_inner());
         hits.retain(|_, q| {
@@ -346,8 +376,8 @@ impl RateLimit {
             }
             !q.is_empty()
         });
-        let q = hits.entry(ip).or_default();
-        if q.len() >= self.max {
+        let q = hits.entry(key).or_default();
+        if q.len() >= max {
             return false;
         }
         q.push_back(now);
@@ -361,13 +391,18 @@ const BASE62: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 
 /// `tern_dev_` and 43 base62 characters (256 bits) from the OS CSPRNG.
 pub fn new_token() -> anyhow::Result<String> {
-    let mut out = String::from(TOKEN_PREFIX);
+    new_secret(TOKEN_PREFIX)
+}
+
+/// `prefix` and 43 base62 characters (256 bits) from the OS CSPRNG.
+pub fn new_secret(prefix: &str) -> anyhow::Result<String> {
+    let mut out = String::from(prefix);
     let mut buf = [0u8; 64];
-    while out.len() < TOKEN_PREFIX.len() + 43 {
+    while out.len() < prefix.len() + 43 {
         aws_lc_rs::rand::fill(&mut buf).map_err(|_| anyhow::anyhow!("no randomness"))?;
         // 248 = 4 × 62: rejecting the rest keeps every symbol equally likely.
         for b in buf.iter().filter(|b| **b < 248) {
-            if out.len() == TOKEN_PREFIX.len() + 43 {
+            if out.len() == prefix.len() + 43 {
                 break;
             }
             out.push(BASE62[usize::from(*b % 62)] as char);
@@ -746,6 +781,9 @@ mod tests {
         );
         assert_eq!(required_scope(&get, "/v1/secrets"), Scope::Owner);
         assert_eq!(required_scope(&post, "/v1/shutdown"), Scope::Owner);
+        // Webhook secrets let the internet start runs: owner-only to read too.
+        assert_eq!(required_scope(&get, "/v1/webhooks"), Scope::Owner);
+        assert_eq!(required_scope(&post, "/v1/webhooks/x/rotate"), Scope::Owner);
         assert_eq!(required_scope(&get, "/v1/status"), Scope::Read);
         assert_eq!(required_scope(&get, "/v1/mcp/github"), Scope::Read);
         assert_eq!(required_scope(&post, "/v1/mcp"), Scope::Owner);

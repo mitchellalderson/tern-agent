@@ -35,7 +35,7 @@ pub struct ScheduleRow {
     /// The agent whose job it is; `None` = the default agent (agent
     /// profiles §4). Its session belongs to the same agent.
     pub agent_id: Option<String>,
-    /// What starts it (T1b): `cron`, `once` or `watch`; empty = `cron`.
+    /// What starts it (T1b): `cron`, `once`, `watch` or `webhook`; empty = `cron`.
     pub trigger: String,
     /// `<connector>.<watch>` for a watch trigger.
     pub watch: Option<String>,

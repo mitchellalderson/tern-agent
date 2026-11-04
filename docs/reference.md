@@ -64,6 +64,7 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
 | [`tern grants`](#new-sites-in-a-tainted-run) | The "always" grants approvals have recorded (commands, tools, sites), and removing them. |
 | [`tern outbox`](#outbox) | Writes waiting for your approval: list, show, approve (optionally edited), reject. |
+| [`tern hooks`](#webhooks) | Webhook routines: create (URL and secret shown once), list, rotate, revoke, fire locally. |
 | [`tern connectors`](#tern-connectors) | List or validate Luau connectors. |
 | [`tern setup`](#tern-setup) | Connect a model provider: paste a key, pick a model. |
 | [`tern providers`](#tern-providers) | List, add, or remove model providers (for scripts). |
@@ -302,7 +303,7 @@ tern config set mcp.servers.github.args '["stdio"]'
 tern doctor [--offline]
 ```
 
-Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; every model in each fallback chain (configured provider, and listed by it when online); the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; each active Luau connector (a warning for one that reads secret values itself with `ctx.secret`); and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
+Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; every model in each fallback chain (configured provider, and listed by it when online); the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; the [webhook](#webhooks) listener and whether senders can reach it; each active Luau connector (a warning for one that reads secret values itself with `ctx.secret`); and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
 
 It exits `1` if anything failed, `0` otherwise (warnings are things not set up yet). It is read-only and doesn't create `~/.tern`.
 
@@ -472,7 +473,7 @@ The agent creates schedules with `schedule_create` and changes them with `schedu
 
 A schedule is a **routine**: a prompt with a trigger. The tools and the API keep their `schedule_*` and `/v1/schedules` names; schedules from before routines are cron routines that push every result, as they did.
 
-- **Triggers.** `cron` (repeating), `at` (once, a local `"YYYY-MM-DD HH:MM"`: reminders; it turns itself off after running, and a new `at` turns it on again), or `watch`.
+- **Triggers.** `cron` (repeating), `at` (once, a local `"YYYY-MM-DD HH:MM"`: reminders; it turns itself off after running, and a new `at` turns it on again), `watch`, or a [webhook](#webhooks).
 - **Watches.** A connector can declare watches next to its tools:
 
   ```lua
@@ -489,7 +490,7 @@ A schedule is a **routine**: a prompt with a trigger. The tools and the API keep
   ```
 
   A routine with `watch = "github.review_requests"` (and `every`, at least `1m`, default the watch's own) is polled by the daemon. **A poll that finds nothing costs no tokens**: no model is called. Each new event starts an ordinary run in the routine's session with the event attached as untrusted input, so the run is [tainted](#taint) (its writes ask, or wait in the outbox). Events are deduplicated by their `id` (or their content), and the cursor is saved with them, so a restart or an overlapping poll never starts an event twice. The first poll only records what is already there, unless `backfill: true`; events marked `origin = "self"` are skipped unless `include_self: true`; more than `max_events_per_poll` new events at once share one run. A watch runs in the connector's sandbox with its hosts and secrets, GET only (`read_via_post = true` allows POST), and only for an active, approved connector. Creating one tells you its interval and the hosts it reaches. No watch is on until you (or the agent, with your approval) create one.
-- **Gates.** A cron or once routine can have a `gate`: Luau run before each slot, at no token cost. False skips that run. An expression (`os.date("*t").wday ~= 1`) or statements with `return`; it gets `ctx` and `routine` (`id`, `last_run_at`, `now`), and with `gate_connector` that connector's hosts (GET only), secrets and tools as `connector` (`#connector.tools.unread.run(ctx, {}) > 0`). A gate that fails lets the run go ahead.
+- **Gates.** A cron, once or webhook routine can have a `gate`: Luau run before each slot, at no token cost. False skips that run. An expression (`os.date("*t").wday ~= 1`) or statements with `return`; it gets `ctx` and `routine` (`id`, `last_run_at`, `now`), and with `gate_connector` that connector's hosts (GET only), secrets and tools as `connector` (`#connector.tools.unread.run(ctx, {}) > 0`). A gate that fails lets the run go ahead.
 - **`last_check`** in `GET /v1/schedules` (and the app's tooltip) says what the last poll or gate found.
 - **Initiative.** Every result is posted to the routine's channel; its initiative decides whether it is also sent to its chat (`deliver_to`):
 
@@ -502,7 +503,38 @@ A schedule is a **routine**: a prompt with a trigger. The tools and the API keep
 
   Set it per routine (`initiative`, `"default"` or `null` for the default), or for all with `schedules.initiative`. The **dial** (`schedules.initiative_dial`, or `PUT /v1/initiative {"dial": "vacation"}`) moves every routine one level `quieter` or `louder`, or makes everything silent on `vacation`; `/v1/status` reports it.
 - **API**: `POST /v1/schedules` takes one of `cron`, `at` or `watch` (+ `every`, `backfill`, `include_self`), and `gate`, `gate_connector`, `initiative`; `PATCH` changes any of them. The view adds `trigger`, `at`, `watch`, `every_secs`, `last_check`, `gate`, `gate_connector` and `initiative` (each absent when unset).
-- **In the desktop app** the routine editor has Repeating / Once / On events, an initiative menu, and a gate under "Quiet hours and limits".
+- **In the desktop app** the routine editor has Repeating / Once / On events / Webhook, an initiative menu, and a gate under "Quiet hours and limits".
+
+### Webhooks
+
+A webhook routine runs its prompt each time something POSTs to its URL: a GitHub push, a form, a script. It's the one thing the internet can call, so it is fenced off:
+
+- **Its own listener.** Deliveries arrive only on `[webhooks] listen`, a port separate from the API's, serving nothing but `POST /v1/hooks/<routine id>` and `GET /healthz`. It's off by default; without it, `tern hooks fire` still delivers locally. Put it behind a tunnel (Cloudflare Tunnel, Tailscale Funnel) or reverse proxy and set `public_url`, so you expose webhooks without exposing the API.
+
+  ```toml
+  [webhooks]
+  listen = ["tcp://127.0.0.1:8712"]
+  tls = "off"                         # the tunnel or proxy terminates TLS; needs [api] trust_proxy = true
+  public_url = "https://hooks.example.com"
+  ```
+
+  | Key | Default | |
+  |---|---|---|
+  | `webhooks.listen` | none | `tcp://host:port` listeners. |
+  | `webhooks.tls` | `[api] tls` | `auto`, `files` (with `[api]`'s `tls_cert`/`tls_key`) or `off` (loopback listeners behind a proxy, with `api.trust_proxy`). |
+  | `webhooks.public_url` | the first listener | The base of each hook's URL. |
+  | `webhooks.max_body_kb` | `256` | Larger bodies get 413. |
+  | `webhooks.per_minute` | `30` | Deliveries one routine accepts per minute; more get 429. |
+  | `webhooks.tolerance_secs` | `300` | How far a signed timestamp may be from now. |
+- **Its own secret.** Each routine has a secret (`tern_whk_…`), shown once when it's made or rotated. With `auth = "hmac"` (the default) senders sign the body with HMAC-SHA256: GitHub's `X-Hub-Signature-256: sha256=<hex>`, or `X-Tern-Signature: t=<unix seconds>,v1=<hex of HMAC("<t>.<body>")>`, whose timestamp must be within `tolerance_secs`. With `auth = "bearer"` they send `Authorization: Bearer <secret>`. **Device tokens are refused on webhook paths, and webhook secrets on the API**, whatever else the request carries. Management (`/v1/webhooks`) is owner-only.
+- **Refusals**: an unknown or revoked hook 404, a body over `max_body_kb` 413, a missing or bad signature or a stale timestamp 401, over `per_minute` 429, a paused routine 409. One address with 20 failures in a minute gets 429 until it passes.
+- **Each delivery once.** A delivery is keyed by a hash of what was signed (the body, plus the timestamp for `X-Tern-Signature`), so a re-delivery or a captured request replayed starts nothing (`200 {"status": "duplicate"}`). Identical bodies count as one event under `X-Hub-Signature-256` and `bearer`.
+- **Untrusted.** The routine sees the event as `{"headers": {…}, "body": …}`: the body (parsed as JSON when it is), and only the headers that name the event (`content-type`, `user-agent`, `*-event`, `*-event-type`, `*-delivery`; never credentials). Its run starts [tainted](#taint) ("started by a webhook") with the event wrapped as untrusted, so writes ask or wait in the outbox. Payloads over 16 KB are cut.
+- **Gates filter first.** A gate sees `event` (and `routine`): false drops the delivery with no model call (`200 {"status": "ignored"}`), `true` keeps it, and a table replaces it, e.g. `event.headers['x-github-event'] == 'issues' and event.body.action == 'opened'`, or `return { title = event.body.issue.title }` to send the model only that.
+- **CLI**: `tern hooks create "<prompt>" [--auth hmac|bearer] [--gate …] [--gate-connector …] [--agent …] [--channel …] [--initiative …]` prints the URL and secret; `tern hooks list`, `rotate <id> [--auth]` (the old secret stops at once; also revives a revoked hook), `revoke <id>`, and `fire <id> [--body JSON | --file path]` (a local delivery: no secret, same gate, dedup and taint). `tern hook` works too.
+- **API** (`webhooks` in `/v1/health`, owner only): `GET /v1/webhooks`, `POST /v1/webhooks` (the fields of `POST /v1/schedules` without a trigger, plus `auth`) → `{schedule, webhook}` with the secret, `POST /v1/webhooks/{id}/rotate {auth?}`, `DELETE /v1/webhooks/{id}`, `POST /v1/webhooks/{id}/fire`. The prompt, gate and limits change through `PATCH /v1/schedules/{id}`; giving the routine another trigger there revokes its secret. The agent's `schedule_*` tools can't make webhook routines (that would put a secret in its context).
+- **Desktop**: **Webhook** in a new routine's editor (signed or secret-in-header); the secret is shown once with copy buttons. Editing one shows its URL, **Rotate secret…** and **Revoke**.
+- `tern doctor` says whether a webhook listener is on, whether it answers, whether it's loopback-only without a `public_url`, and (unless `--offline`) whether `public_url/healthz` reaches this core from outside.
 
 ## Channels
 

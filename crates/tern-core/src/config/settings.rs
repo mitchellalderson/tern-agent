@@ -275,6 +275,28 @@ fn meta(key: &str) -> Meta {
             risky: |v| v == &Value::Bool(true),
             ..m
         },
+        "webhooks.listen" => Meta {
+            security: Some(
+                "A listener lets anyone who can reach it knock; each routine still needs its own \
+                 secret. Webhook runs are tainted.",
+            ),
+            risky: |v| v.as_array().is_some_and(|a| !a.is_empty()),
+            ..m
+        },
+        "webhooks.tls" => Meta {
+            kind: Some(Kind::Choice),
+            choices: &["auto", "files", "off"],
+            risky: |v| v == "off",
+            ..m
+        },
+        "webhooks.public_url" => Meta {
+            kind: Some(Kind::Text),
+            ..m
+        },
+        "webhooks.max_body_kb" | "webhooks.per_minute" | "webhooks.tolerance_secs" => Meta {
+            live: true,
+            ..at_least(1.0)
+        },
         "api.remote_mcp_stdio" => Meta {
             live: true,
             security: Some(
@@ -728,6 +750,7 @@ mod tests {
                 "outbox",
                 "taint",
                 "connectors",
+                "webhooks",
                 "api"
             ]
         );

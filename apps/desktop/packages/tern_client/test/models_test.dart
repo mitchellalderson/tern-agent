@@ -281,4 +281,18 @@ void main() {
     expect(r.stopping, isFalse);
     expect(r.runs.single.title, 'Summarize the Q3 report');
   });
+
+  test('a webhook decodes as the daemon sends it (T1c)', () {
+    // Checked against the Rust API in api_webhooks.rs.
+    final w = Webhook.fromJson(
+      jsonDecode(File('test/fixtures/webhook.json').readAsStringSync()) as Json,
+    );
+    expect(w.routineId, 'sch_7c1e9a3f0b2d4e5');
+    expect(w.url, 'https://hooks.example.com/v1/hooks/sch_7c1e9a3f0b2d4e5');
+    expect(w.active, isTrue);
+    expect(w.secret, startsWith('tern_whk_'));
+    expect(w.rotatedAt, isNull);
+    expect(w.lastDeliveryAt, isNotNull);
+    expect(w.howToSign, contains('X-Hub-Signature-256'));
+  });
 }

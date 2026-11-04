@@ -192,13 +192,21 @@ It costs nothing in tokens.
 and once routines. The tools and API keep their `schedule_*` names. Not built: `message` and `event` triggers,
 `max_catchup`, host-side self-origin detection; webhooks are T1c. See DECISIONS.md, T1b.
 
+**Status (T1c shipped, 2026-11-04).** `webhook` routines: deliveries arrive on a listener of their own
+(`[webhooks] listen`, off by default), not the API's, at `POST /v1/hooks/<routine-id>`, with a per-routine secret
+(HMAC: `X-Tern-Signature` with a signed timestamp, or GitHub's `X-Hub-Signature-256`; or bearer). Device tokens are
+refused there and webhook secrets on the API. Replays dedup on a hash of what was signed (in `routine_events`), the
+body is capped at 256 KB, deliveries are rate-limited per routine, and the gate filters or reshapes events before any
+model call. Runs start tainted ("started by a webhook"). Managed by `tern hooks`, owner-only `/v1/webhooks` and the
+desktop editor; `tern hooks fire` delivers locally; `doctor` probes reachability. See DECISIONS.md, T1c.
+
 ### 3.4 Where triggers need an always-on core
 
 | Trigger | Laptop (tier 1/2) | Server core (tier 3) | tern Cloud (tier 4) |
 |---|---|---|---|
 | cron, once | while awake; missed slots collapse into one run | ✓ | ✓ |
 | watch | while awake; catches up from the cursor | ✓ | ✓ |
-| webhook | ✗ (no listener by default; a `tern hook fire <id>` CLI exists for local scripts) | ✓ over the TLS listener | ✓, plus a stable public URL `hooks.tern.cloud/<id>` relayed to the core |
+| webhook | ✗ (no listener by default; `tern hooks fire <id>` delivers for local scripts) | ✓ over the webhook listener (`[webhooks] listen`, separate from the API's) | ✓, plus a stable public URL `hooks.tern.cloud/<id>` relayed to the core |
 | message | while the gateway runs | ✓ | ✓ |
 
 This table belongs in the UI: a routine that needs an always-on core says so when it's created. **This is the paid
@@ -1013,7 +1021,7 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 | **1. Quick wins** | Small changes to what exists. No new data model, no new protocols. Each item is days, not weeks. | **T0** effects on every tool, money-movement deny · **T1a** on today's schedules: `NO_REPLY`, quiet hours, per-schedule run caps and budget · **T5a** memory flush before compaction, capped `user.md`/`memory.md` · **T6a** provider fallback chains (done) · **T8a** `/v1/status`, `/v1/shutdown`, `tern start`/`stop`, `tern service install` with `SuccessfulExit = false`, "Quit tern completely" in the app (one-click stop for non-technical users, before the tray exists) · **T7a** browser via an MCP recipe (docs only; done) | S each | nothing |
 | **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests (done) · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles (done: T3a taint, then T3 the outbox and autonomy; the Tasks view is T6b) · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits (done) | L / M / S–M | Stage 1 (effects, budgets) |
 | **3. Organize and surface** | Make background work visible and tidy. Mostly UI plus straightforward store work. | **T2** channels, home, posts, reply-to-act, Telegram topics · **T6b** activity ledger with hash chain, Tasks view, `tern security audit` · **T8b** `tern tray` on macOS (helper bundle, notifications with actions, login items, quit escalation, `tern://` links) · **T5b** skill capture | M each | Stage 2 (routines, outbox) |
-| **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) · **T4b-ii** gateway connectors (ntfy, then Slack) | L | Stage 2 (taint before any external input); secret-requests spec built |
+| **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) (done) · **T4b-ii** gateway connectors (ntfy, then Slack) | L | Stage 2 (taint before any external input); secret-requests spec built |
 | **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` · **T6d** `tern mcp serve` · **T4c** OpenAPI-to-connector and recorded test fixtures · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
 | **6. Multiplayer** (later) | Several people with one agent: group rooms first, then members on one core, then hosted workspaces (§15) | **M0** Telegram, Slack and Discord group rooms with guests · **M1** members, per-member connections, approvals and memory · **M2** tern Cloud workspaces, invites, seats | M0 S–M, M1 L, M2 M | Stages 2–3 (taint, channels); M2 needs tern Cloud |
 
@@ -1059,7 +1067,9 @@ Order rationale by phase (the stages in §12.1 apply it):
 - T0 is small and everything else leans on effects.
 - T1 is the largest user-visible win.
 - T3 must land **before** watches on email or webhooks are enabled by default. Until then, `watch` and `webhook`
-  routines force `autonomy = "readonly"` unless the user overrides it.
+  routines force `autonomy = "readonly"` unless the user overrides it. (T3 has landed. T1c keeps the webhook
+  listener off by default and ships no webhook routine; their runs are tainted, so writes ask or go to the outbox
+  under the normal autonomy. See DECISIONS.md, T1c.)
 - T4a's OAuth unblocks Google, which is table stakes for briefs. Connections land in T4a, not later, because adding
   them after people have single-account secrets and grants means a second migration. T4a builds on the
   secret-requests spec (its `secret_request` is the fallback path) and should follow it.

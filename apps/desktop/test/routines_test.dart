@@ -42,6 +42,79 @@ class _FakeClient extends TernClient {
   }
 }
 
+class _HookClient extends _FakeClient {
+  final created = <({String prompt, String auth})>[];
+  var rotated = 0;
+  var revoked = 0;
+  var hook = Webhook(
+    routineId: 'h',
+    auth: 'hmac',
+    path: '/v1/hooks/h',
+    url: 'https://hooks.example.com/v1/hooks/h',
+    createdAt: DateTime(2026, 11, 4),
+  );
+
+  @override
+  Future<CreatedWebhook> createWebhook({
+    required String prompt,
+    String auth = 'hmac',
+    String? deliverTo,
+    ScheduleLimits? limits,
+    String? channel,
+    String? agent,
+    RoutineOptions? options,
+  }) async {
+    created.add((prompt: prompt, auth: auth));
+    return CreatedWebhook(
+      schedule: Schedule(
+        id: 'h',
+        cron: '',
+        prompt: prompt,
+        sessionId: 's',
+        enabled: true,
+        trigger: 'webhook',
+      ),
+      webhook: Webhook(
+        routineId: 'h',
+        auth: auth,
+        path: '/v1/hooks/h',
+        url: hook.url,
+        secret: 'tern_whk_first',
+        createdAt: DateTime(2026, 11, 4),
+      ),
+    );
+  }
+
+  @override
+  Future<List<Webhook>> webhooks() async => [hook];
+
+  @override
+  Future<Webhook> rotateWebhook(String id, {String? auth}) async {
+    rotated++;
+    return hook = Webhook(
+      routineId: id,
+      auth: hook.auth,
+      path: hook.path,
+      url: hook.url,
+      secret: 'tern_whk_second',
+      createdAt: hook.createdAt,
+    );
+  }
+
+  @override
+  Future<void> revokeWebhook(String id) async {
+    revoked++;
+    hook = Webhook(
+      routineId: id,
+      auth: hook.auth,
+      path: hook.path,
+      url: hook.url,
+      active: false,
+      createdAt: hook.createdAt,
+    );
+  }
+}
+
 final _tomorrow = () {
   final n = DateTime.now();
   return DateTime(n.year, n.month, n.day + 1);
@@ -221,5 +294,69 @@ void main() {
     );
     await tester.pump();
     expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
+  });
+
+  testWidgets('a webhook routine shows its secret once, rotates and revokes', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(700, 1600) * 2;
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final client = _HookClient();
+    final store = TernStore(client);
+
+    // New: "Webhook" needs no schedule, only the auth kind.
+    await tester.pumpWidget(_app(RoutineSheet(store: store)));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'Triage new issues');
+    await tester.tap(find.text('Webhook'));
+    await tester.pump();
+    await tester.tap(find.text('Secret in header'));
+    await tester.pump();
+    // A webhook routine can have a gate that sees the event.
+    expect(find.byKey(const Key('routine-gate')), findsNothing);
+    await tester.tap(find.text('Quiet hours and limits'));
+    await tester.pump();
+    expect(find.byKey(const Key('routine-gate')), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Create routine'));
+    await tester.pumpAndSettle();
+    expect(client.created.single, (
+      prompt: 'Triage new issues',
+      auth: 'bearer',
+    ));
+    expect(find.text('Webhook created'), findsOneWidget);
+    expect(find.text('tern_whk_first'), findsOneWidget);
+    expect(find.text('https://hooks.example.com/v1/hooks/h'), findsOneWidget);
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+
+    // Editing: the URL and its state, no trigger switch, rotate and revoke.
+    final hook = Schedule(
+      id: 'h',
+      cron: '',
+      prompt: 'Triage new issues',
+      sessionId: 's',
+      enabled: true,
+      trigger: 'webhook',
+      lastCheck: 'gate: ignored a delivery',
+    );
+    expect(routineWhen(hook), 'On webhook deliveries');
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(_app(RoutineSheet(store: store, editing: hook)));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('routine-trigger')), findsNothing);
+    expect(find.byKey(const Key('routine-webhook-url')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('routine-webhook-rotate')));
+    await tester.pumpAndSettle();
+    expect(client.rotated, 1);
+    expect(find.text('New webhook secret'), findsOneWidget);
+    expect(find.text('tern_whk_second'), findsOneWidget);
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('routine-webhook-revoke')));
+    await tester.pumpAndSettle();
+    expect(client.revoked, 1);
+    expect(find.textContaining('Revoked: the URL answers 404'), findsOneWidget);
+    expect(find.text('New secret…'), findsOneWidget);
   });
 }

@@ -24,6 +24,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0014_egress.sql"),
     include_str!("../migrations/0015_routines.sql"),
     include_str!("../migrations/0016_channel_agents.sql"),
+    include_str!("../migrations/0017_webhooks.sql"),
 ];
 
 pub const LATEST_VERSION: u32 = MIGRATIONS.len() as u32;

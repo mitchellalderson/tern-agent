@@ -143,6 +143,17 @@ docker_pids = 512          # 0 for no limit
 # trust_proxy = false           # trust X-Forwarded-For from a reverse proxy on loopback
 # public_url = "https://tern.example.com"  # put in pairing links; default: the first tcp listener
 # remote_mcp_stdio = false      # let paired devices add stdio MCP servers (they run on this host)
+
+# Webhook routines (`tern hooks create`) are reached on a listener of their
+# own, never the API's: it takes only each routine's own secret, never a
+# device token. Off by default; `tern hooks fire` works without it.
+# [webhooks]
+# listen = ["tcp://127.0.0.1:8712"]  # e.g. behind a tunnel or reverse proxy
+# tls = "off"                   # unset: the same as [api] tls (and its certificate files)
+# public_url = "https://hooks.example.com"  # the base of each hook's URL; default: the first listener
+# max_body_kb = 256             # larger bodies get 413
+# per_minute = 30               # deliveries one routine accepts per minute; more get 429
+# tolerance_secs = 300          # how old a signed X-Tern-Signature timestamp may be
 #
 # Prices (USD per million tokens) for models whose list doesn't give them:
 # [providers.anthropic.prices]

@@ -41,7 +41,7 @@ pub fn routes() -> Router<Shared> {
 #[derive(Serialize, Deserialize)]
 pub struct Schedule {
     pub id: String,
-    /// What starts it (T1b): `cron`, `once` or `watch`.
+    /// What starts it (T1b): `cron`, `once`, `watch` or `webhook` (T1c).
     #[serde(default = "cron")]
     pub trigger: String,
     /// The cron expression; empty for other triggers.
@@ -131,7 +131,7 @@ fn home() -> String {
     tern_store::HOME.into()
 }
 
-fn view(m: &Shared, s: ScheduleRow) -> Schedule {
+pub(super) fn view(m: &Shared, s: ScheduleRow) -> Schedule {
     let last =
         m.rt.store
             .runs_for_session(&s.session_id)
@@ -211,9 +211,9 @@ fn owner(m: &Shared, a: &str) -> Result<String, ApiError> {
 }
 
 #[derive(Deserialize)]
-struct CreateBody {
+pub(super) struct CreateBody {
     #[serde(flatten)]
-    trigger: TriggerArgs,
+    pub(super) trigger: TriggerArgs,
     prompt: String,
     /// `none` (default) or `telegram:<chat_id>`.
     deliver_to: Option<String>,
@@ -287,8 +287,16 @@ async fn check_trigger(
 
 async fn create(
     State(m): State<Shared>,
-    Json(mut b): Json<CreateBody>,
+    Json(b): Json<CreateBody>,
 ) -> Result<(StatusCode, Json<Schedule>), ApiError> {
+    let row = create_row(&m, b).await?;
+    Ok((StatusCode::CREATED, Json(view(&m, row))))
+}
+
+/// Create the routine `b` describes (`POST /v1/webhooks` sets a webhook
+/// trigger first).
+pub(super) async fn create_row(m: &Shared, mut b: CreateBody) -> Result<ScheduleRow, ApiError> {
+    let m = m.clone();
     check_trigger(&m, &mut b.trigger, &b.limits, None).await?;
     let deliver_to = target(b.deliver_to.as_deref())?;
     if let Some(a) = &b.autonomy {
@@ -320,7 +328,7 @@ async fn create(
     }
     join_channel(&m, &row)?;
     set_autonomy(&m, &mut row, b.autonomy.as_deref())?;
-    Ok((StatusCode::CREATED, Json(view(&m, row))))
+    Ok(row)
 }
 
 /// A routine posting to a topic channel makes its agent a member there
