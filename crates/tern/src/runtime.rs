@@ -98,6 +98,8 @@ pub struct Runtime {
     /// apply on their next use.
     pub secrets: Secrets,
     connectors: Arc<tern_lua::Connectors>,
+    /// The live MCP server set; config writes go through [`Runtime::reload_mcp`].
+    pub(crate) mcp: Arc<tern_mcp::McpServers>,
     /// Set when `TERN_PROVIDER=mock:<script>` overrides real providers.
     pub mock: bool,
 }
@@ -123,7 +125,15 @@ impl Runtime {
             changes.clone(),
         ));
         let slot = HostSlot::default();
-        let (mut tools, connectors) = build_tools(home, &config, &store, &secrets, &slot)?;
+        let mcp_changes = changes.clone();
+        let notify: tern_mcp::Notify = Arc::new(move |name, state| {
+            let _ = mcp_changes.send(Change::McpChanged {
+                name: name.to_owned(),
+                state,
+            });
+        });
+        let (mut tools, connectors, mcp) =
+            build_tools(home, &config, &store, &secrets, &slot, notify)?;
         tools.register(Arc::new(tern_tools::secret_request::SecretRequest::new(
             approvals.clone(),
             secrets.clone(),
@@ -198,6 +208,7 @@ impl Runtime {
             prompts,
             secrets,
             connectors,
+            mcp,
             mock,
         })
     }
@@ -395,7 +406,12 @@ fn build_tools(
     store: &Store,
     secrets: &Secrets,
     subagents: &HostSlot,
-) -> anyhow::Result<(ToolRegistry, Arc<tern_lua::Connectors>)> {
+    mcp_notify: tern_mcp::Notify,
+) -> anyhow::Result<(
+    ToolRegistry,
+    Arc<tern_lua::Connectors>,
+    Arc<tern_mcp::McpServers>,
+)> {
     let sandbox: Arc<dyn tern_sandbox::SandboxBackend> = match config.sandbox.backend {
         SandboxBackendKind::Host => {
             Arc::new(tern_sandbox::HostBackend::new(host_policy(config, home)))
@@ -444,9 +460,11 @@ fn build_tools(
         inspected: Default::default(),
     }));
 
-    registry.add_source(Arc::new(tern_mcp::McpServers::from_config(
+    let mcp = Arc::new(tern_mcp::McpServers::from_config(
         &config.mcp.servers,
         Arc::new(secrets.clone()),
-    )));
-    Ok((registry, connectors))
+        Some(mcp_notify),
+    ));
+    registry.add_source(mcp.clone());
+    Ok((registry, connectors, mcp))
 }

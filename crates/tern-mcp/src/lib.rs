@@ -1,9 +1,12 @@
-//! MCP client (spec §11): configured servers become tools named
-//! `mcp__<server>__<tool>`. Servers start on first use and are restarted
-//! with backoff after they crash.
+//! MCP client (spec §11, docs/mcp-management-spec.md): configured servers
+//! become tools named `mcp__<server>__<tool>`. Servers start on first use
+//! (or straight away after a config write) and are restarted with backoff
+//! after they crash. The set is live: [`McpServers::apply`] swaps in a new
+//! config without touching servers that didn't change.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::process::Stdio;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -15,9 +18,13 @@ use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioC
 use serde_json::Value;
 use tern_core::Secrets;
 use tern_core::config::{McpServerConfig, McpTransport};
+use tern_core::mcp::{McpErrorKind, McpState, McpStatus, McpToolInfo, McpVerified, McpVerifyError};
 use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult, ToolSource};
 use tern_core::types::ToolSpec;
 use tokio::io::{AsyncBufReadExt, BufReader};
+
+mod import;
+pub use import::import;
 
 /// Environment passed to stdio servers, besides their declared `env_secrets`.
 const PASSTHROUGH_ENV: &[&str] = &[
@@ -43,6 +50,8 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// Longest tool name every provider accepts.
 const MAX_TOOL_NAME: usize = 64;
+/// Lines of a stdio server's stderr kept for clients.
+const STDERR_LINES: usize = 50;
 
 type Client = RunningService<RoleClient, ()>;
 
@@ -54,6 +63,17 @@ struct RemoteTool {
     schema: Value,
     /// From the server's annotations, before config overrides.
     hinted: Effect,
+}
+
+impl RemoteTool {
+    fn info(&self, cfg: &McpServerConfig) -> McpToolInfo {
+        McpToolInfo {
+            exposed: self.exposed.clone(),
+            remote: self.remote.clone(),
+            description: self.description.clone(),
+            disabled: cfg.disabled_tools.contains(&self.remote),
+        }
+    }
 }
 
 /// The effect the server's annotations suggest: `readOnlyHint` → read,
@@ -83,6 +103,9 @@ pub fn effect_for(cfg: &McpServerConfig, remote: &str, hinted: Effect) -> Effect
         .unwrap_or(hinted)
 }
 
+/// Called with a server's name and new state (`None` once it's removed).
+pub type Notify = Arc<dyn Fn(&str, Option<McpState>) + Send + Sync>;
+
 #[derive(Default)]
 struct Conn {
     client: Option<Client>,
@@ -91,27 +114,62 @@ struct Conn {
     last_error: Option<String>,
 }
 
+/// Why a connection attempt failed.
+struct ConnErr {
+    kind: McpErrorKind,
+    message: String,
+}
+
+impl ConnErr {
+    fn new(kind: McpErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+type Connected = (Client, Vec<RemoteTool>, Option<String>);
+
 pub struct McpServer {
     name: String,
     cfg: McpServerConfig,
     secrets: Arc<Secrets>,
+    /// Secret values typed in a form but not saved yet (verify only).
+    overrides: BTreeMap<String, String>,
     backoff_base: Duration,
+    notify: Option<Notify>,
     conn: tokio::sync::Mutex<Conn>,
     tools: RwLock<Vec<RemoteTool>>,
-    status: RwLock<String>,
+    state: RwLock<McpState>,
+    server_info: RwLock<Option<String>>,
+    stderr: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl McpServer {
-    pub fn new(name: &str, cfg: McpServerConfig, secrets: Arc<Secrets>) -> Arc<Self> {
-        Arc::new(Self {
+    fn build(name: &str, cfg: McpServerConfig, secrets: Arc<Secrets>) -> Self {
+        let state = if cfg.enabled {
+            McpState::NotStarted
+        } else {
+            McpState::Disabled
+        };
+        Self {
             name: name.to_owned(),
             cfg,
             secrets,
+            overrides: BTreeMap::new(),
             backoff_base: Duration::from_secs(1),
+            notify: None,
             conn: tokio::sync::Mutex::new(Conn::default()),
             tools: RwLock::new(Vec::new()),
-            status: RwLock::new("not started".into()),
-        })
+            state: RwLock::new(state),
+            server_info: RwLock::new(None),
+            stderr: Arc::default(),
+        }
+    }
+
+    pub fn new(name: &str, cfg: McpServerConfig, secrets: Arc<Secrets>) -> Arc<Self> {
+        Arc::new(Self::build(name, cfg, secrets))
     }
 
     /// Like [`McpServer::new`] with a custom backoff (for tests).
@@ -121,25 +179,89 @@ impl McpServer {
         secrets: Arc<Secrets>,
         base: Duration,
     ) -> Arc<Self> {
-        let mut s = Self::new(name, cfg, secrets);
-        if let Some(s) = Arc::get_mut(&mut s) {
-            s.backoff_base = base;
-        }
-        s
+        let mut s = Self::build(name, cfg, secrets);
+        s.backoff_base = base;
+        Arc::new(s)
     }
 
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    fn set_status(&self, s: String) {
-        if let Ok(mut g) = self.status.write() {
-            *g = s;
+    pub fn config(&self) -> &McpServerConfig {
+        &self.cfg
+    }
+
+    fn set_state(&self, s: McpState) {
+        if let Ok(mut g) = self.state.write() {
+            if *g == s {
+                return;
+            }
+            *g = s.clone();
+        }
+        if let Some(n) = &self.notify {
+            n(&self.name, Some(s));
         }
     }
 
+    pub fn state(&self) -> McpState {
+        self.state
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or(McpState::NotStarted)
+    }
+
+    /// The state as one line, as the system prompt and `/tools` show it.
     pub fn status(&self) -> String {
-        self.status.read().map(|s| s.clone()).unwrap_or_default()
+        match self.state() {
+            McpState::Disabled => "disabled".into(),
+            McpState::NotStarted => "not started".into(),
+            McpState::Connecting => "connecting".into(),
+            McpState::Running { tools, .. } => format!("{tools} tools"),
+            McpState::Unavailable { error, .. } => format!("unavailable: {error}"),
+        }
+    }
+
+    fn secret(&self, name: &str) -> Option<String> {
+        self.overrides
+            .get(name)
+            .cloned()
+            .or_else(|| self.secrets.get(name))
+    }
+
+    pub fn missing_secrets(&self) -> Vec<String> {
+        self.cfg
+            .secret_names()
+            .filter(|n| self.secret(n).is_none())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn stderr_tail(&self) -> Vec<String> {
+        self.stderr
+            .lock()
+            .map(|l| l.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn tool_infos(&self) -> Vec<McpToolInfo> {
+        self.tools
+            .read()
+            .map(|t| t.iter().map(|t| t.info(&self.cfg)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Everything clients show about this server.
+    pub fn snapshot(&self) -> McpStatus {
+        McpStatus {
+            name: self.name.clone(),
+            config: self.cfg.clone(),
+            state: self.state(),
+            tools: self.tool_infos(),
+            missing_secrets: self.missing_secrets(),
+            server_info: self.server_info.read().ok().and_then(|s| s.clone()),
+            stderr_tail: self.stderr_tail(),
+        }
     }
 
     /// Connect if not connected (respecting backoff) and refresh the tool list.
@@ -148,7 +270,21 @@ impl McpServer {
         self.ensure_locked(&mut conn).await
     }
 
+    /// Drop the connection, forget the backoff and connect again now.
+    pub async fn restart(&self) -> McpStatus {
+        let mut conn = self.conn.lock().await;
+        *conn = Conn::default();
+        if let Err(e) = self.ensure_locked(&mut conn).await {
+            tracing::warn!("{e}");
+        }
+        drop(conn);
+        self.snapshot()
+    }
+
     async fn ensure_locked(&self, conn: &mut Conn) -> Result<(), String> {
+        if !self.cfg.enabled {
+            return Err(format!("MCP server {} is disabled", self.name));
+        }
         if conn
             .client
             .as_ref()
@@ -167,25 +303,36 @@ impl McpServer {
                 conn.last_error.as_deref().unwrap_or("not connected")
             ));
         }
-        match tokio::time::timeout(CONNECT_TIMEOUT, self.connect())
-            .await
-            .unwrap_or_else(|_| Err(format!("timed out after {}s", CONNECT_TIMEOUT.as_secs())))
-        {
-            Ok((client, tools)) => {
-                tracing::info!(server = %self.name, tools = tools.len(), "MCP server connected");
-                self.set_status(format!("{} tools", tools.len()));
+        self.set_state(McpState::Connecting);
+        match self.connect_timed().await {
+            Ok((client, tools, info)) => {
+                let visible = tools
+                    .iter()
+                    .filter(|t| !self.cfg.disabled_tools.contains(&t.remote))
+                    .count();
+                tracing::info!(server = %self.name, tools = visible, "MCP server connected");
                 if let Ok(mut t) = self.tools.write() {
                     *t = tools;
+                }
+                if let Ok(mut s) = self.server_info.write() {
+                    *s = info;
                 }
                 conn.client = Some(client);
                 conn.failures = 0;
                 conn.retry_at = None;
                 conn.last_error = None;
+                self.set_state(McpState::Running {
+                    tools: visible,
+                    since: chrono::Utc::now().timestamp(),
+                });
                 Ok(())
             }
             Err(e) => {
-                self.fail(conn, e.clone());
-                Err(format!("MCP server {} failed to start: {e}", self.name))
+                self.fail(conn, e.message.clone());
+                Err(format!(
+                    "MCP server {} failed to start: {}",
+                    self.name, e.message
+                ))
             }
         }
     }
@@ -199,71 +346,40 @@ impl McpServer {
             .min(MAX_BACKOFF);
         conn.retry_at = Some(Instant::now() + delay);
         tracing::warn!(server = %self.name, %error, retry_in = ?delay, "MCP server unavailable");
-        self.set_status(format!("unavailable: {error}"));
+        let retry_at = chrono::Utc::now()
+            + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::zero());
+        self.set_state(McpState::Unavailable {
+            error: error.clone(),
+            retry_at: Some(retry_at.timestamp()),
+            failures: conn.failures,
+        });
         conn.last_error = Some(error);
     }
 
-    async fn connect(&self) -> Result<(Client, Vec<RemoteTool>), String> {
+    async fn connect_timed(&self) -> Result<Connected, ConnErr> {
+        tokio::time::timeout(CONNECT_TIMEOUT, self.connect())
+            .await
+            .unwrap_or_else(|_| {
+                Err(ConnErr::new(
+                    McpErrorKind::Timeout,
+                    format!("timed out after {}s", CONNECT_TIMEOUT.as_secs()),
+                ))
+            })
+    }
+
+    async fn connect(&self) -> Result<Connected, ConnErr> {
         let client = match self.cfg.transport {
-            McpTransport::Stdio => {
-                let command = self
-                    .cfg
-                    .command
-                    .as_deref()
-                    .ok_or("stdio transport needs `command`")?;
-                let mut env = Vec::new();
-                for key in &self.cfg.env_secrets {
-                    let value = self
-                        .secrets
-                        .get(key)
-                        .ok_or_else(|| format!("secret {key} is not set"))?;
-                    env.push((key.clone(), value));
-                }
-                let cmd = tokio::process::Command::new(command).configure(|c| {
-                    c.args(&self.cfg.args)
-                        .env_clear()
-                        .envs(
-                            PASSTHROUGH_ENV
-                                .iter()
-                                .filter_map(|k| std::env::var_os(k).map(|v| (*k, v))),
-                        )
-                        .envs(env);
-                });
-                let (transport, stderr) = TokioChildProcess::builder(cmd)
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|e| format!("spawning `{command}`: {e}"))?;
-                if let Some(stderr) = stderr {
-                    let (name, secrets) = (self.name.clone(), self.secrets.clone());
-                    tokio::spawn(async move {
-                        let mut lines = BufReader::new(stderr).lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            tracing::debug!(server = %name, "stderr: {}", secrets.redact(&line));
-                        }
-                    });
-                }
-                ().serve(transport).await.map_err(|e| e.to_string())?
-            }
-            McpTransport::Http => {
-                let url = self
-                    .cfg
-                    .url
-                    .as_deref()
-                    .ok_or("http transport needs `url`")?;
-                let client = tern_core::net::http_client()
-                    .build()
-                    .map_err(|e| e.to_string())?;
-                let transport = StreamableHttpClientTransport::with_client(
-                    client,
-                    StreamableHttpClientTransportConfig::with_uri(url.to_owned()),
-                );
-                ().serve(transport).await.map_err(|e| e.to_string())?
-            }
+            McpTransport::Stdio => self.connect_stdio().await?,
+            McpTransport::Http => self.connect_http().await?,
         };
+        let info = client
+            .peer_info()
+            .and_then(|i| i.server_info.clone())
+            .map(|i| format!("{} {}", i.name, i.version));
         let tools = client
             .list_all_tools()
             .await
-            .map_err(|e| format!("listing tools: {e}"))?;
+            .map_err(|e| ConnErr::new(McpErrorKind::Protocol, format!("listing tools: {e}")))?;
         let tools = tools
             .into_iter()
             .map(|t| RemoteTool {
@@ -274,7 +390,167 @@ impl McpServer {
                 hinted: hinted_effect(t.annotations.as_ref()),
             })
             .collect();
-        Ok((client, tools))
+        Ok((client, tools, info))
+    }
+
+    async fn connect_stdio(&self) -> Result<Client, ConnErr> {
+        let command = self.cfg.command.as_deref().ok_or_else(|| {
+            ConnErr::new(McpErrorKind::Invalid, "stdio transport needs `command`")
+        })?;
+        let mut env = Vec::new();
+        for key in &self.cfg.env_secrets {
+            let value = self.secret(key).ok_or_else(|| {
+                ConnErr::new(
+                    McpErrorKind::MissingSecret,
+                    format!("secret {key} is not set"),
+                )
+            })?;
+            env.push((key.clone(), value));
+        }
+        let cwd = self.cfg.cwd.as_deref().map(expand_tilde);
+        let cmd = tokio::process::Command::new(command).configure(|c| {
+            c.args(&self.cfg.args)
+                .env_clear()
+                .envs(
+                    PASSTHROUGH_ENV
+                        .iter()
+                        .filter_map(|k| std::env::var_os(k).map(|v| (*k, v))),
+                )
+                .envs(&self.cfg.env)
+                .envs(env);
+            if let Some(dir) = &cwd {
+                c.current_dir(dir);
+            }
+        });
+        let (transport, stderr) = TokioChildProcess::builder(cmd)
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                let kind = if e.kind() == std::io::ErrorKind::NotFound {
+                    McpErrorKind::CommandNotFound
+                } else {
+                    McpErrorKind::SpawnFailed
+                };
+                ConnErr::new(kind, format!("spawning `{command}`: {e}"))
+            })?;
+        if let Ok(mut l) = self.stderr.lock() {
+            l.clear();
+        }
+        let reader = stderr.map(|stderr| {
+            let (name, secrets, ring) =
+                (self.name.clone(), self.secrets.clone(), self.stderr.clone());
+            let overrides: Vec<String> = self.overrides.values().cloned().collect();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let line = tern_core::secrets::redact_with(&overrides, &secrets.redact(&line));
+                    tracing::debug!(server = %name, "stderr: {line}");
+                    if let Ok(mut ring) = ring.lock() {
+                        if ring.len() == STDERR_LINES {
+                            ring.pop_front();
+                        }
+                        ring.push_back(line);
+                    }
+                }
+            })
+        });
+        match ().serve(transport).await {
+            Ok(c) => Ok(c),
+            Err(e) => {
+                // The child closing stdout usually means it exited; give its
+                // stderr a moment to drain so the reason is in the message.
+                let exited = match reader {
+                    Some(r) => tokio::time::timeout(Duration::from_secs(1), r)
+                        .await
+                        .is_ok(),
+                    None => false,
+                };
+                let last = self
+                    .stderr_tail()
+                    .into_iter()
+                    .rev()
+                    .find(|l| !l.trim().is_empty());
+                let message = match last {
+                    Some(l) => format!("{e} ({l})"),
+                    None => e.to_string(),
+                };
+                let kind = if exited {
+                    McpErrorKind::ExitedEarly
+                } else {
+                    McpErrorKind::Protocol
+                };
+                Err(ConnErr::new(kind, message))
+            }
+        }
+    }
+
+    async fn connect_http(&self) -> Result<Client, ConnErr> {
+        let url = self
+            .cfg
+            .url
+            .as_deref()
+            .ok_or_else(|| ConnErr::new(McpErrorKind::Invalid, "http transport needs `url`"))?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        let secret_header = |header: &str, secret: &str, prefix: &str| {
+            let value = self.secret(secret).ok_or_else(|| {
+                ConnErr::new(
+                    McpErrorKind::MissingSecret,
+                    format!("secret {secret} is not set"),
+                )
+            })?;
+            let name = reqwest::header::HeaderName::from_bytes(header.as_bytes()).map_err(|e| {
+                ConnErr::new(McpErrorKind::Invalid, format!("header {header:?}: {e}"))
+            })?;
+            let mut value = reqwest::header::HeaderValue::from_str(&format!("{prefix}{value}"))
+                .map_err(|_| {
+                    ConnErr::new(
+                        McpErrorKind::Invalid,
+                        format!("secret {secret} isn't a valid header value"),
+                    )
+                })?;
+            value.set_sensitive(true);
+            Ok::<_, ConnErr>((name, value))
+        };
+        if let Some(secret) = &self.cfg.bearer_token_secret {
+            let (k, v) = secret_header("authorization", secret, "Bearer ")?;
+            headers.insert(k, v);
+        }
+        for (header, secret) in &self.cfg.header_secrets {
+            let (k, v) = secret_header(header, secret, "")?;
+            headers.insert(k, v);
+        }
+        let client = tern_core::net::http_client()
+            .default_headers(headers)
+            .build()
+            .map_err(|e| ConnErr::new(McpErrorKind::Invalid, e.to_string()))?;
+        let transport = StreamableHttpClientTransport::with_client(
+            client,
+            StreamableHttpClientTransportConfig::with_uri(url.to_owned()),
+        );
+        ().serve(transport).await.map_err(|e| {
+            let message = e.to_string();
+            let lower = message.to_ascii_lowercase();
+            let kind = if ["401", "403", "unauthorized", "forbidden"]
+                .iter()
+                .any(|w| lower.contains(w))
+            {
+                McpErrorKind::Unauthorized
+            } else if [
+                "error sending request",
+                "connect",
+                "dns",
+                "refused",
+                "resolve",
+            ]
+            .iter()
+            .any(|w| lower.contains(w))
+            {
+                McpErrorKind::Unreachable
+            } else {
+                McpErrorKind::Protocol
+            };
+            ConnErr::new(kind, message)
+        })
     }
 
     pub async fn call(&self, remote: &str, args: Value) -> ToolResult {
@@ -314,6 +590,54 @@ impl McpServer {
                 ToolResult::error(format!("MCP error: {e}"))
             }
         }
+    }
+}
+
+/// Start a throwaway server from `cfg`, list its tools and shut it down.
+/// `overrides` are secret values typed in a form but not saved yet. Never
+/// touches the live set or the config.
+pub async fn verify(
+    name: &str,
+    cfg: &McpServerConfig,
+    secrets: Arc<Secrets>,
+    overrides: BTreeMap<String, String>,
+) -> Result<McpVerified, McpVerifyError> {
+    let mut cfg = cfg.clone();
+    cfg.enabled = true;
+    let mut server = McpServer::build(name, cfg, secrets);
+    server.overrides = overrides;
+    if let Some(missing) = server.missing_secrets().first() {
+        return Err(McpVerifyError {
+            kind: McpErrorKind::MissingSecret,
+            message: format!("secret {missing} is not set"),
+            stderr_tail: Vec::new(),
+        });
+    }
+    match server.connect_timed().await {
+        Ok((client, tools, server_info)) => {
+            if let Err(e) = client.cancel().await {
+                tracing::debug!(server = %name, "closing test connection: {e}");
+            }
+            Ok(McpVerified {
+                tools: tools.iter().map(|t| t.info(&server.cfg)).collect(),
+                server_info,
+            })
+        }
+        Err(e) => Err(McpVerifyError {
+            kind: e.kind,
+            message: e.message,
+            stderr_tail: server.stderr_tail(),
+        }),
+    }
+}
+
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    match (
+        path.strip_prefix("~/").or((path == "~").then_some("")),
+        std::env::var_os("HOME"),
+    ) {
+        (Some(rest), Some(home)) => std::path::PathBuf::from(home).join(rest),
+        _ => path.into(),
     }
 }
 
@@ -413,67 +737,180 @@ impl Tool for McpTool {
 
 /// All configured MCP servers as one tool source.
 pub struct McpServers {
-    servers: Vec<Arc<McpServer>>,
+    servers: RwLock<BTreeMap<String, Arc<McpServer>>>,
+    secrets: Arc<Secrets>,
+    notify: Option<Notify>,
 }
 
 impl McpServers {
     pub fn new(servers: Vec<Arc<McpServer>>) -> Self {
-        Self { servers }
+        let secrets = servers
+            .first()
+            .map(|s| s.secrets.clone())
+            .unwrap_or_default();
+        Self {
+            servers: RwLock::new(servers.into_iter().map(|s| (s.name.clone(), s)).collect()),
+            secrets,
+            notify: None,
+        }
     }
 
+    /// Servers for `cfg`, none started. `notify` hears every state change.
     pub fn from_config(
-        cfg: &std::collections::BTreeMap<String, McpServerConfig>,
+        cfg: &BTreeMap<String, McpServerConfig>,
         secrets: Arc<Secrets>,
+        notify: Option<Notify>,
     ) -> Self {
-        Self::new(
-            cfg.iter()
-                .map(|(name, c)| McpServer::new(name, c.clone(), secrets.clone()))
-                .collect(),
-        )
+        let set = Self {
+            servers: RwLock::default(),
+            secrets,
+            notify,
+        };
+        let servers = cfg
+            .iter()
+            .map(|(name, c)| (name.clone(), set.make(name, c)))
+            .collect();
+        if let Ok(mut s) = set.servers.write() {
+            *s = servers;
+        }
+        set
     }
 
-    pub fn servers(&self) -> &[Arc<McpServer>] {
-        &self.servers
+    fn make(&self, name: &str, cfg: &McpServerConfig) -> Arc<McpServer> {
+        let mut s = McpServer::build(name, cfg.clone(), self.secrets.clone());
+        s.notify = self.notify.clone();
+        Arc::new(s)
+    }
+
+    pub fn servers(&self) -> Vec<Arc<McpServer>> {
+        self.servers
+            .read()
+            .map(|s| s.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<McpServer>> {
+        self.servers.read().ok()?.get(name).cloned()
+    }
+
+    /// Swap in a new config. Removed servers leave the set (their process
+    /// is killed once calls in flight finish), changed ones are replaced,
+    /// unchanged ones keep their connection. Added and changed servers that
+    /// are enabled start in the background straight away.
+    pub fn apply(&self, cfg: &BTreeMap<String, McpServerConfig>) {
+        let mut started = Vec::new();
+        let mut removed = Vec::new();
+        {
+            let Ok(mut servers) = self.servers.write() else {
+                return;
+            };
+            servers.retain(|name, _| {
+                let keep = cfg.contains_key(name);
+                if !keep {
+                    removed.push(name.clone());
+                }
+                keep
+            });
+            for (name, c) in cfg {
+                if servers.get(name).is_some_and(|s| s.cfg == *c) {
+                    continue;
+                }
+                let s = self.make(name, c);
+                if let Some(n) = &self.notify {
+                    n(name, Some(s.state()));
+                }
+                if c.enabled {
+                    started.push(s.clone());
+                }
+                servers.insert(name.clone(), s);
+            }
+        }
+        if let Some(n) = &self.notify {
+            for name in &removed {
+                n(name, None);
+            }
+        }
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            for s in started {
+                rt.spawn(async move {
+                    if let Err(e) = s.ensure().await {
+                        tracing::warn!("{e}");
+                    }
+                });
+            }
+        }
+    }
+
+    pub fn statuses(&self) -> Vec<McpStatus> {
+        self.servers().iter().map(|s| s.snapshot()).collect()
+    }
+
+    pub fn status(&self, name: &str) -> Option<McpStatus> {
+        self.get(name).map(|s| s.snapshot())
+    }
+
+    /// Reconnect `name` now, ignoring backoff.
+    pub async fn restart(&self, name: &str) -> Result<McpStatus, String> {
+        let s = self
+            .get(name)
+            .ok_or_else(|| format!("MCP server {name:?} is not configured"))?;
+        if !s.cfg.enabled {
+            return Err(format!("MCP server {name} is disabled"));
+        }
+        Ok(s.restart().await)
     }
 }
 
 #[async_trait]
 impl ToolSource for McpServers {
     async fn prepare(&self) {
-        let starts = self.servers.iter().map(|s| async move {
-            if let Err(e) = s.ensure().await {
-                tracing::warn!("{e}");
-            }
-        });
+        let servers = self.servers();
+        let starts = servers
+            .iter()
+            .filter(|s| s.cfg.enabled)
+            .map(|s| async move {
+                if let Err(e) = s.ensure().await {
+                    tracing::warn!("{e}");
+                }
+            });
         futures::future::join_all(starts).await;
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.servers
-            .iter()
+        self.servers()
+            .into_iter()
+            .filter(|s| s.cfg.enabled)
             .flat_map(|s| {
                 let tools = s.tools.read().map(|t| t.clone()).unwrap_or_default();
-                tools.into_iter().map(|tool| {
-                    Arc::new(McpTool {
-                        server: s.clone(),
-                        tool,
-                    }) as Arc<dyn Tool>
-                })
+                tools
+                    .into_iter()
+                    .filter(|t| !s.cfg.disabled_tools.contains(&t.remote))
+                    .map(|tool| {
+                        Arc::new(McpTool {
+                            server: s.clone(),
+                            tool,
+                        }) as Arc<dyn Tool>
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect()
     }
 
     fn describe(&self) -> Vec<String> {
-        self.servers
+        self.servers()
             .iter()
-            .map(|s| {
-                let status = s.status();
+            .filter_map(|s| match s.state() {
+                McpState::Disabled => None,
                 // Servers start on a run's first use, so "not started" is normal here.
-                if status == "not started" {
-                    format!("MCP server {} (tools mcp__{}__*)", s.name, s.name)
-                } else {
-                    format!("MCP server {}: {status} (tools mcp__{}__*)", s.name, s.name)
+                McpState::NotStarted => {
+                    Some(format!("MCP server {} (tools mcp__{}__*)", s.name, s.name))
                 }
+                _ => Some(format!(
+                    "MCP server {}: {} (tools mcp__{}__*)",
+                    s.name,
+                    s.status(),
+                    s.name
+                )),
             })
             .collect()
     }

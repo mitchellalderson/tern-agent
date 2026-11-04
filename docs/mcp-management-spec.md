@@ -1,6 +1,6 @@
 # MCP server management
 
-Status: spec, not built. Covers the engine, TUI, desktop app and CLI.
+Status: M0 (engine and API) built; M1 (TUI, CLI) and M2 (desktop) not started. Covers the engine, TUI, desktop app and CLI. See §11 for how M0 was built.
 
 ## 1. Problem
 
@@ -276,3 +276,16 @@ tern mcp enable|disable|restart|rm NAME
 2. **No SSE transport for now.** Streamable HTTP and stdio only; import rejects `type: "sse"` with a clear message (§4.6).
 3. **Saving starts the server.** Every config write starts added or changed servers straight away (§4.1, §5). Daemon boot stays lazy.
 4. **No project-local `.mcp.json` for now.** `config.toml` is the only source.
+
+## 11. As built (M0)
+
+- **Types** live in `tern_core::mcp` (`McpState`, `McpStatus`, `McpVerified`, `McpVerifyError`, `ImportedServer`, `McpPatch`) so the daemon, TUI and clients share them, along with the write checks: `check_name`, `check_config` (transport fields, header names, plain-`http` credentials, secret-looking `env` values and `args`), `looks_like_secret` and `is_placeholder`.
+- **States** serialize as `{"kind": "running", "tools": 5, "since": 1762000000}`; times are Unix seconds, like `fetched_at` on model lists. The `Running` tool count excludes `disabled_tools`. A disabled server isn't mentioned in the system prompt.
+- **`mcp_changed`** is a `Change` on `/v1/events`: `{"mcp_changed": {"name", "state"}}`, with `state: null` once a server is removed.
+- **`POST /v1/mcp/verify`** answers 200 with `{ok: true, verified}` or `{ok: false, error: {kind, message, stderr_tail}}`, so clients parse one shape. A config that fails `check_config` comes back as kind `invalid`. It shares the provider verify rate limit (10 a minute per device).
+- **`POST /v1/mcp/import`** returns `[ImportedServer]`; servers that can't be imported (SSE, no `command` or `url`) become warnings on the first draft, or a 400 when nothing could be imported. Headers other than `Authorization` become `header_secrets` named `<SERVER>_<HEADER>`; a bearer token becomes `<SERVER>_TOKEN`.
+- **Errors**: 404 for an unknown server, 409 for a name in use (add, or rename onto another server), 400 for invalid input, 403 for a stdio write or verify from a paired device without `api.remote_mcp_stdio`.
+- **`/v1/config/reload`** now reloads MCP servers as well as providers.
+- **`tern doctor`** test-connects each enabled server; `--offline` (the existing flag) skips that and checks only the command on `PATH`. There's no separate `--quick`.
+- **Config writes** go through `ConfigFile::upsert_mcp_server` / `remove_mcp_server`: fields left at their defaults are dropped from the table, and comments on the fields that stay are kept. Maps (`env`, `header_secrets`, `effects`) are written as inline tables.
+- **Not yet**: rename doesn't warn about allowlist entries for `mcp__old__*` (that's a client-side message for M1/M2); the `tern_client` and `RemoteBackend` methods come with M1/M2.

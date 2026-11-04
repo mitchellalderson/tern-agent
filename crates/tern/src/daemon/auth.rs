@@ -49,6 +49,7 @@ pub const FEATURES: &[&str] = &[
     "uploads",
     "subagents",
     "secret_requests",
+    "mcp",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";
@@ -732,6 +733,13 @@ mod tests {
         assert_eq!(required_scope(&get, "/v1/secrets"), Scope::Owner);
         assert_eq!(required_scope(&post, "/v1/shutdown"), Scope::Owner);
         assert_eq!(required_scope(&get, "/v1/status"), Scope::Read);
+        assert_eq!(required_scope(&get, "/v1/mcp/github"), Scope::Read);
+        assert_eq!(required_scope(&post, "/v1/mcp"), Scope::Owner);
+        assert_eq!(required_scope(&post, "/v1/mcp/import"), Scope::Owner);
+        assert_eq!(
+            required_scope(&Method::PATCH, "/v1/mcp/github"),
+            Scope::Owner
+        );
         // Unlisted writes are owner-only, and prefixes match whole segments.
         assert_eq!(
             required_scope(&post, "/v1/connectors/x/activate"),

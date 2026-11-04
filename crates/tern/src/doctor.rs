@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use tern_core::config::{
-    ConfineMode, McpTransport, ProviderConfig, ProviderKind, SandboxBackendKind,
+    ConfineMode, McpServerConfig, McpTransport, ProviderConfig, ProviderKind, SandboxBackendKind,
 };
 use tern_core::secrets::SecretSource;
 use tern_core::{Config, Secrets, TernHome};
@@ -233,34 +233,7 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
         r.check(Status::Info, "none configured", None);
     }
     for (name, s) in &config.mcp.servers {
-        match s.transport {
-            McpTransport::Stdio => match s.command.as_deref() {
-                None => r.check(
-                    Status::Fail,
-                    format!("{name}: stdio transport needs `command`"),
-                    None,
-                ),
-                Some(cmd) => match find_on_path(cmd) {
-                    Some(p) => r.check(Status::Ok, format!("{name}: {}", p.display()), None),
-                    None => r.check(
-                        Status::Fail,
-                        format!("{name}: `{cmd}` not found on PATH"),
-                        None,
-                    ),
-                },
-            },
-            McpTransport::Http => match s.url.as_deref() {
-                None => r.check(
-                    Status::Fail,
-                    format!("{name}: http transport needs `url`"),
-                    None,
-                ),
-                Some(url) => r.check(Status::Ok, format!("{name}: {url}"), None),
-            },
-        }
-        for secret in &s.env_secrets {
-            check_secret(&mut r, &secrets, &format!("{name} env"), secret);
-        }
+        check_mcp(&mut r, &runtime, &secrets, name, s, args.offline);
     }
 
     println!();
@@ -273,6 +246,66 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
     } else {
         println!("All good.");
         Ok(ExitCode::SUCCESS)
+    }
+}
+
+/// Start the server and list its tools, so the real startup error shows
+/// (not just whether the command is on `PATH`). `--offline` checks only the
+/// command and secrets.
+fn check_mcp(
+    r: &mut Report,
+    runtime: &tokio::runtime::Runtime,
+    secrets: &Secrets,
+    name: &str,
+    s: &McpServerConfig,
+    offline: bool,
+) {
+    if !s.enabled {
+        r.check(Status::Info, format!("{name}: disabled"), None);
+        return;
+    }
+    if let Err(e) = tern_core::mcp::check_config(s) {
+        r.check(Status::Fail, format!("{name}: {e}"), None);
+        return;
+    }
+    for secret in s.secret_names() {
+        check_secret(r, secrets, &format!("{name} secret"), secret);
+    }
+    if offline {
+        match (s.transport, s.command.as_deref()) {
+            (McpTransport::Stdio, Some(cmd)) => match find_on_path(cmd) {
+                Some(p) => r.check(Status::Ok, format!("{name}: {}", p.display()), None),
+                None => r.check(
+                    Status::Fail,
+                    format!("{name}: `{cmd}` not found on PATH"),
+                    None,
+                ),
+            },
+            _ => r.check(
+                Status::Info,
+                format!("{name}: connection skipped (--offline)"),
+                None,
+            ),
+        }
+        return;
+    }
+    let verified = runtime.block_on(tern_mcp::verify(
+        name,
+        s,
+        std::sync::Arc::new(secrets.clone()),
+        Default::default(),
+    ));
+    match verified {
+        Ok(v) => r.check(
+            Status::Ok,
+            format!(
+                "{name}: connected{}, {} tools",
+                v.server_info.map(|i| format!(" ({i})")).unwrap_or_default(),
+                v.tools.len()
+            ),
+            None,
+        ),
+        Err(e) => r.check(Status::Fail, format!("{name}: {}", e.message), None),
     }
 }
 

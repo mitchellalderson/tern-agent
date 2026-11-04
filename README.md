@@ -65,7 +65,7 @@ tern           # chat
 | **Models** | Anthropic, plus any OpenAI-compatible endpoint (OpenRouter, Ollama, vLLM, LM Studio). Models are `provider:model`; switch with `--model` or `/model`. |
 | **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `http_fetch`, long-term memory, search over past conversations, skills, schedules. |
 | **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. |
-| **MCP** | Configure servers under `[mcp.servers.<name>]` (stdio or streamable HTTP); their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. |
+| **MCP** | Configure servers under `[mcp.servers.<name>]` (stdio or streamable HTTP), or add, test, toggle and remove them through the daemon's `/v1/mcp` API without a restart; their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. |
 | **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
 | **Telegram** | Chat from your phone, approve tool calls with buttons, get scheduled results. |
@@ -271,7 +271,7 @@ tern config set mcp.servers.github.args '["stdio"]'
 tern doctor [--offline]
 ```
 
-Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each MCP server's command or URL and secrets. Each problem comes with a hint for fixing it.
+Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
 
 It exits `1` if anything failed, `0` otherwise (warnings are things not set up yet). It is read-only and doesn't create `~/.tern`.
 
@@ -314,8 +314,13 @@ See [Troubleshooting](#troubleshooting).
 | `gateway.telegram.bot_token_secret` | | Name of the secret holding the bot token. |
 | `mcp.servers.<name>.transport` | | `stdio` or `http` (streamable HTTP). |
 | `mcp.servers.<name>.command` / `args` | | Executable and arguments, for `stdio`. |
-| `mcp.servers.<name>.url` | | Endpoint, for `http`. |
+| `mcp.servers.<name>.enabled` | `true` | `false` keeps the server configured but doesn't start it or offer its tools. |
+| `mcp.servers.<name>.env` / `cwd` | `{}` / none | Plain (non-secret) environment and working directory, for `stdio`. Values that look like keys are refused on write; use `env_secrets`. |
+| `mcp.servers.<name>.url` | | Endpoint, for `http`. Plain `http` with a token only to loopback or private addresses. |
 | `mcp.servers.<name>.env_secrets` | `[]` | Secrets passed to the server's environment. |
+| `mcp.servers.<name>.bearer_token_secret` | none | For `http`: a secret sent as `Authorization: Bearer …`. |
+| `mcp.servers.<name>.header_secrets` | `{}` | For `http`: header → secret, e.g. `{ X-API-Key = "FOO_KEY" }`. |
+| `mcp.servers.<name>.disabled_tools` | `[]` | The server's own tool names to hide from the model. |
 | `mcp.servers.<name>.idempotent` | `false` | Its tools are safe to re-run when resuming. |
 | `mcp.servers.<name>.requires_approval` | `false` | Ask before each of its tool calls. |
 | `mcp.servers.<name>.effects` | `{}` | Effect per tool, by the server's tool name (`"*"` for the rest): `{ search_issues = "read", delete_repo = "destructive" }`. Overrides the server's `readOnlyHint` / `destructiveHint`; tools without either are `write`. |
@@ -381,6 +386,8 @@ The daemon can also listen on TCP so another computer or a phone can reach it. I
 listen = ["unix", "tcp://0.0.0.0:7420"]
 tls = "auto"   # self-signed certificate that devices pin; or "files" with tls_cert/tls_key
 ```
+
+Paired devices can't add or test `stdio` MCP servers, since those run commands on this host outside the sandbox; set `remote_mcp_stdio = true` under `[api]` to allow it. HTTP servers, toggles, restarts and removal work from any owner device.
 
 Restart `tern daemon`, then run `tern devices pair` (default scope `chat`: conversations and approvals, but not config, secrets or devices). It prints a QR code and a `tern://pair?…` link valid for 10 minutes. On another machine, `tern devices join '<link>'` prints a token; then `TERN_REMOTE_TOKEN=<token> tern --remote https://host:7420 --pin sha256:…` attaches the chat UI. `tern devices list` and `tern devices revoke <id>` manage devices; revoking signs the device out at once.
 

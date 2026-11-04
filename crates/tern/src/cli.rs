@@ -227,7 +227,7 @@ pub enum ConnectorsCommand {
 
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
-    /// Skip network checks (provider reachability).
+    /// Skip network checks (provider reachability) and starting MCP servers.
     #[arg(long)]
     pub offline: bool,
 }

@@ -3422,7 +3422,9 @@ name = "tern-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "futures",
+ "reqwest",
  "rmcp",
  "serde_json",
  "tempfile",

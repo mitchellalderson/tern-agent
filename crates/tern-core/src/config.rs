@@ -113,9 +113,8 @@ impl Config {
         }
         for (name, s) in &self.mcp.servers {
             uses.extend(
-                s.env_secrets
-                    .iter()
-                    .map(|secret| (secret.clone(), format!("mcp {name}"))),
+                s.secret_names()
+                    .map(|secret| (secret.to_owned(), format!("mcp {name}"))),
             );
         }
         uses
@@ -292,6 +291,9 @@ pub struct ApiConfig {
     /// Defaults to the first TCP listener (with this host's name for
     /// `0.0.0.0`).
     pub public_url: Option<String>,
+    /// Let paired devices add or test `stdio` MCP servers, which run
+    /// commands on this host outside the sandbox.
+    pub remote_mcp_stdio: bool,
 }
 
 impl Default for ApiConfig {
@@ -303,6 +305,7 @@ impl Default for ApiConfig {
             tls_key: None,
             trust_proxy: false,
             public_url: None,
+            remote_mcp_stdio: false,
         }
     }
 }
@@ -384,22 +387,42 @@ pub struct McpConfig {
     pub servers: BTreeMap<String, McpServerConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub transport: McpTransport,
+    /// A disabled server isn't started and adds no tools.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub enabled: bool,
     /// Executable for the `stdio` transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+    /// Plain, non-secret environment for `stdio` servers.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// Working directory for `stdio` servers, `~` expanded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     /// Endpoint for the `http` (streamable HTTP) transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// Secret names exported to the server process environment.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_secrets: Vec<String>,
-    #[serde(default)]
+    /// `http` only: a secret sent as `Authorization: Bearer <value>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_token_secret: Option<String>,
+    /// `http` only: header name → secret name, e.g. `X-API-Key = "FOO_KEY"`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub header_secrets: BTreeMap<String, String>,
+    /// The server's own tool names to hide from the model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub idempotent: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub requires_approval: bool,
     /// Per-tool effect overrides, keyed by the server's own tool name (`"*"`
     /// for the rest), e.g. `effects = { search = "read", "*" = "write" }`.
@@ -408,9 +431,34 @@ pub struct McpServerConfig {
     pub effects: BTreeMap<String, crate::tool::Effect>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+impl McpServerConfig {
+    /// Every secret the server needs: `env_secrets`, then the bearer token,
+    /// then header secrets.
+    pub fn secret_names(&self) -> impl Iterator<Item = &str> {
+        self.env_secrets
+            .iter()
+            .chain(&self.bearer_token_secret)
+            .chain(self.header_secrets.values())
+            .map(String::as_str)
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpTransport {
+    #[default]
     Stdio,
     Http,
 }

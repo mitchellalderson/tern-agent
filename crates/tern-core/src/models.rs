@@ -79,7 +79,15 @@ impl std::error::Error for ListError {}
 #[serde(rename_all = "snake_case")]
 pub enum Change {
     ProvidersChanged {},
-    ModelsChanged { provider: String },
+    ModelsChanged {
+        provider: String,
+    },
+    /// An MCP server changed state or config; `state` is `None` once it's
+    /// removed.
+    McpChanged {
+        name: String,
+        state: Option<crate::mcp::McpState>,
+    },
 }
 
 /// What a client fills in to add or change a provider.

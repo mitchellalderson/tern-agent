@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Config, ConfigError, ProviderConfig, ProviderKind};
+use super::{Config, ConfigError, McpServerConfig, ProviderConfig, ProviderKind};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EditError {
@@ -137,6 +137,63 @@ impl ConfigFile {
             .is_some_and(|t| t.remove(name).is_some())
     }
 
+    /// Add or replace `[mcp.servers.<name>]`. Fields the config no longer
+    /// sets are removed; comments on the ones that stay are kept.
+    pub fn upsert_mcp_server(
+        &mut self,
+        name: &str,
+        cfg: &McpServerConfig,
+    ) -> Result<(), EditError> {
+        let key = format!("mcp.servers.{name}");
+        let not_table = |part: &str| EditError::NotTable {
+            part: part.into(),
+            key: key.clone(),
+        };
+        let mut table = self.doc.as_table_mut();
+        for part in ["mcp", "servers"] {
+            table = table
+                .entry(part)
+                .or_insert_with(|| {
+                    let mut t = toml_edit::Table::new();
+                    t.set_implicit(true);
+                    toml_edit::Item::Table(t)
+                })
+                .as_table_mut()
+                .ok_or_else(|| not_table(part))?;
+        }
+        let table = table
+            .entry(name)
+            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| not_table(name))?;
+        let fields = match serde_json::to_value(cfg) {
+            Ok(serde_json::Value::Object(m)) => m,
+            _ => return Err(EditError::Key(key)),
+        };
+        let stale: Vec<String> = table
+            .iter()
+            .map(|(k, _)| k.to_owned())
+            .filter(|k| !fields.contains_key(k))
+            .collect();
+        for k in stale {
+            table.remove(&k);
+        }
+        for (k, v) in fields {
+            let v = to_toml(&v).ok_or_else(|| EditError::Key(format!("{key}.{k}")))?;
+            set_keeping_comments(table, &k, v);
+        }
+        Ok(())
+    }
+
+    /// Remove `[mcp.servers.<name>]`. Returns whether it existed.
+    pub fn remove_mcp_server(&mut self, name: &str) -> bool {
+        self.doc
+            .get_mut("mcp")
+            .and_then(|m| m.get_mut("servers"))
+            .and_then(|s| s.as_table_like_mut())
+            .is_some_and(|t| t.remove(name).is_some())
+    }
+
     /// Remove a top-level key such as `default_model`.
     pub fn remove(&mut self, key: &str) -> bool {
         self.doc.remove(key).is_some()
@@ -165,6 +222,34 @@ impl ConfigFile {
         write(&self.path, &|| std::fs::rename(&tmp, &self.path))?;
         Ok(config)
     }
+}
+
+/// A JSON value as TOML: objects become inline tables. `None` for `null`.
+fn to_toml(v: &serde_json::Value) -> Option<toml_edit::Value> {
+    use serde_json::Value as J;
+    Some(match v {
+        J::Null => return None,
+        J::Bool(b) => (*b).into(),
+        J::Number(n) => match n.as_i64() {
+            Some(i) => i.into(),
+            None => n.as_f64()?.into(),
+        },
+        J::String(s) => s.as_str().into(),
+        J::Array(a) => {
+            let mut arr = toml_edit::Array::new();
+            for x in a {
+                arr.push(to_toml(x)?);
+            }
+            arr.into()
+        }
+        J::Object(m) => {
+            let mut t = toml_edit::InlineTable::new();
+            for (k, x) in m {
+                t.insert(k, to_toml(x)?);
+            }
+            t.into()
+        }
+    })
 }
 
 /// Replace `key`'s value but keep the comments around it.
@@ -279,6 +364,45 @@ api_key_secret = \"ANTHROPIC_API_KEY\"
         let mut f = ConfigFile::open(&fresh).unwrap();
         f.set("max_iterations", "5").unwrap();
         assert_eq!(f.save().unwrap().max_iterations, 5);
+    }
+
+    #[test]
+    fn writes_and_removes_mcp_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = file(
+            &dir,
+            "[mcp.servers.github]\n# the token\nenv_secrets = [\"GITHUB_TOKEN\"]\ntransport = \"stdio\"\ncommand = \"old\"\nidempotent = true\n",
+        );
+        let mut f = ConfigFile::open(&path).unwrap();
+        let mut cfg = McpServerConfig {
+            enabled: true,
+            command: Some("github-mcp-server".into()),
+            args: vec!["stdio".into()],
+            env_secrets: vec!["GITHUB_TOKEN".into()],
+            ..Default::default()
+        };
+        cfg.env.insert("LOG_LEVEL".into(), "warn".into());
+        f.upsert_mcp_server("github", &cfg).unwrap();
+        let other = McpServerConfig {
+            transport: super::super::McpTransport::Http,
+            enabled: false,
+            url: Some("https://mcp.example.com/mcp".into()),
+            bearer_token_secret: Some("EXAMPLE_TOKEN".into()),
+            ..Default::default()
+        };
+        f.upsert_mcp_server("example", &other).unwrap();
+        let c = f.save().unwrap();
+        assert_eq!(c.mcp.servers["github"], cfg);
+        assert_eq!(c.mcp.servers["example"], other);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# the token"), "{text}");
+        assert!(!text.contains("idempotent"), "{text}");
+
+        let mut f = ConfigFile::open(&path).unwrap();
+        assert!(f.remove_mcp_server("github"));
+        assert!(!f.remove_mcp_server("github"));
+        let c = f.save().unwrap();
+        assert_eq!(c.mcp.servers.keys().collect::<Vec<_>>(), ["example"]);
     }
 
     #[test]

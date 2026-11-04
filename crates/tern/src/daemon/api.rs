@@ -38,7 +38,7 @@
 //! Schedules are in `api_schedules.rs`; session runs and journal steps in
 //! `api_runs.rs`; sub-agent runs and messages in `api_subagents.rs`;
 //! secrets in `api_secrets.rs`; providers, model lists and the default model
-//! in `api_providers.rs`.
+//! in `api_providers.rs`; MCP servers in `api_mcp.rs`.
 //! Pairing, devices and uploads are in `auth.rs` and `uploads.rs`. TCP
 //! listeners (`listen.rs`) serve this same router behind device-token auth.
 
@@ -175,6 +175,7 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_subagents::routes())
         .merge(super::api_secrets::routes())
         .merge(super::api_providers::routes())
+        .merge(super::api_mcp::routes())
         .merge(super::api_lifecycle::routes())
         .merge(super::auth::routes())
         .with_state(manager)
