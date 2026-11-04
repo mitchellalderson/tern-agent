@@ -9,6 +9,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -50,10 +52,43 @@ pub const NOT_IN_SCRIPTS: &[&str] = &[
     "connection_add",
 ];
 
-/// Whether a tool with this declared effect may be offered to scripts (PY0:
-/// `read` tools only). The per-call policy is checked again at each call.
-pub fn callable_in_scripts(name: &str, effect: Effect) -> bool {
-    effect == Effect::Read && !NOT_IN_SCRIPTS.contains(&name)
+/// Whether a tool with this declared effect may be offered to scripts:
+/// `read` tools, and `write` tools when `[python] allow_writes` is on
+/// (PY2). `destructive` tools never are. The per-call policy is checked
+/// again at each call.
+pub fn callable_in_scripts(name: &str, effect: Effect, allow_writes: bool) -> bool {
+    !NOT_IN_SCRIPTS.contains(&name)
+        && match effect {
+            Effect::Read => true,
+            Effect::Write => allow_writes,
+            Effect::Destructive => false,
+        }
+}
+
+/// What the loop lets one script do (`[python]`, docs/python-tool-spec.md
+/// §3.4, §3.5, §8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptLimits {
+    /// `write` tools are callable from scripts.
+    pub allow_writes: bool,
+    /// Approval prompts one script may cause; the next call that would ask
+    /// is refused.
+    pub max_asks: u32,
+    /// Write calls one script may make.
+    pub max_writes: u32,
+    /// Tool calls run at once when a script awaits several (`gather`).
+    pub max_parallel: usize,
+}
+
+impl Default for ScriptLimits {
+    fn default() -> Self {
+        Self {
+            allow_writes: false,
+            max_asks: 3,
+            max_writes: 10,
+            max_parallel: 4,
+        }
+    }
 }
 
 /// The clock and random seed a script runs with, journaled as its first
@@ -72,14 +107,20 @@ pub enum HostReply {
     Done(ToolResult),
     /// The call wasn't made; the script raises `PermissionError` with this.
     Refused(String),
+    /// The script can't go on: it ends with this error, uncatchable. Used
+    /// when a re-run diverged after writes had already run (spec §4.2).
+    Abort(String),
 }
 
 pub enum HostRequest {
     Env(oneshot::Sender<ScriptEnv>),
-    Call {
-        name: String,
-        input: Value,
-        reply: oneshot::Sender<HostReply>,
+    /// One or more calls the script made without waiting for each result
+    /// (`gather`): planned and journaled in order, run up to `max_parallel`
+    /// at a time, answered together in the same order. A plain call is a
+    /// batch of one.
+    Calls {
+        calls: Vec<(String, Value)>,
+        reply: oneshot::Sender<Vec<HostReply>>,
     },
 }
 
@@ -89,6 +130,9 @@ pub struct ScriptHost {
     /// Tools the run has that scripts can't call, and why.
     blocked: BTreeMap<String, String>,
     tx: mpsc::Sender<HostRequest>,
+    /// Milliseconds the loop spent waiting for the user, which don't count
+    /// against the script's wall time.
+    waited_ms: AtomicU64,
 }
 
 impl ScriptHost {
@@ -104,6 +148,7 @@ impl ScriptHost {
                 callable,
                 blocked,
                 tx,
+                waited_ms: AtomicU64::new(0),
             }),
             rx,
         )
@@ -126,18 +171,43 @@ impl ScriptHost {
         rx.await.ok()
     }
 
+    /// One call; see [`ScriptHost::calls`].
     pub async fn call(&self, name: &str, input: Value) -> HostReply {
+        self.calls(vec![(name.to_owned(), input)])
+            .await
+            .pop()
+            .unwrap_or_else(|| HostReply::Refused("the run stopped".into()))
+    }
+
+    /// Several calls at once. The answers come back in the order asked.
+    pub async fn calls(&self, calls: Vec<(String, Value)>) -> Vec<HostReply> {
+        let n = calls.len();
+        let stopped = || vec![HostReply::Refused("the run stopped".into()); n];
         let (reply, rx) = oneshot::channel();
-        let req = HostRequest::Call {
-            name: name.to_owned(),
-            input,
-            reply,
-        };
-        if self.tx.send(req).await.is_err() {
-            return HostReply::Refused("the run stopped".into());
+        if self
+            .tx
+            .send(HostRequest::Calls { calls, reply })
+            .await
+            .is_err()
+        {
+            return stopped();
         }
-        rx.await
-            .unwrap_or_else(|_| HostReply::Refused("the run stopped".into()))
+        match rx.await {
+            Ok(r) if r.len() == n => r,
+            _ => stopped(),
+        }
+    }
+
+    /// Time the loop spent waiting for the user so far; the script's wall
+    /// limit doesn't count it.
+    pub fn waited(&self) -> Duration {
+        Duration::from_millis(self.waited_ms.load(Ordering::Relaxed))
+    }
+
+    /// Record time spent waiting for the user.
+    pub fn add_wait(&self, d: Duration) {
+        self.waited_ms
+            .fetch_add(d.as_millis() as u64, Ordering::Relaxed);
     }
 }
 

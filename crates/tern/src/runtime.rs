@@ -258,6 +258,7 @@ impl Runtime {
                 outbox_expiry: std::time::Duration::from_secs(
                     config.outbox.expire_hours.saturating_mul(3600),
                 ),
+                script: config.python.script_limits(),
                 ..AgentConfig::default()
             },
         )
@@ -1003,7 +1004,15 @@ pub(crate) fn host_policy(config: &Config, home: &TernHome) -> tern_sandbox::Hos
 /// backend `shell` uses.
 #[cfg(feature = "python")]
 fn python_tool(config: &Config, home: &TernHome) -> tern_python::Python {
-    let limits = tern_python::Limits::default();
+    let cfg = &config.python;
+    let limits = tern_python::Limits {
+        cpu: Duration::from_secs(cfg.max_seconds),
+        turn: Duration::from_secs(cfg.max_turn_seconds),
+        wall: Duration::from_secs(cfg.max_wall_seconds),
+        memory: (cfg.max_memory_mb as usize).saturating_mul(1024 * 1024),
+        host_calls: cfg.max_host_calls as usize,
+        ..tern_python::Limits::default()
+    };
     let Ok(program) = std::env::current_exe() else {
         tracing::warn!("python: can't find tern's own binary; scripts run in-process");
         return tern_python::Python::new(limits);
@@ -1103,7 +1112,9 @@ fn build_tools(
         tern_tools::agents::register(&mut registry, subagents.clone());
     }
     #[cfg(feature = "python")]
-    registry.register(Arc::new(python_tool(config, home)));
+    if config.python.enabled {
+        registry.register(Arc::new(python_tool(config, home)));
+    }
 
     let mut lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
     lua.default_rate = config.connectors.rate;

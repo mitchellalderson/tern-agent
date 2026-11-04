@@ -451,7 +451,7 @@ async fn researched_plans_are_egress_and_capped() {
 
     for tool in ["auth_discover", "auth_propose", "connection_add"] {
         assert!(
-            !tern_core::script::callable_in_scripts(tool, Effect::Read),
+            !tern_core::script::callable_in_scripts(tool, Effect::Read, true),
             "{tool} is offered to scripts"
         );
     }

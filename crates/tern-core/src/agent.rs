@@ -76,6 +76,8 @@ pub struct AgentConfig {
     pub approval_wait: Duration,
     /// How long an outbox item waits for the user.
     pub outbox_expiry: Duration,
+    /// What one `python` script may do (`[python]`).
+    pub script: crate::script::ScriptLimits,
 }
 
 impl Default for AgentConfig {
@@ -91,6 +93,7 @@ impl Default for AgentConfig {
             memory_flush: false,
             approval_wait: Duration::from_secs(120),
             outbox_expiry: Duration::from_secs(72 * 60 * 60),
+            script: crate::script::ScriptLimits::default(),
         }
     }
 }
@@ -653,7 +656,7 @@ impl Agent {
                         StepOutput::new(r.clone()).with_messages(vec![tool_result(&call, &r)]),
                     )
                 };
-                let result = self
+                let result = match self
                     .journal
                     .step_with(&run.id, idx, StepKind::Tool, &call, in_flight, || async {
                         if truncated {
@@ -685,6 +688,7 @@ impl Agent {
                                 scope,
                                 &ctx,
                                 gate,
+                                taint.reason(),
                                 &taint.egress,
                                 call_fut,
                             )
@@ -697,7 +701,13 @@ impl Agent {
                             .with_messages(vec![msg])
                             .with_consumes(consumes))
                     })
-                    .await?;
+                    .await
+                {
+                    Ok(r) => r,
+                    // A script cancelled while it waited for an approval.
+                    Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
+                    Err(e) => return Err(e.into()),
+                };
                 idx += 1;
                 if !result.replayed && !truncated {
                     let summary = self.tools.summarize(&call);
@@ -713,7 +723,11 @@ impl Agent {
                 taint.contacted(host);
                 // A script's own calls: the hosts they reached count too.
                 while self.journal.peek(&run.id, idx)? == Some(StepKind::PyCall) {
-                    taint.contacted(self.script_host(&run.id, idx)?);
+                    let sub = self.script_substep(&run.id, idx)?;
+                    taint.contacted(sub.host);
+                    if sub.allow_all_egress {
+                        taint.allow_all_egress();
+                    }
                     idx += 1;
                 }
                 if result.value.untrusted {
@@ -871,7 +885,7 @@ impl Agent {
                 InFlight::Retry,
                 || async {
                     let (decision, why) = self
-                        .decide(run, call, policy, gate, taint, egress, cancel)
+                        .decide(run, call, policy, gate, taint, egress, None, cancel)
                         .await?;
                     let messages = match decision {
                         ApprovalOutcome::Approved | ApprovalOutcome::ApprovedForRun => vec![],
@@ -904,6 +918,7 @@ impl Agent {
         gate: Gate,
         taint: Option<&str>,
         egress: Option<&str>,
+        script: Option<String>,
         cancel: &CancellationToken,
     ) -> Result<(ApprovalOutcome, String), StepError> {
         let always_ok = self.tools.allow_always(call);
@@ -951,6 +966,7 @@ impl Agent {
             taint: taint.map(Into::into),
             local_only: policy.local_approval,
             egress_host: egress.map(Into::into),
+            script,
         };
         // A write may wait in the outbox instead (tooling spec §5.2).
         let deferrable = effect != crate::tool::Effect::Read && self.approvals.can_defer();

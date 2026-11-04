@@ -133,3 +133,18 @@ pub fn call_input(args: &CallArgs, spec: &ToolSpec) -> Result<Value, String> {
     }
     Ok(Value::Object(input))
 }
+
+/// The positional arguments of a call, as JSON.
+pub fn args_json(args: &CallArgs) -> Vec<Value> {
+    args.args().map(|a| ref_to_json(&a)).collect()
+}
+
+/// An integer argument given by position or by keyword.
+pub fn int_arg(args: &CallArgs, position: usize, name: &str) -> Option<i64> {
+    if let Some(a) = args.args().nth(position) {
+        return a.as_int();
+    }
+    args.kwargs()
+        .find(|(k, _)| k.as_str() == Some(name))
+        .and_then(|(_, v)| v.as_int())
+}

@@ -1,7 +1,9 @@
 # tern `python`: sandboxed compute that calls tools, not the network
 
-Status: PY0 and PY1 built (2026-11-04): read-only compute, run in a sandboxed `tern __monty-exec` helper; see §9 and
-DECISIONS.md PY0, PY1. PY1b–PY3 not built.
+Status: PY0 and PY1 built (2026-11-04): read-only compute, run in a sandboxed `tern __monty-exec` helper; PY1b (the
+asking and `gather` half) and PY2 (writes) built after that, with `statistics` and `string` added to the standard
+library; see §9 and DECISIONS.md PY0, PY1, PY1b+PY2. Not built: `reuse_reads`, the stub list in the prompt, streamed
+`print`, the inspector's nesting, the determinism fuzz and `cargo deny` from PY1b, and all of PY3.
 Builds on T0 (effects), T3a (taint), T3 (outbox, autonomy) and the step journal.
 Interpreter: [Monty](https://pydantic.dev/monty), Pydantic's Python subset written in Rust. Monty facts below were
 checked against Monty 1.4.0 on 2026-11-04 (§11). Related:
@@ -159,6 +161,16 @@ motivating case, that is `lua__county__lookup`.
   `asyncio.gather(*[lua__county__lookup(a) for a in addrs])` runs them concurrently through Monty's pending futures
   (`resume_pending` / `RunProgress::ResolveFutures`). The host runs at most `max_parallel` (default 4) at once, so a
   `gather` of 200 doesn't stampede a county server. Connector rate limits (T4b-i) apply per call on top.
+  **Built (PY1b), with two differences from the picture above.** (1) Monty doesn't say, at a host call, whether the
+  script will `await` it: `r = f(x)` and the `f(x)` inside `asyncio.gather(f(x), f(y))` look the same. So the mode is
+  chosen once per script from its source (`scan::uses_async`: `async`, `await` or `asyncio` outside comments and
+  strings). In an async script every tool call returns an awaitable; in any other it returns the value, as in PY0. An
+  immediate `await f(x)` is answered on the spot (`resume_eager`); calls collected for `gather` run together when the
+  script awaits them. (2) Results go back to Monty **all at once, in call order**, once every call of the batch has
+  finished, so what the script sees can't depend on which tool was faster, and a re-run sees the same. Monty 1.4.0's
+  `gather` has no `return_exceptions`, so one failing call raises for the whole `gather`; a hint tells the model to
+  wrap each call in a small async function that catches its own errors. An upstream `return_exceptions` (or a way to
+  tell a bare call from an awaited one) would remove both workarounds.
 - **Stubs.** The host generates a typed stub per callable tool from its input schema
   (`def lua__county__lookup(address: str, *, year: int = ...) -> dict: ...`). The prompt lists them (§6.1). PY3 can
   also feed them to Monty's type checker (`monty-type-checking`) to catch wrong names and arguments before any host call
@@ -184,6 +196,13 @@ and the run inspector can nest them under the script. The `python` step's output
 replays as completed, the loop skips to *N*+*k*+1 without running anything. Steps complete out of order (*N* after
 *N*+*k*), which the journal already allows because it is keyed by index.
 
+**What the sub-steps are (PY1b, PY2).** Each is a `py_call` step. Sub-step *N*+1 records the clock and seed (the
+`env` step). For each tool call the script makes, in order: if the call needs the user's answer, an **ask** sub-step
+(`{"in": N, "seq": i, "ask": {name, input}}`, its output the decision and what the script is told if it didn't run),
+then the **call** sub-step (`{"in": N, "seq": i, "call": {…}}`). A call a grant or the autonomy level lets through has
+no ask step. Calls that a script makes together (`gather`) are planned and numbered in order, then run up to
+`max_parallel` at a time; each is journaled under its own number.
+
 Sub-steps append no conversation messages: there is no `tool_use` for them to pair with. The model sees one result,
 the script's. The ledger, `tern runs show` and the run inspector see every call.
 
@@ -207,6 +226,15 @@ count against the script's time limits (§5.1).
 | `Check::ReadOnly` (readonly autonomy, PY2 writes) | `PermissionError("…: this run is read-only")` |
 | Out of scope | `PermissionError("…: not available to this agent")`, the same as a direct call |
 
+**Built (PY1b).** The ask goes through the same `Agent::decide` as a top-level call (grants, taint, autonomy, the
+tainted host limit, the outbox), as an *ask* sub-step; the prompt carries `ApprovalRequest::script` ("from a python
+script (call 7 of this script)", then the script, cut to 2000 bytes), which the headline, the TUI, Telegram, the CLI and
+the desktop card's detail view show. Waiting is counted in `ScriptHost::waited` and subtracted from `max_wall_seconds`.
+A standing host grant answers the tainted host limit without a prompt and without counting toward `max_asks`; within one
+`gather` batch, one approval for a host covers the batch's other calls to it (as a sequence of calls would). All of a
+batch's checks see the taint the script had when the batch began: calls made together can't depend on each other.
+A re-run answers journaled asks from the journal, whatever the grants say now.
+
 At most `max_asks` (default 3) prompts per script. The fourth call that would ask raises `PermissionError` with "too
 many approvals in one script; call this tool directly". A loop shouldn't turn into 50 prompts; that is approval
 fatigue (tooling spec W7) with extra steps.
@@ -229,6 +257,13 @@ the model's reasoning beside it.
 
 PY2 is not in v1 because the read-only version already fixes the motivating case, and how writes from loops should
 look to the user (one card per write, or one card per script, §10) deserves real use first.
+
+**Built (PY2), behind `[python] allow_writes` (off by default).** One card per write, as open question 3's simple
+option. `write` tools join the callable set (`callable_in_scripts(name, effect, allow_writes)`); `destructive` ones never
+do, and the per-call policy is checked again (a `write` call of a tool declared `read` is refused too). A deferred write
+returns `{"queued": true, "outbox": <id>, "tool": "…"}` (the id parsed from the outbox message by
+`outbox::deferred_id`); a write that runs is recorded in the activity ledger like a direct one. `max_writes` counts the
+writes let through (refused and queued ones don't), and the call that would exceed it is refused before anyone is asked.
 
 ### 3.6 Taint
 
@@ -269,7 +304,7 @@ differ, and what pins it:
 | `random` | Seeded from `hash(run_id, call_id)` |
 | `time.sleep`, `asyncio.sleep` | Virtual: advances the frozen clock and returns at once. `max_total_sleep` set to 0 real seconds |
 | Host results | Fed from the journal |
-| Completion order of concurrent calls | Each sub-step records the order its result was delivered (`delivered: j`). On replay, futures are resolved in that recorded order |
+| Completion order of concurrent calls | **Built differently:** a batch of awaited calls is answered all at once in call order after every call has finished, so completion order is never observable and nothing needs recording (§3.2) |
 | Workspace files | **Not pinned.** A file read through the mount may have changed since. Reads through the mount are recorded as a content hash in a sub-step (`{"in": N, "seq": i, "fs": path}` → `sha256`). A changed hash is a divergence |
 | Monty version | Recorded in the step output. Not part of the input hash, so an upgrade doesn't throw the step away; a mismatch is logged |
 | `id()`, `hash()` of str, dict order | Deterministic in Monty, assumed. PY0 checks this with a re-run fuzz test (§9) |
@@ -281,7 +316,8 @@ number. If the re-run script asks for something different at *N*+*i* than was re
 
 - **All journaled sub-steps from *i* on are reads** (always, in v1): the journal truncates from *N*+*i* as it does
   for any divergence, logs `journal divergence`, and the script continues live. Repeating a read is harmless.
-- **One of them was an executed write** (PY2): the script does **not** continue. The `python` step completes with an
+- **One of them was an executed write** (PY2, built: `Agent::diverged`; it also counts a write queued in the outbox):
+  the script does **not** continue. The `python` step completes with an
   error naming the writes that already ran ("script changed on resume after these calls ran: write_file notes.md"),
   and the model decides what to do. Writes are never re-executed by a divergent replay.
 
@@ -407,7 +443,7 @@ Functions available in python:
   read_file(path: str) -> str
   ...
 Available modules: json, re, csv, math, datetime, collections, itertools, functools, decimal, random, hashlib,
-tomllib, pathlib, base64, bisect, asyncio. Use asyncio.gather for many independent lookups.
+tomllib, pathlib, base64, bisect, asyncio, statistics, string. Use asyncio.gather for many independent lookups.
 Return a summary, not raw data: results over 32 KB are cut.
 Only if a task needs pandas, numpy or another package, use `shell` with python3. It asks the user every time.
 ```
@@ -426,13 +462,21 @@ what went wrong, where, and what to do instead, in one or two lines, plus `print
 | Syntax error | `SyntaxError at line 4: ...` with the line |
 | Unsupported feature (parse time) | `line 2: class inheritance isn't supported in tern's python. Use functions and dicts, or @dataclass without a base class.` |
 | Unknown module | `line 1: module 'pandas' isn't available. Available: json, re, csv, ... For pandas or numpy, use shell with python3 (asks the user).` |
-| Missing stdlib module | `line 1: module 'statistics' isn't available. Use math and sorted(): median = sorted(xs)[len(xs)//2]` |
+| Missing stdlib module | `line 1: module 'enum' isn't available. Use plain constants or a dict of names to values` (`statistics` and `string` are provided by tern since PY1b+PY2, below) |
 | Unknown function | `name 'county_lookup' is not defined. Did you mean lua__county__lookup?` |
 | Host call error | The traceback ending in `RuntimeError: lua__county__lookup: 404 address not found` |
 | Limits | `stopped: 200 host calls per script. Batch fewer lookups, or ask the user to raise [python] max_host_calls.` |
 
+**Standard library tern adds (built).** Monty asks its host for any module it doesn't know
+(`OsFunctionCall::Import`), and the host's answer becomes the module, so `tern-python/src/modules.rs` provides
+`statistics` (`mean`, `fmean`, `median`, `median_low`, `median_high`, `mode`, `multimode`, `stdev`, `pstdev`,
+`variance`, `pvariance`, `geometric_mean`, `harmonic_mean`, `quantiles`) and `string` (the constants). Calls to them are
+answered inside the interpreter's own process: pure computation, deterministic, not journaled, not tool calls, so they
+don't count against `max_host_calls`. What Monty has no host hook for stays missing: `enum`, `uuid` (non-deterministic
+anyway), `operator` and `io` (they hand back callables or streams), `contextlib`.
+
 The rewrite hints come from a small table in the host keyed on Monty's `NotImplementedError` messages and import
-names: inheritance, `@property`/`@classmethod`/`@staticmethod`, `yield`, `del`, `enum`, `statistics`, `string`,
+names: inheritance, `@property`/`@classmethod`/`@staticmethod`, `yield`, `del`, `enum`,
 `operator`, `uuid`, `io`, `contextlib`. Each entry is one line of what to write instead. The table lives next to a test
 that runs each offending snippet through Monty, so a Monty release that adds a feature fails the test and the hint
 gets removed.
@@ -496,14 +540,14 @@ enabled = true              # the tool is offered when the binary has the `pytho
 max_seconds = 30            # interpreter time per script
 max_turn_seconds = 10       # interpreter time between host calls
 max_wall_seconds = 600      # excluding approval waits
-max_memory = "256MB"
+max_memory_mb = 256          # built as MB, a number
 max_host_calls = 200
 max_parallel = 4
 max_asks = 3
 max_writes = 10             # PY2
 allow_writes = false        # PY2: write tools callable from scripts
-reuse_reads = true          # §6.2
-stub_budget = 2048          # bytes of function stubs in the prompt
+reuse_reads = true          # §6.2 (not built)
+stub_budget = 2048          # bytes of function stubs in the prompt (not built)
 ```
 
 `confine` and the OS sandbox come from `[sandbox]`; scripts never get the network, whatever `[sandbox] network` says.
@@ -514,8 +558,8 @@ stub_budget = 2048          # bytes of function stubs in the prompt
 |---|---|---|---|
 | **PY0** read-only compute (**built**) | Monty 1.4.0 pinned, MSRV 1.96, `python` cargo feature (default on). The `python` tool in-process (§5.2); host functions for `read` tools (§3.1–3.3), by tool name, synchronous; sub-step journaling and deterministic re-run (§4.1) with a journaled clock and seed; taint (§3.6); reads that would ask, and every write, refused with `PermissionError`; the read-only workspace mount; time, memory, host-call, code and output limits; errors and hints (§6.2); a `## Compute` prompt section; `runs show` lines for sub-steps | M | Met: a script loops over a Luau connector with one journaled sub-step per call; a crash mid-script resumes without repeating calls (the connector's own counter proves it); an untrusted result taints the run and the output; a write tool is refused; limits and unsupported features give clean errors with hints |
 | **PY1** isolation (**built**) | `tern __monty-exec` helper under the OS sandbox with network off, `monty-alloc` ceiling and `RLIMIT_CPU` there (§5.2); JSON-lines transport; crash, OOM and CPU-limit exits turned into tool errors | M | Met: a helper that aborts mid-script is a tool error and the run finishes; the memory limit ends the helper with `MemoryError`; a crash mid-script resumes with the journaled clock and calls |
-| **PY1b** asking and speed | Mid-script approvals for reads that ask (§3.4; the T3 egress work in `py_call` is the start); async host functions and `gather` with `max_parallel`; `reuse_reads`; stub list in the prompt; streamed `print`; the run inspector nesting sub-steps; determinism fuzz; `cargo deny`; `[python]` config | M | The motivating case with 30 neighbours through `gather`; a script reading an untrusted page then `http_fetch`ing a new host asks |
-| **PY2** writes | `write` host functions behind `allow_writes`; granted writes; asks and outbox deferral returning `queued` (§3.5); `max_writes`; divergence after writes fails safe (§4.2); approval cards show the script | M | A tainted script's `write_file` goes to the outbox once, replays without a second item, and the script's result says `queued` |
+| **PY1b** asking and speed (**mostly built**: asks, `gather`, `max_parallel`, `[python]` config; not built: `reuse_reads`, stubs in the prompt, streamed `print`, inspector nesting, determinism fuzz, `cargo deny`) | Mid-script approvals for reads that ask (§3.4; the T3 egress work in `py_call` is the start); async host functions and `gather` with `max_parallel`; `reuse_reads`; stub list in the prompt; streamed `print`; the run inspector nesting sub-steps; determinism fuzz; `cargo deny`; `[python]` config | M | The motivating case with 30 neighbours through `gather`; a script reading an untrusted page then `http_fetch`ing a new host asks |
+| **PY2** writes (**built**) | `write` host functions behind `allow_writes`; granted writes; asks and outbox deferral returning `queued` (§3.5); `max_writes`; divergence after writes fails safe (§4.2); approval cards show the script | M | A tainted script's `write_file` goes to the outbox once, replays without a second item, and the script's result says `queued` |
 | **PY3** polish | Agent profile defaults and the per-agent ceiling (AP3); type-check scripts against stubs before running; `tern doctor` lines (feature present, sandbox confined, limits); warm helper pool if traces show the need; desktop script viewer | S–M | |
 
 PY0 is built on main's T3a API (`approval::check(…, tainted)`); PY1 and PY2 need T3 (the `Gate` API, the host limit, the outbox) merged. Where it sits in

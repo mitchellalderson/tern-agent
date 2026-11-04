@@ -303,6 +303,23 @@ fn meta(key: &str) -> Meta {
             ..at_least(1.0)
         },
         "webhooks.header_timeout_secs" | "webhooks.max_connections" => at_least(1.0),
+        "python.allow_writes" => Meta {
+            security: Some(
+                "On: a script can make changes in a loop, up to max_writes. Each one still asks \
+                 (or goes to the outbox) the way a direct call does, and a run that read \
+                 untrusted content asks for all of them; this only lets scripts try.",
+            ),
+            risky: |v| v == &Value::Bool(true),
+            ..m
+        },
+        "python.max_seconds"
+        | "python.max_turn_seconds"
+        | "python.max_wall_seconds"
+        | "python.max_memory_mb"
+        | "python.max_host_calls"
+        | "python.max_parallel"
+        | "python.max_asks" => at_least(1.0),
+        "python.max_writes" => at_least(0.0),
         "bundles.require_signed" => Meta { live: true, ..m },
         "bundles.allow_private_hosts" => Meta {
             live: true,
@@ -769,6 +786,7 @@ mod tests {
                 "connectors",
                 "auth",
                 "bundles",
+                "python",
                 "webhooks",
                 "api"
             ]

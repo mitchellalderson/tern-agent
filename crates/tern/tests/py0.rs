@@ -1,4 +1,4 @@
-//! PY0–PY1 end-to-end (docs/python-tool-spec.md): a `python` script calls a
+//! PY0–PY2 end-to-end (docs/python-tool-spec.md): a `python` script calls a
 //! Luau connector in a loop, each call a journaled `py_call` sub-step that a
 //! resumed run replays instead of repeating; untrusted results taint the
 //! run; write tools are refused inside scripts. Scripts run in a
@@ -243,7 +243,7 @@ fn a_write_tool_is_refused_inside_a_script() {
         .to_owned();
     assert!(
         content.contains(
-            "lua__county__flag: write tool; scripts can only call read-only tools; call it directly"
+            "lua__county__flag: write tool; scripts can only call read-only tools unless `[python] allow_writes` is on; call it directly"
         ),
         "{content}"
     );
@@ -359,4 +359,95 @@ fn the_helper_reads_the_workspace() {
         .unwrap()
         .to_owned();
     assert!(content.contains("result:\n42"), "{content}");
+}
+
+const GATHER: &str = r#"
+import asyncio
+addrs = ["1 Elm St", "22 Elm St", "333 Elm St", "4444 Elm St"]
+rows = await asyncio.gather(*[lua__county__lookup(a) for a in addrs])
+print("looked up", len(rows))
+{"addresses": [r["address"] for r in rows], "calls": sorted(r["call"] for r in rows)}
+"#;
+
+#[test]
+fn gather_runs_connector_calls_together_through_the_helper_and_journals_each() {
+    let env = Env::new();
+    env.script(GATHER);
+    let o = env.tern(&["run", "compare the neighbours"]);
+    let (stdout, stderr) = (text(&o.stdout), text(&o.stderr));
+    assert!(o.status.success(), "{stdout}\n{stderr}");
+    let run = run_id(&stderr);
+    let content = env.script_result(&run)["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        content.contains(
+            r#"{"addresses":["1 Elm St","22 Elm St","333 Elm St","4444 Elm St"],"calls":[1,2,3,4]}"#
+        ),
+        "answers in the order asked: {content}"
+    );
+    assert!(
+        content.contains("tool calls: lua__county__lookup ×4"),
+        "{content}"
+    );
+    // The environment, then a sub-step per call, numbered in call order.
+    let show = env.show(&run);
+    let py_calls: Vec<&str> = show.lines().filter(|l| l.contains("py_call")).collect();
+    assert_eq!(py_calls.len(), 5, "{show}");
+    assert!(py_calls[1].contains("1 Elm St"), "{show}");
+    assert!(py_calls[4].contains("4444 Elm St"), "{show}");
+}
+
+const FLAG: &str = "try:\n    out = lua__county__flag('1 Elm St')\nexcept PermissionError as e:\n    out = 'refused: ' + str(e)\nout";
+
+fn allow_writes(env: &Env) {
+    std::fs::write(
+        env.tern_home.join("config.toml"),
+        "[python]\nallow_writes = true\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn with_allow_writes_a_script_write_asks_like_a_direct_one_and_runs_when_approved() {
+    let env = Env::new();
+    allow_writes(&env);
+    env.script(FLAG);
+    let o = env.tern(&["run", "--yes", "flag it"]);
+    let stderr = text(&o.stderr);
+    assert!(o.status.success(), "{stderr}");
+    let run = run_id(&stderr);
+    let content = env.script_result(&run)["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(content.contains("result:\n\"flagged\""), "{content}");
+    // An ask sub-step, then the call; the ledger has the effect.
+    let show = env.show(&run);
+    assert_eq!(
+        show.lines().filter(|l| l.contains("py_call")).count(),
+        3,
+        "env, ask, call: {show}"
+    );
+}
+
+#[test]
+fn a_script_write_nobody_approves_is_refused_to_the_script() {
+    let env = Env::new();
+    allow_writes(&env);
+    env.script(FLAG);
+    // No --yes and no terminal to answer on: the prompt can't be answered.
+    let o = env.tern(&["run", "flag it"]);
+    let stderr = text(&o.stderr);
+    assert!(o.status.success(), "{stderr}");
+    let run = run_id(&stderr);
+    let content = env.script_result(&run)["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        content.contains("refused: lua__county__flag: denied"),
+        "{content}"
+    );
 }

@@ -71,6 +71,7 @@ impl Agent {
                 "pattern": req.pattern.as_ref().filter(|_| decision == Some(Decision::AlwaysAllow)),
                 "taint": req.taint,
                 "egress_host": req.egress_host,
+                "script": req.script_note(),
                 "agent": req.agent_label,
             }));
         self.store.ledger_append(&e)?;

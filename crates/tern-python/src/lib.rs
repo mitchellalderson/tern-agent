@@ -11,6 +11,8 @@
 mod convert;
 mod errors;
 pub mod helper;
+mod modules;
+mod scan;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -18,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use monty::{MontyRun, RunProgress};
+use monty::{FunctionCall, MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable};
 use monty_types::{
     CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, MontyException, MontyObject,
@@ -113,10 +115,15 @@ regex, dates. Prefer this to shell + python3 for compute. The script can call yo
 functions by their tool name (e.g. `lua__county__lookup(address=a)` in a loop); each call is checked and \
 recorded like a direct call. Files under /workspace are readable. There is no network, no shell and no \
 packages. Return a summary as the last expression (a dict or list), not raw data; print() output comes back \
-too. Tool calls are synchronous: don't await them or use asyncio.gather. Python subset: no class \
-inheritance, generators, `del`, @property/@classmethod, or modules like statistics, enum, string, uuid; \
-available: json, re, csv, math, datetime, collections, itertools, functools, decimal, random, hashlib, \
-base64, bisect, tomllib, pathlib. For pandas or numpy use shell with python3 (it asks the user).";
+too. Tool calls return values, unless the script uses async/await/asyncio: then each call returns an \
+awaitable, and `await asyncio.gather(*[f(x) for x in xs])` runs many at once (a few at a time); \
+gather has no return_exceptions, so catch errors inside a small async function. A call that needs the \
+user's approval waits for it, and the user sees it came from your script; a change nobody approves in \
+time is queued (the call returns {\"queued\": true, \"outbox\": id}). Python subset: no class \
+inheritance, generators, `del`, @property/@classmethod, or modules like enum, uuid, operator; \
+available: json, re, csv, math, statistics, string, datetime, collections, itertools, functools, \
+decimal, random, hashlib, base64, bisect, tomllib, pathlib. For pandas or numpy use shell with python3 \
+(it asks the user).";
 
 #[async_trait]
 impl Tool for Python {
@@ -199,14 +206,27 @@ impl Tool for Python {
                 .unwrap_or_default(),
             limits: self.limits.clone(),
         };
-        let outcome = tokio::select! {
-            o = run(job, host, self.helper.as_ref()) => o,
-            _ = ctx.cancel.cancelled() => return ToolResult::error("cancelled"),
-            _ = tokio::time::sleep(self.limits.wall) => {
+        // The wall limit counts tool calls but not time spent waiting for
+        // the user to answer an approval (spec §3.4, §5.1).
+        let started = std::time::Instant::now();
+        let waited = host.clone();
+        let running = run(job, host, self.helper.as_ref());
+        tokio::pin!(running);
+        let outcome = loop {
+            let spent = started
+                .elapsed()
+                .saturating_sub(waited.as_ref().map(|h| h.waited()).unwrap_or_default());
+            let left = self.limits.wall.saturating_sub(spent);
+            if left.is_zero() {
                 return ToolResult::error(format!(
                     "stopped: the script ran for more than {}s, tool calls included",
                     self.limits.wall.as_secs()
                 ));
+            }
+            tokio::select! {
+                o = &mut running => break o,
+                _ = ctx.cancel.cancelled() => return ToolResult::error("cancelled"),
+                _ = tokio::time::sleep(left) => {}
             }
         };
         outcome.render(self.limits.printed_bytes)
@@ -233,18 +253,24 @@ pub(crate) struct Job {
     limits: Limits,
 }
 
-/// A tool call from the interpreter thread.
+/// Tool calls from the interpreter thread: one, or several that a script
+/// awaits together.
 struct Request {
-    name: String,
-    input: Value,
-    reply: oneshot::Sender<Reply>,
+    calls: Vec<(String, Value)>,
+    reply: oneshot::Sender<Vec<Reply>>,
 }
 
 /// The host's answer to one tool call, as the interpreter sees it.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum Reply {
-    Done { content: String, is_error: bool },
+    Done {
+        content: String,
+        is_error: bool,
+    },
     Refused(String),
+    /// The script ends with this error (a re-run that diverged after
+    /// writes, spec §4.2).
+    Abort(String),
 }
 
 impl From<&HostReply> for Reply {
@@ -255,16 +281,30 @@ impl From<&HostReply> for Reply {
                 is_error: r.is_error,
             },
             HostReply::Refused(why) => Reply::Refused(why.clone()),
+            HostReply::Abort(why) => Reply::Abort(why.clone()),
         }
     }
 }
 
-/// Ask the agent loop (through `host`) to run one call.
-pub(crate) async fn ask_host(host: Option<&ScriptHost>, name: &str, input: Value) -> HostReply {
+/// Ask the agent loop (through `host`) to run these calls together.
+pub(crate) async fn ask_host(
+    host: Option<&ScriptHost>,
+    calls: Vec<(String, Value)>,
+) -> Vec<HostReply> {
     match host {
-        Some(h) => h.call(name, input).await,
-        None => HostReply::Refused("tools can't be called here".into()),
+        Some(h) => h.calls(calls).await,
+        None => vec![HostReply::Refused("tools can't be called here".into()); calls.len()],
     }
+}
+
+/// Replies for the interpreter, noting whether any result was untrusted.
+pub(crate) fn replies(answers: &[HostReply], untrusted: &mut bool) -> Vec<Reply> {
+    for a in answers {
+        if let HostReply::Done(r) = a {
+            *untrusted |= r.untrusted;
+        }
+    }
+    answers.iter().map(Reply::from).collect()
 }
 
 /// How a script ended.
@@ -357,18 +397,13 @@ async fn run_in_thread(job: Job, host: Option<Arc<ScriptHost>>) -> Outcome {
         .name("tern-python".into())
         .stack_size(64 * 1024 * 1024)
         .spawn(move || {
-            let mut bridge = |name: &str, input: Value| {
+            let mut bridge = |calls: Vec<(String, Value)>| {
+                let n = calls.len();
+                let stopped = || vec![Reply::Refused("the run stopped".into()); n];
                 let (reply, rx) = oneshot::channel();
-                let req = Request {
-                    name: name.to_owned(),
-                    input,
-                    reply,
-                };
-                match tx.blocking_send(req) {
-                    Ok(()) => rx
-                        .blocking_recv()
-                        .unwrap_or_else(|_| Reply::Refused("the run stopped".into())),
-                    Err(_) => Reply::Refused("the run stopped".into()),
+                match tx.blocking_send(Request { calls, reply }) {
+                    Ok(()) => rx.blocking_recv().unwrap_or_else(|_| stopped()),
+                    Err(_) => stopped(),
                 }
             };
             let _ = done_tx.send(interpret(&job, &mut bridge));
@@ -386,19 +421,17 @@ async fn run_in_thread(job: Job, host: Option<Arc<ScriptHost>>) -> Outcome {
                 return o;
             }
             Some(req) = rx.recv() => {
-                let reply = ask_host(host.as_deref(), &req.name, req.input).await;
-                if let HostReply::Done(r) = &reply {
-                    untrusted |= r.untrusted;
-                }
-                let _ = req.reply.send(Reply::from(&reply));
+                let answers = ask_host(host.as_deref(), req.calls).await;
+                let _ = req.reply.send(replies(&answers, &mut untrusted));
             }
         }
     }
 }
 
-/// Answers one tool call for the interpreter: a channel to the async side
-/// in this process, or the helper's pipe to the daemon.
-pub(crate) type Bridge<'a> = dyn FnMut(&str, Value) -> Reply + 'a;
+/// Answers tool calls for the interpreter (one answer per call, in order): a
+/// channel to the async side in this process, or the helper's pipe to the
+/// daemon.
+pub(crate) type Bridge<'a> = dyn FnMut(Vec<(String, Value)>) -> Vec<Reply> + 'a;
 
 /// The interpreter loop, on the script's thread.
 pub(crate) fn interpret(job: &Job, bridge: &mut Bridge<'_>) -> Outcome {
@@ -411,6 +444,69 @@ pub(crate) fn interpret(job: &Job, bridge: &mut Bridge<'_>) -> Outcome {
         calls,
         // Set by the async side, which sees the results.
         untrusted: false,
+    }
+}
+
+/// What a call to a function the script can see turns out to be.
+enum Verdict {
+    /// Answered here: one of tern's own stdlib functions.
+    Local(ExtFunctionResult),
+    /// Fails without reaching the host: blocked, unknown, or badly called.
+    Fail(ExtFunctionResult),
+    /// Ends the script.
+    Abort(MontyException),
+    /// A tool call for the agent loop.
+    Host(String, Value),
+}
+
+/// A call whose result a script awaits later.
+enum Slot {
+    Call(String, Value),
+    /// Failed before reaching the host; raises when awaited.
+    Ready(ExtFunctionResult),
+}
+
+fn classify(
+    job: &Job,
+    call: &FunctionCall,
+    made: &mut usize,
+    calls: &mut BTreeMap<String, (usize, usize)>,
+) -> Verdict {
+    let name = &call.function_name;
+    if call.object_id.is_none() && modules::provides(name) {
+        return Verdict::Local(modules::call(name, &call.args));
+    }
+    if let Some(why) = job.blocked.get(name).filter(|_| call.object_id.is_none()) {
+        calls.entry(name.clone()).or_default().1 += 1;
+        return Verdict::Fail(ExtFunctionResult::Error(MontyException::new(
+            ExcType::PermissionError,
+            Some(format!("{name}: {why}")),
+        )));
+    }
+    if call.object_id.is_some() || !job.callable.contains_key(name) {
+        return Verdict::Fail(ExtFunctionResult::Error(errors::unknown_function(
+            name,
+            &job.callable,
+        )));
+    }
+    if *made >= job.limits.host_calls {
+        // Monty leaves counting suspensions to embedders.
+        return Verdict::Abort(MontyException::new(
+            ExcType::RuntimeError,
+            Some(format!(
+                "{} {}",
+                errors::HOST_CALL_LIMIT,
+                job.limits.host_calls
+            )),
+        ));
+    }
+    *made += 1;
+    match convert::call_input(&call.args, &job.callable[name]) {
+        Err(msg) => Verdict::Fail(ExtFunctionResult::Error(MontyException::new(
+            ExcType::TypeError,
+            Some(msg),
+        ))),
+        Ok(input) => Verdict::Host(name.clone(), input),
     }
 }
 
@@ -450,6 +546,11 @@ fn drive(
         tracing::warn!(error = %e, "python: workspace not mounted");
     }
 
+    // A script that uses `async` gets awaitables from tool calls (spec
+    // §3.2): they are collected and run together when it awaits them, which
+    // is what `asyncio.gather` is for. Other scripts get values.
+    let async_mode = scan::uses_async(&job.code);
+    let mut pending: BTreeMap<u32, Slot> = BTreeMap::new();
     let mut made = 0usize;
     let mut progress = runner.start(
         values,
@@ -461,43 +562,42 @@ fn drive(
             RunProgress::Complete(v) => {
                 return Ok((v.type_name() != "NoneType").then(|| convert::to_json(&v)));
             }
-            RunProgress::FunctionCall(call) => {
-                let name = call.function_name.clone();
-                if let Some(why) = job.blocked.get(&name).filter(|_| call.object_id.is_none()) {
-                    calls.entry(name.clone()).or_default().1 += 1;
-                    let exc = MontyException::new(
-                        ExcType::PermissionError,
-                        Some(format!("{name}: {why}")),
-                    );
-                    call.resume(exc, PrintWriter::collect_string(printed))?
-                } else if call.object_id.is_some() || !job.callable.contains_key(&name) {
-                    let exc = errors::unknown_function(&name, &job.callable);
-                    call.resume(exc, PrintWriter::collect_string(printed))?
-                } else if made >= job.limits.host_calls {
-                    // Monty leaves counting suspensions to embedders.
-                    call.abort(
-                        MontyException::new(
-                            ExcType::RuntimeError,
-                            Some(format!(
-                                "{} {}",
-                                errors::HOST_CALL_LIMIT,
-                                job.limits.host_calls
-                            )),
-                        ),
-                        PrintWriter::collect_string(printed),
-                    )?
-                } else {
-                    made += 1;
-                    let result = match convert::call_input(&call.args, &job.callable[&name]) {
-                        Err(msg) => ExtFunctionResult::Error(MontyException::new(
-                            ExcType::TypeError,
-                            Some(msg),
-                        )),
-                        Ok(input) => host_call(bridge, &name, input, calls),
-                    };
-                    call.resume(result, PrintWriter::collect_string(printed))?
+            RunProgress::FunctionCall(call) => match classify(job, &call, &mut made, calls) {
+                Verdict::Local(r) => call.resume(r, PrintWriter::collect_string(printed))?,
+                Verdict::Abort(exc) => call.abort(exc, PrintWriter::collect_string(printed))?,
+                Verdict::Fail(r) if async_mode => {
+                    pending.insert(call.call_id, Slot::Ready(r));
+                    call.resume_pending(PrintWriter::collect_string(printed))?
                 }
-            }
+                Verdict::Fail(r) => call.resume(r, PrintWriter::collect_string(printed))?,
+                Verdict::Host(name, input) if async_mode && !call.allow_eager_await => {
+                    // Not awaited yet: it runs with whatever else the script
+                    // collects, when something awaits it.
+                    pending.insert(call.call_id, Slot::Call(name, input));
+                    call.resume_pending(PrintWriter::collect_string(printed))?
+                }
+                Verdict::Host(name, input) => {
+                    // A plain call, or an `await` on the spot: run it now.
+                    let answer = bridge(vec![(name.clone(), input)])
+                        .pop()
+                        .unwrap_or_else(|| Reply::Refused("the run stopped".into()));
+                    match host_result(&name, answer, calls) {
+                        Err(exc) => call.abort(exc, PrintWriter::collect_string(printed))?,
+                        Ok(result) if async_mode => call.resume_eager(
+                            match result {
+                                ExtFunctionResult::Return(v) => Ok(v),
+                                ExtFunctionResult::Error(e) => Err(e),
+                                _ => Err(MontyException::new(
+                                    ExcType::RuntimeError,
+                                    Some("unexpected tool result".into()),
+                                )),
+                            },
+                            PrintWriter::collect_string(printed),
+                        )?,
+                        Ok(result) => call.resume(result, PrintWriter::collect_string(printed))?,
+                    }
+                }
+            },
             RunProgress::OsCall(os) => os
                 .resume_with(PrintWriter::collect_string(printed), |c| {
                     os_call(&mut mounts, c)
@@ -506,24 +606,66 @@ fn drive(
                 NameLookupResult::Undefined,
                 PrintWriter::collect_string(printed),
             )?,
-            RunProgress::ResolveFutures(wait) => wait.abort(
-                MontyException::new(ExcType::RuntimeError, Some(errors::NO_ASYNC.into())),
-                PrintWriter::collect_string(printed),
-            )?,
+            RunProgress::ResolveFutures(wait) => {
+                // Everything the script is waiting on runs together, and
+                // all the results go back at once, in call order, so what
+                // the script sees doesn't depend on which tool was faster
+                // (a re-run after a crash sees the same).
+                let mut ids = wait.pending_call_ids().to_vec();
+                ids.sort_unstable();
+                let mut results: Vec<(u32, ExtFunctionResult)> = Vec::new();
+                let mut batch_ids = Vec::new();
+                let mut batch = Vec::new();
+                for id in ids {
+                    match pending.remove(&id) {
+                        Some(Slot::Ready(r)) => results.push((id, r)),
+                        Some(Slot::Call(name, input)) => {
+                            batch_ids.push(id);
+                            batch.push((name, input));
+                        }
+                        None => results.push((
+                            id,
+                            ExtFunctionResult::Error(MontyException::new(
+                                ExcType::RuntimeError,
+                                Some(errors::NOT_A_TOOL_CALL.into()),
+                            )),
+                        )),
+                    }
+                }
+                let names: Vec<String> = batch.iter().map(|(n, _)| n.clone()).collect();
+                let mut aborted = None;
+                if !batch.is_empty() {
+                    let mut answers = bridge(batch);
+                    answers.resize_with(names.len(), || Reply::Refused("the run stopped".into()));
+                    for ((id, name), answer) in batch_ids.into_iter().zip(names).zip(answers) {
+                        match host_result(&name, answer, calls) {
+                            Ok(r) => results.push((id, r)),
+                            Err(exc) => {
+                                aborted.get_or_insert(exc);
+                            }
+                        }
+                    }
+                }
+                if let Some(exc) = aborted {
+                    wait.abort(exc, PrintWriter::collect_string(printed))?
+                } else {
+                    results.sort_by_key(|(id, _)| *id);
+                    wait.resume(results, PrintWriter::collect_string(printed))?
+                }
+            }
         };
     }
 }
 
-/// Ask the agent loop to run one call, and turn its answer into Python.
-fn host_call(
-    bridge: &mut Bridge<'_>,
+/// Turn the loop's answer to one tool call into Python's: the value, or an
+/// exception the script can catch. `Err` ends the script.
+fn host_result(
     name: &str,
-    input: Value,
+    answer: Reply,
     calls: &mut BTreeMap<String, (usize, usize)>,
-) -> ExtFunctionResult {
-    let answer = bridge(name, input);
+) -> Result<ExtFunctionResult, MontyException> {
     let tally = calls.entry(name.to_owned()).or_default();
-    match answer {
+    Ok(match answer {
         Reply::Done { content, is_error } if !is_error => {
             tally.0 += 1;
             ExtFunctionResult::Return(convert::tool_output(&content))
@@ -543,7 +685,11 @@ fn host_call(
                 Some(format!("{name}: {why}")),
             ))
         }
-    }
+        Reply::Abort(why) => {
+            tally.1 += 1;
+            return Err(MontyException::new(ExcType::RuntimeError, Some(why)));
+        }
+    })
 }
 
 /// Filesystem calls go to the read-only workspace mount; nothing else
@@ -553,7 +699,10 @@ fn os_call(mounts: &mut MountTable, call: OsFunctionCall) -> ExtFunctionResult {
         MountCallOutcome::Handled(Ok(v)) => ExtFunctionResult::Return(v),
         MountCallOutcome::Handled(Err(e)) => ExtFunctionResult::Error(e.into_exception()),
         MountCallOutcome::NotHandled(OsFunctionCall::Import(module)) => {
-            ExtFunctionResult::NotFound(module)
+            match modules::import(&module) {
+                Some(m) => ExtFunctionResult::Return(m),
+                None => ExtFunctionResult::NotFound(module),
+            }
         }
         MountCallOutcome::NotHandled(other) => ExtFunctionResult::Error(MontyException::new(
             ExcType::PermissionError,

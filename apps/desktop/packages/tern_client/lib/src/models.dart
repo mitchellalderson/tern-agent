@@ -428,6 +428,7 @@ class Approval {
     this.channelId,
     this.agentId,
     this.egressHost,
+    this.script,
   });
 
   factory Approval.fromJson(Json j) => Approval(
@@ -446,6 +447,7 @@ class Approval {
     channelId: j['channel_id'] as String?,
     agentId: j['agent_id'] as String?,
     egressHost: j['egress_host'] as String?,
+    script: j['script'] as String?,
   );
 
   /// The channel of the conversation the user started (agent profiles):
@@ -470,7 +472,22 @@ class Approval {
   final String effect;
 
   /// `write · gmail_send …`: the effect, then the summary.
-  String get headline => '$effect · $summary';
+  String get headline => scriptNote == null
+      ? '$effect · $summary'
+      : '$effect · $summary ($scriptNote)';
+
+  /// Set when a `python` script's own tool call asks: "from a python script
+  /// (call 7 of this script)", a newline, then the script.
+  final String? script;
+
+  /// "from a python script (call 7 of this script)", or null.
+  String? get scriptNote => script?.split('\n').first;
+
+  /// The script that made the call, for the detail view, or null.
+  String? get scriptText {
+    final i = script?.indexOf('\n') ?? -1;
+    return i < 0 ? null : script!.substring(i + 1);
+  }
 
   /// What "always allow" adds to the allowlist, or null if this call
   /// can't be always-allowed (hide the option).

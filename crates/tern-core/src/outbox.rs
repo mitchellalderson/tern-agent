@@ -23,6 +23,13 @@ pub fn deferred_message(id: i64) -> String {
     )
 }
 
+/// The outbox id in a [`deferred_message`], for a script's `queued` result.
+pub fn deferred_id(message: &str) -> Option<i64> {
+    let rest = message.strip_prefix("queued for approval as outbox #")?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 /// The note a running run gets when an item is decided.
 pub fn decided_note(item: &OutboxRow, result: Option<&str>) -> String {
     match item.state.as_str() {
@@ -122,5 +129,16 @@ impl OutboxItem {
     /// `write · gmail_send to bob@…`, as approval prompts show a call.
     pub fn headline(&self) -> String {
         format!("{} · {}", self.effect, self.summary)
+    }
+}
+
+#[cfg(test)]
+mod deferred_id_tests {
+    use super::*;
+
+    #[test]
+    fn the_id_comes_back_out_of_the_message() {
+        assert_eq!(deferred_id(&deferred_message(12)), Some(12));
+        assert_eq!(deferred_id("denied: nobody was there"), None);
     }
 }

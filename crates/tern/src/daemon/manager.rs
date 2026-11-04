@@ -54,6 +54,10 @@ pub struct ApiApproval {
     /// `host` (always allow this host).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress_host: Option<String>,
+    /// Set when a python script's own tool call asks: "from a python script
+    /// (call 7 of this script)", then a newline and the script.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
     /// The channel of the session at the top of the run's tree, and its
     /// agent (agent profiles §3): an agent's DM mirrors the card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,6 +111,7 @@ impl ApiApprovals {
             root_session_id: root_session_id.filter(|_| req.parent_run_id.is_some()),
             taint: req.taint.clone(),
             egress_host: req.egress_host.clone(),
+            script: req.script.clone(),
             local_only: req.local_only,
             channel_id: at.0,
             agent_id: at.1,

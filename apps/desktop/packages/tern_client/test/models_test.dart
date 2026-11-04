@@ -70,6 +70,19 @@ void main() {
     expect(Decision.host.wire, 'host');
   });
 
+  test('decodes a script-originated approval and shows where it came from', () {
+    final e = ev(
+      '{"approval_requested":{"id":"a","run_id":"r",'
+      '"session_id":"s","tool":"write_file","input":{},'
+      '"summary":"write_file notes.md","effect":"write","pattern":null,'
+      '"script":"from a python script (call 2 of this script)\\nx = 1"}}',
+    );
+    final a = (e as ApprovalRequested).approval;
+    expect(a.scriptNote, 'from a python script (call 2 of this script)');
+    expect(a.scriptText, 'x = 1');
+    expect(a.headline, contains('(from a python script'));
+  });
+
   test('decodes taint on approvals and runs', () {
     final e = ev(
       '{"approval_requested":{"id":"a","run_id":"r",'

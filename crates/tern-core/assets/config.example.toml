@@ -163,6 +163,21 @@ docker_pids = 512          # 0 for no limit
 # require_signed = false       # refuse unsigned bundles instead of warning
 # allow_private_hosts = false  # fetch bundle URLs on your own network (http allowed there)
 
+# The `python` tool: sandboxed compute whose scripts call your tools by name
+# (docs/python-tool-spec.md). Each call is checked, approved and journaled like
+# a direct one. Read when tern starts.
+# [python]
+# enabled = true               # offer the tool (when this build has it)
+# max_seconds = 30             # interpreter time per script, tool calls excluded
+# max_turn_seconds = 10        # interpreter time between two tool calls
+# max_wall_seconds = 600       # wall time per script, tool calls included, approval waits excluded
+# max_memory_mb = 256          # memory the interpreter may use
+# max_host_calls = 200         # tool calls one script may make
+# max_parallel = 4             # tool calls run at once when a script awaits several (asyncio.gather)
+# max_asks = 3                 # approval prompts one script may cause; the next call that would ask is refused
+# max_writes = 10              # write calls one script may make
+# allow_writes = false         # scripts may call write tools (destructive ones never); each asks like a direct call
+
 # OAuth apps you registered yourself, by provider. Google wants a "Desktop
 # app" client, whose client secret goes in secrets.toml under the name given.
 # [auth.clients]

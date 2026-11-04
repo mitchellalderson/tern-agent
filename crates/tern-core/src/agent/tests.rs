@@ -3161,6 +3161,7 @@ impl Tool for FakePython {
             out.push(match r {
                 crate::script::HostReply::Done(r) => r.content,
                 crate::script::HostReply::Refused(why) => format!("refused: {why}"),
+                crate::script::HostReply::Abort(why) => format!("aborted: {why}"),
             });
         }
         ToolResult::ok(out.join("\n"))
@@ -3171,13 +3172,14 @@ impl Tool for FakePython {
 async fn scripts_keep_the_host_limit_and_count_the_hosts_they_reach() {
     let h = Harness::new();
     let fetch = Arc::new(Fetch(AtomicU32::new(0)));
-    let answer = Answer::new(Decision::AllowOnce);
+    let answer = Answer::new(Decision::Deny);
     let script = Arc::new(Script::new(vec![
         // Untainted: the script reaches x, then tainted by its results.
         Reply::Tool("python", json!({ "hosts": ["x.example"] })),
         // x was reached by the script: no prompt.
         Reply::Tool("fetch", json!({ "host": "x.example" })),
-        // A script can't ask: y is refused inside it.
+        // y is new to a tainted run: the script waits for the user, who
+        // says no, so y is refused inside it.
         Reply::Tool("python", json!({ "hosts": ["x.example", "y.example"] })),
         Reply::Text("done"),
     ]));
@@ -3188,20 +3190,26 @@ async fn scripts_keep_the_host_limit_and_count_the_hosts_they_reach() {
     );
     let run = h.start(&agent, "compare");
     agent.drive(&run, CancellationToken::new()).await.unwrap();
-    assert!(answer.asked().is_empty(), "{:?}", answer.asked());
+    let asked = answer.asked();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].egress_host.as_deref(), Some("y.example"));
+    assert!(
+        asked[0]
+            .script_note()
+            .is_some_and(|n| n.starts_with("from a python script (call 2 of this script)")),
+        "{:?}",
+        asked[0].script
+    );
     assert_eq!(fetch.0.load(Ordering::SeqCst), 3, "x, x, x; never y");
     let (said, _) = last_tool_result(&script.seen.lock().unwrap()[3]).unwrap();
-    assert!(
-        said.contains("y.example is a site it hasn't reached yet"),
-        "{said}"
-    );
+    assert!(said.contains("denied"), "{said}");
 
     // Replay: the same steps, the hosts rebuilt from the scripts' sub-steps.
     let before = h.kinds(&run);
     h.store.set_run_status(&run, "running", None).unwrap();
     agent.drive(&run, CancellationToken::new()).await.unwrap();
     assert_eq!(h.kinds(&run), before);
-    assert!(answer.asked().is_empty());
+    assert_eq!(answer.asked().len(), 1, "a replay doesn't ask again");
 
     // After "allow all sites for this run", a script may reach new ones.
     let h = Harness::new();
@@ -3338,3 +3346,5 @@ async fn the_ledger_follows_an_outbox_item_from_queue_to_execution() {
     assert_eq!(effect.detail.as_ref().unwrap()["outbox_id"], id);
     assert_eq!(h.store.ledger_verify().unwrap().broken, None);
 }
+
+mod py_scripts;

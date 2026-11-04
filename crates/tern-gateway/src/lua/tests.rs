@@ -207,6 +207,7 @@ fn request(pattern: Option<&str>) -> ApprovalRequest {
         taint: None,
         local_only: false,
         egress_host: None,
+        script: None,
     }
 }
 
