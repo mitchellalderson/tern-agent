@@ -13,6 +13,7 @@ import 'channel_view.dart';
 import 'config_editor.dart';
 import 'connections.dart';
 import 'conversation.dart';
+import 'ledger.dart';
 import 'mcp.dart';
 import 'offline.dart';
 import 'providers.dart';
@@ -141,6 +142,13 @@ class _HomeState extends State<Home> {
                               store.page == LibraryPage.connections &&
                                   store.canManageConnections
                               ? ConnectionsView(
+                                  store: store,
+                                  panelOpen: panel,
+                                  onTogglePanel: _togglePanel,
+                                )
+                              : store.page == LibraryPage.ledger &&
+                                    store.hasLedger
+                              ? LedgerView(
                                   store: store,
                                   panelOpen: panel,
                                   onTogglePanel: _togglePanel,

@@ -37,6 +37,7 @@ impl Agent {
             expires_at,
         })?;
         tracing::info!(run = %run.id, tool = %req.call.name, outbox = item.id, "nobody answered; queued in the outbox");
+        self.ledger_queued(run, req, item.id)?;
         self.approvals.deferred(req, item.id).await;
         Ok(item.id)
     }
@@ -99,6 +100,16 @@ impl Agent {
             Err(e) => return Err(e.into()),
         };
         let r = &result.value;
+        if !result.replayed {
+            self.ledger_effect(
+                run,
+                &call,
+                policy.effect,
+                &item.summary,
+                r.is_error,
+                Some(item.id),
+            )?;
+        }
         self.emit(AgentEvent::ToolFinished {
             run_id: run.id.clone(),
             id: call.id.clone(),

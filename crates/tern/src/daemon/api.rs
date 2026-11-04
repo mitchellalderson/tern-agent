@@ -182,6 +182,7 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_schedules::routes())
         .merge(super::api_webhooks::routes())
         .merge(super::api_outbox::routes())
+        .merge(super::api_ledger::routes())
         .merge(super::api_runs::routes())
         .merge(super::api_subagents::routes())
         .merge(super::api_secrets::routes())

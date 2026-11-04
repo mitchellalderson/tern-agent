@@ -83,6 +83,12 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<GrantsCommand>,
     },
+    /// The activity ledger: approvals, grants, writes, connections and
+    /// other security-relevant changes, hash-chained (`verify` checks it).
+    Ledger {
+        #[command(subcommand)]
+        command: Option<LedgerCommand>,
+    },
     /// Writes waiting for your approval (deferred because nobody answered).
     Outbox {
         #[command(subcommand)]
@@ -402,6 +408,40 @@ pub enum GrantsCommand {
     List,
     /// Remove one, e.g. `tern grants remove http_fetch host:example.com`.
     Remove { tool: String, pattern: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum LedgerCommand {
+    /// Recent entries, oldest first (the default).
+    List(LedgerArgs),
+    /// Recompute the hash chain; exits non-zero if the database was changed
+    /// outside tern.
+    Verify {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Default, Args)]
+pub struct LedgerArgs {
+    /// A kind (`grant.add`) or a family (`grant`, `outbox`, `approval`).
+    #[arg(long)]
+    pub kind: Option<String>,
+    #[arg(long)]
+    pub channel: Option<String>,
+    /// A routine id.
+    #[arg(long)]
+    pub routine: Option<String>,
+    /// A connector or MCP server name.
+    #[arg(long)]
+    pub connector: Option<String>,
+    #[arg(long)]
+    pub run: Option<String>,
+    /// How many (default 100).
+    #[arg(long, default_value_t = 100)]
+    pub limit: u32,
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Subcommand)]

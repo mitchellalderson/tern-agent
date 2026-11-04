@@ -178,7 +178,8 @@ impl Store {
     // ---- schedules ----
 
     pub fn create_schedule(&self, s: &ScheduleRow) -> Result<()> {
-        self.conn()?.execute(
+        let conn = self.conn()?;
+        conn.execute(
             &format!(
                 "INSERT INTO schedules ({SCHEDULE_COLS})
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
@@ -217,6 +218,7 @@ impl Store {
                 s.last_check_at
             ],
         )?;
+        note_routine_autonomy(&conn, &s.id, None, s.autonomy.as_deref())?;
         Ok(())
     }
 
@@ -303,7 +305,9 @@ impl Store {
     /// Replace a schedule's editable fields (everything but its id, session
     /// and pause state). A different watch starts over from a baseline.
     pub fn update_schedule(&self, s: &ScheduleRow) -> Result<bool> {
-        Ok(self.conn()?.execute(
+        let conn = self.conn()?;
+        let old = schedule_autonomy(&conn, &s.id)?;
+        let n = conn.execute(
             "UPDATE schedules SET cron = ?2, prompt = ?3, deliver_to = ?4, enabled = ?5, next_run_at = ?6,
                quiet_hours = ?7, urgent = ?8, runs_per_day = ?9, usd_per_day = ?10, tokens_per_run = ?11,
                autonomy = ?12,
@@ -334,7 +338,11 @@ impl Store {
                 s.gate_connector,
                 s.initiative
             ],
-        )? > 0)
+        )?;
+        if let Some(old) = old {
+            note_routine_autonomy(&conn, &s.id, old.as_deref(), s.autonomy.as_deref())?;
+        }
+        Ok(n > 0)
     }
 
     /// Top-level scheduled runs started in `session_id` since `since`.
@@ -391,10 +399,16 @@ impl Store {
     /// A routine's own autonomy profile; `None` = the configured one. Only
     /// the user sets it (the API), never the agent's schedule tools.
     pub fn set_schedule_autonomy(&self, id: &str, autonomy: Option<&str>) -> Result<bool> {
-        Ok(self.conn()?.execute(
+        let conn = self.conn()?;
+        let Some(old) = schedule_autonomy(&conn, id)? else {
+            return Ok(false);
+        };
+        conn.execute(
             "UPDATE schedules SET autonomy = ?2 WHERE id = ?1",
             params![id, autonomy],
-        )? > 0)
+        )?;
+        note_routine_autonomy(&conn, id, old.as_deref(), autonomy)?;
+        Ok(true)
     }
 
     /// Freeze the run's host-limit setting (before it is driven).
@@ -723,6 +737,37 @@ impl Store {
             |r| r.get(0),
         )?)
     }
+}
+
+/// A routine's own autonomy: `None` if there is no such routine.
+fn schedule_autonomy(conn: &rusqlite::Connection, id: &str) -> Result<Option<Option<String>>> {
+    Ok(conn
+        .query_row("SELECT autonomy FROM schedules WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()?)
+}
+
+/// Record a routine's autonomy change (the ledger, tooling spec §8.1).
+fn note_routine_autonomy(
+    conn: &rusqlite::Connection,
+    id: &str,
+    old: Option<&str>,
+    new: Option<&str>,
+) -> Result<()> {
+    if old == new {
+        return Ok(());
+    }
+    let shown = |a: Option<&str>| a.unwrap_or("the configured profile").to_owned();
+    let e = crate::LedgerEntry::new(
+        "autonomy.routine",
+        id,
+        format!("routine {id}: {} → {}", shown(old), shown(new)),
+    )
+    .routine(id)
+    .detail(serde_json::json!({ "value": new, "was": old }));
+    crate::ledger_repo::append_on(conn, &e)?;
+    Ok(())
 }
 
 #[cfg(test)]

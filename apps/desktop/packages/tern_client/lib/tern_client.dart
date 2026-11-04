@@ -10,6 +10,7 @@ export 'src/client.dart';
 export 'src/config.dart';
 export 'src/connections.dart';
 export 'src/endpoint.dart';
+export 'src/ledger.dart';
 export 'src/lifecycle.dart';
 export 'src/mcp.dart';
 export 'src/models.dart';

@@ -3223,3 +3223,118 @@ async fn scripts_keep_the_host_limit_and_count_the_hosts_they_reach() {
     assert_eq!(answer.asked().len(), 1);
     assert_eq!(fetch.0.load(Ordering::SeqCst), 4);
 }
+
+// ---- the activity ledger (tooling spec §8.1) ----
+
+fn ledger_kinds(h: &Harness) -> Vec<String> {
+    let mut rows = h
+        .store
+        .ledger(&tern_store::LedgerFilter::default())
+        .unwrap();
+    rows.reverse();
+    rows.into_iter().map(|r| r.entry.kind).collect()
+}
+
+#[tokio::test]
+async fn the_ledger_records_decisions_grants_and_writes_not_reads() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("shell", false, true));
+    let replies = vec![
+        Reply::Tool("shell", json!({"command": "echo hi"})),
+        Reply::Tool("shell", json!({"command": "echo again"})),
+        Reply::Text("ok"),
+    ];
+    let agent = h.agent(
+        Arc::new(Script::new(replies)),
+        vec![tool],
+        Arc::new(Recorder::default()),
+    );
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    // Asked once ("always"), which added a grant; both calls ran.
+    assert_eq!(
+        ledger_kinds(&h),
+        ["approval", "grant.add", "effect", "effect"]
+    );
+    let rows = h
+        .store
+        .ledger(&tern_store::LedgerFilter {
+            kind: Some("approval".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let a = &rows[0].entry;
+    assert_eq!(a.actor, "owner");
+    assert_eq!(a.run_id.as_deref(), Some(run.as_str()));
+    assert!(a.summary.starts_with("always allowed: "), "{}", a.summary);
+    assert_eq!(a.detail.as_ref().unwrap()["pattern"], "echo *");
+    let effect = &h.store.ledger(&Default::default()).unwrap()[0].entry;
+    assert_eq!(effect.actor, "agent:tern");
+    assert_eq!(h.store.ledger_verify().unwrap().broken, None);
+
+    // A replayed run adds nothing; a read adds nothing.
+    h.store.set_run_status(&run, "running", None).unwrap();
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(ledger_kinds(&h).len(), 4);
+    let h = Harness::new();
+    twice(
+        &h,
+        Counter::with_policy("look", ToolPolicy::new(Effect::Read, false)),
+    )
+    .await;
+    assert!(ledger_kinds(&h).is_empty());
+}
+
+#[tokio::test]
+async fn the_ledger_records_denials_and_refusals() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("danger", false, true));
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("danger", json!({})),
+        Reply::Text("ok, skipped"),
+    ]));
+    let agent = h.agent(script, vec![tool], Arc::new(AutoDeny));
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let rows = h.store.ledger(&Default::default()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].entry.detail.as_ref().unwrap()["decision"], "denied");
+
+    let h = Harness::new();
+    let policy = ToolPolicy {
+        forbidden: Some("money_movement"),
+        ..ToolPolicy::new(Effect::Read, false)
+    };
+    twice(&h, Counter::with_policy("pay", policy)).await;
+    let rows = h.store.ledger(&Default::default()).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter().all(|r| r.entry.actor == "tern"
+            && r.entry.detail.as_ref().unwrap()["flag"] == "money_movement")
+    );
+}
+
+#[tokio::test]
+async fn the_ledger_follows_an_outbox_item_from_queue_to_execution() {
+    let h = Harness::new();
+    let send = sender();
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("send", json!({ "to": "bob" })),
+        Reply::Text("queued"),
+    ]));
+    let agent = agent_with(&h, script, vec![send.clone()], Nobody::new(false));
+    let run = h.start(&agent, "reply to bob");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let id = h.store.pending_outbox_for_run(&run).unwrap()[0].id;
+    assert_eq!(ledger_kinds(&h), ["outbox.queue"]);
+
+    let exec = approve(&h, id, None);
+    agent.drive(&exec, CancellationToken::new()).await.unwrap();
+    assert_eq!(
+        ledger_kinds(&h),
+        ["outbox.queue", "outbox.approve", "effect"]
+    );
+    let effect = &h.store.ledger(&Default::default()).unwrap()[0].entry;
+    assert_eq!(effect.detail.as_ref().unwrap()["outbox_id"], id);
+    assert_eq!(h.store.ledger_verify().unwrap().broken, None);
+}

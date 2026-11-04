@@ -135,6 +135,7 @@ impl Store {
             [&id],
             row,
         )?;
+        crate::ledger_repo::append_on(&tx, &connection_entry("connection.add", "added", &r))?;
         tx.commit()?;
         Ok(r)
     }
@@ -179,6 +180,17 @@ impl Store {
              WHERE (kind, target) = (SELECT kind, target FROM connections WHERE id = ?1)",
             [id],
         )?;
+        let r = tx
+            .query_row(
+                &format!("SELECT {COLS} FROM connections WHERE id = ?1"),
+                [id],
+                row,
+            )
+            .optional()?;
+        if let Some(r) = r {
+            let e = connection_entry("connection.default", "is now the default:", &r);
+            crate::ledger_repo::append_on(&tx, &e)?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -188,6 +200,13 @@ impl Store {
     pub fn remove_connection(&self, id: &str) -> Result<bool> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
+        let removed = tx
+            .query_row(
+                &format!("SELECT {COLS} FROM connections WHERE id = ?1"),
+                [id],
+                row,
+            )
+            .optional()?;
         let gone: Option<(String, String, bool)> = tx
             .query_row(
                 "DELETE FROM connections WHERE id = ?1 RETURNING kind, target, is_default",
@@ -195,6 +214,10 @@ impl Store {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
+        if let Some(r) = &removed {
+            let e = connection_entry("connection.remove", "removed", r);
+            crate::ledger_repo::append_on(&tx, &e)?;
+        }
         if let Some((kind, target, true)) = &gone {
             tx.execute(
                 "UPDATE connections SET is_default = 1 WHERE id = (
@@ -242,11 +265,44 @@ impl Store {
             .filter(|(_, t, p)| t.starts_with(tool_prefix) && p.ends_with(suffix))
             .map(|(id, _, _)| id)
             .collect();
+        if !ids.is_empty() {
+            let e = crate::LedgerEntry::new(
+                "grant.remove",
+                tool_prefix,
+                format!(
+                    "removed {} grant(s) of {tool_prefix}* ending {suffix}",
+                    ids.len()
+                ),
+            )
+            .detail(serde_json::json!({ "suffix": suffix, "count": ids.len() }));
+            crate::ledger_repo::append_on(&conn, &e)?;
+        }
         for id in &ids {
             conn.execute("DELETE FROM approval_allowlist WHERE id = ?1", [id])?;
         }
         Ok(ids.len())
     }
+}
+
+/// `connection.add` and friends: `added gmail · work (me@x.com)`.
+fn connection_entry(kind: &str, verb: &str, r: &ConnectionRow) -> crate::LedgerEntry {
+    let account = r
+        .account
+        .as_deref()
+        .map(|a| format!(" ({a})"))
+        .unwrap_or_default();
+    let mut e = crate::LedgerEntry::new(
+        kind,
+        &r.target,
+        format!("{verb} {} · {}{account}", r.target, r.slug),
+    )
+    .detail(serde_json::json!({
+        "kind": r.kind, "slug": r.slug, "account": r.account, "auth_method": r.auth_method,
+    }));
+    if r.kind == "connector" {
+        e = e.connector(&r.target);
+    }
+    e
 }
 
 #[cfg(test)]

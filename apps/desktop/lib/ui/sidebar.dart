@@ -602,6 +602,13 @@ class _Library extends StatelessWidget {
                     )
                   : null,
             ),
+          if (store.hasLedger)
+            _LibraryRow(
+              icon: Icons.receipt_long_outlined,
+              label: 'Activity ledger',
+              selected: store.page == LibraryPage.ledger,
+              onTap: store.openLedger,
+            ),
         ],
       ),
     );

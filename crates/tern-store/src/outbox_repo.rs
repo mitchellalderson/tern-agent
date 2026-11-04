@@ -147,21 +147,34 @@ impl Store {
         exec_run_id: &str,
         edited_input: Option<&str>,
     ) -> Result<bool> {
-        Ok(self.conn()?.execute(
+        let conn = self.conn()?;
+        let won = conn.execute(
             "UPDATE outbox SET state = 'approved', decided_at = ?2, exec_run_id = ?3,
                edited_input_json = ?4
              WHERE id = ?1 AND state = 'pending' AND expires_at > ?2",
             params![id, now_ms(), exec_run_id, edited_input],
-        )? > 0)
+        )? > 0;
+        if won {
+            let detail =
+                serde_json::json!({ "exec_run_id": exec_run_id, "edited": edited_input.is_some() });
+            outbox_entry(&conn, id, "outbox.approve", "approved", Some(detail))?;
+        }
+        Ok(won)
     }
 
     /// Reject a pending item. Returns whether it was pending.
     pub fn reject_outbox(&self, id: i64, note: Option<&str>) -> Result<bool> {
-        Ok(self.conn()?.execute(
+        let conn = self.conn()?;
+        let rejected = conn.execute(
             "UPDATE outbox SET state = 'rejected', decided_at = ?2, note = ?3
              WHERE id = ?1 AND state = 'pending'",
             params![id, now_ms(), note],
-        )? > 0)
+        )? > 0;
+        if rejected {
+            let detail = note.map(|n| serde_json::json!({ "note": n }));
+            outbox_entry(&conn, id, "outbox.reject", "rejected", detail)?;
+        }
+        Ok(rejected)
     }
 
     /// Record an approved item's result: `done`, or `failed` for an error.
@@ -190,6 +203,17 @@ impl Store {
              WHERE state = 'pending' AND expires_at <= ?1",
             [now],
         )?;
+        for r in &rows {
+            let e = crate::LedgerEntry::new(
+                "outbox.expire",
+                &r.tool,
+                format!("outbox #{} expired unanswered: {}", r.id, r.summary),
+            )
+            .actor(crate::ACTOR_TERN)
+            .run(&r.run_id, &r.session_id)
+            .detail(serde_json::json!({ "outbox_id": r.id, "effect": r.effect }));
+            crate::ledger_repo::append_on(&tx, &e)?;
+        }
         tx.commit()?;
         Ok(rows)
     }
@@ -206,6 +230,27 @@ impl Store {
         let rows = stmt.query_map([], row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+}
+
+/// An outbox decision's entry, naming the item's tool and run.
+fn outbox_entry(
+    conn: &rusqlite::Connection,
+    id: i64,
+    kind: &str,
+    verb: &str,
+    detail: Option<serde_json::Value>,
+) -> Result<()> {
+    let sql = format!("SELECT {COLS} FROM outbox WHERE id = ?1");
+    let r = conn.query_row(&sql, [id], row)?;
+    let mut d = serde_json::json!({ "outbox_id": id, "effect": r.effect, "taint": r.taint });
+    if let (Some(serde_json::Value::Object(extra)), Some(o)) = (detail, d.as_object_mut()) {
+        o.extend(extra);
+    }
+    let e = crate::LedgerEntry::new(kind, &r.tool, format!("{verb} outbox #{id}: {}", r.summary))
+        .run(&r.run_id, &r.session_id)
+        .detail(d);
+    crate::ledger_repo::append_on(conn, &e)?;
+    Ok(())
 }
 
 #[cfg(test)]

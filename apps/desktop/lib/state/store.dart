@@ -10,7 +10,7 @@ import 'transcript.dart';
 enum Link { connecting, online, offline }
 
 /// A Library page shown in the centre column instead of a conversation.
-enum LibraryPage { mcp, connections, routines }
+enum LibraryPage { mcp, connections, routines, ledger }
 
 /// Everything the app knows, fed by the daemon. Widgets listen to it.
 ///
@@ -528,6 +528,11 @@ class TernStore extends ChangeNotifier {
 
   /// Whether the core defers unanswered writes to an outbox.
   bool get hasOutbox => health?.features.contains('outbox') ?? false;
+
+  /// The activity ledger (tooling spec §8.1): owner-only.
+  bool get hasLedger =>
+      (health?.features.contains('ledger') ?? false) &&
+      (health?.isOwner ?? false);
 
   /// Reached as a paired device rather than the local owner socket, so the
   /// core refuses stdio MCP servers unless `api.remote_mcp_stdio` is set.
@@ -2119,6 +2124,12 @@ class TernStore extends ChangeNotifier {
       loadingModels = false;
       if (!_disposed) notifyListeners();
     }
+  }
+
+  /// Show the activity ledger.
+  void openLedger() {
+    page = LibraryPage.ledger;
+    notifyListeners();
   }
 
   /// Show the Routines page: every routine, by every agent.

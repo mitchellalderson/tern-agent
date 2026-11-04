@@ -11,6 +11,7 @@ mod gateway_cmd;
 mod grants_cmd;
 mod hooks_cmd;
 mod inspect;
+mod ledger_cmd;
 mod lifecycle;
 mod logging;
 mod mcp;
@@ -192,6 +193,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Outbox { command }) => outbox_cmd::run(&home, command),
         Some(Command::Hooks { command }) => hooks_cmd::run(&home, command),
         Some(Command::Grants { command }) => grants_cmd::run(&home, command),
+        Some(Command::Ledger { command }) => ledger_cmd::run(&home, command),
         Some(Command::Runs { command }) => {
             match command {
                 RunsCommand::List => inspect::runs_list(&home)?,

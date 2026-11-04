@@ -37,13 +37,28 @@ impl Store {
     /// Give routine `id` a new secret (and auth kind), replacing any old
     /// one at once: a create, a rotation, or turning a revoked hook back on.
     pub fn set_webhook_secret(&self, id: &str, auth: &str, secret: &str) -> Result<()> {
-        self.conn()?.execute(
+        let conn = self.conn()?;
+        let existed: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM routine_webhooks WHERE routine_id = ?1)",
+            [id],
+            |r| r.get(0),
+        )?;
+        conn.execute(
             "INSERT INTO routine_webhooks (routine_id, auth, secret, created_at)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(routine_id) DO UPDATE SET auth = ?2, secret = ?3, rotated_at = ?4,
                revoked_at = NULL",
             params![id, auth, secret, now_ms()],
         )?;
+        let (kind, verb) = if existed {
+            ("webhook.rotate", "rotated the secret of")
+        } else {
+            ("webhook.create", "created a secret for")
+        };
+        let e = crate::LedgerEntry::new(kind, id, format!("{verb} webhook routine {id} ({auth})"))
+            .routine(id)
+            .detail(serde_json::json!({ "auth": auth }));
+        crate::ledger_repo::append_on(&conn, &e)?;
         Ok(())
     }
 
@@ -63,11 +78,22 @@ impl Store {
     /// Forget routine `id`'s secret: its URL answers 404 until rotated.
     /// False if it had none.
     pub fn revoke_webhook(&self, id: &str) -> Result<bool> {
-        Ok(self.conn()?.execute(
+        let conn = self.conn()?;
+        let revoked = conn.execute(
             "UPDATE routine_webhooks SET secret = NULL, revoked_at = ?2
              WHERE routine_id = ?1 AND secret IS NOT NULL",
             params![id, now_ms()],
-        )? > 0)
+        )? > 0;
+        if revoked {
+            let e = crate::LedgerEntry::new(
+                "webhook.revoke",
+                id,
+                format!("revoked the secret of webhook routine {id}"),
+            )
+            .routine(id);
+            crate::ledger_repo::append_on(&conn, &e)?;
+        }
+        Ok(revoked)
     }
 
     /// Whether routine `id` has seen event `key`.
