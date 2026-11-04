@@ -357,9 +357,19 @@ class TernStore extends ChangeNotifier {
         channel: channelId,
         newChannelTitle: newTitle,
       );
+      // A run shown as working in the stream goes with its session; the
+      // stream's next segment starts idle. (The daemon refuses to move a
+      // conversation with work running, so this is normally stale state,
+      // which the resync below clears.)
+      final streamRun = transcripts[streamKey]?.activeRun;
       for (final s in sessions) {
         _streamSessions.remove(s);
+        if (streamRun != null && _runSession[streamRun] == s) {
+          transcripts[streamKey]!.activeRun = null;
+          transcripts.putIfAbsent(s, Transcript.new).activeRun = streamRun;
+        }
       }
+      unawaited(resyncRuns());
       channels = await client.channels();
       this.sessions = await client.sessions();
       posts.remove(r.channel.id);
@@ -548,6 +558,10 @@ class TernStore extends ChangeNotifier {
         onDone: () => _lost(null),
       );
       await _resync();
+      _staleTimer ??= Timer.periodic(
+        const Duration(seconds: 15),
+        (_) => _checkStale(),
+      );
       link = Link.online;
       linkError = null;
       _backoff = const Duration(milliseconds: 500);
@@ -612,6 +626,12 @@ class TernStore extends ChangeNotifier {
         _activeIn[r.runId] = ch;
         _runChannel[r.runId] = ch;
       }
+    }
+    // A run that finished while this app was away still shows as working
+    // in the views it kept: it isn't.
+    final live = {for (final r in active) r.runId};
+    for (final t in transcripts.values) {
+      if (t.activeRun case final run? when !live.contains(run)) t.endRun(run);
     }
     for (final a in await client.pendingApprovals()) {
       _transcriptFor(hasChannels ? homeKey : a.sessionId)
@@ -684,6 +704,13 @@ class TernStore extends ChangeNotifier {
     if (!t.items.contains(item)) t.items.add(item);
   }
 
+  /// Whether [run] is in a session of the open stream (or one this app
+  /// can't place yet).
+  bool _inStream(String run) => switch (_runSession[run]) {
+    final s? => _streamSessions.contains(s),
+    null => true,
+  };
+
   /// Rebuild the open stream (Home or a DM) from the daemon: the newest
   /// page (as many items as were loaded), or with `older` the page before
   /// what's loaded.
@@ -710,9 +737,15 @@ class TernStore extends ChangeNotifier {
         ?head,
       ]);
     final previous = transcripts[streamKey];
+    // Busy state belongs to the run's session: keep it only while that
+    // session is still part of this stream (it may have moved away).
+    final kept = switch (previous?.activeRun) {
+      final run? when _inStream(run) => run,
+      _ => null,
+    };
     final t = Transcript.fromStream(_streamItems)
-      ..activeRun = previous?.activeRun
-      ..runSince = previous?.runSince;
+      ..activeRun = kept
+      ..runSince = kept == null ? null : previous?.runSince;
     for (final a
         in previous?.items.whereType<ApprovalItem>() ?? <ApprovalItem>[]) {
       if (a.outcome == null) t.items.add(a);
@@ -1215,6 +1248,13 @@ class TernStore extends ChangeNotifier {
   void onEventForTest(TernEvent e) => _onEvent(e);
 
   void _onEvent(TernEvent e) {
+    _lastEvent = DateTime.now();
+    if (e is EventsDropped) {
+      // The daemon skipped events this app was too slow for: a
+      // run_finished may be among them.
+      unawaited(resyncRuns());
+      return;
+    }
     if (e case RunEvent(:final runId, :final channelId?)) {
       _runChannel[runId] = channelId;
       if (e is RunStarted && e.parentRunId == null) {
@@ -1309,7 +1349,7 @@ class TernStore extends ChangeNotifier {
         if (state != 'pending') _resolveOutboxPosts(id);
         unawaited(refreshOutbox());
         return;
-      case UnknownEvent():
+      case UnknownEvent() || EventsDropped():
         return;
     }
     if (session == null) {
@@ -1522,6 +1562,69 @@ class TernStore extends ChangeNotifier {
     super.notifyListeners();
   }
 
+  /// Make every "working" state match the daemon's active runs: a run it
+  /// no longer has (its `run_finished` was missed) stops showing as busy,
+  /// and the open views reload what it did. On reconnect, when the event
+  /// stream says it dropped events, from Stop, and when a run has been
+  /// silent too long.
+  Future<void> resyncRuns() async {
+    final List<ActiveRun> active;
+    try {
+      active = await client.activeRuns();
+    } on TernException {
+      return;
+    }
+    _lastEvent = DateTime.now();
+    final live = {for (final r in active) r.runId};
+    var reload = false;
+    for (final MapEntry(key: key, value: t) in transcripts.entries) {
+      if (t.activeRun case final run? when !live.contains(run)) {
+        t.endRun(run);
+        reload |= key == streamKey || key == selected || key == thread;
+      }
+    }
+    _activeIn.removeWhere((run, _) => !live.contains(run));
+    _live.removeWhere((run, _) => !live.contains(run));
+    _phase.removeWhere((run, _) => !live.contains(run));
+    for (final r in active) {
+      _runSession[r.runId] = r.sessionId;
+      if (r.parentRunId case final p?) {
+        _parentOf[r.runId] = p;
+        continue;
+      }
+      _transcriptFor(r.sessionId)!.activeRun = r.runId;
+      if (r.channelId case final ch?) _activeIn[r.runId] = ch;
+    }
+    if (reload) {
+      try {
+        if (streamOpen) await _loadHome();
+        if (selected case final id? when !streamOpen) await _load(id);
+        if (thread case final id?) await _load(id);
+      } on TernException {
+        // The next resync or reconnect tries again.
+      }
+    }
+    notifyListeners();
+  }
+
+  /// When the last event arrived, for [_checkStale].
+  DateTime _lastEvent = DateTime.now();
+  Timer? _staleTimer;
+
+  /// How long a run may be silent before the app asks the daemon whether
+  /// it is still working. Runs waiting on a tool or a model can be quiet
+  /// for a while; asking costs one request.
+  static const staleAfter = Duration(seconds: 45);
+
+  void _checkStale() {
+    final busy = transcripts.values.any((t) => t.activeRun != null);
+    if (busy &&
+        link == Link.online &&
+        DateTime.now().difference(_lastEvent) > staleAfter) {
+      unawaited(resyncRuns());
+    }
+  }
+
   Future<void> _learnRuns() async {
     try {
       for (final r in await client.activeRuns()) {
@@ -1662,8 +1765,14 @@ class TernStore extends ChangeNotifier {
     final run = current?.activeRun;
     if (run == null) return;
     try {
-      await client.cancel(run);
+      // Not cancelled: the daemon has no such run working (it finished and
+      // this app missed it). Don't leave Stop doing nothing.
+      if (!await client.cancel(run)) await resyncRuns();
     } on TernException catch (e) {
+      if (e.status == 404) {
+        await resyncRuns();
+        return;
+      }
       error = e.message;
       notifyListeners();
     }
@@ -1673,7 +1782,7 @@ class TernStore extends ChangeNotifier {
     try {
       await client.resume(run);
       current?.items.removeWhere((i) => i is RunEndItem && i.runId == run);
-      current?.activeRun = run;
+      current?.resumeRun(run);
     } on TernException catch (e) {
       error = e.message;
     }
@@ -1941,6 +2050,7 @@ class TernStore extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _retry?.cancel();
+    _staleTimer?.cancel();
     _events?.cancel();
     client.close();
     super.dispose();

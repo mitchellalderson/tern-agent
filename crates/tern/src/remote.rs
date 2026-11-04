@@ -156,6 +156,13 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                 }
                 // The TUI re-reads providers and models when it needs them.
                 Ok(ApiEvent::Change(_)) => {}
+                // Its runs end through `/wait`, which can't miss the end.
+                Ok(ApiEvent::Dropped { events_dropped: d }) => {
+                    tracing::warn!(
+                        missed = d.missed,
+                        "the daemon skipped events this TUI was slow for"
+                    );
+                }
                 Ok(ApiEvent::Approval {
                     approval_requested: a,
                 }) => {

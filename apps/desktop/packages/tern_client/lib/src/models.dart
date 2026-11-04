@@ -517,6 +517,9 @@ sealed class TernEvent {
     }
     if (j.containsKey('channels_changed')) return const ChannelsChanged();
     if (j.containsKey('agents_changed')) return const AgentsChanged();
+    if (j['events_dropped'] case final Json d) {
+      return EventsDropped(d['missed'] as int? ?? 0);
+    }
     if (j['outbox_changed'] case final Json o) {
       return OutboxChanged(o['id'] as int, o['state'] as String? ?? '');
     }
@@ -849,6 +852,13 @@ class ChannelsChanged extends TernEvent {
 /// An agent profile was created, edited or archived.
 class AgentsChanged extends TernEvent {
   const AgentsChanged();
+}
+
+/// The daemon skipped [missed] events this client was too slow to take
+/// (a `run_finished` may be among them): re-read the active runs.
+class EventsDropped extends TernEvent {
+  const EventsDropped(this.missed);
+  final int missed;
 }
 
 /// An outbox item was queued or changed state; re-read the outbox.
