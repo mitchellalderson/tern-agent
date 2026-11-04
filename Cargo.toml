@@ -17,6 +17,7 @@ expect_used = "deny"
 
 [workspace.dependencies]
 tern-auth = { path = "crates/tern-auth" }
+tern-bundle = { path = "crates/tern-bundle" }
 tern-core = { path = "crates/tern-core" }
 tern-gateway = { path = "crates/tern-gateway" }
 tern-lua = { path = "crates/tern-lua" }
@@ -36,6 +37,8 @@ blake3 = "1.8.7"
 # Direct for the webhook listener's header timeout; axum already pulls both in.
 hyper = { version = "1.12.0", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "service", "http1", "server"] }
+# minisign's prehashed signatures (bundles, tooling spec §6.5).
+blake2 = "0.10.6"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 fastrand = "2.5.0"
 futures = "0.3.34"
@@ -60,6 +63,9 @@ mlua = { version = "0.12.2", features = ["luau", "async", "serialize", "send"] }
 ratatui = "0.30.2"
 rmcp = { version = "3.8.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12", "logging"] }
+# Bundles as `.tar.zst` (tooling spec §6.5): pure Rust, no C zstd.
+ruzstd = "0.9.1"
+tar = { version = "0.4.46", default-features = false }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

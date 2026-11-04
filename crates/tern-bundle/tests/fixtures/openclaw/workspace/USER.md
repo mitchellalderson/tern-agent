@@ -1,0 +1,2 @@
+- Prefers short answers.
+- Lives in Lisbon.

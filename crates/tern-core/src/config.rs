@@ -69,6 +69,18 @@ pub struct Config {
     pub taint: TaintConfig,
     pub connectors: ConnectorsConfig,
     pub auth: AuthConfig,
+    pub bundles: BundlesConfig,
+}
+
+/// Installing bundles (tooling spec §6.5).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BundlesConfig {
+    /// Refuse unsigned bundles instead of installing them with a warning.
+    pub require_signed: bool,
+    /// Fetch bundle URLs on private or loopback addresses (a server on your
+    /// own network). Off: bundles come from the public internet over https.
+    pub allow_private_hosts: bool,
 }
 
 /// Taint settings (tooling spec §5.3).
@@ -203,6 +215,7 @@ impl Default for Config {
             taint: TaintConfig::default(),
             connectors: ConnectorsConfig::default(),
             auth: AuthConfig::default(),
+            bundles: BundlesConfig::default(),
         }
     }
 }

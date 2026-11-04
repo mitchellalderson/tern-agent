@@ -10,7 +10,7 @@ import 'transcript.dart';
 enum Link { connecting, online, offline }
 
 /// A Library page shown in the centre column instead of a conversation.
-enum LibraryPage { mcp, connections, routines, ledger, tasks }
+enum LibraryPage { mcp, connections, routines, ledger, tasks, bundles }
 
 /// Everything the app knows, fed by the daemon. Widgets listen to it.
 ///
@@ -70,6 +70,9 @@ class TernStore extends ChangeNotifier {
 
   /// The accounts per connector or MCP server, once loaded.
   ConnectionList? connectionList;
+
+  /// Installed bundles, once loaded ([canManageBundles]).
+  List<InstalledBundle>? bundles;
 
   /// The Library page in the centre column, and the MCP server open in it.
   LibraryPage? page;
@@ -564,6 +567,11 @@ class TernStore extends ChangeNotifier {
 
   /// The Connections page is owner-only.
   bool get canManageConnections => hasConnections && (health?.isOwner ?? false);
+
+  /// Whether the core installs bundles (tooling spec §6.5). Owner-only.
+  bool get canManageBundles =>
+      (health?.features.contains('bundles') ?? false) &&
+      (health?.isOwner ?? false);
 
   /// Whether the core defers unanswered writes to an outbox.
   bool get hasOutbox => health?.features.contains('outbox') ?? false;
@@ -2198,6 +2206,57 @@ class TernStore extends ChangeNotifier {
   void openLedger() {
     page = LibraryPage.ledger;
     notifyListeners();
+  }
+
+  /// Show the Bundles page.
+  void openBundles() {
+    page = LibraryPage.bundles;
+    notifyListeners();
+    unawaited(loadBundles());
+  }
+
+  Future<void> loadBundles() async {
+    try {
+      bundles = await client.bundles();
+    } on TernException catch (e) {
+      error = e.message;
+      bundles ??= [];
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  /// Install what a preview showed, then reload bundles and routines (it
+  /// may have added paused ones). The error's text, or null.
+  Future<String?> installBundle(
+    String source,
+    BundlePlan plan, {
+    bool acceptNewKey = false,
+  }) async {
+    try {
+      await client.installBundle(
+        source,
+        sha256: plan.sha256,
+        acceptNewKey: acceptNewKey,
+      );
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    } finally {
+      await loadBundles();
+      await refreshSchedules();
+    }
+  }
+
+  Future<String?> removeBundle(String name) async {
+    try {
+      await client.removeBundle(name);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    } finally {
+      await loadBundles();
+      await refreshSchedules();
+    }
   }
 
   /// Show the Routines page: every routine, by every agent.

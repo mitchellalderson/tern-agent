@@ -71,6 +71,8 @@ pub const FEATURES: &[&str] = &[
     "tasks",
     // `/v1/security/audit`: `tern security audit` (tooling spec §8.4).
     "security_audit",
+    // `/v1/bundles`: preview, install, remove (tooling spec §6.5).
+    "bundles",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";
@@ -136,6 +138,8 @@ const OWNER_ONLY: &[&str] = &[
     "/v1/ledger",
     // How exposed the core is (tooling spec §8.4).
     "/v1/security",
+    // Installing code and routines, and fetching URLs from this machine.
+    "/v1/bundles",
 ];
 
 /// Paths a `chat` device may change. Any other non-GET route is owner-only,

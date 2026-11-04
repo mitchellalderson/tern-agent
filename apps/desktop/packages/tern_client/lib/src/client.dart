@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'agents.dart';
+import 'bundles.dart';
 import 'channels.dart';
 import 'config.dart';
 import 'connections.dart';
@@ -756,6 +757,45 @@ class TernClient {
 
   /// The URL answers 404 until [rotateWebhook].
   Future<void> revokeWebhook(String id) => _json('DELETE', '/v1/webhooks/$id');
+
+  /// Owner only: installed bundles (tooling spec §6.5).
+  Future<List<InstalledBundle>> bundles() async => [
+    for (final b
+        in (await _json('GET', '/v1/bundles') as Json)['bundles'] as List)
+      InstalledBundle.fromJson(b as Json),
+  ];
+
+  /// Everything a bundle (an https URL, `…#sha256=` to pin it, or a path on
+  /// the core's machine) would do. Installs nothing.
+  Future<BundlePreview> previewBundle(String source, {String? sha256}) async =>
+      BundlePreview.fromJson(
+        await _json('POST', '/v1/bundles/preview', {
+          'source': source,
+          'sha256': ?sha256,
+        }),
+      );
+
+  /// Install what [previewBundle] showed: `sha256` is the plan's, so a
+  /// bundle that changed since is refused.
+  Future<BundleOutcome> installBundle(
+    String source, {
+    required String sha256,
+    String? agent,
+    bool acceptNewKey = false,
+  }) async => BundleOutcome.fromJson(
+    await _json('POST', '/v1/bundles/install', {
+      'source': source,
+      'sha256': sha256,
+      'agent': ?agent,
+      if (acceptNewKey) 'accept_new_key': true,
+    }),
+  );
+
+  /// Remove a bundle and the connectors, skills and routines it installed.
+  Future<BundleOutcome> removeBundle(String name) async =>
+      BundleOutcome.fromJson(
+        await _json('DELETE', '/v1/bundles/${Uri.encodeComponent(name)}'),
+      );
 
   /// The global initiative dial: `vacation`, `quieter`, `normal`, `louder`.
   Future<String> initiative() async =>

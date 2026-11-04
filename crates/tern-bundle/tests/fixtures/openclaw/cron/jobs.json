@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "jobs": [
+    {"id": "j1", "name": "Morning brief", "enabled": true,
+     "schedule": {"kind": "cron", "expr": "0 8 * * 1-5", "tz": "Europe/Lisbon"},
+     "payload": {"kind": "agentTurn", "message": "Give me my morning brief."},
+     "delivery": {"mode": "announce", "channel": "telegram"}},
+    {"id": "j2", "name": "Inbox sweep", "enabled": true,
+     "schedule": {"kind": "every", "everyMs": 1800000},
+     "payload": {"kind": "systemEvent", "text": "Sweep the inbox for anything urgent."}},
+    {"id": "j3", "name": "Old reminder",
+     "schedule": {"kind": "at", "at": "2025-01-01T09:00:00Z"},
+     "payload": {"kind": "agentTurn", "message": "Too late."}},
+    {"id": "j4", "name": "Odd interval",
+     "schedule": {"kind": "every", "everyMs": 420000},
+     "payload": {"kind": "agentTurn", "message": "Every seven minutes."}},
+    {"id": "j5", "name": "Application errors",
+     "schedule": {"kind": "stream", "command": ["tail", "-F", "/var/log/app.log"], "mode": "match", "match": "ERROR"},
+     "payload": {"kind": "agentTurn", "message": "Report the errors."}}
+  ]
+}

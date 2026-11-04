@@ -302,6 +302,16 @@ fn meta(key: &str) -> Meta {
             ..at_least(1.0)
         },
         "webhooks.header_timeout_secs" | "webhooks.max_connections" => at_least(1.0),
+        "bundles.require_signed" => Meta { live: true, ..m },
+        "bundles.allow_private_hosts" => Meta {
+            live: true,
+            security: Some(
+                "On: bundle URLs may point at your own network, over plain http too. A bundle \
+                 is still shown in full and installed only when you approve it.",
+            ),
+            risky: |v| v == &Value::Bool(true),
+            ..m
+        },
         "api.remote_mcp_stdio" => Meta {
             live: true,
             security: Some(
@@ -756,6 +766,7 @@ mod tests {
                 "taint",
                 "connectors",
                 "auth",
+                "bundles",
                 "webhooks",
                 "api"
             ]

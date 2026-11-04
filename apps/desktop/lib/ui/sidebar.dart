@@ -610,6 +610,13 @@ class _Library extends StatelessWidget {
                     )
                   : null,
             ),
+          if (store.canManageBundles)
+            _LibraryRow(
+              icon: Icons.inventory_2_outlined,
+              label: 'Bundles',
+              selected: store.page == LibraryPage.bundles,
+              onTap: store.openBundles,
+            ),
           if (store.canManageConnections)
             _LibraryRow(
               icon: Icons.link,

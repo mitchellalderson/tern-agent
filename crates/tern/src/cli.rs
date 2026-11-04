@@ -117,6 +117,17 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<ConnectorsCommand>,
     },
+    /// Bundles of connectors, skills and routines: signed, hash-pinned,
+    /// installed only after you've seen everything they can do.
+    Bundle {
+        #[command(subcommand)]
+        command: Option<BundleCommand>,
+    },
+    /// Bring another agent's setup across.
+    Import {
+        #[command(subcommand)]
+        command: ImportCommand,
+    },
     /// Accounts of connectors and MCP servers: list, add (sign in), and
     /// remove them, or pick the default.
     Connections {
@@ -600,6 +611,119 @@ pub enum ConnectorsCommand {
         #[arg(long)]
         base_url: Option<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ImportCommand {
+    /// OpenClaw: SKILL.md skills, cron automations (as paused routines),
+    /// and SOUL.md, USER.md and MEMORY.md. Credentials are never read:
+    /// you're told which secrets and accounts to add.
+    Openclaw {
+        /// OpenClaw's directory (default ~/.openclaw) or its workspace.
+        dir: Option<std::path::PathBuf>,
+        /// The agent the routines belong to (default: tern).
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BundleCommand {
+    /// What is installed, from where, and how it is signed.
+    List,
+    /// Show everything a bundle can do, then install it if you approve.
+    /// Connectors arrive inactive and routines paused.
+    Install {
+        /// An https URL (`…#sha256=<hex>` pins it), a .tar.zst, or a directory.
+        source: String,
+        /// The SHA-256 the bundle must have (as its author published it).
+        #[arg(long)]
+        sha256: Option<String>,
+        /// The agent its routines belong to (default: tern).
+        #[arg(long)]
+        agent: Option<String>,
+        /// Show what it would do and stop.
+        #[arg(long)]
+        dry_run: bool,
+        /// Approve without asking (you've read the plan).
+        #[arg(long)]
+        yes: bool,
+        /// Accept an update signed by a different key than the installed one.
+        #[arg(long)]
+        accept_new_key: bool,
+    },
+    /// Fetch an installed bundle again from where it came from; asks again
+    /// when the new version can do more.
+    Update {
+        name: String,
+        #[arg(long)]
+        sha256: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        accept_new_key: bool,
+    },
+    /// Remove a bundle and the connectors, skills and routines it installed.
+    Remove {
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Package your own connectors, skills and routines as a bundle to
+    /// share, signed with your key when you have one. Secrets never go in.
+    Export {
+        /// The bundle's name ([a-z0-9-]).
+        name: String,
+        #[arg(long, default_value = "0.1.0")]
+        version: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long, default_value = "")]
+        author: String,
+        /// A connector to include (repeat for more).
+        #[arg(long = "connector")]
+        connectors: Vec<String>,
+        /// A skill (its directory under skills/) to include.
+        #[arg(long = "skill")]
+        skills: Vec<String>,
+        /// A routine id (sch_…) to include as a template.
+        #[arg(long = "routine")]
+        routines: Vec<String>,
+        /// Everything of yours: active connectors, skills, and the routines
+        /// of --agent, except what came from installed bundles.
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        agent: Option<String>,
+        /// Where to write it: a .tar.zst (default <name>-<version>.tar.zst)
+        /// or, with --dir, a directory.
+        #[arg(long, short)]
+        output: Option<std::path::PathBuf>,
+        #[arg(long)]
+        dir: bool,
+        /// Don't sign it, even with a key.
+        #[arg(long)]
+        unsigned: bool,
+    },
+    /// Make your signing key (bundles/signing.key) for `tern bundle export`.
+    Keygen,
+    /// Trust a signing key (minisign format, `RW…`, or a .pub file), or
+    /// list the trusted keys.
+    Trust {
+        /// The key, or a path to a .pub file.
+        key: Option<String>,
+        /// Whose key it is.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Stop trusting a key (by key, key id or name).
+    Untrust { key: String },
 }
 
 #[derive(Debug, Subcommand)]

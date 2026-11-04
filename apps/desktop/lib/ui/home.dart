@@ -9,6 +9,7 @@ import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
 import 'auth_card.dart';
+import 'bundles.dart';
 import 'channel_view.dart';
 import 'config_editor.dart';
 import 'connections.dart';
@@ -163,6 +164,13 @@ class _HomeState extends State<Home> {
                                 )
                               : store.page == LibraryPage.routines
                               ? RoutinesPage(
+                                  store: store,
+                                  panelOpen: panel,
+                                  onTogglePanel: _togglePanel,
+                                )
+                              : store.page == LibraryPage.bundles &&
+                                    store.canManageBundles
+                              ? BundlesView(
                                   store: store,
                                   panelOpen: panel,
                                   onTogglePanel: _togglePanel,
