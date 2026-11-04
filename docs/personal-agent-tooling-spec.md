@@ -388,7 +388,7 @@ Agent profiles will cap it per agent (`Autonomy` is ordered, so a ceiling is a `
   entry; `{ query = … }` and `{ basic = { user, password } }` forms and a per-entry `hosts` subset; injected values
   are scrubbed from responses and errors; `ctx.secret` keeps its `capabilities.secrets` name rather than becoming
   `secrets_raw`; one rate budget per connector (default `[connectors] rate = "120/min"`) that fails fast instead of
-  waiting. `tern security audit` (T6b) doesn't exist yet; `tern doctor` and `tern connectors list` carry the legacy flag.
+  waiting. `tern security audit` (T6b), `tern doctor` and `tern connectors list` carry the legacy flag.
 
 ### 6.2 OAuth helper
 
@@ -729,6 +729,13 @@ model the usual retries, then moves the same call on for 5xx, 529, 429, 408, net
 replay never re-picks and spend is billed to it. `tern runs show`, the run inspector and `tern doctor` show it. See
 DECISIONS.md "T6a".
 
+**Status (T6b shipped).** The ledger is its own append-only table (migration `0019_ledger.sql`), not a view over the
+journal: the store appends inside the calls that make each change (grants, outbox decisions, connections, webhook
+secrets, devices, routine autonomy, agent egress and tools), and the agent loop adds approval decisions, refusals,
+queued outbox items and every executed `write`/`destructive` call. `tern ledger [verify]`, `GET /v1/ledger[/verify]`
+and Library → Activity ledger. The Tasks view is `GET /v1/tasks`, `tern tasks` and Library → Tasks; goals join it
+with §10. See DECISIONS.md "T6b".
+
 ### 8.4 `tern security audit`
 
 A read-only report that exits non-zero on high findings:
@@ -742,6 +749,11 @@ A read-only report that exits non-zero on high findings:
 - `secrets.toml` permissions.
 
 `doctor` links to it.
+
+**Status (T6b shipped).** `tern security audit [--json]`, `GET /v1/security/audit`, a Security section in `doctor`
+and Settings › Security in the desktop app. It also covers webhook listeners, gateways that taint strangers, shell
+`network` without an OS sandbox, `egress = "allow"`, and broad (rather than stale) OAuth scopes. Unsigned bundles
+wait for T4b-iii.
 
 ### 8.5 `tern mcp serve`
 
@@ -1033,7 +1045,7 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 |---|---|---|---|---|
 | **1. Quick wins** | Small changes to what exists. No new data model, no new protocols. Each item is days, not weeks. | **T0** effects on every tool, money-movement deny · **T1a** on today's schedules: `NO_REPLY`, quiet hours, per-schedule run caps and budget · **T5a** memory flush before compaction, capped `user.md`/`memory.md` · **T6a** provider fallback chains (done) · **T8a** `/v1/status`, `/v1/shutdown`, `tern start`/`stop`, `tern service install` with `SuccessfulExit = false`, "Quit tern completely" in the app (one-click stop for non-technical users, before the tray exists) · **T7a** browser via an MCP recipe (docs only; done) | S each | nothing |
 | **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests (done) · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles (done: T3a taint, then T3 the outbox and autonomy; the Tasks view is T6b) · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits (done) | L / M / S–M | Stage 1 (effects, budgets) |
-| **3. Organize and surface** | Make background work visible and tidy. Mostly UI plus straightforward store work. | **T2** channels, home, posts, reply-to-act, Telegram topics · **T6b** activity ledger with hash chain, Tasks view, `tern security audit` · **T8b** `tern tray` on macOS (helper bundle, notifications with actions, login items, quit escalation, `tern://` links) · **T5b** skill capture | M each | Stage 2 (routines, outbox) |
+| **3. Organize and surface** | Make background work visible and tidy. Mostly UI plus straightforward store work. | **T2** channels, home, posts, reply-to-act, Telegram topics · **T6b** activity ledger with hash chain, Tasks view, `tern security audit` (done) · **T8b** `tern tray` on macOS (helper bundle, notifications with actions, login items, quit escalation, `tern://` links) · **T5b** skill capture | M each | Stage 2 (routines, outbox) |
 | **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** (done) `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) (done) · **T4b-ii** gateway connectors (ntfy, then Slack; done) | L | Stage 2 (taint before any external input); secret-requests spec built |
 | **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` · **T6d** `tern mcp serve` · **T4c** OpenAPI-to-connector and recorded test fixtures · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
 | **6. Multiplayer** (later) | Several people with one agent: group rooms first, then members on one core, then hosted workspaces (§15) | **M0** Telegram, Slack and Discord group rooms with guests · **M1** members, per-member connections, approvals and memory · **M2** tern Cloud workspaces, invites, seats | M0 S–M, M1 L, M2 M | Stages 2–3 (taint, channels); M2 needs tern Cloud |
