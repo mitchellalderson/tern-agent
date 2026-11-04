@@ -52,6 +52,8 @@ pub const FEATURES: &[&str] = &[
     "subagents",
     "secret_requests",
     "mcp",
+    // `/v1/channels` and Home's stream (docs/channels-design.md).
+    "channels",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";

@@ -41,7 +41,7 @@ impl Default for QuietHours {
 #[error("quiet hours {0:?}: expected \"HH:MM-HH:MM\" (e.g. \"22:00-07:30\") or \"none\"")]
 pub struct QuietHoursError(String);
 
-fn minutes(s: &str) -> Option<u32> {
+pub(crate) fn minutes(s: &str) -> Option<u32> {
     let (h, m) = s.trim().split_once(':')?;
     if !(1..=2).contains(&h.len()) || m.len() != 2 {
         return None;
@@ -128,7 +128,7 @@ impl QuietHours {
 
 /// `day` at `minutes` past midnight, local. A time in a DST gap moves to
 /// the first valid minute after it.
-fn at_local(day: NaiveDate, minutes: u32) -> DateTime<Local> {
+pub(crate) fn at_local(day: NaiveDate, minutes: u32) -> DateTime<Local> {
     let mut t = day.and_time(NaiveTime::MIN) + Duration::minutes(i64::from(minutes));
     for _ in 0..180 {
         if let Some(d) = Local.from_local_datetime(&t).earliest() {

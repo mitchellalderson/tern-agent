@@ -23,7 +23,7 @@ const EDIT_INTERVAL: Duration = Duration::from_secs(1);
 const OFFSET_KEY: &str = "update_offset";
 
 const HELP: &str = "Send me a message and I'll work on it.\n\
-/new — start a new conversation\n\
+/new — new topic (I keep a summary of this one)\n\
 /model [provider:model] — show or change the model\n\
 /stop — stop the current task\n\
 /status — what I'm doing";
@@ -101,7 +101,10 @@ impl TelegramGateway {
         match cmd {
             "/start" | "/help" => self.reply(chat, HELP).await,
             "/new" => match host.new_session(SOURCE, &chat_ref).await {
-                Ok(()) => self.reply(chat, "Started a new conversation.").await,
+                Ok(()) => {
+                    self.reply(chat, "New topic. I kept a summary of the last one.")
+                        .await
+                }
                 Err(e) => self.reply(chat, &format!("Error: {e}")).await,
             },
             "/model" => {
@@ -127,14 +130,16 @@ impl TelegramGateway {
             _ => {
                 self.api.typing(chat).await;
                 match host.send(SOURCE, &chat_ref, text).await {
+                    // A queued message returns the run already streaming here.
                     Ok(run_id) => {
-                        self.streams.lock().await.insert(
-                            run_id,
-                            Stream {
+                        self.streams
+                            .lock()
+                            .await
+                            .entry(run_id)
+                            .or_insert_with(|| Stream {
                                 chat,
                                 ..Stream::default()
-                            },
-                        );
+                            });
                     }
                     Err(e) => self.reply(chat, &format!("Error: {e}")).await,
                 }

@@ -352,3 +352,424 @@ async fn home_sends_write_no_posts_and_routines_post_where_they_are_pointed() {
     let n: i64 = env.query("SELECT count(*) FROM posts");
     assert_eq!(n, 2);
 }
+
+// ---- C1: Home's stream ----
+
+fn stream_types(page: &Value) -> Vec<String> {
+    page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| match i["type"].as_str().unwrap() {
+            "message" => format!(
+                "{}:{}",
+                i["role"].as_str().unwrap(),
+                i["content"][0]["text"].as_str().unwrap_or("…")
+            ),
+            "cut" => format!("cut:{}", i["reason"].as_str().unwrap_or("")),
+            "post" => format!("post:{}", i["post"]["text"].as_str().unwrap()),
+            other => other.to_owned(),
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn new_topic_cuts_home_and_carries_the_last_segment_over() {
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            // First: the new segment's message also quotes the old one.
+            { "matches": "Plan the launch", "turns": [
+                { "text": "", "tool_calls": [{ "name": "history_search", "input": { "query": "Northwind" } }] },
+                { "text": "Launch plan drafted." }
+            ]},
+            { "matches": "Northwind is 310", "turns": [{ "text": "Noted: Northwind 310 EUR." }] },
+            { "matches": "Morning brief", "turns": [{ "text": "Two meetings today." }] }
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+
+    let (_, first) = post(
+        &s,
+        "/v1/channels/home/posts",
+        json!({ "text": "Northwind is 310 EUR" }),
+    )
+    .await;
+    assert_eq!(first["new_segment"], false);
+    wait_run(&s, first["run_id"].as_str().unwrap()).await;
+    let (_, brief) = post(
+        &s,
+        "/v1/schedules",
+        json!({ "cron": "0 8 * * *", "prompt": "Morning brief" }),
+    )
+    .await;
+    let (_, r) = post(
+        &s,
+        &format!("/v1/schedules/{}/run", brief["id"].as_str().unwrap()),
+        json!({}),
+    )
+    .await;
+    wait_run(&s, r["run_id"].as_str().unwrap()).await;
+
+    // The stream orders by millisecond; keep the brief and the cut apart.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let (_, next) = post(
+        &s,
+        "/v1/channels/home/posts",
+        json!({ "text": "Plan the launch", "new_topic": true }),
+    )
+    .await;
+    assert_eq!(next["new_segment"], true);
+    assert_ne!(next["session_id"], first["session_id"]);
+    let done = wait_run(&s, next["run_id"].as_str().unwrap()).await;
+    assert_eq!(done["final_text"], "Launch plan drafted.");
+
+    // The new segment's first run carried the old one over, and found the
+    // detail with history_search.
+    let kinds: String = env.query(&format!(
+        "SELECT group_concat(kind, ',') FROM (SELECT kind FROM steps WHERE run_id = '{}' ORDER BY idx)",
+        next["run_id"].as_str().unwrap()
+    ));
+    assert_eq!(kinds, "carry,llm,tool,llm");
+    let found: String = env.query(&format!(
+        "SELECT output_json FROM steps WHERE run_id = '{}' AND kind = 'tool'",
+        next["run_id"].as_str().unwrap()
+    ));
+    assert!(
+        found.contains(first["session_id"].as_str().unwrap()) && found.contains("Northwind"),
+        "{found}"
+    );
+    let (_, home) = get(&s, "/v1/channels").await;
+    assert_eq!(home[0]["main_session_id"], next["session_id"]);
+
+    let (_, page) = get(&s, "/v1/channels/home/stream").await;
+    assert_eq!(
+        stream_types(&page)[..4],
+        [
+            "assistant:Launch plan drafted.".to_string(),
+            "user:…".into(),
+            "assistant:…".into(),
+            "user:Plan the launch".into()
+        ]
+    );
+    let types = stream_types(&page);
+    let cut = types.iter().position(|t| t == "cut:new_topic").unwrap();
+    let brief_at = types
+        .iter()
+        .position(|t| t == "post:Two meetings today.")
+        .unwrap();
+    let hello = types
+        .iter()
+        .position(|t| t == "user:Northwind is 310 EUR")
+        .unwrap();
+    assert!(
+        cut < brief_at && brief_at < hello,
+        "{types:#?}\n{:#}",
+        page["items"]
+    );
+    let carry = page["items"][cut]["carry"].as_str().unwrap();
+    assert!(
+        carry.contains("Summary: mock summary") && carry.contains("you: Northwind is 310 EUR"),
+        "{carry}"
+    );
+    assert_eq!(page["next"], Value::Null);
+
+    // Paging: two at a time, then the rest.
+    let (_, p1) = get(&s, "/v1/channels/home/stream?limit=2").await;
+    assert_eq!(p1["items"].as_array().unwrap().len(), 2);
+    let cursor = p1["next"].as_str().unwrap();
+    let (_, p2) = get(&s, &format!("/v1/channels/home/stream?before={cursor}")).await;
+    assert_eq!(stream_types(&p2), types[2..]);
+    assert_eq!(get(&s, "/v1/channels/home/stream?before=junk").await.0, 400);
+
+    // A side chat is a card in the stream, not part of it.
+    let (_, side) = post(
+        &s,
+        "/v1/runs",
+        json!({ "text": "> Northwind\nWhy 310?", "channel": "home", "branched_from": "message:1" }),
+    )
+    .await;
+    wait_run(&s, side["run_id"].as_str().unwrap()).await;
+    assert_eq!(
+        post(
+            &s,
+            "/v1/runs",
+            json!({ "text": "x", "channel": "home", "branched_from": "nope" })
+        )
+        .await
+        .0,
+        400
+    );
+    let (_, page) = get(&s, "/v1/channels/home/stream").await;
+    assert_eq!(page["items"][0]["type"], "side_chat");
+    assert_eq!(page["items"][0]["session_id"], side["session_id"]);
+    assert_eq!(page["items"][0]["branched_from"], "message:1");
+    let (_, home) = get(&s, "/v1/channels").await;
+    assert_eq!(
+        home[0]["main_session_id"], next["session_id"],
+        "a side chat doesn't move the stream"
+    );
+
+    // History lists both segments.
+    let (_, history) = get(&s, "/v1/sessions?channel=home").await;
+    let ids: Vec<&str> = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&first["session_id"].as_str().unwrap())
+            && ids.contains(&next["session_id"].as_str().unwrap())
+    );
+    let seg = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["id"] == next["session_id"])
+        .unwrap();
+    assert_eq!(seg["prev_session_id"], first["session_id"]);
+    assert_eq!(seg["segment_reason"], "new_topic");
+    assert!(
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["branched_from"] == "message:1")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn home_is_cut_after_idle_hours() {
+    let env = Env::with_config(
+        &json!({ "turns": [{ "text": "ok" }] }),
+        "[home]\nidle_hours = 0.0002\n",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let (_, a) = post(&s, "/v1/channels/home/posts", json!({ "text": "one" })).await;
+    wait_run(&s, a["run_id"].as_str().unwrap()).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let (_, b) = post(&s, "/v1/channels/home/posts", json!({ "text": "two" })).await;
+    assert_eq!(b["new_segment"], true, "{b}");
+    wait_run(&s, b["run_id"].as_str().unwrap()).await;
+    let reason: String = env.query(&format!(
+        "SELECT segment_reason FROM sessions WHERE id = '{}'",
+        b["session_id"].as_str().unwrap()
+    ));
+    assert_eq!(reason, "idle");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_send_while_home_is_busy_is_queued_for_the_run_not_a_cancel() {
+    let env = Env::with_config(
+        &json!({ "turns": [
+            { "text": "Counting.", "delay_ms": 1500 },
+            { "text": "Counted, in EUR." }
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let (_, a) = post(
+        &s,
+        "/v1/channels/home/posts",
+        json!({ "text": "Tally the invoices" }),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (_, q) = post(
+        &s,
+        "/v1/channels/home/posts",
+        json!({ "text": "in EUR please" }),
+    )
+    .await;
+    assert_eq!(q["queued"], true, "{q}");
+    assert_eq!(q["run_id"], a["run_id"]);
+    let done = wait_run(&s, a["run_id"].as_str().unwrap()).await;
+    assert_eq!(
+        (done["status"].as_str(), done["final_text"].as_str()),
+        (Some("completed"), Some("Counted, in EUR."))
+    );
+    let runs: i64 = env.query("SELECT count(*) FROM runs");
+    assert_eq!(runs, 1, "no second run, nothing cancelled");
+    let (_, page) = get(&s, "/v1/channels/home/stream").await;
+    let queued = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["queued"] == true)
+        .unwrap();
+    assert_eq!(queued["content"][0]["text"], "in EUR please");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_topic_channel_send_while_busy_posts_at_once_and_queues() {
+    let env = Env::with_config(
+        &json!({ "turns": [
+            { "text": "Looking.", "delay_ms": 1500 },
+            { "text": "Found both." }
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    post(&s, "/v1/channels", json!({ "slug": "launch" })).await;
+    let (_, a) = post(
+        &s,
+        "/v1/channels/launch/posts",
+        json!({ "text": "Find the venue" }),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (_, q) = post(
+        &s,
+        "/v1/channels/launch/posts",
+        json!({ "text": "and the caterer" }),
+    )
+    .await;
+    assert_eq!(
+        (q["queued"].as_bool(), q["post"]["text"].as_str()),
+        (Some(true), Some("and the caterer"))
+    );
+    wait_run(&s, a["run_id"].as_str().unwrap()).await;
+    let posts = wait_get(&s, "/v1/channels/launch/posts", |v| {
+        v.as_array().is_some_and(|a| a.len() == 3)
+    })
+    .await;
+    assert_eq!(
+        texts(&posts),
+        ["Found both.", "and the caterer", "Find the venue"]
+    );
+}
+
+/// The fake Bot API (`tests/fixtures/fake_telegram.py`).
+struct FakeTelegram {
+    _proc: subagents_env::Killed,
+    url: String,
+    http: reqwest::Client,
+}
+
+const CHAT: i64 = 7070;
+
+impl FakeTelegram {
+    fn start() -> Self {
+        use std::io::BufRead;
+        let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fake_telegram.py");
+        let mut child = std::process::Command::new("python3")
+            .arg(script)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        Self {
+            _proc: subagents_env::Killed(child),
+            url: format!("http://127.0.0.1:{}", line.trim()),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    async fn user_says(&self, text: &str) {
+        self.http
+            .post(format!("{}/control/message", self.url))
+            .json(&json!({ "chat_id": CHAT, "user_id": 1, "text": text }))
+            .send()
+            .await
+            .unwrap();
+    }
+
+    async fn wait_for(&self, needle: &str) {
+        let end = Instant::now() + Duration::from_secs(15);
+        loop {
+            let all: Vec<Value> = self
+                .http
+                .get(format!("{}/control/messages", self.url))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            if all
+                .iter()
+                .any(|m| m["text"].as_str().unwrap_or("").contains(needle))
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < end,
+                "no bot message with {needle:?}: {all:#?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn telegram_new_is_new_topic_and_carries_the_chat_over() {
+    let tg = FakeTelegram::start();
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "matches": "And the second?", "turns": [{ "text": "Second: book the caterer." }] },
+            { "matches": "First task", "turns": [{ "text": "First: find a venue." }] }
+        ]}),
+        &format!(
+            "[gateway.telegram]\nenabled = true\nbot_token_secret = \"TELEGRAM_BOT_TOKEN\"\napi_url = \"{}\"\n",
+            tg.url
+        ),
+    );
+    let secrets = env.tern_home.join("secrets.toml");
+    std::fs::write(&secrets, "TELEGRAM_BOT_TOKEN = \"TEST:TOKEN\"\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let _d = env.daemon_with(None);
+    let out = env.cmd(&["gateway", "pair"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    tg.user_says(String::from_utf8_lossy(&out.stdout).trim())
+        .await;
+    tg.wait_for("Paired.").await;
+
+    tg.user_says("First task").await;
+    tg.wait_for("First: find a venue.").await;
+    tg.user_says("/new").await;
+    tg.wait_for("New topic.").await;
+    tg.user_says("And the second?").await;
+    tg.wait_for("Second: book the caterer.").await;
+
+    let db = env.db();
+    let (prev, reason): (String, String) = db
+        .query_row(
+            "SELECT prev_session_id, segment_reason FROM sessions WHERE source = 'telegram' AND prev_session_id IS NOT NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(reason, "new_topic");
+    let first: String = db
+        .query_row(
+            "SELECT session_id FROM runs ORDER BY started_at LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(prev, first);
+    let carried: String = db
+        .query_row(
+            "SELECT group_concat(kind) FROM steps s JOIN runs r ON r.id = s.run_id WHERE r.session_id <> ?1",
+            [&first],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(carried.starts_with("carry"), "{carried}");
+}

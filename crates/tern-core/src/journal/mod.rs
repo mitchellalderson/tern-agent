@@ -28,6 +28,9 @@ pub enum StepKind {
     Compaction,
     /// Delivers mail from other runs of the tree (sub-agent reports).
     Inbox,
+    /// Carries a summary of the previous segment into a new one
+    /// (docs/channels-design.md §2.6).
+    Carry,
 }
 
 impl StepKind {
@@ -38,6 +41,7 @@ impl StepKind {
             StepKind::Approval => "approval",
             StepKind::Compaction => "compaction",
             StepKind::Inbox => "inbox",
+            StepKind::Carry => "carry",
         }
     }
 
@@ -48,6 +52,7 @@ impl StepKind {
             "approval" => StepKind::Approval,
             "compaction" => StepKind::Compaction,
             "inbox" => StepKind::Inbox,
+            "carry" => StepKind::Carry,
             _ => return None,
         })
     }

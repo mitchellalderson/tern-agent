@@ -10,25 +10,46 @@ import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
 import 'agents.dart';
+import 'channel_items.dart';
 import 'inspector.dart';
 
 /// One transcript item.
 class ItemView extends StatelessWidget {
-  const ItemView({super.key, required this.item, required this.store});
+  const ItemView({
+    super.key,
+    required this.item,
+    required this.store,
+    this.session,
+    this.branchable = false,
+  });
 
   final Item item;
   final TernStore store;
 
+  /// The conversation the item is in, when it isn't [TernStore.selected]
+  /// (the right pane).
+  final String? session;
+
+  /// Messages offer "Branch into side chat" (Home's stream).
+  final bool branchable;
+
   @override
   Widget build(BuildContext context) => switch (item) {
-    UserItem(:final text) => _UserMessage(text),
-    AssistantItem(:final text, :final streaming) => _AssistantMessage(
+    UserItem(:final text, :final queued, :final messageId) => _branch(
       text,
-      streaming: streaming,
+      messageId,
+      _UserMessage(text, queued: queued),
+      alignEnd: true,
+    ),
+    AssistantItem(:final text, :final streaming, :final messageId) => _branch(
+      text,
+      messageId,
+      _AssistantMessage(text, streaming: streaming),
+      enabled: !streaming,
     ),
     final WorkItem w => WorkCard(
       work: w,
-      onInspect: switch ((store.selected, w.runId)) {
+      onInspect: switch ((session ?? store.selected, w.runId)) {
         (final String session, final String run) => () => showInspector(
           context,
           store,
@@ -43,18 +64,39 @@ class ItemView extends StatelessWidget {
     final ApprovalItem a => ApprovalCard(item: a, store: store),
     final SecretRequestItem r => SecretRequestCard(item: r, store: store),
     final RunEndItem r => _RunEnd(r, store: store),
+    final CutItem c => CutDivider(item: c),
+    PostItem(:final post) => PostCard(post: post, store: store),
+    SideChatItem(:final chat) => SideChatCard(chat: chat, store: store),
   };
+
+  Widget _branch(
+    String text,
+    int? messageId,
+    Widget child, {
+    bool alignEnd = false,
+    bool enabled = true,
+  }) => branchable && enabled
+      ? Branchable(
+          text: text,
+          messageId: messageId,
+          store: store,
+          alignEnd: alignEnd,
+          child: child,
+        )
+      : child;
 }
 
 class _UserMessage extends StatelessWidget {
-  const _UserMessage(this.text);
+  const _UserMessage(this.text, {this.queued = false});
 
   final String text;
 
+  /// Sent while a run worked: it reads it at its next step.
+  final bool queued;
+
   @override
-  Widget build(BuildContext context) => Align(
-    alignment: Alignment.centerRight,
-    child: Container(
+  Widget build(BuildContext context) {
+    final bubble = Container(
       constraints: const BoxConstraints(maxWidth: 560),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
       decoration: BoxDecoration(
@@ -62,8 +104,29 @@ class _UserMessage extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
       ),
       child: SelectableText(text),
-    ),
-  );
+    );
+    return Align(
+      alignment: Alignment.centerRight,
+      child: queued
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                bubble,
+                Padding(
+                  padding: const EdgeInsets.only(top: 3, right: 6),
+                  child: Text(
+                    'Sent while tern was working · read at its next step',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: context.colors.muted,
+                    ),
+                  ),
+                ),
+              ],
+            )
+          : bubble,
+    );
+  }
 }
 
 class _AssistantMessage extends StatelessWidget {

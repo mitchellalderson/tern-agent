@@ -47,54 +47,68 @@ class _SidebarState extends State<Sidebar> {
                   padding: const EdgeInsets.only(right: 8),
                   child: QuietIconButton(
                     icon: Icons.edit_square,
-                    tooltip: 'New conversation (⌘N)',
+                    tooltip: store.hasChannels
+                        ? 'New topic (⌘N)'
+                        : 'New conversation (⌘N)',
                     onPressed: store.newConversation,
                   ),
                 ),
               ),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-            child: _SearchField(
-              controller: _search,
-              onChanged: (_) => setState(() {}),
-            ),
-          ),
+          if (!store.hasChannels)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+              child: _SearchField(
+                controller: _search,
+                onChanged: (_) => setState(() {}),
+              ),
+            )
+          else
+            const SizedBox(height: 10),
           _AgentRow(store: store),
           const SizedBox(height: 6),
+          if (store.hasChannels) ...[
+            const SizedBox(height: 4),
+            _HomeRow(store: store),
+            ...channelsSection(context, store),
+          ],
           if (store.hasMcp) _Library(store: store),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              children: [
-                for (final group in _group(sessions)) ...[
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 14, 10, 4),
-                    child: Text(
-                      group.$1.toUpperCase(),
-                      style: Theme.of(context).textTheme.labelSmall,
+          // With channels, conversations live in Home's History.
+          if (store.hasChannels)
+            const Spacer()
+          else
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                children: [
+                  for (final group in _group(sessions)) ...[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(10, 14, 10, 4),
+                      child: Text(
+                        group.$1.toUpperCase(),
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
                     ),
-                  ),
-                  for (final s in group.$2)
-                    _SessionRow(
-                      session: s,
-                      selected: s.id == store.selected && store.page == null,
-                      transcript: store.transcripts[s.id],
-                      onTap: () => store.open(s.id),
+                    for (final s in group.$2)
+                      _SessionRow(
+                        session: s,
+                        selected: s.id == store.selected && store.page == null,
+                        transcript: store.transcripts[s.id],
+                        onTap: () => store.open(s.id),
+                      ),
+                  ],
+                  if (sessions.isEmpty && store.link == Link.online)
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text(
+                        q.isEmpty ? 'No conversations yet.' : 'No matches.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
                     ),
                 ],
-                if (sessions.isEmpty && store.link == Link.online)
-                  Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Text(
-                      q.isEmpty ? 'No conversations yet.' : 'No matches.',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ),
-              ],
+              ),
             ),
-          ),
           const Hairline(),
           _StatusFooter(store: store),
         ],
@@ -117,6 +131,84 @@ class _SidebarState extends State<Sidebar> {
     return [for (final e in groups.entries) (e.key, e.value)];
   }
 }
+
+/// ⌂ Home: the direct line to the agent, with what's waiting for you.
+class _HomeRow extends StatelessWidget {
+  const _HomeRow({required this.store});
+
+  final TernStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final selected = store.homeOpen && store.page == null;
+    final waiting = store.pendingApprovals + store.pendingSecrets;
+    final running = store.transcripts[TernStore.homeKey]?.activeRun != null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Material(
+        color: selected ? c.selection : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => store.openHome(),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            child: Row(
+              children: [
+                Icon(Icons.home_outlined, size: 15, color: c.muted),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Home',
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
+                    ),
+                  ),
+                ),
+                if (waiting > 0)
+                  Tooltip(
+                    message: '$waiting waiting for you',
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: c.warn,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '$waiting',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  )
+                else if (running)
+                  SizedBox(
+                    width: 10,
+                    height: 10,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      color: c.muted,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The CHANNELS section: topic channels, added in C2.
+List<Widget> channelsSection(BuildContext context, TernStore store) => const [];
 
 class _SearchField extends StatelessWidget {
   const _SearchField({required this.controller, required this.onChanged});

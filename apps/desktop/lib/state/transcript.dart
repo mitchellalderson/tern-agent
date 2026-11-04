@@ -8,14 +8,44 @@ import 'package:tern_client/tern_client.dart';
 sealed class Item {}
 
 class UserItem extends Item {
-  UserItem(this.text);
+  UserItem(this.text, {this.messageId, this.queued = false});
   final String text;
+
+  /// The stored message, when it came from history (side chats branch
+  /// from it).
+  final int? messageId;
+
+  /// Sent while a run was working: it reads it at its next step.
+  bool queued;
 }
 
 class AssistantItem extends Item {
-  AssistantItem(this.text, {this.streaming = false});
+  AssistantItem(this.text, {this.streaming = false, this.messageId});
   String text;
   bool streaming;
+  final int? messageId;
+}
+
+/// Where Home's stream was cut into a new session (docs/channels-design.md
+/// §2.6), with what was carried over.
+class CutItem extends Item {
+  CutItem(this.cut);
+  final StreamCut cut;
+
+  /// Showing the carried-over summary.
+  bool expanded = false;
+}
+
+/// Something posted from elsewhere: a routine's result, a card.
+class PostItem extends Item {
+  PostItem(this.post);
+  final Post post;
+}
+
+/// A side chat branched off the stream; it opens beside it.
+class SideChatItem extends Item {
+  SideChatItem(this.chat);
+  final StreamSideChat chat;
 }
 
 enum StepStatus { running, ok, error }
@@ -215,61 +245,31 @@ class Transcript {
   /// summaries and tool results).
   static Transcript fromSession(SessionDetail s) {
     final t = Transcript();
-    final steps = <String, ToolStep>{};
-    final agentCalls = <String, String>{};
+    final b = _Builder(t);
     for (final m in s.messages) {
-      if (m.summary) {
-        t.items.add(
-          PillItem(PillKind.compacted, 'Earlier messages summarized'),
-        );
-        continue;
-      }
-      for (final b in m.content) {
-        switch (b) {
-          case TextBlock(:final text) when text.trim().isNotEmpty:
-            t.items.add(
-              m.role == 'user' ? UserItem(text) : AssistantItem(text),
-            );
-          case TextBlock():
-            break;
-          case ToolUseBlock(:final id, :final name, :final input)
-              when _agentTools.contains(name):
-            agentCalls[id] = name;
-            if (name == 'agent_spawn' && input is Map) {
-              t
-                  ._agents(m.runId)
-                  .children
-                  .add(
-                    AgentChild(
-                      callId: id,
-                      label: input['label'] as String? ?? 'agent',
-                      task: input['task'] as String? ?? '',
-                    ),
-                  );
-            }
-          case ToolResultBlock(:final toolUseId, :final content, :final isError)
-              when agentCalls.containsKey(toolUseId):
-            t._agentResult(agentCalls[toolUseId]!, toolUseId, content, isError);
-          case ToolUseBlock(:final id, :final name, :final input):
-            final step = ToolStep(
-              id: id,
-              name: name,
-              summary: summarize(name, input),
-            );
-            steps[id] = step;
-            t._work(m.runId).steps.add(step);
-          case ToolResultBlock(
-            :final toolUseId,
-            :final content,
-            :final isError,
-          ):
-            final step = steps[toolUseId];
-            if (step == null) break;
-            step
-              ..status = isError ? StepStatus.error : StepStatus.ok
-              ..output = content;
-            if (!isError) t._pillFor(step.name, step.summary);
-        }
+      b.add(m);
+    }
+    return t;
+  }
+
+  /// Rebuild a main channel's stream (oldest first): its segments'
+  /// messages with a divider at each cut, and posts and side chats where
+  /// they happened.
+  static Transcript fromStream(Iterable<StreamItem> oldestFirst) {
+    final t = Transcript();
+    final b = _Builder(t);
+    for (final i in oldestFirst) {
+      switch (i) {
+        case StreamMessage(:final message, :final messageId, :final queued):
+          b.add(message, messageId: messageId, queued: queued);
+        case StreamCut():
+          t.items.add(CutItem(i));
+        case StreamPost(:final post):
+          t.items.add(PostItem(post));
+        case StreamSideChat():
+          t.items.add(SideChatItem(i));
+        case StreamUnknown():
+          break;
       }
     }
     return t;
@@ -431,7 +431,9 @@ class Transcript {
           UnknownEvent() ||
           ProvidersChanged() ||
           ModelsChanged() ||
-          McpChanged():
+          McpChanged() ||
+          PostCreated() ||
+          ChannelsChanged():
         return false;
     }
     return true;
@@ -644,4 +646,65 @@ String summarize(String name, Object? input) {
 String _clip(String s) {
   final line = s.split('\n').first;
   return line.length > 80 ? '${line.substring(0, 79)}…' : line;
+}
+
+/// Turns stored messages into items, pairing tool calls with their results
+/// across messages.
+class _Builder {
+  _Builder(this.t);
+  final Transcript t;
+  final steps = <String, ToolStep>{};
+  final agentCalls = <String, String>{};
+
+  void add(SessionMessage m, {int? messageId, bool queued = false}) {
+    if (m.summary) {
+      t.items.add(PillItem(PillKind.compacted, 'Earlier messages summarized'));
+      return;
+    }
+    for (final b in m.content) {
+      switch (b) {
+        case TextBlock(:final text) when text.trim().isNotEmpty:
+          t.items.add(
+            m.role == 'user'
+                ? UserItem(text, messageId: messageId, queued: queued)
+                : AssistantItem(text, messageId: messageId),
+          );
+        case TextBlock():
+          break;
+        case ToolUseBlock(:final id, :final name, :final input)
+            when _agentTools.contains(name):
+          agentCalls[id] = name;
+          if (name == 'agent_spawn' && input is Map) {
+            t
+                ._agents(m.runId)
+                .children
+                .add(
+                  AgentChild(
+                    callId: id,
+                    label: input['label'] as String? ?? 'agent',
+                    task: input['task'] as String? ?? '',
+                  ),
+                );
+          }
+        case ToolResultBlock(:final toolUseId, :final content, :final isError)
+            when agentCalls.containsKey(toolUseId):
+          t._agentResult(agentCalls[toolUseId]!, toolUseId, content, isError);
+        case ToolUseBlock(:final id, :final name, :final input):
+          final step = ToolStep(
+            id: id,
+            name: name,
+            summary: summarize(name, input),
+          );
+          steps[id] = step;
+          t._work(m.runId).steps.add(step);
+        case ToolResultBlock(:final toolUseId, :final content, :final isError):
+          final step = steps[toolUseId];
+          if (step == null) break;
+          step
+            ..status = isError ? StepStatus.error : StepStatus.ok
+            ..output = content;
+          if (!isError) t._pillFor(step.name, step.summary);
+      }
+    }
+  }
 }

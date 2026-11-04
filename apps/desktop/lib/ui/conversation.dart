@@ -5,6 +5,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
+import 'history.dart';
 import 'items.dart';
 import 'model_picker.dart';
 import 'providers.dart';
@@ -43,12 +44,15 @@ class _ConversationViewState extends State<ConversationView> {
     final phase = t?.phase;
     // The activity line sits below the newest item (index 0, reversed).
     final extra = phase == null ? 0 : 1;
-    final title =
-        store.sessions
-            .where((s) => s.id == store.selected)
-            .firstOrNull
-            ?.title ??
-        'New conversation';
+    // Home: "Load earlier" above the oldest item.
+    final earlier = store.homeOpen && store.homeNext != null ? 1 : 0;
+    final title = store.homeOpen
+        ? 'Home'
+        : store.sessions
+                  .where((s) => s.id == store.selected)
+                  .firstOrNull
+                  ?.title ??
+              'New conversation';
     return Column(
       children: [
         _Header(
@@ -69,8 +73,16 @@ class _ConversationViewState extends State<ConversationView> {
                   controller: _scroll,
                   reverse: true,
                   padding: const EdgeInsets.symmetric(vertical: 20),
-                  itemCount: items.length + extra,
+                  itemCount: items.length + extra + earlier,
                   itemBuilder: (context, i) {
+                    if (i == items.length + extra) {
+                      return Center(
+                        child: TextButton(
+                          onPressed: store.loadOlderHome,
+                          child: const Text('Load earlier'),
+                        ),
+                      );
+                    }
                     final item = i < extra
                         ? null
                         : items[items.length - 1 - (i - extra)];
@@ -89,7 +101,11 @@ class _ConversationViewState extends State<ConversationView> {
                                     phase: phase!,
                                     since: t!.runSince,
                                   )
-                                : ItemView(item: item, store: store),
+                                : ItemView(
+                                    item: item,
+                                    store: store,
+                                    branchable: store.homeOpen,
+                                  ),
                           ),
                         ),
                       ),
@@ -164,6 +180,20 @@ class _Header extends StatelessWidget {
                 used: contextTokens,
                 window: contextWindow,
                 compactAt: compactAt,
+              ),
+            if (store.homeOpen)
+              TextButton.icon(
+                onPressed: () => showHistory(context, store),
+                icon: Icon(Icons.history, size: 15, color: c.muted),
+                label: Text(
+                  'History',
+                  style: TextStyle(fontSize: 12.5, color: c.muted),
+                ),
+                style: TextButton.styleFrom(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
               ),
             if (store.link == Link.online)
               TextButton.icon(
@@ -372,11 +402,27 @@ class _ComposerState extends State<_Composer> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (running && _text.text.isNotEmpty)
+            if (store.homeOpen && store.newTopic)
+              Padding(
+                padding: const EdgeInsets.only(left: 6, bottom: 6),
+                child: InputChip(
+                  avatar: Icon(Icons.add_comment_outlined, size: 15),
+                  label: const Text(
+                    'New topic: a fresh session, with a summary of this one',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  onDeleted: store.toggleNewTopic,
+                  deleteButtonTooltipMessage: 'Keep going in this session',
+                  visualDensity: VisualDensity.compact,
+                ),
+              )
+            else if (running && _text.text.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(left: 14, bottom: 6),
                 child: Text(
-                  'Sending will stop the current run.',
+                  store.homeOpen
+                      ? 'tern will read this at its next step. Stop ends the run.'
+                      : 'Sending will stop the current run.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
@@ -395,10 +441,21 @@ class _ComposerState extends State<_Composer> {
                   ),
                 ],
               ),
-              padding: const EdgeInsets.fromLTRB(18, 4, 6, 4),
+              padding: EdgeInsets.fromLTRB(store.homeOpen ? 6 : 18, 4, 6, 4),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
+                  if (store.homeOpen)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4, right: 4),
+                      child: QuietIconButton(
+                        icon: store.newTopic
+                            ? Icons.add_comment
+                            : Icons.add_comment_outlined,
+                        tooltip: 'New topic (⌘N)',
+                        onPressed: store.toggleNewTopic,
+                      ),
+                    ),
                   Expanded(
                     child: Focus(
                       onFocusChange: (_) => setState(() {}),
@@ -420,7 +477,9 @@ class _ComposerState extends State<_Composer> {
                         maxLines: 8,
                         keyboardType: TextInputType.multiline,
                         decoration: InputDecoration(
-                          hintText: 'Message tern',
+                          hintText: store.homeOpen && store.newTopic
+                              ? 'Start a new topic'
+                              : 'Message tern',
                           hintStyle: TextStyle(color: c.muted),
                           border: InputBorder.none,
                           contentPadding: const EdgeInsets.symmetric(

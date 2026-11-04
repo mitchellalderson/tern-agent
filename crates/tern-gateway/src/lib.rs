@@ -15,10 +15,12 @@ use tokio_util::sync::CancellationToken;
 /// gateway's source name (`"telegram"`) and a platform chat id.
 #[async_trait]
 pub trait ChatHost: Send + Sync {
-    /// A user message: stops any run in progress in this chat, then starts
-    /// a run for `text` in the chat's current session. Returns the run id.
+    /// A user message: goes to the run in progress in this chat, if any
+    /// (it reads it at its next model call), else starts a run for `text`
+    /// in the chat's current session. Returns the run id either way.
     async fn send(&self, source: &str, chat: &str, text: &str) -> Result<String, String>;
-    /// Start a fresh session for the chat (`/new`).
+    /// Start a new topic for the chat (`/new`): the next message begins a
+    /// new session that carries a summary of this one over.
     async fn new_session(&self, source: &str, chat: &str) -> Result<(), String>;
     /// Show (`None`) or set the chat session's model. Returns the model now in use.
     async fn model(&self, source: &str, chat: &str, set: Option<&str>) -> Result<String, String>;

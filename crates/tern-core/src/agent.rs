@@ -26,6 +26,9 @@ use crate::types::{
     StreamEvent, ToolCall, Usage,
 };
 
+mod carry;
+pub use carry::CarryOutput;
+
 pub const MAX_LLM_ATTEMPTS: u32 = 5;
 /// The result of a tool call cut off by the output limit. Its arguments are
 /// incomplete, so it is never run.
@@ -357,6 +360,13 @@ impl Agent {
             if cancel.is_cancelled() {
                 return Ok(RunStatus::Interrupted);
             }
+            if let Some(prev) = self.carry_due(run, idx)? {
+                match self.carry_step(run, &prev, &model, &provider, cancel).await {
+                    Ok(()) => idx += 1,
+                    Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
+                    Err(e) => return Err(e.into()),
+                }
+            }
             if self.inbox_due(run, idx, false)? {
                 match self.inbox_step(run, idx, false, cancel).await {
                     Ok(_) => idx += 1,
@@ -586,7 +596,8 @@ impl Agent {
             Some(kind) => Ok(kind == StepKind::Inbox),
             None => match self.subagents.get() {
                 Some(h) => Ok(h.inbox_due(&run.id, at_turn_end)?),
-                None => Ok(false),
+                // Messages the user queued while the run worked.
+                None => Ok(!self.store.pending_mail(&run.id)?.is_empty()),
             },
         }
     }
@@ -612,7 +623,7 @@ impl Agent {
                 || async {
                     let mail = match self.subagents.get() {
                         Some(h) => h.take_mail(&run.id, wait, cancel).await?,
-                        None => Vec::new(),
+                        None => self.store.pending_mail(&run.id)?,
                     };
                     let text = mail
                         .iter()

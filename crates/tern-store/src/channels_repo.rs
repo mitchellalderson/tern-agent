@@ -279,6 +279,25 @@ impl Store {
         )?)
     }
 
+    /// Side threads of a channel created in `[from, to)` (unix ms), oldest
+    /// first.
+    pub fn side_threads_between(
+        &self,
+        channel_id: &str,
+        from: i64,
+        to: i64,
+    ) -> Result<Vec<SessionRow>> {
+        let sql = format!(
+            "SELECT {SESSION_COLS} FROM sessions
+             WHERE channel_id = ?1 AND branched_from IS NOT NULL AND created_at >= ?2 AND created_at < ?3
+             ORDER BY created_at"
+        );
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![channel_id, from, to], session_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// When the session last had a message (its input or a step's), or
     /// when it was created. Posts from elsewhere don't count.
     pub fn session_last_activity(&self, session_id: &str) -> Result<i64> {
@@ -451,6 +470,21 @@ impl Store {
             [channel_id],
             |r| r.get(0),
         )?)
+    }
+
+    /// Mark mail `ids` consumed by `run_id` without a step: messages the
+    /// user queued for a run that finished before reading them, handed to
+    /// the run started (or found working) for them.
+    pub fn hand_over_mail(&self, ids: &[i64], run_id: &str) -> Result<()> {
+        let conn = self.conn()?;
+        for id in ids {
+            conn.execute(
+                "UPDATE agent_mail SET consumed_run_id = ?2, consumed_step = -1
+                 WHERE id = ?1 AND consumed_step IS NULL",
+                params![id, run_id],
+            )?;
+        }
+        Ok(())
     }
 
     pub fn set_schedule_channel(&self, schedule_id: &str, channel_id: &str) -> Result<bool> {

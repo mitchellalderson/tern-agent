@@ -3,6 +3,7 @@
 // event types decode to [UnknownEvent], so a newer daemon doesn't break
 // an older app.
 
+import 'channels.dart';
 import 'mcp.dart';
 import 'secret_requests.dart';
 
@@ -198,6 +199,10 @@ class SessionItem {
     required this.messages,
     required this.runs,
     required this.updatedAt,
+    this.channelId,
+    this.prevSessionId,
+    this.segmentReason,
+    this.branchedFrom,
   });
 
   factory SessionItem.fromJson(Json j) => SessionItem(
@@ -208,6 +213,10 @@ class SessionItem {
     messages: j['messages'] as int,
     runs: j['runs'] as int,
     updatedAt: _time(j['updated_at'] as int),
+    channelId: j['channel_id'] as String?,
+    prevSessionId: j['prev_session_id'] as String?,
+    segmentReason: j['segment_reason'] as String?,
+    branchedFrom: j['branched_from'] as String?,
   );
 
   final String id;
@@ -219,6 +228,17 @@ class SessionItem {
   final int messages;
   final int runs;
   final DateTime updatedAt;
+
+  /// The channel it's a thread of.
+  final String? channelId;
+
+  /// A segment of a stream: the one before it, and why it was cut
+  /// (`idle`, `day`, `new_topic`, `migrated`).
+  final String? prevSessionId;
+  final String? segmentReason;
+
+  /// A side chat: `message:<id>` or `post:<id>`.
+  final String? branchedFrom;
 }
 
 /// Store timestamps are Unix seconds; accept milliseconds too.
@@ -445,10 +465,15 @@ sealed class TernEvent {
         m['state'] is Json ? McpState.fromJson(m['state'] as Json) : null,
       );
     }
+    if (j['post_created'] case final Json p) {
+      return PostCreated(Post.fromJson(p['post'] as Json));
+    }
+    if (j.containsKey('channels_changed')) return const ChannelsChanged();
     final run = j['run_id'] as String? ?? '';
     final event = _agentEvent(j, run);
     if (event is RunEvent) {
       if (j['session_id'] case final String s) _sessions[event] = s;
+      if (j['channel_id'] case final String c) _channels[event] = c;
       if (j['parent_run_id'] case final String p) _parents[event] = p;
       if (j['root_session_id'] case final String r) _roots[event] = r;
     }
@@ -542,6 +567,9 @@ sealed class RunEvent extends TernEvent {
   /// at the root of the tree. The daemon adds both.
   String? get parentRunId => _parents[this];
   String? get rootSessionId => _roots[this];
+
+  /// The channel of the run's session, which the daemon adds.
+  String? get channelId => _channels[this];
 }
 
 // Kept beside the event rather than in every constructor, so events can
@@ -549,6 +577,7 @@ sealed class RunEvent extends TernEvent {
 final _sessions = Expando<String>('session_id');
 final _parents = Expando<String>('parent_run_id');
 final _roots = Expando<String>('root_session_id');
+final _channels = Expando<String>('channel_id');
 
 class RunStarted extends RunEvent {
   const RunStarted({
@@ -743,6 +772,18 @@ class McpChanged extends TernEvent {
   final McpState? state;
 }
 
+/// A post was written to a channel.
+class PostCreated extends TernEvent {
+  const PostCreated(this.post);
+  final Post post;
+}
+
+/// A channel was created, changed, archived, or got a new main thread
+/// (Home: a new segment). Re-read `/v1/channels`.
+class ChannelsChanged extends TernEvent {
+  const ChannelsChanged();
+}
+
 class UnknownEvent extends TernEvent {
   const UnknownEvent(this.json);
   final Json json;
@@ -765,6 +806,7 @@ class Schedule {
     this.paused,
     this.pausedUntil,
     this.pausedReason,
+    this.channelId = 'home',
   });
 
   factory Schedule.fromJson(Json j) => Schedule(
@@ -782,6 +824,7 @@ class Schedule {
     paused: j['paused'] as String?,
     pausedUntil: _maybeTime(j['paused_until']),
     pausedReason: j['paused_reason'] as String?,
+    channelId: j['channel_id'] as String? ?? 'home',
   );
 
   final String id;
@@ -812,6 +855,9 @@ class Schedule {
 
   /// Which cap paused it: `runs_per_day` or `usd_per_day`.
   final String? pausedReason;
+
+  /// The channel its results are posted to.
+  final String channelId;
 
   bool get pausedByBudget => paused == 'budget';
 }

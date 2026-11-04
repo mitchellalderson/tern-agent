@@ -34,7 +34,10 @@ pub fn turns_so_far(req: &ChatRequest) -> usize {
         .messages
         .iter()
         .filter(|m| m.role == Role::User)
-        .map(|m| summarized_turns(&m.text()))
+        .map(|m| m.text())
+        // A carried-over summary counts another session's turns.
+        .filter(|t| !t.contains(tern_core::channels::CARRY_HEADER))
+        .map(|t| summarized_turns(&t))
         .sum();
     live + summarized
 }

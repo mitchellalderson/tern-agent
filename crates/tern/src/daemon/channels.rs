@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
-use tern_core::channels::{Post, author};
+use tern_core::channels::{CutReason, Post, author};
 use tern_core::models::Change;
 use tern_core::types::ContentBlock;
-use tern_store::{ChannelRow, HOME, NewPost, NewThread, RunRow, Store};
+use tern_store::{ChannelRow, HOME, NewPost, NewThread, RunRow, SessionRow, Store};
 
 use super::manager::Manager;
 
@@ -18,9 +18,10 @@ pub struct Sent {
     pub post: Option<Post>,
     pub run_id: String,
     pub session_id: String,
-    /// The text went to a run already working there (C1).
+    /// The text went to the run already working there (`run_id`), which
+    /// reads it at its next model call.
     pub queued: bool,
-    /// Home: the send started a new segment of the stream (C1).
+    /// Home: the send started a new segment of the stream.
     pub new_segment: bool,
 }
 
@@ -114,12 +115,14 @@ impl Manager {
     /// The user sends `text` into `channel` (`POST /v1/channels/{id}/posts`).
     /// In a topic channel it becomes a post and a run in the main thread (or
     /// in a side thread with `reply_to`); in Home it is a run in the current
-    /// segment.
+    /// segment, or in a new one when §2.6 says to cut (`new_topic` forces
+    /// it). Where a run is already working, the text is queued for it.
     pub async fn send_to_channel(
         self: &Arc<Self>,
         channel: &ChannelRow,
         text: &str,
         reply_to: Option<i64>,
+        new_topic: bool,
         model: Option<&str>,
     ) -> anyhow::Result<Sent> {
         if text.trim().is_empty() {
@@ -129,30 +132,26 @@ impl Manager {
             bail!("#{} is archived", channel.slug);
         }
         if channel.kind == "main" {
-            let session = self.main_thread(channel)?;
-            let started = self
-                .start(Some(&session), model, text, "api", "user", None)
-                .await?;
-            return Ok(Sent {
-                post: None,
-                run_id: started.run_id,
-                session_id: started.session_id,
-                queued: false,
-                new_segment: false,
-            });
+            return self.send_home(channel, text, new_topic, model).await;
         }
         let session = match reply_to {
             Some(to) => self.reply_thread(channel, to)?,
             None => self.main_thread(channel)?,
         };
-        let started = self
-            .start(Some(&session), model, text, "api", "user", None)
-            .await?;
-        let key = format!("send:{}", started.run_id);
+        let (run_id, session_id, key, queued) = match self.queue_message(&session, text)? {
+            Some((run, mail)) => (run, session, format!("queued:{mail}"), true),
+            None => {
+                let started = self
+                    .start(Some(&session), model, text, "api", "user", None)
+                    .await?;
+                let key = format!("send:{}", started.run_id);
+                (started.run_id, started.session_id, key, false)
+            }
+        };
         let (row, _) = self.rt.store.add_post(&NewPost {
             channel_id: &channel.id,
-            session_id: Some(&started.session_id),
-            run_id: Some(&started.run_id),
+            session_id: Some(&session_id),
+            run_id: Some(&run_id),
             author_kind: "user",
             author_id: author::OWNER,
             author: "you",
@@ -166,11 +165,151 @@ impl Manager {
         self.publish(post.clone());
         Ok(Sent {
             post: Some(post),
-            run_id: started.run_id,
-            session_id: started.session_id,
-            queued: false,
+            run_id,
+            session_id,
+            queued,
             new_segment: false,
         })
+    }
+
+    /// A send into Home (§2.6, §4).
+    async fn send_home(
+        self: &Arc<Self>,
+        channel: &ChannelRow,
+        text: &str,
+        new_topic: bool,
+        model: Option<&str>,
+    ) -> anyhow::Result<Sent> {
+        let head = match &channel.main_session_id {
+            Some(id) => self.rt.store.session(id)?,
+            None => None,
+        };
+        let Some(head) = head else {
+            let session = self.main_thread(channel)?;
+            let started = self
+                .start(Some(&session), model, text, "api", "user", None)
+                .await?;
+            return Ok(Sent {
+                post: None,
+                run_id: started.run_id,
+                session_id: started.session_id,
+                queued: false,
+                new_segment: false,
+            });
+        };
+        if !new_topic && let Some((run_id, _)) = self.queue_message(&head.id, text)? {
+            return Ok(Sent {
+                post: None,
+                run_id,
+                session_id: head.id,
+                queued: true,
+                new_segment: false,
+            });
+        }
+        let session = match self.cut(&head, new_topic)? {
+            Some(next) => {
+                self.rt.store.set_main_session(&channel.id, &next.id)?;
+                self.channels_changed();
+                next
+            }
+            None => head.clone(),
+        };
+        let started = self
+            .start(Some(&session.id), model, text, "api", "user", None)
+            .await?;
+        Ok(Sent {
+            post: None,
+            run_id: started.run_id,
+            new_segment: session.id != head.id,
+            session_id: started.session_id,
+            queued: false,
+        })
+    }
+
+    /// The next segment after `head`, if the stream should be cut before
+    /// the user's message (§2.6): on New topic, or after idle hours or a
+    /// new day. The caller has checked that no run is working in `head`
+    /// (New topic cuts anyway; that run finishes in its own segment).
+    pub(super) fn cut(
+        &self,
+        head: &SessionRow,
+        new_topic: bool,
+    ) -> anyhow::Result<Option<SessionRow>> {
+        let reason = if new_topic {
+            Some(CutReason::NewTopic)
+        } else {
+            let last = self.rt.store.session_last_activity(&head.id)?;
+            let last = chrono::DateTime::from_timestamp_millis(last)
+                .map(|t| t.with_timezone(&chrono::Local))
+                .unwrap_or_else(chrono::Local::now);
+            tern_core::channels::cut_reason(&self.rt.live().home, last, chrono::Local::now())
+        };
+        let Some(reason) = reason else {
+            return Ok(None);
+        };
+        let next = self.rt.store.create_thread(&NewThread {
+            id: &tern_core::agent::new_id(),
+            source: &head.source,
+            channel_id: head.channel_id.as_deref().unwrap_or(HOME),
+            model: head.model.as_deref(),
+            external_ref: head.external_ref.as_deref(),
+            prev_session_id: Some(&head.id),
+            segment_reason: Some(reason.as_str()),
+            ..NewThread::default()
+        })?;
+        tracing::info!(prev = %head.id, next = %next.id, reason = reason.as_str(), "cut the stream into a new segment");
+        Ok(Some(next))
+    }
+
+    /// Messages the user queued for `run_id` that it finished without
+    /// reading: answer them with a new run in the same thread (or give them
+    /// to the run that has started there since). A stopped run's queue is
+    /// left alone.
+    pub(super) async fn follow_up_queued(self: &Arc<Self>, run_id: &str) -> anyhow::Result<()> {
+        let store = &self.rt.store;
+        let Some(run) = store.run(run_id)? else {
+            return Ok(());
+        };
+        if run.parent_run_id.is_some() || !matches!(run.status.as_str(), "completed" | "failed") {
+            return Ok(());
+        }
+        let mail: Vec<_> = store
+            .pending_mail(run_id)?
+            .into_iter()
+            .filter(|m| m.from_run_id.is_none() && m.kind == "message")
+            .collect();
+        if mail.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<i64> = mail.iter().map(|m| m.id).collect();
+        let text = mail
+            .iter()
+            .map(|m| {
+                serde_json::from_str::<serde_json::Value>(&m.body)
+                    .ok()
+                    .and_then(|b| b.get("text")?.as_str().map(str::to_owned))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if let Some((active, _)) = self.queue_message(&run.session_id, &text)? {
+            store.hand_over_mail(&ids, &active)?;
+            return Ok(());
+        }
+        let deliver_to = store.run_deliver_to(run_id)?;
+        let started = self
+            .start(
+                Some(&run.session_id),
+                None,
+                &text,
+                "api",
+                "user",
+                deliver_to.as_deref(),
+            )
+            .await?;
+        store.hand_over_mail(&ids, &started.run_id)?;
+        tracing::info!(run = %started.run_id, after = %run_id, "answering messages queued too late for the last run");
+        Ok(())
     }
 
     /// Write the post a finished run owes its channel (§2.3), at most once:

@@ -1,0 +1,98 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:tern_client/tern_client.dart';
+import 'package:test/test.dart';
+
+void main() {
+  test('a stream page decodes every kind of item', () {
+    final page = StreamPage.fromJson(
+      jsonDecode(File('test/fixtures/stream_page.json').readAsStringSync())
+          as Json,
+    );
+    expect(page.next, '1762185600000.2.3');
+    final [side, reply, queued, cut, post] = page.items;
+    expect((side as StreamSideChat).branchedFrom, 'message:12');
+    expect((reply as StreamMessage).message.role, 'assistant');
+    expect(reply.messageId, 14);
+    expect((queued as StreamMessage).queued, isTrue);
+    final c = cut as StreamCut;
+    expect(
+      (c.reason, c.prevSessionId),
+      ('new_topic', '019a0b1c2d3e7f00a1b2c3d4e5f60718'),
+    );
+    expect(c.carry, startsWith('[Continuing from your previous session'));
+    final p = (post as StreamPost).post;
+    expect(
+      (p.authorKind, p.authorId, p.author),
+      ('routine', 'routine:sch_0a1b2c3d4e5f', 'Morning brief'),
+    );
+    expect(p.mine, isFalse);
+  });
+
+  test('channels, sends and channel events decode', () {
+    final home = Channel.fromJson({
+      'id': 'home',
+      'slug': 'home',
+      'title': 'Home',
+      'kind': 'main',
+      'main_session_id': 's1',
+      'needs_you': 2,
+      'active_runs': 1,
+      'updated_at': 1762185600000,
+    });
+    expect((home.isHome, home.needsYou, home.archived), (true, 2, false));
+    final sent = Sent.fromJson({
+      'post': null,
+      'run_id': 'r',
+      'session_id': 's2',
+      'queued': false,
+      'new_segment': true,
+    });
+    expect((sent.post, sent.newSegment), (null, true));
+
+    final created = TernEvent.fromJson({
+      'post_created': {
+        'post': {
+          'id': 9,
+          'channel_id': 'c',
+          'author_kind': 'user',
+          'author_id': 'owner',
+          'author': 'you',
+          'kind': 'message',
+          'text': 'hi',
+          'created_at': 1,
+        },
+      },
+    });
+    expect((created as PostCreated).post.mine, isTrue);
+    expect(
+      TernEvent.fromJson({'channels_changed': <String, dynamic>{}}),
+      isA<ChannelsChanged>(),
+    );
+    final started = TernEvent.fromJson({
+      'type': 'run_started',
+      'run_id': 'r',
+      'session_id': 's',
+      'channel_id': 'c',
+    });
+    expect((started as RunStarted).channelId, 'c');
+  });
+
+  test('sessions carry their place in a stream', () {
+    final s = SessionItem.fromJson({
+      'id': 's2',
+      'source': 'api',
+      'messages': 2,
+      'runs': 1,
+      'updated_at': 1,
+      'channel_id': 'home',
+      'prev_session_id': 's1',
+      'segment_reason': 'idle',
+    });
+    expect(
+      (s.channelId, s.prevSessionId, s.segmentReason, s.branchedFrom),
+      ('home', 's1', 'idle', null),
+    );
+  });
+}

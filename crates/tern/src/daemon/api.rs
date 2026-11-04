@@ -7,7 +7,7 @@
 //! | GET | `/v1/info` | default model and tools |
 //! | GET | `/v1/tools` | full tool specs: `[{name, description, input_schema, effect, untrusted}]` |
 //! | POST | `/v1/models/check` | validate `{model}` |
-//! | POST | `/v1/runs` | send a message: `{text, session_id?, model?, channel?}` (`channel`: a new thread there) |
+//! | POST | `/v1/runs` | send a message: `{text, session_id?, model?, channel?, branched_from?}` (`channel`: a new thread there; `branched_from`: a side chat) |
 //! | GET | `/v1/runs/active` | runs in progress: `[{run_id, session_id, parent_run_id?, label?}]` |
 //! | POST | `/v1/runs/{id}/resume` | resume an interrupted run |
 //! | POST | `/v1/runs/{id}/cancel` | cancel a run and its sub-agents |
@@ -261,6 +261,10 @@ pub struct StartBody {
     /// id) instead of a new conversation in Home.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+    /// With `channel`: a side chat branched from `message:<id>` or
+    /// `post:<id>` (docs/channels-design.md §2.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branched_from: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -274,12 +278,21 @@ async fn start_run(State(m): State<Shared>, Json(b): Json<StartBody>) -> ApiResu
     let thread = match (&b.session_id, &b.channel) {
         (None, Some(c)) => {
             let c = super::api_channels::find(&m, c)?;
+            if let Some(b) = &b.branched_from {
+                let ok = b.split_once(':').is_some_and(|(k, id)| {
+                    matches!(k, "message" | "post") && id.parse::<i64>().is_ok()
+                });
+                if !ok {
+                    return Err(bad("branched_from must be message:<id> or post:<id>"));
+                }
+            }
             let s =
                 m.rt.store
                     .create_thread(&tern_store::NewThread {
                         id: &tern_core::agent::new_id(),
                         source: "api",
                         channel_id: &c.id,
+                        branched_from: b.branched_from.as_deref(),
                         ..tern_store::NewThread::default()
                     })
                     .map_err(internal)?;

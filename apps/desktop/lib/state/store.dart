@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:tern_client/tern_client.dart';
@@ -62,6 +63,42 @@ class TernStore extends ChangeNotifier {
   LibraryPage? page;
   String? mcpSelected;
 
+  /// Channels, Home first, when the core has them ([hasChannels]).
+  List<Channel> channels = [];
+
+  /// The channel open in the centre column: [homeId], or a topic channel.
+  /// Null when a plain conversation ([selected]) is open.
+  String? channel;
+
+  /// Home's id (and slug).
+  static const homeId = 'home';
+
+  /// Where Home's stream lives in [transcripts]: one transcript for all of
+  /// its segments.
+  static const homeKey = '#home';
+
+  /// The sessions whose events belong to Home's stream.
+  final _homeSessions = <String>{};
+
+  /// Home's stream as loaded, oldest first, and the cursor for older items.
+  List<StreamItem> _homeItems = [];
+  String? homeNext;
+
+  /// Home has changed underneath (a carry-over to show, a post that came
+  /// in mid-run): rebuild it when its run finishes.
+  var _homeDirty = false;
+
+  /// The next send in Home starts a new topic.
+  bool newTopic = false;
+
+  /// The conversation open in the right pane: a History entry, a side
+  /// chat, a post's thread.
+  String? thread;
+
+  /// A side chat about to start from a message: what it quotes, and the
+  /// message it branched from.
+  ({String quote, String? from})? branch;
+
   /// The model a new conversation will use, when chosen before sending.
   String? draftModel;
   String? error;
@@ -72,7 +109,27 @@ class TernStore extends ChangeNotifier {
   var _backoff = const Duration(milliseconds: 500);
   var _disposed = false;
 
-  Transcript? get current => selected == null ? null : transcripts[selected];
+  Transcript? get current => homeOpen
+      ? transcripts[homeKey]
+      : selected == null
+      ? null
+      : transcripts[selected];
+
+  /// Whether the core has channels and Home's stream (T2).
+  bool get hasChannels => health?.features.contains('channels') ?? false;
+
+  bool get homeOpen => channel == homeId;
+
+  Channel? get home => channels.where((c) => c.isHome).firstOrNull;
+
+  /// The transcript showing `session`: Home's for its segments.
+  Transcript? transcriptOf(String session) => _homeSessions.contains(session)
+      ? transcripts[homeKey]
+      : transcripts[session];
+
+  /// The thread pane's transcript.
+  Transcript? get threadTranscript =>
+      thread == null ? null : transcripts[thread];
 
   bool get running => current?.activeRun != null;
 
@@ -171,11 +228,20 @@ class TernStore extends ChangeNotifier {
       _runSession[r.runId] = r.sessionId;
       if (r.parentRunId case final p?) _parentOf[r.runId] = p;
     }
-    if (selected case final id?) {
+    if (hasChannels) {
+      channels = await client.channels();
+      // Home is where the app opens.
+      if (channel == null && selected == null && page == null) {
+        channel = homeId;
+      }
+      if (homeOpen) await _loadHome();
+    }
+    if (selected case final id? when !homeOpen) {
       await _load(id);
     }
+    if (thread case final id?) await _load(id);
     for (final r in active) {
-      transcripts[r.sessionId]?.activeRun = r.runId;
+      if (r.parentRunId == null) transcriptOf(r.sessionId)?.activeRun = r.runId;
     }
     for (final a in await client.pendingApprovals()) {
       _transcriptFor(a.sessionId)?.apply(ApprovalRequested(a));
@@ -226,6 +292,215 @@ class TernStore extends ChangeNotifier {
     }
   }
 
+  /// Rebuild Home's stream from the daemon: the newest page (as many items
+  /// as were loaded), or with `older` the page before what's loaded.
+  Future<void> _loadHome({bool older = false}) async {
+    final head = home?.mainSessionId;
+    final page = await client.stream(
+      homeId,
+      before: older ? homeNext : null,
+      limit: older ? 200 : max(200, _homeItems.length + 20),
+    );
+    final fresh = page.items.reversed.toList();
+    _homeItems = older ? [...fresh, ..._homeItems] : fresh;
+    homeNext = page.next;
+    _homeSessions
+      ..clear()
+      ..addAll([
+        for (final i in _homeItems)
+          if (i
+              case StreamMessage(:final sessionId) ||
+                  StreamCut(:final sessionId))
+            sessionId,
+        ?head,
+      ]);
+    final previous = transcripts[homeKey];
+    final t = Transcript.fromStream(_homeItems)
+      ..activeRun = previous?.activeRun
+      ..runSince = previous?.runSince;
+    for (final a
+        in previous?.items.whereType<ApprovalItem>() ?? <ApprovalItem>[]) {
+      if (a.outcome == null) t.items.add(a);
+    }
+    for (final r
+        in previous?.items.whereType<SecretRequestItem>() ??
+            <SecretRequestItem>[]) {
+      if (r.open) t.items.add(r);
+    }
+    transcripts[homeKey] = t;
+    _homeDirty = false;
+    selected = head;
+    draft = head == null;
+    if (head == null) return;
+    usage[head] = await client.usage(head);
+    if (t.children.isNotEmpty) {
+      try {
+        final runs = await client.subagents(head);
+        for (final r in runs) {
+          _runSession[r.runId] = r.sessionId;
+          _parentOf[r.runId] = r.parentRunId;
+        }
+        t.mergeChildren(runs);
+      } on TernException {
+        // The calls alone will do.
+      }
+    }
+  }
+
+  /// Open Home's stream in the centre column; with `newTopic`, the next
+  /// send starts a new segment.
+  Future<void> openHome({bool newTopic = false}) async {
+    page = null;
+    channel = homeId;
+    error = null;
+    this.newTopic = newTopic;
+    selected = home?.mainSessionId;
+    draft = selected == null;
+    notifyListeners();
+    try {
+      if (channels.isEmpty) channels = await client.channels();
+      await _loadHome();
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  /// Load the page of Home's stream before what's shown.
+  Future<void> loadOlderHome() async {
+    if (homeNext == null) return;
+    try {
+      await _loadHome(older: true);
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  void toggleNewTopic() {
+    newTopic = !newTopic;
+    notifyListeners();
+  }
+
+  /// Re-read the channels; follow Home to a new segment started elsewhere.
+  Future<void> _refreshChannels() async {
+    try {
+      channels = await client.channels();
+      final head = home?.mainSessionId;
+      if (homeOpen && head != null && head != selected) {
+        _homeSessions.add(head);
+        await _loadHome();
+      }
+      notifyListeners();
+    } on TernException {
+      // Refreshed again on reconnect.
+    }
+  }
+
+  /// A post came in: Home shows it where it happened.
+  void _onPost(Post post) {
+    unawaited(_refreshChannels());
+    if (post.channelId != homeId) return;
+    final t = transcripts[homeKey];
+    if (t == null) return;
+    // Mid-run, appending would split the reply streaming in.
+    if (t.activeRun == null) {
+      t.items.add(PostItem(post));
+      notifyListeners();
+    } else {
+      _homeDirty = true;
+    }
+  }
+
+  /// Open a conversation in the right pane (History, a side chat).
+  Future<void> openThread(String session) async {
+    thread = session;
+    branch = null;
+    notifyListeners();
+    try {
+      await _load(session);
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  void closeThread() {
+    thread = null;
+    branch = null;
+    notifyListeners();
+  }
+
+  /// Start a side chat about `text` in the right pane (sent with its
+  /// first message).
+  void branchFrom(String text, {int? messageId}) {
+    thread = null;
+    branch = (
+      quote: text,
+      from: messageId == null ? null : 'message:$messageId',
+    );
+    notifyListeners();
+  }
+
+  /// Send in the right pane: the side chat's first message, or the next
+  /// one in the open conversation (which stops a run in progress there).
+  Future<void> sendThread(String text) async {
+    error = null;
+    try {
+      if (branch case final b?) {
+        final quoted = '${_quote(b.quote)}\n\n$text';
+        final started = await client.send(
+          quoted,
+          channel: homeId,
+          branchedFrom: b.from,
+        );
+        _runSession[started.runId] = started.sessionId;
+        branch = null;
+        thread = started.sessionId;
+        final t = transcripts.putIfAbsent(started.sessionId, Transcript.new);
+        t.items.insert(0, UserItem(quoted));
+        t.activeRun ??= started.runId;
+        // Its card in the stream.
+        if (homeOpen) {
+          if (transcripts[homeKey]?.activeRun == null) {
+            await _loadHome();
+          } else {
+            _homeDirty = true;
+          }
+        }
+      } else if (thread case final s?) {
+        // Continuing an earlier segment: its run shows here, not in Home.
+        if (s != home?.mainSessionId) _homeSessions.remove(s);
+        final t = transcripts.putIfAbsent(s, Transcript.new);
+        t.items.add(UserItem(text));
+        notifyListeners();
+        final started = await client.send(text, session: s);
+        _runSession[started.runId] = s;
+        t.activeRun ??= started.runId;
+      }
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  Future<void> stopThread() async {
+    if (threadTranscript?.activeRun case final run?) {
+      try {
+        await client.cancel(run);
+      } on TernException catch (e) {
+        error = e.message;
+        notifyListeners();
+      }
+    }
+  }
+
+  static String _quote(String text) {
+    final lines = text.trim().split('\n');
+    final kept = lines.take(6).map((l) => '> $l').join('\n');
+    return lines.length > 6 ? '$kept\n> …' : kept;
+  }
+
   /// Load a sub-agent's conversation, to show inside its parent's.
   Future<void> loadChild(String session) async {
     try {
@@ -260,14 +535,16 @@ class TernStore extends ChangeNotifier {
   /// The transcript holding [run]'s agents card, if [run] is a sub-agent.
   Transcript? _parentTranscript(String run) => switch (_parentOf[run]) {
     final p? => switch (_runSession[p]) {
-      final s? => transcripts[s],
+      final s? => transcriptOf(s),
       null => null,
     },
     null => null,
   };
 
-  Transcript? _transcriptFor(String session) =>
-      transcripts.putIfAbsent(session, Transcript.new);
+  Transcript? _transcriptFor(String session) => transcripts.putIfAbsent(
+    _homeSessions.contains(session) ? homeKey : session,
+    Transcript.new,
+  );
 
   @visibleForTesting
   void onEventForTest(TernEvent e) => _onEvent(e);
@@ -285,6 +562,13 @@ class TernStore extends ChangeNotifier {
         session = sessionId;
         _runSession[runId] = sessionId;
         if (e.parentRunId case final p?) _parentOf[runId] = p;
+        // A run in Home we haven't placed: maybe a new segment.
+        if (e.channelId == homeId &&
+            e.parentRunId == null &&
+            homeOpen &&
+            !_homeSessions.contains(sessionId)) {
+          unawaited(_refreshChannels());
+        }
       case SubagentSpawned(
         :final runId,
         :final childRunId,
@@ -310,6 +594,12 @@ class TernStore extends ChangeNotifier {
         // State changes also add or drop tools.
         unawaited(loadMcp());
         unawaited(refreshInfo());
+        return;
+      case PostCreated(:final post):
+        _onPost(post);
+        return;
+      case ChannelsChanged():
+        unawaited(_refreshChannels());
         return;
       case UnknownEvent():
         return;
@@ -342,10 +632,10 @@ class TernStore extends ChangeNotifier {
       case RunFinished(:final runId, :final status, :final error):
         // Its approvals live in the conversation the user started.
         if (_approvalSession[runId] case final root?) {
-          transcripts[root]?.expireApprovals(runId);
+          transcriptOf(root)?.expireApprovals(runId);
         }
         if (_secretSession[runId] case final root?) {
-          transcripts[root]?.expireSecretRequests(runId);
+          transcriptOf(root)?.expireSecretRequests(runId);
         }
         final reply = transcripts[session]?.items
             .whereType<AssistantItem>()
@@ -369,7 +659,11 @@ class TernStore extends ChangeNotifier {
   }
 
   /// Notify only when the user can't already see it.
-  bool _unseen(String session) => !appActive || selected != session;
+  bool _unseen(String session) =>
+      !appActive ||
+      (selected != session &&
+          thread != session &&
+          !(homeOpen && _homeSessions.contains(session)));
 
   void _notifyApproval(Approval a) {
     if (!_unseen(a.sessionId)) return;
@@ -419,7 +713,7 @@ class TernStore extends ChangeNotifier {
     // A quiet run (`NO_REPLY`) had nothing to say.
     if (!_unseen(session) || e.status == 'interrupted' || e.quiet) return;
     final title = sessions.where((s) => s.id == session).firstOrNull?.title;
-    final reply = transcripts[session]?.items
+    final reply = transcriptOf(session)?.items
         .whereType<AssistantItem>()
         .lastOrNull
         ?.text
@@ -452,7 +746,11 @@ class TernStore extends ChangeNotifier {
               .map((t) => t.key)
               .firstOrNull ??
           id;
-      unawaited(open(session));
+      unawaited(
+        session == homeKey || _homeSessions.contains(session)
+            ? openHome()
+            : open(session),
+      );
       return;
     }
     final item = transcripts.values
@@ -504,6 +802,9 @@ class TernStore extends ChangeNotifier {
 
   Future<void> _afterRun(String session, RunFinished e) async {
     try {
+      if (homeOpen && _homeDirty && _homeSessions.contains(session)) {
+        await _loadHome();
+      }
       sessions = await client.sessions();
       usage[session] = await client.usage(session);
       if (schedules.any((s) => s.sessionId == session)) {
@@ -518,6 +819,7 @@ class TernStore extends ChangeNotifier {
 
   Future<void> open(String id) async {
     page = null;
+    channel = null;
     selected = id;
     draft = false;
     error = null;
@@ -531,6 +833,11 @@ class TernStore extends ChangeNotifier {
   }
 
   void newConversation() {
+    // With Home, a new conversation is a new topic in its stream.
+    if (hasChannels) {
+      unawaited(openHome(newTopic: true));
+      return;
+    }
     page = null;
     selected = null;
     draft = true;
@@ -540,6 +847,7 @@ class TernStore extends ChangeNotifier {
   }
 
   Future<void> send(String text) async {
+    if (homeOpen) return _sendHome(text);
     error = null;
     final session = selected;
     if (session != null) {
@@ -563,6 +871,38 @@ class TernStore extends ChangeNotifier {
         sessions = await client.sessions();
       }
       _transcriptFor(started.sessionId)!.activeRun ??= started.runId;
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  /// Send into Home: to the current segment, a new one when the daemon
+  /// cuts (or [newTopic]), or queued for the run already working there.
+  Future<void> _sendHome(String text) async {
+    error = null;
+    final topic = newTopic;
+    final item = UserItem(text);
+    final t = transcripts.putIfAbsent(homeKey, Transcript.new);
+    if (!topic) {
+      t.items.add(item);
+      notifyListeners();
+    }
+    try {
+      final sent = await client.sendToChannel(homeId, text, newTopic: topic);
+      newTopic = false;
+      _runSession[sent.runId] = sent.sessionId;
+      _homeSessions.add(sent.sessionId);
+      item.queued = sent.queued;
+      if (sent.newSegment || selected != sent.sessionId) {
+        // A new segment: show where it was cut. Its carry-over comes with
+        // its first run, so look again when that finishes.
+        channels = await client.channels();
+        await _loadHome();
+        _homeDirty = true;
+      }
+      transcripts[homeKey]?.activeRun ??= sent.runId;
+      sessions = await client.sessions();
     } on TernException catch (e) {
       error = e.message;
     }

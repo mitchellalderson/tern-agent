@@ -7,7 +7,8 @@
 //! | POST | `/v1/channels` | create `{slug, title?, kind?: "topic", instructions?}` |
 //! | PATCH | `/v1/channels/{id}` | `{title?, instructions?, archived?}` (`instructions: null` clears them) |
 //! | GET | `/v1/channels/{id}/posts?before=&limit=` | `[Post]`, newest first |
-//! | POST | `/v1/channels/{id}/posts` | send `{text, reply_to?, model?}` → `{post?, run_id, session_id, queued, new_segment}` |
+//! | GET | `/v1/channels/{id}/stream?before=&limit=` | a main channel's stream: its segments' messages, its posts and its side chats, interleaved, newest first, with a `cut` item where each segment starts (`next`: the cursor for older items) |
+//! | POST | `/v1/channels/{id}/posts` | send `{text, reply_to?, new_topic?, model?}` → `{post?, run_id, session_id, queued, new_segment}` |
 
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
@@ -25,6 +26,7 @@ pub fn routes() -> Router<Shared> {
         .route("/v1/channels", get(list).post(create))
         .route("/v1/channels/{id}", axum::routing::patch(update))
         .route("/v1/channels/{id}/posts", get(posts).post(send))
+        .route("/v1/channels/{id}/stream", get(stream))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +212,9 @@ async fn posts(
 struct SendBody {
     text: String,
     reply_to: Option<i64>,
+    /// Home: start a new segment ("New topic").
+    #[serde(default)]
+    new_topic: bool,
     model: Option<String>,
 }
 
@@ -220,8 +225,269 @@ async fn send(
 ) -> ApiResult<Sent> {
     let c = find(&m, &id)?;
     let sent = m
-        .send_to_channel(&c, &b.text, b.reply_to, b.model.as_deref())
+        .send_to_channel(&c, &b.text, b.reply_to, b.new_topic, b.model.as_deref())
         .await
         .map_err(bad)?;
     Ok(Json(sent))
+}
+
+/// One entry of a stream page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StreamItem {
+    /// A message of one of the stream's segments, as in `GET /v1/sessions/{id}`.
+    Message {
+        session_id: String,
+        message_id: i64,
+        role: String,
+        #[serde(default)]
+        run_id: Option<String>,
+        content: Vec<tern_core::types::ContentBlock>,
+        #[serde(default)]
+        summary: bool,
+        /// Sent while a run was working and read by it at its next call.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        queued: bool,
+        created_at: i64,
+    },
+    /// A post from elsewhere: a routine's result, later pointers and cards.
+    Post { post: Post },
+    /// A side chat branched off the stream; its messages stay in it.
+    SideChat {
+        session_id: String,
+        #[serde(default)]
+        title: Option<String>,
+        /// `message:<id>` or `post:<id>`.
+        branched_from: String,
+        created_at: i64,
+    },
+    /// Where a segment starts: why it was cut, and what was carried over.
+    Cut {
+        session_id: String,
+        #[serde(default)]
+        prev_session_id: Option<String>,
+        /// `idle`, `day`, `new_topic` or `migrated`.
+        #[serde(default)]
+        reason: Option<String>,
+        /// The carry message, once the segment's first run has made it.
+        #[serde(default)]
+        carry: Option<String>,
+        created_at: i64,
+    },
+}
+
+impl StreamItem {
+    /// Order within a stream: time, then cut before messages before posts.
+    fn key(&self) -> (i64, u8, i64) {
+        match self {
+            StreamItem::Cut { created_at, .. } => (*created_at, 0, 0),
+            StreamItem::Message {
+                created_at,
+                message_id,
+                ..
+            } => (*created_at, 1, *message_id),
+            StreamItem::Post { post } => (post.created_at, 2, post.id),
+            // Session ids are UUIDv7, so their first hex digits order by time.
+            StreamItem::SideChat {
+                created_at,
+                session_id,
+                ..
+            } => (
+                *created_at,
+                3,
+                i64::from_str_radix(session_id.get(..12).unwrap_or("0"), 16).unwrap_or(0),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamPage {
+    /// Newest first.
+    pub items: Vec<StreamItem>,
+    /// Pass as `before` for the page of older items; absent at the start.
+    #[serde(default)]
+    pub next: Option<String>,
+}
+
+/// How a queued message from the user reads in the session (the inbox
+/// step's rendering, `tern_core::subagent::render_mail`).
+const QUEUED_PREFIX: &str = "[message from the user to this agent]\n";
+
+fn cursor(key: (i64, u8, i64)) -> String {
+    format!("{}.{}.{}", key.0, key.1, key.2)
+}
+
+fn parse_cursor(s: &str) -> Option<(i64, u8, i64)> {
+    let mut it = s.split('.');
+    Some((
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+    ))
+}
+
+/// The items of one segment, oldest first: its cut and its messages, with
+/// the carry message folded into the cut and queued messages unwrapped.
+fn segment_items(
+    store: &tern_store::Store,
+    s: &tern_store::SessionRow,
+) -> anyhow::Result<Vec<StreamItem>> {
+    let mut carry = None;
+    let mut items = Vec::new();
+    for m in store.session_messages(&s.id)? {
+        let mut content: Vec<tern_core::types::ContentBlock> =
+            serde_json::from_str(&m.content_json).unwrap_or_default();
+        let mut queued = false;
+        if m.role == "user"
+            && m.step_idx.is_some()
+            && let [tern_core::types::ContentBlock::Text { text }] = content.as_mut_slice()
+        {
+            if text.starts_with(tern_core::channels::CARRY_HEADER) {
+                carry = Some(text.clone());
+                continue;
+            }
+            if let Some(rest) = text.strip_prefix(QUEUED_PREFIX) {
+                *text = rest.to_owned();
+                queued = true;
+            }
+        }
+        items.push(StreamItem::Message {
+            session_id: s.id.clone(),
+            message_id: m.id,
+            role: m.role,
+            run_id: m.run_id,
+            content,
+            summary: m.summary_of.is_some(),
+            queued,
+            created_at: m.created_at,
+        });
+    }
+    if s.prev_session_id.is_some() || s.segment_reason.is_some() {
+        items.insert(
+            0,
+            StreamItem::Cut {
+                session_id: s.id.clone(),
+                prev_session_id: s.prev_session_id.clone(),
+                reason: s.segment_reason.clone(),
+                carry,
+                created_at: s.created_at,
+            },
+        );
+    }
+    Ok(items)
+}
+
+#[derive(Deserialize)]
+struct StreamQuery {
+    before: Option<String>,
+    limit: Option<usize>,
+}
+
+/// Walk the segments back from the newest until a page is full, then add
+/// the channel's posts from the time those cover.
+async fn stream(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<StreamQuery>,
+) -> ApiResult<StreamPage> {
+    let c = find(&m, &id)?;
+    if c.kind != "main" {
+        return Err(bad(format!(
+            "#{} is a topic channel; read its posts",
+            c.slug
+        )));
+    }
+    let store = &m.rt.store;
+    let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    let before = match q.before.as_deref() {
+        Some(b) => parse_cursor(b).ok_or_else(|| bad("before: not a cursor from this endpoint"))?,
+        None => (i64::MAX, u8::MAX, i64::MAX),
+    };
+    let mut items = Vec::new();
+    let mut seg = c.main_session_id.clone();
+    let mut seen = std::collections::HashSet::new();
+    let mut floor = 0;
+    while let Some(sid) = seg.take() {
+        if !seen.insert(sid.clone()) {
+            break;
+        }
+        let Some(s) = store.session(&sid).map_err(internal)? else {
+            break;
+        };
+        let older: Vec<StreamItem> = segment_items(store, &s)
+            .map_err(internal)?
+            .into_iter()
+            .filter(|i| i.key() < before)
+            .collect();
+        items.extend(older);
+        seg = s.prev_session_id;
+        if items.len() >= limit && seg.is_some() {
+            floor = s.created_at;
+            break;
+        }
+    }
+    let top = if before.0 == i64::MAX {
+        i64::MAX
+    } else {
+        before.0 + 1
+    };
+    for p in store.posts_between(&c.id, floor, top).map_err(internal)? {
+        let item = StreamItem::Post {
+            post: view(store, p),
+        };
+        if item.key() < before {
+            items.push(item);
+        }
+    }
+    for t in store
+        .side_threads_between(&c.id, floor, top)
+        .map_err(internal)?
+    {
+        let item = StreamItem::SideChat {
+            branched_from: t.branched_from.unwrap_or_default(),
+            session_id: t.id,
+            title: t.title,
+            created_at: t.created_at,
+        };
+        if item.key() < before {
+            items.push(item);
+        }
+    }
+    items.sort_by_key(|i| std::cmp::Reverse(i.key()));
+    let more = items.len() > limit || floor > 0;
+    items.truncate(limit);
+    let next = more
+        .then(|| items.last().map(|i| cursor(i.key())))
+        .flatten();
+    Ok(Json(StreamPage { items, next }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fixture the Dart client decodes is exactly this API's shape.
+    #[test]
+    fn dart_fixture_matches_the_api() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/desktop/packages/tern_client/test/fixtures/stream_page.json"
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let parsed: StreamPage = serde_json::from_value(fixture.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), fixture);
+    }
+
+    #[test]
+    fn cursors_round_trip_and_order_items() {
+        let k = (1762185600000, 2, 3);
+        assert_eq!(parse_cursor(&cursor(k)), Some(k));
+        assert_eq!(parse_cursor("junk"), None);
+        assert!(
+            (5, 0, 0) < (5, 1, 0),
+            "a cut sorts before its first message"
+        );
+    }
 }

@@ -82,6 +82,12 @@ docker_pids = 512          # 0 for no limit
 # usd_per_day = 1.0             # needs the model's price (see `prices` below)
 # tokens_per_run = 200000       # a run that uses more is stopped and fails
 #
+# Home (and each Telegram chat) is one stream cut into sessions. A message
+# starts a new one, with a summary of the last carried over, after:
+# [home]
+# idle_hours = 6                # this long without a message
+# day_starts = "04:00"          # a new day (local), once idle for an hour
+#
 # Prices (USD per million tokens) for models whose list doesn't give them:
 # [providers.anthropic.prices]
 # "claude-sonnet-4-5" = { input = 3.0, output = 15.0, cache_read = 0.3, cache_write = 3.75 }
