@@ -19,6 +19,7 @@ class Agent {
     this.activeRuns = 0,
     this.archived = false,
     this.isDefault = false,
+    this.delegates,
   });
 
   factory Agent.fromJson(Json j) => Agent(
@@ -41,6 +42,10 @@ class Agent {
     activeRuns: j['active_runs'] as int? ?? 0,
     archived: j['archived'] as bool? ?? false,
     isDefault: j['is_default'] as bool? ?? j['id'] == defaultId,
+    delegates: switch (j['delegates']) {
+      final List<dynamic> l => [for (final d in l) d as String],
+      _ => null,
+    },
   );
 
   /// The default agent: today's setup, whose DM is Home.
@@ -80,7 +85,17 @@ class Agent {
   final bool archived;
   final bool isDefault;
 
+  /// Agent ids it may hand work to (`agent_spawn {agent}`). Null: every
+  /// agent for the default agent, none for others.
+  final List<String>? delegates;
+
   bool get privateMemory => memory == 'private';
+
+  /// Whether it may hand work to `other`.
+  bool mayDelegateTo(Agent other) =>
+      other.id != id &&
+      !other.archived &&
+      (delegates?.contains(other.id) ?? isDefault);
 }
 
 /// `"anthropic:x"`, `["a:x", "b:y"]` or null, as a list.

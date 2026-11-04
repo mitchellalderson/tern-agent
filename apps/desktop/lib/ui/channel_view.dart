@@ -4,6 +4,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'agent_face.dart';
 import 'conversation.dart';
 import 'widgets.dart';
 
@@ -68,7 +69,10 @@ class ChannelView extends StatelessWidget {
                           vertical: 6,
                         ),
                         child: i < extra
-                            ? MemberLine(line: lines[extra - 1 - i])
+                            ? MemberLine(
+                                line: lines[extra - 1 - i],
+                                store: store,
+                              )
                             : TimelinePost(
                                 post: shown[shown.length - 1 - (i - extra)],
                                 store: store,
@@ -91,16 +95,17 @@ class ChannelView extends StatelessWidget {
 
 /// "research-1 · Running http_fetch": a member working in the channel.
 class MemberLine extends StatelessWidget {
-  const MemberLine({super.key, required this.line});
+  const MemberLine({super.key, required this.line, required this.store});
 
   final ({String runId, String author, String doing}) line;
+  final TernStore store;
 
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
     return Row(
       children: [
-        AgentAvatar(name: line.author, size: 18),
+        authorAvatar(store, authorId: line.author, name: line.author, size: 18),
         const SizedBox(width: 8),
         SizedBox(
           width: 10,
@@ -110,7 +115,7 @@ class MemberLine extends StatelessWidget {
         const SizedBox(width: 8),
         Flexible(
           child: Text(
-            '${line.author} · ${line.doing}',
+            '${store.authorName(line.author, line.author)} · ${line.doing}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(fontSize: 12.5, color: c.muted),
@@ -179,9 +184,11 @@ class _ChannelHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.colors;
     // Who has posted lately, newest first.
-    final members = <String>[];
+    final members = <Post>[];
     for (final p in (store.posts[channel.id] ?? const <Post>[]).reversed) {
-      if (!p.mine && !members.contains(p.author)) members.add(p.author);
+      if (!p.mine && !members.any((m) => m.authorId == p.authorId)) {
+        members.add(p);
+      }
       if (members.length == 4) break;
     }
     final main = channel.mainSessionId;
@@ -229,8 +236,13 @@ class _ChannelHeader extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(right: 3),
                 child: Tooltip(
-                  message: m,
-                  child: AgentAvatar(name: m, size: 20),
+                  message: store.authorName(m.authorId, m.author),
+                  child: authorAvatar(
+                    store,
+                    authorId: m.authorId,
+                    name: m.author,
+                    size: 20,
+                  ),
                 ),
               ),
             const SizedBox(width: 6),
@@ -317,7 +329,12 @@ class TimelinePost extends StatelessWidget {
                 backgroundColor: c.userBubble,
                 child: Icon(Icons.person, size: 15, color: c.muted),
               )
-            : AgentAvatar(name: post.author, size: 26),
+            : authorAvatar(
+                store,
+                authorId: post.authorId,
+                name: post.author,
+                size: 26,
+              ),
         const SizedBox(width: 10),
         Expanded(
           child: Column(
@@ -326,7 +343,7 @@ class TimelinePost extends StatelessWidget {
               Row(
                 children: [
                   Text(
-                    post.author,
+                    store.authorName(post.authorId, post.author),
                     style: const TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,

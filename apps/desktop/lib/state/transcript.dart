@@ -89,6 +89,10 @@ class AgentChild {
   String? sessionId;
   String? model;
 
+  /// The agent profile it runs as (an id, or the name the parent gave
+  /// `agent_spawn`), when its parent delegated to one.
+  String? agent;
+
   /// The daemon's word: `starting` (spawn in flight), `queued`, `running`,
   /// `question`, `completed`, `failed`, `cancelled`, `stopped`,
   /// `interrupted`.
@@ -328,6 +332,7 @@ class Transcript {
         :final task,
         :final model,
         :final status,
+        :final agent,
       ):
         var child = _child(callId);
         if (child == null) {
@@ -340,7 +345,8 @@ class Transcript {
           ..runId = childRunId
           ..sessionId = childSessionId
           ..model = model
-          ..status = status;
+          ..status = status
+          ..agent = agent ?? child.agent;
       case SubagentMessage(:final kind, :final text, :final runId):
         // A question from one of ours.
         final child = children.where((c) => c.runId == runId).firstOrNull;
@@ -522,7 +528,8 @@ class Transcript {
         ..question = r.pendingQuestion
         ..started = r.startedAt
         ..finished = r.finishedAt
-        ..result = child.result ?? r.resultPreview;
+        ..result = child.result ?? r.resultPreview
+        ..agent = r.agentId ?? child.agent;
       if (child.task.isEmpty) child.task = r.task;
     }
   }
@@ -690,7 +697,7 @@ class _Builder {
                     callId: id,
                     label: input['label'] as String? ?? 'agent',
                     task: input['task'] as String? ?? '',
-                  ),
+                  )..agent = input['agent'] as String?,
                 );
           }
         case ToolResultBlock(:final toolUseId, :final content, :final isError)

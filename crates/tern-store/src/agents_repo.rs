@@ -41,6 +41,27 @@ impl AgentRow {
     pub fn private_memory(&self) -> bool {
         self.memory == "private"
     }
+
+    /// The agents this one lists in `delegates`; `None` when unset.
+    pub fn delegate_list(&self) -> Option<Vec<String>> {
+        self.delegates
+            .as_deref()
+            .and_then(|d| serde_json::from_str(d).ok())
+    }
+
+    /// Whether this agent may hand work to `target` with `agent_spawn
+    /// {agent}` (agent profiles §6.1): an active other agent its
+    /// `delegates` lists (by id or slug). Unset, the default agent may
+    /// delegate to every agent and others to none.
+    pub fn may_delegate_to(&self, target: &AgentRow) -> bool {
+        if target.id == self.id || target.archived_at.is_some() {
+            return false;
+        }
+        match self.delegate_list() {
+            Some(list) => list.iter().any(|x| *x == target.id || *x == target.slug),
+            None => self.is_default(),
+        }
+    }
 }
 
 /// Changes to an agent; `None` leaves a field, `Some(None)` clears it.
@@ -455,6 +476,31 @@ mod tests {
             ..AgentRow::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn tern_may_delegate_to_all_others_only_to_their_list() {
+        let s = Store::open_in_memory().unwrap();
+        let (research, _) = research(&s);
+        let tern = s.agent(DEFAULT_AGENT).unwrap().unwrap();
+        assert!(tern.may_delegate_to(&research));
+        assert!(!tern.may_delegate_to(&tern), "not to itself");
+        assert!(!research.may_delegate_to(&tern), "others: none by default");
+        let listed = AgentRow {
+            delegates: Some(r#"["tern"]"#.into()),
+            ..research.clone()
+        };
+        assert!(listed.may_delegate_to(&tern));
+        let restricted = AgentRow {
+            delegates: Some("[]".into()),
+            ..tern.clone()
+        };
+        assert!(!restricted.may_delegate_to(&research));
+        let archived = AgentRow {
+            archived_at: Some(1),
+            ..research
+        };
+        assert!(!tern.may_delegate_to(&archived));
     }
 
     #[test]

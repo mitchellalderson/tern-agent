@@ -235,18 +235,19 @@ impl Runtime {
             let p = prompts.clone();
             let st = store.clone();
             let h = home.clone();
-            host.set_prompt(Box::new(move |label, depth, parent_session| {
-                // A helper works under its parent agent's persona and memory.
+            host.set_prompt(Box::new(move |label, depth, agent, caller| {
+                // A helper works under its agent's persona and memory: its
+                // parent's, or the profile it was delegated to.
                 let frame = st
-                    .session_agent(parent_session)
+                    .agent(agent)
                     .ok()
-                    .and_then(|a| st.agent(&a).ok().flatten())
+                    .flatten()
                     .map(|a| agent_frame(&h, &st, &a));
                 let (prompt, scope) = match &frame {
                     Some((prompt, scope)) => (prompt.as_ref(), scope.as_ref()),
                     None => (None, None),
                 };
-                p.build(AgentRole::Subagent { label }, depth, prompt, scope)
+                p.build(AgentRole::Subagent { label, caller }, depth, prompt, scope)
             }));
             slot.set(host.clone());
             host
@@ -604,12 +605,46 @@ pub(crate) fn agent_frame(
     if agent.is_default() && others.is_empty() {
         return (None, scope);
     }
+    let delegates = store
+        .agents(false)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| agent.may_delegate_to(a))
+        .map(|a| {
+            let job = use_for(home, &a);
+            format!("`{}` · {} · use for: {job}", a.slug, a.name)
+        })
+        .collect();
     let prompt = tern_core::prompt::AgentPrompt {
         persona_path: tern_core::agents::persona_path(home, &agent.id),
         memory_path: tern_core::agents::memory_path(home, &agent.id, agent.private_memory()),
         others,
+        delegates,
     };
     (Some(prompt), scope)
+}
+
+/// What an agent is for, from its persona: the "Your job: …" line the
+/// templates write, else its first line that isn't "You are …".
+fn use_for(home: &TernHome, a: &tern_store::AgentRow) -> String {
+    let text = std::fs::read_to_string(tern_core::agents::persona_path(home, &a.id))
+        .map(|t| tern_core::memory::injectable(&t))
+        .unwrap_or_default();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(|l| l.trim().trim_start_matches(['-', '*', ' ']))
+        .filter(|l| !l.is_empty())
+        .collect();
+    let line = lines
+        .iter()
+        .find_map(|l| {
+            let i = l.to_ascii_lowercase().find("job:")?;
+            Some(l[i + 4..].trim())
+        })
+        .or_else(|| lines.iter().copied().find(|l| !l.starts_with("You are")))
+        .or_else(|| lines.first().copied())
+        .unwrap_or("its own job (see its name)");
+    line.chars().take(160).collect()
 }
 
 /// One line per other active agent: `@slug · Name · first line of its persona`.

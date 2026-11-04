@@ -298,6 +298,20 @@ void main() {
       expect(find.text('Message Research'), findsOneWidget);
       await _shot(tester, key, 'agent_dm_${dark ? 'dark' : 'light'}');
 
+      // A new agent's empty DM: its own avatar and name, not tern's.
+      store
+        ..channel = 'dm:marketing'
+        ..streamChannel = 'dm:marketing'
+        ..selected = null
+        ..draft = true;
+      store.notifyListeners();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('What should Marketing do?'), findsOneWidget);
+      await _shot(tester, key, 'agent_empty_${dark ? 'dark' : 'light'}');
+      store
+        ..channel = 'dm:research'
+        ..streamChannel = 'dm:research';
+
       await tester.tap(find.byTooltip('New agent'));
       await tester.pumpAndSettle();
       await tester.tap(

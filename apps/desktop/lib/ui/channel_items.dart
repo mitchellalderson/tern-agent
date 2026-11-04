@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:tern_client/tern_client.dart';
 
+import 'agent_face.dart';
+
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
@@ -150,14 +152,19 @@ class PostCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              AgentAvatar(name: post.author, size: 20),
+              authorAvatar(
+                store,
+                authorId: post.authorId,
+                name: post.author,
+                size: 20,
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Row(
                   children: [
                     Flexible(
                       child: Text(
-                        post.author,
+                        store.authorName(post.authorId, post.author),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(

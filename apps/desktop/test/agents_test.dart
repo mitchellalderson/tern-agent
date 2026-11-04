@@ -63,6 +63,7 @@ class _FakeClient extends TernClient {
   _FakeClient() : super(const Endpoint.unix('/nonexistent'));
 
   var agentList = <Agent>[_tern, _research];
+  var emptyHome = false;
   final sends = <({String channel, String text})>[];
   final created = <Map<String, Object?>>[];
   final updated = <(String, Map<String, Object?>)>[];
@@ -197,7 +198,11 @@ class _FakeClient extends TernClient {
     int limit = 200,
   }) async => StreamPage(
     items: channel == 'home'
-        ? [_msg('h1', 2, 'assistant', 'Hi from Home.')]
+        ? emptyHome
+              ? const []
+              : [_msg('h1', 2, 'assistant', 'Hi from Home.')]
+        : channel != 'dm:research'
+        ? const []
         : [
             _msg('d1', 2, 'assistant', 'Three sources agree.'),
             _msg('d1', 1, 'user', 'Look into Acme.'),
@@ -514,6 +519,139 @@ void main() {
       find.widgetWithText(RadioListTile<String>, 'Private'),
     );
     expect(private.enabled, isFalse);
+  });
+
+  test('a delegated sub-agent is marked with its agent', () async {
+    final (store, _) = await _store();
+    final t = Transcript()
+      ..apply(
+        const SubagentSpawned(
+          runId: 'r1',
+          callId: 'c1',
+          childRunId: 'k1',
+          childSessionId: 'ks',
+          label: 'acme',
+          task: 'Find pricing',
+          model: 'mock:m',
+          status: 'running',
+          agent: 'tern:research',
+        ),
+      );
+    final child = t.items.whereType<AgentsItem>().single.children.single;
+    expect(store.agentNamed(child.agent)?.name, 'Research');
+    // From history the parent's own words name it.
+    expect(store.agentNamed('research')?.id, 'tern:research');
+    expect(_tern.mayDelegateTo(_research), isTrue);
+    expect(_research.mayDelegateTo(_tern), isFalse);
+  });
+
+  testWidgets('the sheet saves who an agent can hand work to', (tester) async {
+    final (store, client) = await _store();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ternTheme(TernColors.light, Brightness.light),
+        home: Scaffold(
+          body: AgentSheet(store: store, editing: _tern),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final chip = find.widgetWithText(FilterChip, 'Research');
+    final sheet = find
+        .descendant(
+          of: find.descendant(
+            of: find.byType(AgentSheet),
+            matching: find.byType(SingleChildScrollView),
+          ),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(chip.hitTestable(), 200, scrollable: sheet);
+    await tester.pumpAndSettle();
+    // tern may hand work to every agent until restricted.
+    expect(tester.widget<FilterChip>(chip).selected, isTrue);
+    await tester.tap(chip);
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    final (id, fields) = client.updated.single;
+    expect(id, 'tern');
+    expect(fields['delegates'], isEmpty);
+  });
+
+  testWidgets('an empty DM shows its agent, not tern', (tester) async {
+    final (store, client) = await _store();
+    const scout = Agent(
+      id: 'tern:scout',
+      slug: 'scout',
+      name: 'Scout',
+      avatar: AvatarSpec(glyph: '♦', color: 'orange'),
+      mainChannelId: 'dm:scout',
+    );
+    client.agentList = [_tern, _research, scout];
+    store
+      ..agents = client.agentList
+      ..channels = await client.channels();
+    await store.openAgent(scout);
+    await _pump(tester, store);
+    expect(find.text('What should Scout do?'), findsOneWidget);
+    expect(find.text('What should tern do?'), findsNothing);
+    expect(find.text('Message Scout'), findsOneWidget);
+    // Its avatar, in the empty state and the header: not tern's.
+    final glyphs = tester
+        .widgetList<AgentAvatar>(find.byType(AgentAvatar))
+        .where((a) => a.glyph == '♦' && a.color == 'orange');
+    expect(
+      glyphs.length,
+      greaterThanOrEqualTo(3),
+      reason: 'sidebar, header, empty state',
+    );
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('Home shows the default agent as it is named now', (
+    tester,
+  ) async {
+    final (store, client) = await _store();
+    const ari = Agent(
+      id: 'tern',
+      slug: 'tern',
+      name: 'Ari',
+      avatar: AvatarSpec(glyph: '★', color: 'violet'),
+      memory: 'shared',
+      mainChannelId: 'home',
+      isDefault: true,
+    );
+    client
+      ..agentList = [ari, _research]
+      ..emptyHome = true;
+    store.agents = client.agentList;
+    await store.openHome();
+    await _pump(tester, store);
+    expect(find.text('Home'), findsWidgets);
+    expect(find.text('What should Ari do?'), findsOneWidget);
+    expect(find.text('Message Ari'), findsOneWidget);
+    expect(
+      tester
+          .widgetList<AgentAvatar>(find.byType(AgentAvatar))
+          .where((a) => a.glyph == '★')
+          .length,
+      greaterThanOrEqualTo(3),
+    );
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  test('posts and live lines show an agent by its profile', () async {
+    final (store, _) = await _store();
+    expect(store.agentOfAuthor('tern:research/acme')?.name, 'Research');
+    expect(store.authorName('tern:research/acme', 'x'), 'Research/acme');
+    expect(store.authorName('owner', 'you'), 'you');
+    // A routine's post: its owner's avatar, its own title.
+    expect(store.agentOfAuthor('routine:s2')?.name, 'Research');
+    expect(
+      store.authorName('routine:s2', 'Weekly Acme digest'),
+      'Weekly Acme digest',
+    );
   });
 
   test('agentAllows follows the scope and keeps the system layer', () {
