@@ -1013,3 +1013,17 @@ Stage 4 of docs/personal-agent-tooling-spec.md (§6.2, §6.7–6.8; T4a in §12.
 | A14 | **A dynamically registered client is reused across accounts**, or a stale port redirects nowhere. | Registration per account with its exact loopback URI; signing in again keeps that client and port, and registers again if the port is taken. | `signin::oauth`, `connect_oauth` |
 | A15 | **A chat collects a sign-in or the choice.** | Telegram gets a pointer only; cards are answered in the app or TUI, by owner devices; the card accepts only answers it offered. | Router, `/v1/auth-prompts` |
 | A16 | **Duplicate accounts** pile up from repeated sign-ins. | The same account label reconnects the existing connection. | `signin::record_oauth` |
+
+## Where you are (every conversation run's prompt)
+
+The user's report: an agent answering in `#grokbot-research` ended with "Should I post these findings to #grokbot-research, or write them up as a file?". It was already there, and its answer was the post. The cause, confirmed: the prompt said where a run was only when the channel had `instructions` (C0's `## Channel #slug`), and it never said that the answer is delivered by itself.
+
+- **One always-present section, `## Where you are`**, in every conversation run's frozen prompt (`tern_core::channels::where_section`, built by `Runtime::where_section` in `start_run`). It replaces the instructions section and AP2's "Agents in #slug" section.
+  - **A topic channel**: "You're in the #slug channel ("Title")". The reply is posted there automatically, so the agent shouldn't offer to post it, and `channel_post` is only for an update mid-run or another channel. When it has more than one agent, the members, with the lead and "you" marked, and whether agents' mentions wake anyone. That the channel is one conversation, everyone's posts being context. Then the user's instructions, if any.
+  - **Home**: "your direct line with the user", and the reply is the next message. **An agent's DM**: "You're in Research's DM", likewise.
+  - **A routine's run**: "This is a run of the routine "Title". Your result is posted to #x (or Home, or Name's DM) and sent to Telegram by itself" (the push target named by its gateway). Routines are told this instead of a place, because their session is private.
+  - **A sub-agent or delegate** (`subagent_where_section`, in `Subagents::spawn`): "You're working for tern in #slug. Your final message is your report: it goes back to tern, not to the user or the channel." Without `"post": true` it adds "Don't post to the channel or offer to"; with it, that it may `channel_post` and its report is posted. A nested child names its parent's label.
+- **Frozen**, like the rest of the prompt: replay reads the run's stored prompt, so a channel renamed or joined later changes the next run only.
+- **Short on purpose**: two or three sentences per place. The member list appears only when there is someone else. Taint is unchanged: posts from tainted runs still arrive wrapped through the digest.
+- **Tests**: `channels::tests::every_place_says_where_the_run_is_and_where_its_reply_goes` (each kind, a channel without instructions still gets the section, members and instructions), and `tests/where_you_are.rs` against the daemon: the frozen prompts of a run in a topic channel without instructions, in Home, in a DM, a sub-agent and a routine.
+

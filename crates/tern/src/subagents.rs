@@ -443,6 +443,47 @@ impl Subagents {
 
     /// The agent `caller` hands work to as `name` (id, @name or name), if
     /// it may (agent profiles §6.1); the inner error is for the model.
+    /// "Where you are" for a child of `parent`: whom it works for, where,
+    /// and that its report goes back (frozen with its prompt).
+    fn where_section(
+        &self,
+        parent: &tern_store::RunRow,
+        caller: Option<&str>,
+        can_post: bool,
+    ) -> anyhow::Result<String> {
+        use tern_core::channels::Place;
+        let place = match self.store.session_channel(&parent.session_id)? {
+            Some(c) if c.kind == "topic" => Some(
+                Place::Topic {
+                    slug: &c.slug,
+                    title: &c.title,
+                }
+                .name(),
+            ),
+            Some(c) if c.id == tern_store::HOME => Some(Place::Home.name()),
+            Some(c) => Some(match self.store.agent(c.lead())? {
+                Some(a) => Place::Dm(&a.name).name(),
+                None => c.title.clone(),
+            }),
+            None => None,
+        };
+        let caller = match parent
+            .label
+            .as_deref()
+            .filter(|_| parent.parent_run_id.is_some())
+        {
+            Some(label) => label.to_owned(),
+            None => caller
+                .unwrap_or(tern_core::channels::author::AGENT)
+                .to_owned(),
+        };
+        Ok(tern_core::channels::subagent_where_section(
+            &caller,
+            place.as_deref(),
+            can_post,
+        ))
+    }
+
     fn delegate(
         &self,
         caller: &str,
@@ -729,7 +770,11 @@ impl Subagents {
             (Some(build), None) => build(&req.label, depth, &caller, None),
             (None, _) => parent.system_prompt.clone().unwrap_or_default(),
         };
-        let system = format!("{system}\n\n{}", limits_section(max_iterations, budget));
+        let system = format!(
+            "{system}\n\n{}{}",
+            limits_section(max_iterations, budget),
+            self.where_section(&parent, caller_name.as_deref(), req.post)?
+        );
         let queued = {
             let _g = self
                 .gate
