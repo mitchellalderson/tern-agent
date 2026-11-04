@@ -4,6 +4,7 @@ mod agents_repo;
 mod channels_repo;
 mod daemon_repo;
 mod devices_repo;
+mod members_repo;
 mod migrations;
 mod outbox_repo;
 mod repo;
@@ -13,6 +14,7 @@ pub use agents_repo::{AgentChange, AgentRow, DEFAULT_AGENT, dm_slug};
 pub use channels_repo::{ChannelRow, HOME, Moved, NewPost, NewThread, PostRow};
 pub use daemon_repo::{HeldDelivery, ScheduleRow, TokenCounts};
 pub use devices_repo::{DeviceGrant, DeviceRow};
+pub use members_repo::{ChannelWakes, Member, mention_slugs};
 pub use outbox_repo::{NewOutbox, OutboxRow};
 pub use subagents_repo::{MailRow, NewMail};
 

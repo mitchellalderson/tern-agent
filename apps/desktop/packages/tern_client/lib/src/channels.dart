@@ -15,6 +15,7 @@ class Channel {
     this.activeRuns = 0,
     this.archived = false,
     this.agentId,
+    this.agents,
     required this.updatedAt,
   });
 
@@ -30,6 +31,9 @@ class Channel {
     activeRuns: j['active_runs'] as int? ?? 0,
     archived: j['archived'] as bool? ?? false,
     agentId: j['agent_id'] as String?,
+    agents: j['agents'] is Json
+        ? ChannelAgents.fromJson(j['agents'] as Json)
+        : null,
     updatedAt: _time(j['updated_at'] as int? ?? 0),
   );
 
@@ -55,7 +59,22 @@ class Channel {
   /// A main channel: whose DM it is (`tern` for Home); a topic channel:
   /// its lead.
   final String? agentId;
+
+  /// A topic channel's agents and wake settings (agent profiles §5); null
+  /// from cores without them.
+  final ChannelAgents? agents;
   final DateTime updatedAt;
+
+  /// The agent that answers posts mentioning no one.
+  String get lead =>
+      agents?.members.where((m) => m.lead).firstOrNull?.agentId ??
+      agentId ??
+      'tern';
+
+  /// The agents in it, lead first.
+  List<String> get memberIds => [
+    for (final m in agents?.members ?? const <ChannelMember>[]) m.agentId,
+  ];
 
   /// The default agent's DM. Older cores have no other main channel.
   bool get isHome => id == 'home' || (kind == 'main' && agentId == null);
@@ -65,6 +84,53 @@ class Channel {
 
   /// An agent's DM other than Home.
   bool get isDm => isMain && !isHome;
+}
+
+/// A topic channel's agents (agent profiles §5.1) and its limits on
+/// agents waking agents (§5.3).
+class ChannelAgents {
+  const ChannelAgents({
+    this.members = const [],
+    this.agentWakes = false,
+    this.maxHops = 2,
+    this.wakesPerHour = 6,
+  });
+
+  factory ChannelAgents.fromJson(Json j) => ChannelAgents(
+    members: [
+      for (final m in j['members'] as List? ?? const [])
+        ChannelMember.fromJson(m as Json),
+    ],
+    agentWakes: j['agent_wakes'] as bool? ?? false,
+    maxHops: j['max_hops'] as int? ?? 2,
+    wakesPerHour: j['wakes_per_hour'] as int? ?? 6,
+  );
+
+  /// Lead first.
+  final List<ChannelMember> members;
+
+  /// Agents' @mentions wake the agents they name.
+  final bool agentWakes;
+  final int maxHops;
+  final int wakesPerHour;
+}
+
+class ChannelMember {
+  const ChannelMember({
+    required this.agentId,
+    this.lead = false,
+    required this.addedAt,
+  });
+
+  factory ChannelMember.fromJson(Json j) => ChannelMember(
+    agentId: j['agent_id'] as String,
+    lead: j['lead'] as bool? ?? false,
+    addedAt: _time(j['added_at'] as int? ?? 0),
+  );
+
+  final String agentId;
+  final bool lead;
+  final DateTime addedAt;
 }
 
 /// What an agent, a routine or the user said in a channel.
@@ -85,6 +151,8 @@ class Post {
     this.replies = 0,
     this.resolvedAt,
     this.pointsToChannel,
+    this.mentions = const [],
+    this.wakeDepth = 0,
     required this.createdAt,
   });
 
@@ -107,6 +175,8 @@ class Post {
       _ => null,
     },
     pointsToChannel: j['points_to_channel'] as String?,
+    mentions: [for (final m in j['mentions'] as List? ?? const []) m as String],
+    wakeDepth: j['wake_depth'] as int? ?? 0,
     createdAt: _time(j['created_at'] as int),
   );
 
@@ -117,16 +187,18 @@ class Post {
   final String? sessionId;
   final String? runId;
 
-  /// `user`, `agent`, `subagent` or `routine`.
+  /// `user`, `agent`, `subagent`, `routine`, or `system` (notes).
   final String authorKind;
 
-  /// Stable: `owner`, `tern`, `tern/<label>`, `routine:<schedule id>`.
+  /// Stable: `owner`, an agent's id (`tern`, `tern:research`), a
+  /// sub-agent's `<agent id>/<label>`, `routine:<schedule id>`, `system`.
   final String authorId;
 
   /// What to show: `you`, `tern`, a routine's title.
   final String author;
 
-  /// `message`, `answer`, `update`, `needs_you` or `pointer`.
+  /// `message`, `answer`, `update`, `needs_you`, `pointer`, `moved`, or
+  /// `note` (a quiet line from tern: "Research joined").
   final String kind;
   final String text;
   final int? replyTo;
@@ -141,9 +213,18 @@ class Post {
 
   /// A pointer: the channel of the post it points to.
   final String? pointsToChannel;
+
+  /// The agents it @mentions, by id.
+  final List<String> mentions;
+
+  /// How far down a chain of agents waking agents it is.
+  final int wakeDepth;
   final DateTime createdAt;
 
   bool get mine => authorKind == 'user';
+
+  /// A quiet line from tern itself ("Research joined", "@ops not woken").
+  bool get isNote => kind == 'note';
 
   /// Waiting on the user: a `needs_you` post, or its pointer in Home.
   bool get needsYou =>
@@ -165,6 +246,8 @@ class Post {
     replies: replies,
     resolvedAt: DateTime.now(),
     pointsToChannel: pointsToChannel,
+    mentions: mentions,
+    wakeDepth: wakeDepth,
     createdAt: createdAt,
   );
 }
@@ -285,6 +368,7 @@ class Sent {
     required this.sessionId,
     this.queued = false,
     this.newSegment = false,
+    this.woke = const [],
   });
 
   factory Sent.fromJson(Json j) => Sent(
@@ -293,6 +377,15 @@ class Sent {
     sessionId: j['session_id'] as String,
     queued: j['queued'] as bool? ?? false,
     newSegment: j['new_segment'] as bool? ?? false,
+    woke: [
+      for (final w in j['woke'] as List? ?? const [])
+        (
+          agentId: (w as Json)['agent_id'] as String,
+          runId: w['run_id'] as String,
+          sessionId: w['session_id'] as String,
+          queued: w['queued'] as bool? ?? false,
+        ),
+    ],
   );
 
   /// The user's post (topic channels; Home's stream is its messages).
@@ -305,6 +398,11 @@ class Sent {
 
   /// Home: a new segment of the stream started.
   final bool newSegment;
+
+  /// A topic channel: each agent the post started (or was queued for),
+  /// the lead or the agents it mentions; the first is [runId].
+  final List<({String agentId, String runId, String sessionId, bool queued})>
+  woke;
 }
 
 DateTime _time(int t) =>

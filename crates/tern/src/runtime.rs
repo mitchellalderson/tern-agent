@@ -452,6 +452,34 @@ impl Runtime {
     }
 
     /// Check that `model` resolves to a configured provider.
+    /// The "Agents in #slug" prompt section for a run of `agent_id` in a
+    /// topic channel with other agents (agent profiles §5.2).
+    fn members_section(&self, session: &str, agent_id: &str) -> anyhow::Result<Option<String>> {
+        let Some(c) = self.store.session_channel(session)? else {
+            return Ok(None);
+        };
+        if c.kind != "topic" {
+            return Ok(None);
+        }
+        let mut agents = Vec::new();
+        for m in self.store.channel_members(&c)? {
+            if let Some(a) = self.store.agent(&m.agent_id)? {
+                agents.push((a, m.lead));
+            }
+        }
+        let lines: Vec<_> = agents
+            .iter()
+            .map(|(a, lead)| tern_core::channels::MemberLine {
+                slug: &a.slug,
+                name: &a.name,
+                lead: *lead,
+                you: a.id == agent_id,
+            })
+            .collect();
+        let wakes = self.store.channel_wakes(&c.id)?.agent_wakes;
+        Ok(tern_core::channels::members_section(&c.slug, &lines, wakes))
+    }
+
     pub fn check_model(&self, model: &str) -> anyhow::Result<ModelRef> {
         Ok(self.resolve_model(model)?.model.parse()?)
     }
@@ -512,6 +540,9 @@ impl Runtime {
                 .as_deref()
                 .and_then(|i| tern_core::channels::instructions_section(&c.slug, i))
         {
+            system.push_str(&section);
+        }
+        if let Some(section) = self.members_section(&session.id, &agent.id)? {
             system.push_str(&section);
         }
         let tool_scope = scope

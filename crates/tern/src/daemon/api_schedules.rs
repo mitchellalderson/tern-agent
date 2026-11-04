@@ -246,8 +246,26 @@ async fn create(
             .map_err(internal)?;
         row.channel_id = Some(c);
     }
+    join_channel(&m, &row)?;
     set_autonomy(&m, &mut row, b.autonomy.as_deref())?;
     Ok((StatusCode::CREATED, Json(view(&m, row))))
+}
+
+/// A routine posting to a topic channel makes its agent a member there
+/// (agent profiles §5.1).
+fn join_channel(m: &Shared, s: &tern_store::ScheduleRow) -> Result<(), ApiError> {
+    let Some(c) = s.channel_id.as_deref() else {
+        return Ok(());
+    };
+    let channel = m.rt.store.channel(c).map_err(internal)?;
+    let agent =
+        m.rt.store
+            .agent(s.agent_id.as_deref().unwrap_or(tern_store::DEFAULT_AGENT))
+            .map_err(internal)?;
+    if let (Some(c), Some(a)) = (channel, agent) {
+        m.join(&c, &a).map_err(internal)?;
+    }
+    Ok(())
 }
 
 fn parse(cron: &str) -> Result<Cron, ApiError> {
@@ -329,6 +347,7 @@ async fn update(
             .map_err(internal)?;
         s.channel_id = Some(c);
     }
+    join_channel(&m, &s)?;
     set_autonomy(&m, &mut s, b.autonomy.as_deref())?;
     Ok(Json(view(&m, s)))
 }

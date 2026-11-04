@@ -5,12 +5,15 @@
 //! |---|---|---|
 //! | GET | `/v1/channels[?archived=1]` | `[Channel]`: Home first, with `last_post_id`, `needs_you`, `active_runs` |
 //! | POST | `/v1/channels` | create `{slug, title?, kind?: "topic", instructions?}` |
-//! | PATCH | `/v1/channels/{id}` | `{title?, instructions?, archived?}` (`instructions: null` clears them) |
+//! | PATCH | `/v1/channels/{id}` | `{title?, instructions?, archived?, lead?, agent_wakes?, max_hops?, wakes_per_hour?}` (`instructions: null` clears them; the last four: topic channels) |
+//! | GET | `/v1/channels/{id}/agents` | a topic channel's `{members: [{agent_id, lead?, added_at}], agent_wakes, max_hops, wakes_per_hour}` (also on `Channel` as `agents`) |
+//! | POST | `/v1/channels/{id}/agents` | add `{agent}` (id or slug), with a "Name joined" note |
+//! | DELETE | `/v1/channels/{id}/agents/{agent}` | take an agent out (not the lead or `tern`) |
 //! | GET | `/v1/channels/{id}/posts?before=&limit=` | `[Post]`, newest first |
 //! | GET | `/v1/channels/{id}/stream?before=&limit=` | a main channel's stream: its segments' messages, its posts and its side chats, interleaved, newest first, with a `cut` item where each segment starts (`next`: the cursor for older items) |
 //! | POST | `/v1/channels/move` | move conversations into a topic channel: `{sessions: [id], channel? \| new_channel?: {slug?, title, instructions?}}` → `{channel, moved: [MovedThread]}` (owner scope) |
 //! | POST | `/v1/posts/{id}/resolve` | mark a `needs_you` post or its Home `pointer` done (both close) |
-//! | POST | `/v1/channels/{id}/posts` | send `{text, reply_to?, new_topic?, model?}` → `{post?, run_id, session_id, queued, new_segment}` |
+//! | POST | `/v1/channels/{id}/posts` | send `{text, reply_to?, new_topic?, model?}` → `{post?, run_id, session_id, queued, new_segment, woke?: [{agent_id, run_id, session_id, queued}]}`; in a topic channel the lead answers, or each agent `@mentioned` (who joins if it wasn't a member) |
 
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
@@ -29,6 +32,11 @@ pub fn routes() -> Router<Shared> {
         .route("/v1/channels/{id}", axum::routing::patch(update))
         .route("/v1/channels/{id}/posts", get(posts).post(send))
         .route("/v1/channels/{id}/stream", get(stream))
+        .route("/v1/channels/{id}/agents", get(members).post(add_member))
+        .route(
+            "/v1/channels/{id}/agents/{agent}",
+            axum::routing::delete(remove_member),
+        )
         .route("/v1/channels/move", axum::routing::post(move_in))
         .route("/v1/posts/{id}/resolve", axum::routing::post(resolve))
 }
@@ -60,7 +68,48 @@ pub struct Channel {
     /// its lead, when not the default agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// A topic channel's agents (agent profiles §5.1), lead first, and
+    /// its limits on agents waking agents (§5.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<ChannelAgents>,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelAgents {
+    pub members: Vec<MemberView>,
+    pub agent_wakes: bool,
+    pub max_hops: i64,
+    pub wakes_per_hour: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemberView {
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lead: bool,
+    pub added_at: i64,
+}
+
+fn channel_agents(m: &Shared, c: &ChannelRow) -> Option<ChannelAgents> {
+    if c.kind != "topic" {
+        return None;
+    }
+    let w = m.rt.store.channel_wakes(&c.id).ok()?;
+    let members = m.rt.store.channel_members(c).ok()?;
+    Some(ChannelAgents {
+        members: members
+            .into_iter()
+            .map(|m| MemberView {
+                agent_id: m.agent_id,
+                lead: m.lead,
+                added_at: m.added_at,
+            })
+            .collect(),
+        agent_wakes: w.agent_wakes,
+        max_hops: w.max_hops,
+        wakes_per_hour: w.wakes_per_hour,
+    })
 }
 
 pub(super) fn channel_view(m: &Shared, c: ChannelRow) -> Channel {
@@ -99,6 +148,7 @@ pub(super) fn channel_view(m: &Shared, c: ChannelRow) -> Channel {
         open
     };
     Channel {
+        agents: channel_agents(m, &c),
         last_post_id: m.rt.store.last_post_id(&c.id).ok().flatten(),
         needs_you,
         active_runs,
@@ -191,6 +241,12 @@ struct UpdateBody {
     #[serde(default, deserialize_with = "double_option")]
     instructions: Option<Option<String>>,
     archived: Option<bool>,
+    /// Topic channels (agent profiles §5): the agent that answers posts
+    /// mentioning no one, and the wake limits.
+    lead: Option<String>,
+    agent_wakes: Option<bool>,
+    max_hops: Option<i64>,
+    wakes_per_hour: Option<i64>,
 }
 
 async fn update(
@@ -214,11 +270,110 @@ async fn update(
         .instructions
         .as_ref()
         .map(|i| i.as_deref().map(str::trim).filter(|t| !t.is_empty()));
+    let agents_change = b.lead.is_some()
+        || b.agent_wakes.is_some()
+        || b.max_hops.is_some()
+        || b.wakes_per_hour.is_some();
+    if agents_change && c.kind != "topic" {
+        return Err(bad("only topic channels have a lead and wake settings"));
+    }
+    let lead = match b.lead.as_deref() {
+        Some(l) => Some(active_agent(&m, l)?),
+        None => None,
+    };
+    if b.max_hops.is_some_and(|h| !(1..=10).contains(&h)) {
+        return Err(bad("max_hops is 1 to 10"));
+    }
+    if b.wakes_per_hour.is_some_and(|n| !(0..=120).contains(&n)) {
+        return Err(bad("wakes_per_hour is 0 to 120"));
+    }
     m.rt.store
         .update_channel(&c.id, title, instructions, b.archived)
         .map_err(internal)?;
+    if let Some(a) = lead {
+        m.rt.store
+            .set_channel_lead(&c.id, &a.id)
+            .map_err(internal)?;
+    }
+    if agents_change {
+        let mut w = m.rt.store.channel_wakes(&c.id).map_err(internal)?;
+        w.agent_wakes = b.agent_wakes.unwrap_or(w.agent_wakes);
+        w.max_hops = b.max_hops.unwrap_or(w.max_hops);
+        w.wakes_per_hour = b.wakes_per_hour.unwrap_or(w.wakes_per_hour);
+        m.rt.store.set_channel_wakes(&c.id, &w).map_err(internal)?;
+    }
     m.channels_changed();
     Ok(Json(channel_view(&m, find(&m, &c.id)?)))
+}
+
+/// An active agent by id or slug.
+fn active_agent(m: &Shared, id: &str) -> Result<tern_store::AgentRow, ApiError> {
+    m.rt.store
+        .agent(id)
+        .map_err(internal)?
+        .filter(|a| a.archived_at.is_none())
+        .ok_or_else(|| bad(format!("no agent {id:?}")))
+}
+
+async fn members(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<ChannelAgents> {
+    let c = find(&m, &id)?;
+    channel_agents(&m, &c)
+        .map(Json)
+        .ok_or_else(|| bad("only topic channels have members"))
+}
+
+#[derive(Deserialize)]
+struct AddMemberBody {
+    agent: String,
+}
+
+async fn add_member(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+    Json(b): Json<AddMemberBody>,
+) -> ApiResult<ChannelAgents> {
+    let c = find(&m, &id)?;
+    if c.kind != "topic" || c.archived_at.is_some() {
+        return Err(bad("agents join topic channels that aren't archived"));
+    }
+    let a = active_agent(&m, &b.agent)?;
+    m.join(&c, &a).map_err(internal)?;
+    members(State(m), UrlPath(id)).await
+}
+
+async fn remove_member(
+    State(m): State<Shared>,
+    UrlPath((id, agent)): UrlPath<(String, String)>,
+) -> ApiResult<ChannelAgents> {
+    let c = find(&m, &id)?;
+    let a =
+        m.rt.store
+            .agent(&agent)
+            .map_err(internal)?
+            .ok_or_else(|| not_found("agent"))?;
+    if a.id == tern_store::DEFAULT_AGENT || a.id == c.lead() {
+        return Err(bad(format!(
+            "{} can't leave #{}: {}",
+            a.name,
+            c.slug,
+            if a.id == c.lead() {
+                "it's the lead; make another agent the lead first"
+            } else {
+                "the default agent is in every channel"
+            }
+        )));
+    }
+    if m.rt
+        .store
+        .remove_channel_agent(&c, &a.id)
+        .map_err(internal)?
+    {
+        m.channels_changed();
+    }
+    members(State(m), UrlPath(id)).await
 }
 
 #[derive(Deserialize)]
@@ -390,7 +545,7 @@ pub enum StreamItem {
         created_at: i64,
     },
     /// A post from elsewhere: a routine's result, later pointers and cards.
-    Post { post: Post },
+    Post { post: Box<Post> },
     /// A side chat branched off the stream; its messages stay in it.
     SideChat {
         session_id: String,
@@ -577,7 +732,7 @@ async fn stream(
     };
     for p in store.posts_between(&c.id, floor, top).map_err(internal)? {
         let item = StreamItem::Post {
-            post: view(store, p),
+            post: Box::new(view(store, p)),
         };
         if item.key() < before {
             items.push(item);

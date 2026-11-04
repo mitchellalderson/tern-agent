@@ -337,7 +337,8 @@ pub struct ActiveRun {
     /// The channel of its session, for member lines (docs/channels-design.md §5.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_id: Option<String>,
-    /// Who is working, as posts name them: `tern`, `tern/<label>`.
+    /// Who is working, as posts name them: the agent's id (`tern`,
+    /// `tern:research`), a sub-agent's `<agent id>/<label>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_id: Option<String>,
 }
@@ -350,16 +351,16 @@ async fn active_runs(State(m): State<Shared>) -> Json<Vec<ActiveRun>> {
                 let row = m.rt.store.run(&run_id).ok().flatten();
                 let (parent_run_id, label) =
                     row.map(|r| (r.parent_run_id, r.label)).unwrap_or_default();
-                let channel_id =
-                    m.rt.store
-                        .session(&session_id)
-                        .ok()
-                        .flatten()
-                        .and_then(|s| s.channel_id);
+                let session = m.rt.store.session(&session_id).ok().flatten();
+                let agent = session
+                    .as_ref()
+                    .map_or(tern_store::DEFAULT_AGENT, |s| s.agent())
+                    .to_owned();
+                let channel_id = session.and_then(|s| s.channel_id);
                 let label = label.filter(|_| parent_run_id.is_some());
                 let author_id = Some(match &label {
-                    Some(l) => tern_core::channels::author::subagent(l),
-                    None => tern_core::channels::author::AGENT.to_owned(),
+                    Some(l) => format!("{agent}/{l}"),
+                    None => agent,
                 });
                 ActiveRun {
                     run_id,

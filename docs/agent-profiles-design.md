@@ -1,6 +1,6 @@
 # tern agent profiles: several agents, each with its own job
 
-Status: AP0 and AP1 built (2026-11-04; DECISIONS.md "Agent profiles AP0" and "AP1"). AP2–AP3 not built. Open questions (§9) were built with their recommended answers, still to be confirmed. This is the detailed design for agent profiles, which were only sketched in
+Status: AP0, AP1 and AP2 built (2026-11-04; DECISIONS.md "Agent profiles AP0", "AP1" and "AP2"). AP3 not built. Open questions (§9) were built with their recommended answers, still to be confirmed. This is the detailed design for agent profiles, which were only sketched in
 [gui-spec.md](gui-spec.md) §7.2 (phase G5, open question 1) and in the "Later" row of
 [channels-design.md](channels-design.md) §6. It builds on channels C0–C2 (Home's stream, topic channels, posts) and
 T3a (taint), and on the sub-agent machinery in [subagents-design.md](subagents-design.md). Related:
@@ -399,7 +399,7 @@ because P0 already names provider setup.
 |---|---|---|---|---|
 | **AP0** (built) | Migration (§2); default agent; `/v1/agents` CRUD and persona files; `start_run` freezing persona, model chain, tool scope and memory scope; memory scopes in prompt and memory tools; `schedules.agent_id` and the `schedule_*` tools acting on the caller's own; `agents` health flag; `tern agents`; TUI `/agent`. DM channels created per agent. | M | C1 (main channels) | API, CLI and TUI: several configurable agents, each with its own DM stream, and their own routines |
 | **AP1** (built) | Desktop: AGENTS section, agent DM view (reusing the Home view), create/edit sheet with templates, per-agent side panel (routines, tools, memory), memory scope chips, approval mirror in the DM; Telegram `/agent` with forum topics where available. | M | AP0 | **The Grok Bot experience**: agents in the sidebar, each with a DM and its own jobs |
-| **AP2** | Agents in topic channels: membership, lead, `@mention` wakes, `agent_wakes`, hop limit and budgets, taint on wake; desktop member avatars, + Agent, `@` autocomplete; routines posting to topic channels auto-join. | M | C3 (digest), C4 (member live lines) | Marketing posting into `#marketing`; asking `@research` in `#launch` |
+| **AP2** (built) | Agents in topic channels: membership, lead, `@mention` wakes, `agent_wakes`, hop limit and budgets, taint on wake; desktop member avatars, + Agent, `@` autocomplete; routines posting to topic channels auto-join. | M | C3 (digest), C4 (member live lines) | Marketing posting into `#marketing`; asking `@research` in `#launch` |
 | **AP3** | Delegating to profiles (`agent_spawn {agent}`, `delegates`); "Let agents decide" on the gate model; a Telegram bot per agent; per-agent autonomy ceiling; templates as signed bundles. | M (each part S) | AP2; T3's outbox for delegated writes at night; T1b's gate model for the router | agent-to-agent handoffs |
 
 **Where this sits relative to T2 and stage 2** (spec §12.1, stage 3 next to T2):
@@ -424,7 +424,8 @@ parallel if wanted. The one shared resource is the migration number.
 3. **Telegram.** One bot with `/agent` and topics (AP1), with per-agent bots as an option later (AP3)? Or is a bot per
    agent essential from the start?
 4. **Agent-to-agent wakes.** Off by default per channel, with a hop limit of 2 and 6 wakes an hour when on. Are those
-   the right defaults, or should agents never wake each other until you've seen how it behaves?
+   the right defaults, or should agents never wake each other until you've seen how it behaves? (Built with these
+   defaults in AP2, still to be confirmed.)
 5. **Should routines remain visible on their own?** This design moves them under agents (§4). Is a global "all
    routines" list still wanted (e.g. in Settings or the Tasks view, spec §8.2) for seeing everything that runs at
    night?

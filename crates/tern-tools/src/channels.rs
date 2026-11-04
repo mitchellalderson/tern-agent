@@ -43,6 +43,31 @@ fn when(ms: i64) -> String {
         .unwrap_or_default()
 }
 
+/// Add `agent_id` to `channel` with a "Name joined" note; the note, if it
+/// joined.
+fn join(
+    store: &Store,
+    channel: &ChannelRow,
+    agent_id: &str,
+    name: &str,
+) -> tern_store::Result<Option<PostRow>> {
+    if !store.add_channel_agent(channel, agent_id)? {
+        return Ok(None);
+    }
+    let key = format!("joined:{}:{agent_id}:{}", channel.id, tern_store::now_ms());
+    let (row, _) = store.add_post(&NewPost {
+        channel_id: &channel.id,
+        author_kind: "system",
+        author_id: author::SYSTEM,
+        author: author::AGENT,
+        kind: "note",
+        text: &format!("{name} joined"),
+        dedupe_key: Some(&key),
+        ..NewPost::default()
+    })?;
+    Ok(Some(row))
+}
+
 pub struct ChannelRead {
     store: Store,
 }
@@ -96,6 +121,28 @@ impl Tool for ChannelRead {
             Ok(c) => c,
             Err(e) => return ToolResult::error(e),
         };
+        // An agent reads its own conversation's channel, channels it's a
+        // member of, and its DM; never another agent's (agent profiles §5.1).
+        let here = self
+            .store
+            .session_channel(&ctx.session_id)
+            .ok()
+            .flatten()
+            .is_some_and(|c| c.id == channel.id);
+        let agent = self
+            .store
+            .session_agent(&ctx.session_id)
+            .unwrap_or_else(|_| author::AGENT.into());
+        if !here && !self.store.is_member(&channel, &agent).unwrap_or(false) {
+            return ToolResult::error(format!(
+                "you can't read {}: you aren't a member",
+                if channel.kind == "main" {
+                    channel.title.clone()
+                } else {
+                    format!("#{}", channel.slug)
+                }
+            ));
+        }
         let limit = a.limit.unwrap_or(20).clamp(1, MAX_READ);
         let rows = match a.query.as_deref().filter(|q| !q.trim().is_empty()) {
             Some(q) => self.store.search_posts(&channel.id, q, a.before, limit),
@@ -230,7 +277,7 @@ impl Tool for ChannelPost {
                 format!("{agent_id}/{label}"),
                 format!("{agent_name}/{label}"),
             ),
-            _ => ("agent", agent_id, agent_name),
+            _ => ("agent", agent_id.clone(), agent_name.clone()),
         };
         let channel = match channel_for(&self.store, ctx, a.channel.as_deref()) {
             Ok(c) => c,
@@ -238,6 +285,32 @@ impl Tool for ChannelPost {
         };
         if channel.archived_at.is_some() {
             return ToolResult::error(format!("#{} is archived", channel.slug));
+        }
+        // An agent posts in topic channels it's a member of (agent profiles
+        // §5.1). From its DM or a routine, where the user asked it to,
+        // posting elsewhere makes it one.
+        let mut joined = None;
+        if channel.kind == "topic" && !self.store.is_member(&channel, &agent_id).unwrap_or(false) {
+            let asked = run.trigger == "cron"
+                || self
+                    .store
+                    .session_channel(&ctx.session_id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|c| c.kind == "main");
+            if !asked {
+                return ToolResult::error(format!(
+                    "you aren't a member of #{}; the user can add you there",
+                    channel.slug
+                ));
+            }
+            match join(&self.store, &channel, &agent_id, &agent_name) {
+                Ok(note) => joined = note,
+                Err(e) => return ToolResult::error(format!("joining #{}: {e}", channel.slug)),
+            }
+        }
+        if let (Some(note), Some(f)) = (joined, &self.on_post) {
+            f(note);
         }
         let call = current_call_id().unwrap_or_else(tern_core::agent::new_id);
         let key = format!("post:{}:{call}", run.id);
@@ -374,6 +447,110 @@ mod tests {
             .call(&ctx, json!({ "channel": "#finances", "query": "sources" }))
             .await;
         assert!(found.content.contains("Halfway"), "{}", found.content);
+    }
+
+    /// A run of `agent` in a new thread of channel `channel`.
+    fn run_of(store: &Store, agent: &str, channel: &str, id: &str) -> ToolCtx {
+        store
+            .create_thread(&NewThread {
+                id,
+                source: "api",
+                channel_id: channel,
+                agent_id: Some(agent),
+                ..NewThread::default()
+            })
+            .unwrap();
+        store
+            .create_run(
+                &NewRun {
+                    id,
+                    session_id: id,
+                    trigger: "user",
+                    model: "mock:m",
+                    ..NewRun::default()
+                },
+                &NewMessage {
+                    role: "user".into(),
+                    content_json: "[]".into(),
+                    text: "go".into(),
+                    summary_of: None,
+                },
+            )
+            .unwrap();
+        ToolCtx {
+            workspace: std::env::temp_dir(),
+            run_id: id.into(),
+            session_id: id.into(),
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn agents_read_and_post_where_they_are_members() {
+        let (store, _) = setup(None);
+        let (research, dm) = store
+            .create_agent(&tern_store::AgentRow {
+                id: "tern:research".into(),
+                slug: "research".into(),
+                name: "Research".into(),
+                memory: "private".into(),
+                ..tern_store::AgentRow::default()
+            })
+            .unwrap();
+        store
+            .create_channel(&ChannelRow {
+                id: "l".into(),
+                slug: "launch".into(),
+                title: "Launch".into(),
+                kind: "topic".into(),
+                created_by: "user".into(),
+                ..ChannelRow::default()
+            })
+            .unwrap();
+        // In #finances (not a member: its thread there was moved in, say).
+        let there = run_of(&store, &research.id, "c", "x");
+        let read = ChannelRead::new(store.clone());
+        let r = read.call(&there, json!({})).await;
+        assert!(!r.is_error, "its own conversation's channel: {}", r.content);
+        let r = read.call(&there, json!({ "channel": "launch" })).await;
+        assert!(
+            r.is_error && r.content.contains("aren't a member"),
+            "{}",
+            r.content
+        );
+        let r = read.call(&there, json!({ "channel": "home" })).await;
+        assert!(r.is_error, "never another agent's DM");
+        let post = ChannelPost::new(store.clone(), None);
+        let r = post
+            .call(&there, json!({ "text": "hi", "channel": "launch" }))
+            .await;
+        assert!(r.is_error, "{}", r.content);
+
+        // Asked in its DM, posting to #launch makes it a member.
+        let home = run_of(&store, &research.id, &dm, "y");
+        let r = post
+            .call(&home, json!({ "text": "Draft is up", "channel": "launch" }))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        let launch = store.channel("launch").unwrap().unwrap();
+        assert!(store.is_member(&launch, &research.id).unwrap());
+        let posts: Vec<_> = store
+            .posts("l", None, 5)
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.kind, p.text, p.author_id))
+            .collect();
+        assert_eq!(
+            posts,
+            vec![
+                ("update".into(), "Draft is up".into(), research.id.clone()),
+                ("note".into(), "Research joined".into(), "system".into()),
+            ]
+        );
+        let r = read.call(&there, json!({ "channel": "launch" })).await;
+        assert!(!r.is_error, "{}", r.content);
+        let r = read.call(&home, json!({})).await;
+        assert!(!r.is_error, "its DM: {}", r.content);
     }
 
     #[tokio::test]

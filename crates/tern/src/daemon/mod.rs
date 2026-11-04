@@ -21,6 +21,7 @@ pub mod outbox;
 pub mod scheduler;
 pub mod tls;
 pub mod uploads;
+pub mod wakes;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -151,6 +152,7 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
         }
     }
     tokio::spawn(scheduler::run(manager.clone(), shutdown.clone()));
+    manager.watch_mentions(shutdown.clone());
 
     let socket = home.socket_path();
     let bind = home.socket_bind_path();

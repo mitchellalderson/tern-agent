@@ -488,6 +488,15 @@ impl Manager {
         Ok(started)
     }
 
+    /// The run working in `session`, if one is.
+    pub(super) fn active_run_in(&self, session: &str) -> Option<String> {
+        self.active
+            .lock()
+            .ok()?
+            .get(session)
+            .map(|x| x.run_id.clone())
+    }
+
     /// If a run is working in `session`, give it `text` as a message from
     /// the user (read at its next model call) instead of stopping it, and
     /// return that run's id and the mail id. Checked and posted under the

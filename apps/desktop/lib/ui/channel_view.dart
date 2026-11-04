@@ -68,7 +68,10 @@ class ChannelView extends StatelessWidget {
                           vertical: 6,
                         ),
                         child: i < extra
-                            ? MemberLine(line: lines[extra - 1 - i])
+                            ? MemberLine(
+                                line: lines[extra - 1 - i],
+                                store: store,
+                              )
                             : TimelinePost(
                                 post: shown[shown.length - 1 - (i - extra)],
                                 store: store,
@@ -91,16 +94,23 @@ class ChannelView extends StatelessWidget {
 
 /// "research-1 · Running http_fetch": a member working in the channel.
 class MemberLine extends StatelessWidget {
-  const MemberLine({super.key, required this.line});
+  const MemberLine({super.key, required this.line, this.store});
 
   final ({String runId, String author, String doing}) line;
+
+  /// Names the author's agent profile, when there are profiles.
+  final TernStore? store;
 
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
+    final agent = store?.authorAgent(line.author);
+    final name = store?.authorName(line.author) ?? line.author;
     return Row(
       children: [
-        AgentAvatar(name: line.author, size: 18),
+        agent == null
+            ? AgentAvatar(name: line.author, size: 18)
+            : AgentAvatar.of(agent, size: 18),
         const SizedBox(width: 8),
         SizedBox(
           width: 10,
@@ -110,7 +120,7 @@ class MemberLine extends StatelessWidget {
         const SizedBox(width: 8),
         Flexible(
           child: Text(
-            '${line.author} · ${line.doing}',
+            '$name · ${line.doing}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(fontSize: 12.5, color: c.muted),
@@ -178,10 +188,17 @@ class _ChannelHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
-    // Who has posted lately, newest first.
+    // Its agents, lead first (agent profiles §5.1); without profiles, who
+    // has posted lately, newest first.
+    final agents = channel.agents == null || !store.hasAgents
+        ? null
+        : store.membersOf(channel);
     final members = <String>[];
     for (final p in (store.posts[channel.id] ?? const <Post>[]).reversed) {
-      if (!p.mine && !members.contains(p.author)) members.add(p.author);
+      if (agents != null) break;
+      if (!p.mine && !p.isNote && !members.contains(p.author)) {
+        members.add(p.author);
+      }
       if (members.length == 4) break;
     }
     final main = channel.mainSessionId;
@@ -225,14 +242,17 @@ class _ChannelHeader extends StatelessWidget {
                 ],
               ),
             ),
-            for (final m in members)
-              Padding(
-                padding: const EdgeInsets.only(right: 3),
-                child: Tooltip(
-                  message: m,
-                  child: AgentAvatar(name: m, size: 20),
+            if (agents != null)
+              MemberAvatars(store: store, channel: channel, agents: agents)
+            else
+              for (final m in members)
+                Padding(
+                  padding: const EdgeInsets.only(right: 3),
+                  child: Tooltip(
+                    message: m,
+                    child: AgentAvatar(name: m, size: 20),
+                  ),
                 ),
-              ),
             const SizedBox(width: 6),
             if (main != null)
               if (store.usage[main]
@@ -266,6 +286,164 @@ class _ChannelHeader extends StatelessWidget {
   }
 }
 
+/// A topic channel's agents in its header, the lead first and marked,
+/// then "+ Agent" to add one (agent profiles §5.1).
+class MemberAvatars extends StatelessWidget {
+  const MemberAvatars({
+    super.key,
+    required this.store,
+    required this.channel,
+    required this.agents,
+  });
+
+  final TernStore store;
+  final Channel channel;
+  final List<Agent> agents;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final lead = channel.lead;
+    final others = [
+      for (final a in store.agents)
+        if (!a.archived && !channel.memberIds.contains(a.id)) a,
+    ];
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final a in agents)
+          Padding(
+            padding: const EdgeInsets.only(right: 3),
+            child: Tooltip(
+              message: a.id == lead
+                  ? '${a.name} · lead: answers posts that mention no one'
+                  : '${a.name} · answers when @${a.slug} is mentioned',
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  AgentAvatar.of(a, size: 22),
+                  if (a.id == lead)
+                    Positioned(
+                      right: -3,
+                      bottom: -3,
+                      child: Container(
+                        padding: const EdgeInsets.all(1.5),
+                        decoration: BoxDecoration(
+                          color: c.background,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.star_rounded,
+                          size: 10,
+                          color: c.warn,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(width: 4),
+        PopupMenuButton<String>(
+          tooltip: others.isEmpty
+              ? 'Every agent is in #${channel.slug}'
+              : 'Add an agent to #${channel.slug}',
+          enabled: others.isNotEmpty,
+          position: PopupMenuPosition.under,
+          onSelected: (id) => store.addToChannel(channel.id, id),
+          itemBuilder: (_) => [
+            for (final a in others)
+              PopupMenuItem(
+                value: a.id,
+                height: 36,
+                child: Row(
+                  children: [
+                    AgentAvatar.of(a, size: 20),
+                    const SizedBox(width: 8),
+                    Text(a.name),
+                    const SizedBox(width: 6),
+                    Text(
+                      '@${a.slug}',
+                      style: TextStyle(fontSize: 12, color: c.muted),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+          child: Container(
+            height: 24,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              border: Border.all(color: c.hairline),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              '+ Agent',
+              style: TextStyle(
+                fontSize: 12,
+                color: others.isEmpty ? c.muted : c.text,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// A quiet line from tern in a timeline: "Research joined", "@ops not
+/// woken: …".
+class NoteLine extends StatelessWidget {
+  const NoteLine({super.key, required this.post});
+
+  final Post post;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.info_outline, size: 13, color: c.muted),
+          const SizedBox(width: 6),
+          Flexible(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Text(
+                post.text,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12, color: c.muted),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            relativeTime(post.createdAt),
+            style: TextStyle(fontSize: 11, color: c.muted),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// `text` with each `@slug` an agent profile has (of `slugs`) turned into
+/// a `mention:` link, so the timeline can colour it.
+String markMentions(String text, Iterable<String> slugs) {
+  final known = slugs.toSet();
+  if (known.isEmpty) return text;
+  return text.replaceAllMapped(
+    RegExp(r'(^|[^A-Za-z0-9._+@-])@([a-z0-9][a-z0-9-]*)', caseSensitive: false),
+    (m) {
+      final slug = m[2]!.toLowerCase();
+      return known.contains(slug) ? '${m[1]}[@${m[2]}](mention:$slug)' : m[0]!;
+    },
+  );
+}
+
 class _EmptyChannel extends StatelessWidget {
   const _EmptyChannel({required this.channel});
 
@@ -283,7 +461,10 @@ class _EmptyChannel extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          'Ask tern something here, or point a routine at this channel.',
+          channel.agents == null
+              ? 'Ask tern something here, or point a routine at this channel.'
+              : 'Ask something here, or @mention an agent. Routines can post '
+                    'here too.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
@@ -300,8 +481,14 @@ class TimelinePost extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (post.isNote) return NoteLine(post: post);
     final c = context.colors;
     final theme = Theme.of(context);
+    final agent = post.mine ? null : store.authorAgent(post.authorId);
+    final slugs = [
+      for (final id in post.mentions)
+        if (store.agentById(id) case final a?) a.slug,
+    ];
     final tag = switch (post.authorKind) {
       'routine' => (Icons.schedule, 'routine'),
       'subagent' => (Icons.subdirectory_arrow_right, 'under a parent agent'),
@@ -317,6 +504,8 @@ class TimelinePost extends StatelessWidget {
                 backgroundColor: c.userBubble,
                 child: Icon(Icons.person, size: 15, color: c.muted),
               )
+            : agent != null
+            ? AgentAvatar.of(agent, size: 26)
             : AgentAvatar(name: post.author, size: 26),
         const SizedBox(width: 10),
         Expanded(
@@ -356,10 +545,12 @@ class TimelinePost extends StatelessWidget {
               ),
               const SizedBox(height: 3),
               MarkdownBody(
-                data: post.text,
+                data: markMentions(post.text, slugs),
                 selectable: true,
-                styleSheet: MarkdownStyleSheet.fromTheme(theme)
-                    .copyWith(p: theme.textTheme.bodyMedium),
+                styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                  p: theme.textTheme.bodyMedium,
+                  a: TextStyle(color: c.accent, fontWeight: FontWeight.w600),
+                ),
               ),
               Row(
                 children: [
@@ -490,6 +681,10 @@ class _ChannelDialogState extends State<ChannelDialog> {
   late final _instructions = TextEditingController(
     text: widget.editing?.instructions,
   );
+  late String? _lead = widget.editing?.agents == null
+      ? null
+      : widget.editing!.lead;
+  late bool _wakes = widget.editing?.agents?.agentWakes ?? false;
   String? _error;
   var _busy = false;
 
@@ -526,6 +721,11 @@ class _ChannelDialogState extends State<ChannelDialog> {
             editing.id,
             title: _title.text.trim(),
             instructions: _instructions.text.trim(),
+            lead: _lead == editing.lead ? null : _lead,
+            agentWakes:
+                editing.agents == null || _wakes == editing.agents!.agentWakes
+                ? null
+                : _wakes,
           );
     if (!mounted) return;
     if (err == null) {
@@ -600,6 +800,63 @@ class _ChannelDialogState extends State<ChannelDialog> {
                   helperText: 'Added to what tern is told for work here.',
                 ),
               ),
+              if (editing?.agents case final agents?
+                  when widget.store.hasAgents) ...[
+                const SizedBox(height: 14),
+                Text('LEAD', style: labels),
+                const SizedBox(height: 6),
+                DropdownButtonFormField<String>(
+                  initialValue: _lead,
+                  isDense: true,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    helperText: 'Answers posts that mention no one.',
+                  ),
+                  items: [
+                    for (final a in widget.store.mentionable(editing!))
+                      DropdownMenuItem(
+                        value: a.agent.id,
+                        child: Row(
+                          children: [
+                            AgentAvatar.of(a.agent, size: 18),
+                            const SizedBox(width: 8),
+                            Text(a.agent.name),
+                            if (!a.member) ...[
+                              const SizedBox(width: 6),
+                              Text(
+                                'will join',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: c.muted,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                  ],
+                  onChanged: (v) => setState(() => _lead = v),
+                ),
+                const SizedBox(height: 6),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  value: _wakes,
+                  onChanged: (v) => setState(() => _wakes = v),
+                  title: const Text('Agents can wake each other'),
+                  subtitle: Text(
+                    _wakes
+                        ? "An agent's @mention starts the agent it names: at "
+                              'most ${agents.maxHops} in a row from your '
+                              'message, and ${agents.wakesPerHour} an hour.'
+                        : "Agents' @mentions are shown but start nothing; "
+                              'yours always do.',
+                  ),
+                ),
+              ],
               if (_error case final e?) ...[
                 const SizedBox(height: 10),
                 Text(e, style: TextStyle(color: c.error, fontSize: 12.5)),

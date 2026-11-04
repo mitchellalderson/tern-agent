@@ -395,6 +395,10 @@ class TernClient {
     String? instructions,
     bool clearInstructions = false,
     bool? archived,
+    String? lead,
+    bool? agentWakes,
+    int? maxHops,
+    int? wakesPerHour,
   }) async => Channel.fromJson(
     await _json('PATCH', '/v1/channels/${_seg(id)}', {
       'title': ?title,
@@ -403,7 +407,30 @@ class TernClient {
       else
         'instructions': ?instructions,
       'archived': ?archived,
+      'lead': ?lead,
+      'agent_wakes': ?agentWakes,
+      'max_hops': ?maxHops,
+      'wakes_per_hour': ?wakesPerHour,
     }),
+  );
+
+  /// Add an agent (id or slug) to a topic channel.
+  Future<ChannelAgents> addChannelAgent(String channel, String agent) async =>
+      ChannelAgents.fromJson(
+        await _json('POST', '/v1/channels/${_seg(channel)}/agents', {
+          'agent': agent,
+        }),
+      );
+
+  /// Take an agent out of a topic channel (not its lead or `tern`).
+  Future<ChannelAgents> removeChannelAgent(
+    String channel,
+    String agent,
+  ) async => ChannelAgents.fromJson(
+    await _json(
+      'DELETE',
+      '/v1/channels/${_seg(channel)}/agents/${_seg(agent)}',
+    ),
   );
 
   /// A page of a channel's posts, newest first.

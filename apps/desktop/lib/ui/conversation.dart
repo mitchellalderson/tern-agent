@@ -395,6 +395,51 @@ class _ComposerState extends State<Composer> {
   final _text = TextEditingController();
   final _focus = FocusNode();
 
+  /// The highlighted `@` suggestion.
+  var _pick = 0;
+
+  /// The `@partial` being typed just before the cursor, in a topic
+  /// channel with agent profiles: what to complete, and where it starts.
+  ({String partial, int start})? get _mention {
+    final store = widget.store;
+    if (!store.topicOpen || !store.hasAgents) return null;
+    final sel = _text.selection;
+    if (!sel.isValid || !sel.isCollapsed) return null;
+    final before = _text.text.substring(0, sel.baseOffset);
+    final m = RegExp(
+      r'(^|[\s(])@([a-z0-9-]*)$',
+      caseSensitive: false,
+    ).firstMatch(before);
+    if (m == null) return null;
+    return (partial: m[2]!.toLowerCase(), start: m.end - m[2]!.length - 1);
+  }
+
+  /// Agents `@` can name here that match what's typed: members first,
+  /// then others (sending adds them).
+  List<({Agent agent, bool member})> get _suggestions {
+    final m = _mention;
+    final ch = widget.store.openChannel;
+    if (m == null || ch == null) return const [];
+    return [
+      for (final s in widget.store.mentionable(ch))
+        if (s.agent.slug.startsWith(m.partial) ||
+            s.agent.name.toLowerCase().startsWith(m.partial))
+          s,
+    ];
+  }
+
+  void _complete(Agent a) {
+    final m = _mention;
+    if (m == null) return;
+    final end = _text.selection.baseOffset;
+    final text = _text.text.replaceRange(m.start, end, '@${a.slug} ');
+    _text.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: m.start + a.slug.length + 2),
+    );
+    _pick = 0;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -460,6 +505,15 @@ class _ComposerState extends State<Composer> {
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
+            if (_suggestions case final options when options.isNotEmpty)
+              MentionSuggestions(
+                options: options,
+                picked: _pick.clamp(0, options.length - 1),
+                onPick: (a) {
+                  _complete(a);
+                  _focus.requestFocus();
+                },
+              ),
             Container(
               decoration: BoxDecoration(
                 color: c.background,
@@ -494,7 +548,34 @@ class _ComposerState extends State<Composer> {
                     child: Focus(
                       onFocusChange: (_) => setState(() {}),
                       // ⏎ sends; ⇧⏎ inserts a newline.
+                      // With `@` suggestions open, ↑↓ pick and ⏎/⇥ complete.
                       onKeyEvent: (node, e) {
+                        if (e is! KeyDownEvent && e is! KeyRepeatEvent) {
+                          return KeyEventResult.ignored;
+                        }
+                        final options = _suggestions;
+                        if (options.isNotEmpty) {
+                          final key = e.logicalKey;
+                          if (key == LogicalKeyboardKey.arrowDown ||
+                              key == LogicalKeyboardKey.arrowUp) {
+                            setState(() {
+                              _pick =
+                                  (_pick +
+                                      (key == LogicalKeyboardKey.arrowDown
+                                          ? 1
+                                          : -1)) %
+                                  options.length;
+                            });
+                            return KeyEventResult.handled;
+                          }
+                          if (key == LogicalKeyboardKey.enter ||
+                              key == LogicalKeyboardKey.tab) {
+                            _complete(
+                              options[_pick.clamp(0, options.length - 1)].agent,
+                            );
+                            return KeyEventResult.handled;
+                          }
+                        }
                         if (e is KeyDownEvent &&
                             e.logicalKey == LogicalKeyboardKey.enter &&
                             !HardwareKeyboard.instance.isShiftPressed) {
@@ -542,6 +623,78 @@ class _ComposerState extends State<Composer> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// The agents an `@` in a topic channel's composer can name.
+class MentionSuggestions extends StatelessWidget {
+  const MentionSuggestions({
+    super.key,
+    required this.options,
+    required this.picked,
+    required this.onPick,
+  });
+
+  final List<({Agent agent, bool member})> options;
+  final int picked;
+  final ValueChanged<Agent> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      constraints: const BoxConstraints(maxWidth: 320, maxHeight: 220),
+      decoration: BoxDecoration(
+        color: c.background,
+        border: Border.all(color: c.hairline),
+        borderRadius: BorderRadius.circular(10),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        children: [
+          for (final (i, o) in options.indexed)
+            Material(
+              color: i == picked ? c.selection : Colors.transparent,
+              child: InkWell(
+                onTap: () => onPick(o.agent),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    children: [
+                      AgentAvatar.of(o.agent, size: 20),
+                      const SizedBox(width: 8),
+                      Text(o.agent.name, style: const TextStyle(fontSize: 13)),
+                      const SizedBox(width: 6),
+                      Text(
+                        '@${o.agent.slug}',
+                        style: TextStyle(fontSize: 12, color: c.muted),
+                      ),
+                      const Spacer(),
+                      if (!o.member)
+                        Text(
+                          'will join',
+                          style: TextStyle(fontSize: 11.5, color: c.muted),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

@@ -14,6 +14,9 @@ pub mod author {
     /// The main agent; becomes its agent profile's id.
     pub const AGENT: &str = "tern";
 
+    /// tern itself, for notes in a timeline ("Research joined").
+    pub const SYSTEM: &str = "system";
+
     /// A sub-agent of the main agent, by its label.
     pub fn subagent(label: &str) -> String {
         format!("{AGENT}/{label}")
@@ -40,7 +43,8 @@ pub struct Post {
     pub author_id: String,
     /// What to show.
     pub author: String,
-    /// `message`, `answer`, `update`, `needs_you` or `pointer`.
+    /// `message`, `answer`, `update`, `needs_you`, `pointer`, `moved`, or
+    /// `note` (a quiet line from tern itself: "Research joined").
     pub kind: String,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,6 +62,12 @@ pub struct Post {
     /// A `needs_you` post or pointer the user marked done (unix ms).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<i64>,
+    /// The agents it @mentions, by id (agent profiles §5.2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<String>,
+    /// How far down a chain of agents waking agents it is (§5.3).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub wake_depth: i64,
     /// Unix ms.
     pub created_at: i64,
 }
@@ -84,6 +94,8 @@ impl From<tern_store::PostRow> for Post {
             replies: 0,
             resolved_at: p.resolved_at,
             points_to_channel: None,
+            mentions: p.mentions,
+            wake_depth: p.wake_depth,
             created_at: p.created_at,
         }
     }
@@ -114,6 +126,50 @@ pub fn instructions_section(slug: &str, instructions: &str) -> Option<String> {
             "\n\n## Channel #{slug}\n\nThis conversation is in the #{slug} channel. The user's instructions for it:\n\n{text}"
         )
     })
+}
+
+/// One agent in a topic channel, for [`members_section`].
+pub struct MemberLine<'a> {
+    pub slug: &'a str,
+    pub name: &'a str,
+    pub lead: bool,
+    /// The agent this run is.
+    pub you: bool,
+}
+
+/// Who else is in a topic channel and how to ask them (agent profiles
+/// §5.2), when there is anyone else. `agent_wakes`: the channel lets
+/// agents' mentions wake agents.
+pub fn members_section(
+    slug: &str,
+    members: &[MemberLine<'_>],
+    agent_wakes: bool,
+) -> Option<String> {
+    if members.len() < 2 {
+        return None;
+    }
+    let list = members
+        .iter()
+        .map(|m| {
+            let mut tags = vec![m.name.to_owned()];
+            if m.lead {
+                tags.push("lead".into());
+            }
+            if m.you {
+                tags.push("you".into());
+            }
+            format!("@{} ({})", m.slug, tags.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let wakes = if agent_wakes {
+        "An `@slug` in your answer or a `channel_post` asks that agent too; it answers in its own thread here, and agents can only wake each other a few times in a row, so ask for what you need in one go."
+    } else {
+        "In this channel agents' `@mentions` don't wake anyone: to get another agent's help, say so and the user can ask it."
+    };
+    Some(format!(
+        "\n\n## Agents in #{slug}\n\nMembers: {list}. The lead answers the user's posts that mention no one; a post that `@mentions` an agent is answered by that agent. Each agent works in its own threads and sees the others' posts in its digest. {wakes}"
+    ))
 }
 
 /// `[home]`: when Home's stream (and each Telegram chat's) is cut into a

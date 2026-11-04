@@ -195,6 +195,63 @@ class TernStore extends ChangeNotifier {
       agents.where((x) => x.id == a.agentId).firstOrNull?.name ??
       'tern';
 
+  /// The agent profile with id `id`.
+  Agent? agentById(String? id) =>
+      id == null ? null : agents.where((a) => a.id == id).firstOrNull;
+
+  /// The agent behind an author id (a post's, a live line's): an agent's
+  /// id, or a sub-agent's `<agent id>/<label>`.
+  Agent? authorAgent(String authorId) => agentById(authorId.split('/').first);
+
+  /// How to name an author id: the agent's name, `Name/label` for its
+  /// sub-agents; ids that aren't an agent's as they are.
+  String authorName(String authorId) {
+    final i = authorId.indexOf('/');
+    final a = authorAgent(authorId);
+    if (a == null) return authorId;
+    return i < 0 ? a.name : '${a.name}${authorId.substring(i)}';
+  }
+
+  /// A topic channel's members as agents, lead first.
+  List<Agent> membersOf(Channel c) => [
+    for (final id in c.memberIds) ?agentById(id),
+  ];
+
+  /// Who `@` can name in topic channel `c`: its members, then the other
+  /// agents (sending to them adds them).
+  List<({Agent agent, bool member})> mentionable(Channel c) {
+    final members = c.memberIds;
+    return [
+      for (final a in membersOf(c)) (agent: a, member: true),
+      for (final a in agents)
+        if (!a.archived && !members.contains(a.id)) (agent: a, member: false),
+    ];
+  }
+
+  /// Add agent `agentId` to topic channel `channelId`. Returns the
+  /// daemon's reason on failure.
+  Future<String?> addToChannel(String channelId, String agentId) async {
+    try {
+      await client.addChannelAgent(channelId, agentId);
+      channels = await client.channels();
+      notifyListeners();
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  Future<String?> removeFromChannel(String channelId, String agentId) async {
+    try {
+      await client.removeChannelAgent(channelId, agentId);
+      channels = await client.channels();
+      notifyListeners();
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
   /// The default agent, `tern`.
   Agent? get defaultAgent => agents.where((a) => a.isDefault).firstOrNull;
 
@@ -889,6 +946,8 @@ class TernStore extends ChangeNotifier {
     String id, {
     String? title,
     String? instructions,
+    String? lead,
+    bool? agentWakes,
   }) async {
     try {
       await client.updateChannel(
@@ -898,6 +957,8 @@ class TernStore extends ChangeNotifier {
             ? null
             : instructions,
         clearInstructions: instructions?.trim().isEmpty ?? false,
+        lead: lead,
+        agentWakes: agentWakes,
       );
       channels = await client.channels();
       notifyListeners();
@@ -1117,9 +1178,12 @@ class TernStore extends ChangeNotifier {
     }
     if (e case RunStarted(:final runId, :final channelId?)) {
       final label = _labels[runId];
+      final agent = e.agentId ?? 'tern';
       _live[runId] = (
         channel: channelId,
-        author: e.parentRunId != null && label != null ? 'tern/$label' : 'tern',
+        author: e.parentRunId != null && label != null
+            ? '$agent/$label'
+            : agent,
       );
     }
     switch (e) {

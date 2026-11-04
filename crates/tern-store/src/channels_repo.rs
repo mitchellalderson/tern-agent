@@ -52,6 +52,11 @@ pub struct PostRow {
     pub created_at: i64,
     /// A `needs_you` post or a pointer the user marked done.
     pub resolved_at: Option<i64>,
+    /// The agents it @mentions (agent profiles §5.2), by id.
+    pub mentions: Vec<String>,
+    /// How far down a wake chain it is (§5.3): the user's posts are 0, a
+    /// post by a run a depth-d post woke is d + 1.
+    pub wake_depth: i64,
 }
 
 /// Values for a new post.
@@ -111,12 +116,20 @@ pub struct NewThread<'a> {
     pub prev_session_id: Option<&'a str>,
     pub segment_reason: Option<&'a str>,
     pub branched_from: Option<&'a str>,
+    /// Whose thread it is; default: the channel's (a DM's owner, a topic
+    /// channel's lead).
+    pub agent_id: Option<&'a str>,
 }
+
+/// Leaves out of a digest the posts that woke a run in session `?2`: the
+/// run was started with their text.
+const NOT_WAKER: &str =
+    "AND id NOT IN (SELECT woken_by FROM runs WHERE session_id = ?2 AND woken_by IS NOT NULL)";
 
 const CHANNEL_COLS: &str = "id, slug, title, kind, instructions, main_session_id, created_by, \
     archived_at, created_at, updated_at, agent_id";
 const POST_COLS: &str = "id, channel_id, session_id, run_id, author_kind, author_id, author, kind, \
-    text, reply_to, points_to, tainted, dedupe_key, created_at, resolved_at";
+    text, reply_to, points_to, tainted, dedupe_key, created_at, resolved_at, mentions, wake_depth";
 
 fn channel_row(r: &Row<'_>) -> rusqlite::Result<ChannelRow> {
     Ok(ChannelRow {
@@ -151,6 +164,11 @@ fn post_row(r: &Row<'_>) -> rusqlite::Result<PostRow> {
         dedupe_key: r.get(12)?,
         created_at: r.get(13)?,
         resolved_at: r.get(14)?,
+        mentions: r
+            .get::<_, Option<String>>(15)?
+            .map(|m| crate::members_repo::ids_from_json(&m))
+            .unwrap_or_default(),
+        wake_depth: r.get(16)?,
     })
 }
 
@@ -266,7 +284,7 @@ impl Store {
             "INSERT INTO sessions (id, source, model, external_ref, channel_id, prev_session_id,
                segment_reason, branched_from, created_at, updated_at, agent_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9,
-               (SELECT NULLIF(agent_id, 'tern') FROM channels WHERE id = ?5))",
+               NULLIF(COALESCE(?10, (SELECT agent_id FROM channels WHERE id = ?5)), 'tern'))",
             params![
                 t.id,
                 t.source,
@@ -276,7 +294,8 @@ impl Store {
                 t.prev_session_id,
                 t.segment_reason,
                 t.branched_from,
-                now
+                now,
+                t.agent_id,
             ],
         )?;
         if let Some(prev) = t.prev_session_id {
@@ -299,10 +318,11 @@ impl Store {
             segment_reason: t.segment_reason.map(Into::into),
             branched_from: t.branched_from.map(Into::into),
             title: None,
-            agent_id: self
-                .channel(t.channel_id)?
-                .and_then(|c| c.agent_id)
-                .filter(|a| a != crate::DEFAULT_AGENT),
+            agent_id: match t.agent_id {
+                Some(a) => Some(a.to_owned()),
+                None => self.channel(t.channel_id)?.and_then(|c| c.agent_id),
+            }
+            .filter(|a| a != crate::DEFAULT_AGENT),
             moved_from: None,
         })
     }
@@ -424,14 +444,22 @@ impl Store {
     /// whatever writes one (`channel_post`, a sub-agent, later the outbox)
     /// puts it where the user acts (docs/channels-design.md §2.3).
     pub fn add_post(&self, p: &NewPost<'_>) -> Result<(PostRow, bool)> {
+        // Who it @mentions, and (an agent's) how far down a wake chain it is.
+        let mentions = self.mentioned_agents(p.text)?;
+        let mentions = (!mentions.is_empty())
+            .then(|| crate::members_repo::ids_to_json(mentions.iter().map(|a| a.id.as_str())));
+        let depth = match p.run_id {
+            Some(run) if p.author_kind != "user" => self.run_wake_depth(run)?,
+            _ => 0,
+        };
         let now = now_ms();
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let insert = |tx: &rusqlite::Transaction<'_>, p: &NewPost<'_>| -> rusqlite::Result<usize> {
             tx.execute(
                 "INSERT INTO posts (channel_id, session_id, run_id, author_kind, author_id, author, kind,
-                   text, reply_to, points_to, dedupe_key, created_at, tainted)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                   text, reply_to, points_to, dedupe_key, created_at, tainted, mentions, wake_depth)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT (dedupe_key) DO NOTHING",
                 params![
                     p.channel_id,
@@ -447,6 +475,8 @@ impl Store {
                     p.dedupe_key,
                     p.created_at.unwrap_or(now),
                     p.tainted,
+                    mentions,
+                    depth,
                 ],
             )
         };
@@ -767,13 +797,13 @@ impl Store {
     ) -> Result<(Vec<PostRow>, usize)> {
         let conn = self.conn()?;
         let total: i64 = conn.query_row(
-            "SELECT count(*) FROM posts WHERE channel_id = ?1 AND id > ?3 AND session_id IS NOT ?2",
+            &format!("SELECT count(*) FROM posts WHERE channel_id = ?1 AND id > ?3 AND session_id IS NOT ?2 {NOT_WAKER}"),
             params![channel_id, session_id, after],
             |r| r.get(0),
         )?;
         let sql = format!(
             "SELECT {POST_COLS} FROM posts WHERE channel_id = ?1 AND id > ?3 AND session_id IS NOT ?2
-             ORDER BY id DESC LIMIT ?4"
+             {NOT_WAKER} ORDER BY id DESC LIMIT ?4"
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(

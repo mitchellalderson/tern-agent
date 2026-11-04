@@ -23,6 +23,10 @@ pub struct Sent {
     pub queued: bool,
     /// Home: the send started a new segment of the stream.
     pub new_segment: bool,
+    /// A topic channel: every agent the post started or was queued for
+    /// (the lead, or each agent it mentions); the first is `run_id`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub woke: Vec<super::wakes::Woken>,
 }
 
 /// The text of a run's last assistant message.
@@ -75,7 +79,7 @@ impl Manager {
     }
 
     /// A channel's main thread, created on first use.
-    fn main_thread(&self, channel: &ChannelRow) -> anyhow::Result<String> {
+    pub(super) fn main_thread(&self, channel: &ChannelRow) -> anyhow::Result<String> {
         if let Some(id) = &channel.main_session_id
             && self.rt.store.session(id)?.is_some()
         {
@@ -92,9 +96,15 @@ impl Manager {
         Ok(s.id)
     }
 
-    /// The side thread a reply to post `to` goes to: the thread the post
-    /// is in if that's a side thread, else a new one branched from it.
-    fn reply_thread(&self, channel: &ChannelRow, to: i64) -> anyhow::Result<String> {
+    /// The side thread `agent`'s reply to post `to` goes to: the thread
+    /// the post is in if that's `agent`'s side thread, else a new one of
+    /// its branched from the post.
+    pub(super) fn reply_thread(
+        &self,
+        channel: &ChannelRow,
+        to: i64,
+        agent: &str,
+    ) -> anyhow::Result<String> {
         let post = self
             .rt
             .store
@@ -106,6 +116,7 @@ impl Manager {
             && let Some(row) = self.rt.store.session(s)?
             && row.channel_id.as_deref() == Some(channel.id.as_str())
             && row.source != "cron"
+            && row.agent() == agent
         {
             return Ok(row.id);
         }
@@ -114,14 +125,15 @@ impl Manager {
             source: "api",
             channel_id: &channel.id,
             branched_from: Some(&format!("post:{to}")),
+            agent_id: Some(agent),
             ..NewThread::default()
         })?;
         Ok(s.id)
     }
 
     /// The user sends `text` into `channel` (`POST /v1/channels/{id}/posts`).
-    /// In a topic channel it becomes a post and a run in the main thread (or
-    /// in a side thread with `reply_to`); in Home it is a run in the current
+    /// In a topic channel it becomes a post and a run of the lead or the
+    /// agents it mentions (`Manager::send_to_topic`); in Home it is a run in the current
     /// segment, or in a new one when §2.6 says to cut (`new_topic` forces
     /// it). Where a run is already working, the text is queued for it.
     pub async fn send_to_channel(
@@ -141,42 +153,7 @@ impl Manager {
         if channel.kind == "main" {
             return self.send_home(channel, text, new_topic, model).await;
         }
-        let session = match reply_to {
-            Some(to) => self.reply_thread(channel, to)?,
-            None => self.main_thread(channel)?,
-        };
-        let (run_id, session_id, key, queued) = match self.queue_message(&session, text)? {
-            Some((run, mail)) => (run, session, format!("queued:{mail}"), true),
-            None => {
-                let started = self
-                    .start(Some(&session), model, text, "api", "user", None)
-                    .await?;
-                let key = format!("send:{}", started.run_id);
-                (started.run_id, started.session_id, key, false)
-            }
-        };
-        let (row, _) = self.rt.store.add_post(&NewPost {
-            channel_id: &channel.id,
-            session_id: Some(&session_id),
-            run_id: Some(&run_id),
-            author_kind: "user",
-            author_id: author::OWNER,
-            author: "you",
-            kind: "message",
-            text,
-            reply_to,
-            dedupe_key: Some(&key),
-            ..NewPost::default()
-        })?;
-        let post = view(&self.rt.store, row);
-        self.publish(post.clone());
-        Ok(Sent {
-            post: Some(post),
-            run_id,
-            session_id,
-            queued,
-            new_segment: false,
-        })
+        self.send_to_topic(channel, text, reply_to, model).await
     }
 
     /// A send into Home (§2.6, §4).
@@ -202,6 +179,7 @@ impl Manager {
                 session_id: started.session_id,
                 queued: false,
                 new_segment: false,
+                woke: Vec::new(),
             });
         };
         if !new_topic && let Some((run_id, _)) = self.queue_message(&head.id, text)? {
@@ -211,6 +189,7 @@ impl Manager {
                 session_id: head.id,
                 queued: true,
                 new_segment: false,
+                woke: Vec::new(),
             });
         }
         let session = match self.cut(&head, new_topic)? {
@@ -230,6 +209,7 @@ impl Manager {
             new_segment: session.id != head.id,
             session_id: started.session_id,
             queued: false,
+            woke: Vec::new(),
         })
     }
 
@@ -354,7 +334,12 @@ impl Manager {
             let Some(channel) = store.session_channel(&run.session_id)? else {
                 return Ok(None);
             };
-            let who = author::subagent(run.label.as_deref().unwrap_or("agent"));
+            // `<agent id>/<label>` (agent profiles §2).
+            let who = format!(
+                "{}/{}",
+                store.session_agent(&run.session_id)?,
+                run.label.as_deref().unwrap_or("agent")
+            );
             let key = format!("answer:{}", run.id);
             let (row, created) = store.add_post(&NewPost {
                 channel_id: &channel.id,
@@ -383,6 +368,13 @@ impl Manager {
         let (row, created) = if let Some(s) = schedule {
             let channel = s.channel_id.clone().unwrap_or_else(|| HOME.into());
             let title = super::scheduler::title(&s);
+            // A routine posting to a topic channel makes its agent a
+            // member there (agent profiles §5.1).
+            if let Some(c) = store.channel(&channel)?
+                && let Some(a) = store.agent(&store.session_agent(&run.session_id)?)?
+            {
+                self.join(&c, &a)?;
+            }
             store.add_post(&NewPost {
                 channel_id: &channel,
                 session_id: Some(&run.session_id),
@@ -403,8 +395,25 @@ impl Manager {
             if channel.kind != "topic" {
                 return Ok(None);
             }
-            let reply_to = match store.post_by_key(&format!("send:{}", run.id))? {
-                Some(p) => Some(p.id),
+            // Written by the thread's agent, under its own name.
+            let agent = store
+                .agent(&store.session_agent(&run.session_id)?)?
+                .unwrap_or_else(|| tern_store::AgentRow {
+                    id: author::AGENT.into(),
+                    name: author::AGENT.into(),
+                    ..tern_store::AgentRow::default()
+                });
+            // The post that woke it (agent profiles §5.2), or the user's
+            // send from before wakes were recorded, or the post its side
+            // thread branched from.
+            let sent = match store.run_woken_by(&run.id)? {
+                Some(id) => Some(id),
+                None => store
+                    .post_by_key(&format!("send:{}", run.id))?
+                    .map(|p| p.id),
+            };
+            let reply_to = match sent {
+                Some(id) => Some(id),
                 None => store
                     .session(&run.session_id)?
                     .and_then(|s| s.branched_from)
@@ -415,8 +424,8 @@ impl Manager {
                 session_id: Some(&run.session_id),
                 run_id: Some(&run.id),
                 author_kind: "agent",
-                author_id: author::AGENT,
-                author: author::AGENT,
+                author_id: &agent.id,
+                author: &agent.name,
                 kind: "answer",
                 text: &text,
                 reply_to,
@@ -597,6 +606,10 @@ impl Manager {
                 .channel(&moved.from)
                 .map_err(MoveError::internal)?
                 .ok_or_else(|| MoveError::internal("source channel gone"))?;
+            // The thread keeps its agent, which joins the channel.
+            if let Some(a) = store.agent(s.agent()).map_err(MoveError::internal)? {
+                self.join(target, &a).map_err(MoveError::internal)?;
+            }
             let mut text = format!("Moved here from {}: {title}", place(&from));
             if let Some(r) = reply {
                 let r: String = r.chars().take(200).collect();
