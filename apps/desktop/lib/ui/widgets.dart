@@ -109,14 +109,14 @@ class AgentAvatar extends StatelessWidget {
   static const glyphs = ['●', '■', '▲', '★', '♥', '♦', '♣', '♠', '☾', '✓'];
 
   static const _palette = [
-    Color(0xFFF59E3B),
-    Color(0xFF3FB6A8),
-    Color(0xFF7C6CF2),
-    Color(0xFFE0607E),
-    Color(0xFF4C8DF6),
-    Color(0xFFF06A3C),
-    Color(0xFF9B6AE8),
-    Color(0xFF5BAE5B),
+    Color(0xFFF6B92B),
+    Color(0xFF8DB56F),
+    Color(0xFFB89A78),
+    Color(0xFFE58C7A),
+    Color(0xFF7FA6A0),
+    Color(0xFFF07A2B),
+    Color(0xFFD93A2B),
+    Color(0xFF6F8F4E),
   ];
 
   static Color colorFor(String name, [String? color]) {
@@ -141,7 +141,7 @@ class AgentAvatar extends StatelessWidget {
         child: Text(
           g,
           style: TextStyle(
-            color: Colors.white,
+            color: const Color(0xFF2B2118),
             fontSize: size * 0.5,
             height: 1,
             fontWeight: FontWeight.w600,
@@ -153,7 +153,7 @@ class AgentAvatar extends StatelessWidget {
       width: size * 0.1,
       height: size * 0.26,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: const Color(0xFF2B2118),
         borderRadius: BorderRadius.circular(size),
       ),
     );

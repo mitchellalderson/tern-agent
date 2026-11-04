@@ -12,10 +12,12 @@ use tern_core::{Config, Secrets, TernHome};
 use tern_store::Store;
 use tern_tools::schedule::{ScheduleLimits, TriggerArgs};
 
-use crate::manifest::{Kind, ROUTINES, RoutineTemplate, RoutinesFile, kind};
+use crate::manifest::{
+    AGENT_FILE, AgentTemplate, Kind, PERSONA_FILE, ROUTINES, RoutineTemplate, RoutinesFile, kind,
+};
 use crate::plan::{Context, Plan, plan, scratch_host};
 use crate::source::{self, Bundle, Fetcher, Signed};
-use crate::state::{InstalledBundle, InstalledRoutine, Lock, TrustStore, now};
+use crate::state::{InstalledAgent, InstalledBundle, InstalledRoutine, Lock, TrustStore, now};
 use crate::{BundleError, Paths};
 
 pub struct Installer {
@@ -171,6 +173,7 @@ impl Installer {
         std::fs::create_dir_all(&drafts).map_err(io)?;
         let mut connectors = Vec::new();
         let mut skills: BTreeMap<String, Vec<(&str, &[u8])>> = BTreeMap::new();
+        let mut agent_slugs: Vec<String> = Vec::new();
         for (path, bytes) in &b.files {
             match kind(path)? {
                 Kind::Connector(c) => {
@@ -188,6 +191,11 @@ impl Installer {
                     connectors.push(c);
                 }
                 Kind::Skill(slug) => skills.entry(slug).or_default().push((path, bytes)),
+                Kind::Agent(slug) => {
+                    if !agent_slugs.contains(&slug) {
+                        agent_slugs.push(slug);
+                    }
+                }
                 Kind::Routines | Kind::Readme => {}
             }
         }
@@ -207,6 +215,39 @@ impl Installer {
                 std::fs::write(&target, bytes).map_err(io)?;
             }
             out.lines.push(format!("skill {slug}: installed"));
+        }
+        // Agents: made from the templates, never over one you already have.
+        let mut agents: Vec<InstalledAgent> = Vec::new();
+        for slug in &agent_slugs {
+            let made = previous
+                .as_ref()
+                .and_then(|p| p.agents.iter().find(|a| a.slug == *slug));
+            let existing = store
+                .agent(slug)
+                .map_err(|e| BundleError::Io(e.to_string()))?;
+            match (existing, made) {
+                (Some(a), Some(m)) if a.id == m.id => {
+                    out.lines.push(format!(
+                        "agent @{slug}: already installed; left as you have it"
+                    ));
+                    agents.push(m.clone());
+                }
+                (Some(_), _) => {
+                    return Err(BundleError::Refused(format!(
+                        "you already have an agent @{slug}; rename or archive it first"
+                    )));
+                }
+                (None, _) => {
+                    let id = self.make_agent(b, slug, store)?;
+                    out.lines.push(format!(
+                        "agent @{slug}: created, with its own DM; set its model and anything else in the app"
+                    ));
+                    agents.push(InstalledAgent {
+                        slug: slug.clone(),
+                        id,
+                    });
+                }
+            }
         }
         // Routines: unchanged ones are kept (on or off as the user left
         // them); new or changed ones are created paused.
@@ -235,7 +276,15 @@ impl Installer {
             {
                 let _ = store.delete_schedule(&old.id);
             }
-            let id = create_routine(store, t, &agent)?;
+            // Its own agent, else the bundle's only one, else the one it
+            // is installed for.
+            let owner = match (&t.agent, agents.as_slice()) {
+                (Some(s), _) => agents.iter().find(|a| a.slug == *s).map(|a| a.id.clone()),
+                (None, [only]) => Some(only.id.clone()),
+                _ => None,
+            }
+            .unwrap_or_else(|| agent.clone());
+            let id = create_routine(store, t, &owner)?;
             out.lines.push(format!(
                 "routine {}: created paused ({}); turn it on to start it",
                 t.name,
@@ -255,6 +304,16 @@ impl Installer {
                 let _ = std::fs::remove_dir_all(skills_dir.join(s));
                 out.lines
                     .push(format!("skill {s}: removed (no longer in the bundle)"));
+            }
+            for a in prev
+                .agents
+                .iter()
+                .filter(|a| !agents.iter().any(|n| n.slug == a.slug))
+            {
+                out.lines.push(format!(
+                    "agent @{}: no longer in the bundle; it stays, and is yours now",
+                    a.slug
+                ));
             }
             for r in prev
                 .routines
@@ -281,6 +340,7 @@ impl Installer {
             connectors,
             skills: skills.into_keys().collect(),
             routines,
+            agents,
             key_trusted: false,
         });
         lock.save(&self.paths.lock())?;
@@ -310,6 +370,29 @@ impl Installer {
             let _ = store.delete_schedule(&r.id);
             out.lines.push(format!("routine {}: removed", r.name));
         }
+        for a in &b.agents {
+            // Archived, never deleted: its history and persona stay. One
+            // the user deleted is already gone.
+            let live = store.agent(&a.id).ok().flatten().is_some();
+            let archived = live
+                && store
+                    .update_agent(
+                        &a.id,
+                        &tern_store::AgentChange {
+                            archived: Some(true),
+                            ..tern_store::AgentChange::default()
+                        },
+                    )
+                    .unwrap_or(false);
+            out.lines.push(if archived {
+                format!(
+                    "agent @{}: archived (its persona and history are kept)",
+                    a.slug
+                )
+            } else {
+                format!("agent @{}: already gone", a.slug)
+            });
+        }
         let _ = std::fs::remove_dir_all(self.paths.copy(name));
         lock.save(&self.paths.lock())?;
         tracing::info!(bundle = %name, "bundle removed");
@@ -322,6 +405,81 @@ impl Installer {
 
     pub fn installed(&self, name: &str) -> Result<Option<InstalledBundle>, BundleError> {
         Ok(Lock::load(&self.paths.lock())?.get(name).cloned())
+    }
+
+    /// Make the agent `slug` from the bundle's template: its persona file,
+    /// its row and its DM. Returns its id.
+    fn make_agent(&self, b: &Bundle, slug: &str, store: &Store) -> Result<String, BundleError> {
+        let text = |part: &str| {
+            b.file_text(&format!("agents/{slug}/{part}"))
+                .ok_or_else(|| {
+                    BundleError::Invalid(format!("agent {slug} needs agents/{slug}/{part}"))
+                })
+        };
+        let t = AgentTemplate::parse(slug, &text(AGENT_FILE)?)?;
+        let persona = text(PERSONA_FILE)?;
+        let invalid = |e: String| BundleError::Invalid(format!("agent @{slug}: {e}"));
+        tern_core::agents::check_slug(slug).map_err(invalid)?;
+        let mut id = tern_core::agents::id_for(slug);
+        match store
+            .agent_or_deleted(&id)
+            .map_err(|e| BundleError::Io(e.to_string()))?
+        {
+            None => {}
+            Some(old) if old.deleted_at.is_none() => {
+                return Err(invalid(format!("the id {id} is taken")));
+            }
+            // A deleted agent keeps its id (history names it): this one
+            // gets the next free id.
+            Some(_) => {
+                let mut n = 2;
+                while store
+                    .agent_or_deleted(&tern_core::agents::id_for(&format!("{slug}-{n}")))
+                    .map_err(|e| BundleError::Io(e.to_string()))?
+                    .is_some()
+                {
+                    n += 1;
+                }
+                id = tern_core::agents::id_for(&format!("{slug}-{n}"));
+            }
+        }
+        if store
+            .channel(&tern_store::dm_slug(slug))
+            .map_err(|e| BundleError::Io(e.to_string()))?
+            .is_some()
+        {
+            return Err(invalid(format!(
+                "the channel #{} is taken",
+                tern_store::dm_slug(slug)
+            )));
+        }
+        let persona_path = tern_core::agents::persona_path(&self.home, &id);
+        if let Some(dir) = persona_path.parent() {
+            std::fs::create_dir_all(dir).map_err(io)?;
+        }
+        let tmp = persona_path.with_extension("md.tmp");
+        std::fs::write(&tmp, format!("{}\n", persona.trim())).map_err(io)?;
+        std::fs::rename(&tmp, &persona_path).map_err(io)?;
+        let row = tern_store::AgentRow {
+            id: id.clone(),
+            slug: slug.to_owned(),
+            name: t.name.trim().to_owned(),
+            avatar: t
+                .avatar
+                .as_ref()
+                .map(|a| serde_json::json!({ "glyph": a.glyph, "color": a.color }).to_string()),
+            tools: Some(
+                serde_json::to_string(&t.scope()).map_err(|e| BundleError::Io(e.to_string()))?,
+            ),
+            memory: t.memory.clone().unwrap_or_else(|| "private".into()),
+            autonomy: t.autonomy.clone(),
+            ..tern_store::AgentRow::default()
+        };
+        if let Err(e) = store.create_agent(&row) {
+            let _ = std::fs::remove_file(&persona_path);
+            return Err(BundleError::Io(e.to_string()));
+        }
+        Ok(id)
     }
 
     /// Remove connector `c` as bundle `bundle` installed it: its draft, and

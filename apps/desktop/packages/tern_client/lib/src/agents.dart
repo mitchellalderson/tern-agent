@@ -187,6 +187,7 @@ class AgentTemplate {
     required this.name,
     required this.description,
     required this.persona,
+    this.category = '',
     this.tools,
     this.memory = 'private',
     this.routine,
@@ -198,6 +199,7 @@ class AgentTemplate {
     name: j['name'] as String? ?? '',
     description: j['description'] as String? ?? '',
     persona: j['persona'] as String? ?? '',
+    category: j['category'] as String? ?? '',
     tools: j['tools'] is Json ? ToolScope.fromJson(j['tools'] as Json) : null,
     memory: j['memory'] as String? ?? 'private',
     routine: switch (j['routine']) {
@@ -217,6 +219,9 @@ class AgentTemplate {
   final String name;
   final String description;
 
+  /// What the picker groups starters by ("Coding", "Everyday", ...).
+  final String category;
+
   /// May contain `{name}`, replaced with the agent's name.
   final String persona;
 
@@ -225,6 +230,9 @@ class AgentTemplate {
   final String memory;
   final ({String cron, String prompt})? routine;
   final AvatarSpec? avatar;
+
+  /// What a search over the starters matches: name, description, category.
+  String get searchText => '$name $description $category $id'.toLowerCase();
 }
 
 /// An agent's persona and, from GET, what tern adds under every persona.
@@ -351,6 +359,8 @@ class AgentImpact {
     this.memories = 0,
     this.runningRuns = 0,
     this.pendingOutbox = 0,
+    this.telegramBot,
+    this.bundles = const [],
     this.blockers = const [],
   });
 
@@ -365,6 +375,8 @@ class AgentImpact {
     memories: j['memories'] as int? ?? 0,
     runningRuns: j['running_runs'] as int? ?? 0,
     pendingOutbox: j['pending_outbox'] as int? ?? 0,
+    telegramBot: j['telegram_bot'] as String?,
+    bundles: [for (final b in j['bundles'] as List<dynamic>? ?? []) b as String],
     blockers: [
       for (final b in j['blockers'] as List<dynamic>? ?? []) b as String,
     ],
@@ -388,6 +400,13 @@ class AgentImpact {
   final int memories;
   final int runningRuns;
   final int pendingOutbox;
+
+  /// The secret naming its own Telegram bot's token: the bot stops, the
+  /// secret stays.
+  final String? telegramBot;
+
+  /// Bundles that installed it and stop tracking it.
+  final List<String> bundles;
 
   /// Why it can't be deleted now; empty when it can.
   final List<String> blockers;

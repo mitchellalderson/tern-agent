@@ -669,6 +669,7 @@ fn routine(
     Ok((
         RoutineTemplate {
             name,
+            agent: None,
             prompt,
             trigger,
             initiative: delivers.then(|| "interrupt".to_owned()),

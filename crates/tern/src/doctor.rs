@@ -269,6 +269,23 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
         }
         _ => r.check(Status::Info, "telegram disabled", None),
     }
+    let agents_db = home
+        .db_path()
+        .exists()
+        .then(|| Store::open(&home.db_path()).ok())
+        .flatten();
+    if let Some(store) = &agents_db {
+        for a in store.agents(false).unwrap_or_default() {
+            if let Some(bot) = tern_core::agents::AgentTelegram::parse(a.telegram.as_deref()) {
+                check_secret(
+                    &mut r,
+                    &secrets,
+                    &format!("telegram bot token for @{}", a.slug),
+                    &bot.bot_token_secret,
+                );
+            }
+        }
+    }
     for c in crate::gateway_cmd::check_connectors(home, &config) {
         if !c.enabled {
             r.check(Status::Info, format!("{}: disabled", c.name), None);

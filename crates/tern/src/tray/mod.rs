@@ -1,4 +1,4 @@
-//! `tern tray`: the menu-bar icon (personal-agent-tooling-spec §11, T8b).
+//! `tern tray`: the menu-bar icon (personal-agent-tooling-spec §11, T8b, T8c).
 //!
 //! A client of the daemon like the TUI and the app, in its own process:
 //! it reads `/v1/status`, sleeps on `/v1/events` and only asks again when
@@ -7,15 +7,22 @@
 //! (and the escalation) `tern stop` does. It supervises nothing.
 //!
 //! - `model`: what the icon and menu show for a state; pure, tested.
-//! - `worker`: the daemon side, on a background thread.
+//! - `worker`: the daemon side, on a background thread (macOS) or task
+//!   (Linux).
 //! - `macos`: AppKit, on the main thread (`tray-icon` + `muda`).
+//! - `linux`: a StatusNotifierItem over D-Bus (`ksni`).
 
+#[cfg(all(feature = "tray", target_os = "linux"))]
+mod linux;
 #[cfg(all(feature = "tray", target_os = "macos"))]
 mod macos;
-// Pure and tested everywhere; only the macOS tray uses it.
-#[cfg_attr(not(all(feature = "tray", target_os = "macos")), allow(dead_code))]
+// Pure and tested everywhere; only the real trays use it.
+#[cfg_attr(
+    not(all(feature = "tray", any(target_os = "macos", target_os = "linux"))),
+    allow(dead_code)
+)]
 pub mod model;
-#[cfg(all(feature = "tray", target_os = "macos"))]
+#[cfg(all(feature = "tray", any(target_os = "macos", target_os = "linux")))]
 mod worker;
 
 use std::ffi::OsString;
@@ -56,12 +63,37 @@ pub fn run(home: &TernHome) -> anyhow::Result<ExitCode> {
     macos::run(home)
 }
 
-#[cfg(not(all(feature = "tray", target_os = "macos")))]
+#[cfg(all(feature = "tray", target_os = "linux"))]
+pub fn run(home: &TernHome) -> anyhow::Result<ExitCode> {
+    linux::run(home)
+}
+
+#[cfg(not(all(feature = "tray", any(target_os = "macos", target_os = "linux"))))]
 pub fn run(_home: &TernHome) -> anyhow::Result<ExitCode> {
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
         anyhow::bail!("this tern was built without the `tray` feature");
     }
-    anyhow::bail!("tern tray runs on macOS for now (Linux is planned)");
+    anyhow::bail!("tern tray runs on macOS and Linux");
+}
+
+/// Whether a graphical session is available for the tray: an X11 or
+/// Wayland display and a D-Bus session bus. Linux only; false elsewhere.
+pub fn desktop_session() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let bus = env_set("DBUS_SESSION_BUS_ADDRESS")
+        || std::env::var_os("XDG_RUNTIME_DIR")
+            .is_some_and(|d| std::path::Path::new(&d).join("bus").exists());
+    session_ok(env_set("DISPLAY"), env_set("WAYLAND_DISPLAY"), bus)
+}
+
+fn env_set(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| !v.is_empty())
+}
+
+fn session_ok(display: bool, wayland: bool, bus: bool) -> bool {
+    (display || wayland) && bus
 }
 
 #[cfg(test)]
@@ -70,6 +102,14 @@ mod tests {
 
     fn args(a: &[&str]) -> Vec<OsString> {
         a.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn a_desktop_session_needs_a_display_and_a_bus() {
+        assert!(session_ok(true, false, true));
+        assert!(session_ok(false, true, true));
+        assert!(!session_ok(false, false, true));
+        assert!(!session_ok(true, true, false));
     }
 
     #[test]

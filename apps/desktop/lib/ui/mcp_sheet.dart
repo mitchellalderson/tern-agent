@@ -1160,6 +1160,6 @@ InputDecoration _box(
     contentPadding: const EdgeInsets.all(12),
     border: border(c.hairline),
     enabledBorder: border(c.hairline),
-    focusedBorder: border(c.accent),
+    focusedBorder: border(c.ink),
   );
 }

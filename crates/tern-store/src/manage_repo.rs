@@ -123,14 +123,14 @@ impl Store {
         let now = now_ms();
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
-        let row: Option<(String, String)> = tx
+        let row: Option<(String, String, Option<String>)> = tx
             .query_row(
-                "SELECT name, slug FROM agents WHERE id = ?1 AND deleted_at IS NULL",
+                "SELECT name, slug, telegram FROM agents WHERE id = ?1 AND deleted_at IS NULL",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        let Some((name, slug)) = row else {
+        let Some((name, slug, telegram)) = row else {
             return Ok(false);
         };
         let led: i64 = tx.query_row(
@@ -211,7 +211,7 @@ impl Store {
         )?;
         tx.execute(
             "UPDATE agents SET deleted_at = ?2, archived_at = COALESCE(archived_at, ?2),
-               slug = '~' || id, updated_at = ?2 WHERE id = ?1",
+               slug = '~' || id, telegram = NULL, updated_at = ?2 WHERE id = ?1",
             params![id, now],
         )?;
         let e = LedgerEntry::new(
@@ -226,6 +226,8 @@ impl Store {
                 RoutineFate::Delete => "deleted".to_owned(),
             },
             "memories_deleted": memories,
+            // The bot's token secret is the user's: only the reference goes.
+            "telegram_reference_dropped": telegram,
         }));
         crate::ledger_repo::append_on(&tx, &e)?;
         tx.commit()?;

@@ -12,7 +12,8 @@ workspace = true
 [features]
 # `tern tray`, the menu-bar icon, and SMAppService login items
 # (personal-agent-tooling-spec §11.3). Its dependencies are macOS-only, so
-# Linux and musl server builds are unchanged with it on.
+# Linux gets `ksni` (StatusNotifierItem, pure Rust) and nothing else; musl
+# server builds drop the feature.
 default = ["tray", "python"]
 tray = [
     "dep:tray-icon",
@@ -21,6 +22,7 @@ tray = [
     "dep:objc2-foundation",
     "dep:dispatch2",
     "dep:smappservice-rs",
+    "dep:ksni",
 ]
 # The `python` tool on Monty (docs/python-tool-spec.md).
 python = ["dep:tern-python", "dep:monty-alloc"]
@@ -80,6 +82,9 @@ objc2-app-kit = { workspace = true, optional = true }
 objc2-foundation = { workspace = true, optional = true }
 smappservice-rs = { workspace = true, optional = true }
 tray-icon = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { workspace = true, optional = true }
 
 [dev-dependencies]
 rusqlite.workspace = true

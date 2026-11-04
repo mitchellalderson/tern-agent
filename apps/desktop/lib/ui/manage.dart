@@ -169,6 +169,18 @@ class _DeleteAgentDialogState extends State<DeleteAgentDialog> {
                         'It leads ${i.ledChannels.map((x) => '#${x.label}').join(', ')}: '
                         'the lead moves to ${_handOver && i.routines.isNotEmpty ? _nameOf(_to) : 'tern'}.',
                       ),
+                    if (i.telegramBot case final secret?)
+                      _line(
+                        context,
+                        'Its own Telegram bot stops. The token secret '
+                        '$secret stays in your secrets.',
+                      ),
+                    if (i.bundles.isNotEmpty)
+                      _line(
+                        context,
+                        'Bundle ${i.bundles.join(', ')} no longer tracks it; '
+                        'installing again makes a new one.',
+                      ),
                     if (i.routines.isNotEmpty) ...[
                       const SizedBox(height: 8),
                       Text(

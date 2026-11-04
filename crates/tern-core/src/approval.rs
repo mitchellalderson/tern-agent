@@ -30,6 +30,7 @@ pub enum Check {
 #[serde(rename_all = "snake_case")]
 pub enum Autonomy {
     /// `read` effects only; anything else is refused without asking.
+    #[serde(rename = "readonly", alias = "read_only")]
     ReadOnly,
     /// The §5.1 defaults.
     #[default]

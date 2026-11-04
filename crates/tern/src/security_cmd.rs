@@ -137,7 +137,7 @@ pub fn audit(home: &TernHome, config: &Config, store: Option<&Store>) -> Audit {
     autonomy(&mut a, config, store);
     sandbox(&mut a, home, config);
     egress(&mut a, config, store);
-    gateways(&mut a, home, config);
+    gateways(&mut a, home, config, store);
     connectors(&mut a, home);
     bundles(&mut a, home);
     if let Some(store) = store {
@@ -369,7 +369,7 @@ fn egress(a: &mut Audit, config: &Config, store: Option<&Store>) {
     }
 }
 
-fn gateways(a: &mut Audit, home: &TernHome, config: &Config) {
+fn gateways(a: &mut Audit, home: &TernHome, config: &Config, store: Option<&Store>) {
     if config.gateway.telegram.as_ref().is_some_and(|t| t.enabled) {
         a.add(
             Severity::Info,
@@ -377,6 +377,22 @@ fn gateways(a: &mut Audit, home: &TernHome, config: &Config) {
             "telegram: only paired chats reach the agent",
             None,
         );
+    }
+    if let Some(store) = store {
+        for ag in store.agents(false).unwrap_or_default() {
+            if ag.telegram.is_some() {
+                a.add(
+                    Severity::Info,
+                    "gateways",
+                    format!(
+                        "telegram bot for @{}: only paired chats reach it (pairing is shared with the main bot)",
+                        ag.slug
+                    ),
+                    None,
+                );
+                a.about(&ag.id);
+            }
+        }
     }
     let checks = crate::gateway_cmd::check_connectors(home, config);
     for (name, g) in &config.gateway.connectors {

@@ -246,7 +246,10 @@ fn oauth2_schemes_feed_the_oauth_first_flow() {
     );
     // No `auth` line: the account's token is sent by tern as a bearer.
     assert!(!g.source.contains("    auth ="), "{}", g.source);
-    assert_eq!(vm.spec.capabilities.auth_secrets(), ["oauth:acmewidgets_example"]);
+    assert_eq!(
+        vm.spec.capabilities.auth_secrets(),
+        ["oauth:acmewidgets_example"]
+    );
     let plan = g.oauth_plan.expect("a plan for auth_propose");
     assert_eq!(
         plan["authorize_url"],

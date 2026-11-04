@@ -352,3 +352,40 @@ fn the_cli_renames_and_deletes_agents_and_channels_with_confirmation() {
             .contains("no agent")
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_an_agent_with_its_own_bot_names_the_bot_and_keeps_the_secret() {
+    let env = Env::with_config(&json!({ "turns": [] }), "");
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+
+    post(&s, "/v1/agents", json!({ "name": "Helper" })).await;
+    let (code, _) = send(
+        &s,
+        reqwest::Method::PUT,
+        "/v1/secrets/helper_bot_token",
+        json!({ "value": "123:abc" }),
+    )
+    .await;
+    assert_eq!(code, 200);
+    let (code, body) = patch(
+        &s,
+        "/v1/agents/helper",
+        json!({ "telegram": { "bot_token_secret": "helper_bot_token" } }),
+    )
+    .await;
+    assert_eq!(code, 200, "{body}");
+
+    let (_, imp) = get(&s, "/v1/agents/helper/impact").await;
+    assert_eq!(imp["telegram_bot"], "helper_bot_token");
+    let (code, _) = delete(&s, "/v1/agents/helper?confirm=true").await;
+    assert_eq!(code, 200);
+    // The reference is gone, the user's secret is not.
+    let bot: Option<String> = env.query("SELECT telegram FROM agents WHERE id = 'tern:helper'");
+    assert_eq!(bot, None);
+    let (_, secrets) = get(&s, "/v1/secrets").await;
+    assert!(
+        secrets.to_string().contains("helper_bot_token"),
+        "{secrets}"
+    );
+}

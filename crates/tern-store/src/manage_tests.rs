@@ -202,3 +202,35 @@ fn deleting_a_channel_removes_its_posts_but_keeps_conversations() {
     );
     assert!(!s.delete_channel(&c.id).unwrap(), "already gone");
 }
+
+#[test]
+fn deleting_an_agent_drops_its_bot_reference_only() {
+    let s = Store::open_in_memory().unwrap();
+    s.create_agent(&AgentRow {
+        id: "tern:bot".into(),
+        slug: "bot".into(),
+        name: "Bot".into(),
+        memory: "private".into(),
+        telegram: Some(r#"{"bot_token_secret":"my_bot_token"}"#.into()),
+        ..AgentRow::default()
+    })
+    .unwrap();
+    assert!(s.delete_agent("tern:bot", &RoutineFate::Delete).unwrap());
+    // The tombstone has no bot, so no poller is built for it, and the
+    // ledger remembers which secret it named.
+    let t = s.agent_or_deleted("tern:bot").unwrap().unwrap();
+    assert_eq!(t.telegram, None);
+    let rows = s.ledger(&crate::LedgerFilter::default()).unwrap();
+    let e = rows
+        .iter()
+        .find(|e| e.entry.kind == "agent.delete")
+        .unwrap();
+    assert!(
+        e.entry
+            .detail
+            .as_ref()
+            .unwrap()
+            .to_string()
+            .contains("my_bot_token")
+    );
+}

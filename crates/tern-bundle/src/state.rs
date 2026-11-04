@@ -39,9 +39,20 @@ pub struct InstalledBundle {
     pub skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routines: Vec<InstalledRoutine>,
+    /// Agents it made (templates become real agents at install).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<InstalledAgent>,
     /// Whether `key` is in the trust store: filled in when read, not stored.
     #[serde(skip)]
     pub key_trusted: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledAgent {
+    /// Its slug in the bundle (and when it was made).
+    pub slug: String,
+    /// The agent id (`tern:<slug>`) it became.
+    pub id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

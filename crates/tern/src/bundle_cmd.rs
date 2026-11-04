@@ -72,6 +72,7 @@ pub fn run(home: &TernHome, command: Option<BundleCommand>) -> anyhow::Result<Ex
             connectors,
             skills,
             routines,
+            agents,
             all,
             agent,
             output,
@@ -89,6 +90,7 @@ pub fn run(home: &TernHome, command: Option<BundleCommand>) -> anyhow::Result<Ex
                 connectors,
                 skills,
                 routines,
+                agents,
                 all,
                 agent,
             };

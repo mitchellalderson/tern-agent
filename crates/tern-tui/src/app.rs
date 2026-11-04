@@ -214,6 +214,8 @@ Commands:
   /outbox           writes waiting for your approval: approve, edit, reject
   /mcp              add, test and manage MCP servers (/mcp add, /mcp paste,
                     /mcp restart|enable|disable <name>)
+  /skills [offers|save N|dismiss N|show|publish|discard NAME]
+                    skills, drafts, and runs offered as skills
   /connections      accounts of connectors and MCP servers (tern connections
                     adds, removes and reconnects them)
   /usage            token usage for this session
@@ -836,6 +838,10 @@ impl App {
                 }
                 self.notice(text);
             }
+            "skills" => match self.backend.skills(arg) {
+                Ok(text) => self.notice(text),
+                Err(e) => self.error(e),
+            },
             "connections" => match self.backend.connections() {
                 Ok(lines) if lines.is_empty() => self.notice(
                     "No accounts yet: every connector and MCP server uses its default one. \

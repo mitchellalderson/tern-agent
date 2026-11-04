@@ -45,13 +45,15 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 
 **Memory and models**
 - **Memory flush before compaction**, with capped `user.md` and `memory.md` (T5a).
+- **Skill capture** (T5b): after a long, clean run tern offers once to save it as a skill; accepting writes a draft you
+  review and publish (`tern skills`).
 - **Provider fallback chains**: if one model fails, the next takes over (T6a).
 - **A browser through an existing MCP server**, documented as a recipe (T7a).
 
 **Start, stop and tray**
 - **Start and stop without a terminal**: `tern service install`, `tern start` / `stop`, "Quit tern completely" (T8a).
 - **Menu-bar icon on macOS** (`tern tray`): status, Open, Start/Quit, Start at login through System Settings › Login
-  Items (T8b). The desktop app's first launch asks where tern runs: this Mac, or a tern server you pair with.
+  Items (T8b). **Tray icon on Linux** (StatusNotifierItem via `ksni`, XDG autostart; T8c). The desktop app's first launch asks where tern runs: this Mac, or a tern server you pair with.
 
 **Channels and agents**
 - **Channels** ([channels-design.md](docs/channels-design.md) C0–C4): Home as one stream, topic channels in the desktop
@@ -91,9 +93,8 @@ Being built on other branches right now; not done until merged.
 
 | Stage | What | Spec |
 |---|---|---|
-| 3. Organize | Skill capture (T5b). | tooling §8 |
-| 5. Ecosystem | Recipes (morning brief, follow-ups, meeting prep) and goals (T6c). Native browser behind a feature flag (T7b). Tray on Linux (T8c). | tooling §6.5, §9, §10 |
-| Agent profiles | The rest of AP3: "Let agents decide" routing, a Telegram bot per agent, a per-agent autonomy ceiling, templates as signed bundles. | [agent-profiles-design.md](docs/agent-profiles-design.md) |
+| 5. Ecosystem | Recipes (morning brief, follow-ups, meeting prep) and goals (T6c). Native browser behind a feature flag (T7b). Tray on Linux (T8c, done). | tooling §6.5, §9, §10 |
+| Agent profiles | AP3 is built (API, CLI, daemon): "Let agents decide" routing, a Telegram bot per agent, a per-agent autonomy ceiling, templates as signed bundles. Left: the desktop controls for them. | [agent-profiles-design.md](docs/agent-profiles-design.md) |
 | 6. Multiplayer | Group rooms with guests (M0), then several members on one core (M1), then hosted workspaces (M2). | tooling §15 |
 
 **Running it elsewhere** ([deployment-spec.md](docs/deployment-spec.md) §12): event replay and an async store (D0),

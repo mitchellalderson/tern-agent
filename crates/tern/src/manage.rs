@@ -83,6 +83,14 @@ pub struct AgentImpact {
     pub memories: usize,
     pub running_runs: usize,
     pub pending_outbox: usize,
+    /// The secret naming its own Telegram bot's token, if it has a bot:
+    /// the bot stops and the reference goes, the secret stays yours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telegram_bot: Option<String>,
+    /// Bundles that installed it: they stop tracking it, and installing
+    /// the bundle again makes a fresh one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bundles: Vec<String>,
     /// Reasons it can't be deleted at all right now.
     pub blockers: Vec<String>,
 }
@@ -121,6 +129,22 @@ impl AgentImpact {
         }
         if !self.member_channels.is_empty() {
             lines.push(format!("- it leaves {}", tags(&self.member_channels)));
+        }
+        if let Some(secret) = &self.telegram_bot {
+            lines.push(format!(
+                "- its own Telegram bot stops; the token secret {secret} stays in secrets.toml \
+                 (`tern secrets` removes it)"
+            ));
+        }
+        if !self.bundles.is_empty() {
+            lines.push(format!(
+                "- {} stop(s) tracking it; installing again makes a new one",
+                self.bundles
+                    .iter()
+                    .map(|b| format!("bundle {b}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         lines.push("its persona file is kept under ~/.tern/agents/.deleted/".into());
         for b in &self.blockers {
@@ -277,6 +301,13 @@ impl Runtime {
             memories: u.memories,
             running_runs: u.running_runs,
             pending_outbox: u.pending_outbox,
+            telegram_bot: tern_core::agents::AgentTelegram::parse(a.telegram.as_deref())
+                .map(|t| t.bot_token_secret),
+            bundles: tern_bundle::installed(&self.home)
+                .into_iter()
+                .filter(|b| b.agents.iter().any(|x| x.id == a.id))
+                .map(|b| b.name)
+                .collect(),
             blockers,
         })
     }
@@ -339,6 +370,12 @@ impl Runtime {
             return refuse("no such agent");
         }
         self.keep_agent_files(a);
+        if let Err(e) = tern_bundle::forget_agent(&self.home, &a.id) {
+            tracing::warn!(
+                "dropping deleted agent {} from the bundle lockfile: {e}",
+                a.id
+            );
+        }
         self.refresh_agent_chains();
         Ok(impact)
     }

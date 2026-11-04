@@ -122,6 +122,13 @@ async fn install(State(m): State<Shared>, Json(b): Json<InstallBody>) -> ApiResu
             },
         )
         .map_err(bad)?;
+    // A bundle can bring agents (and their DMs).
+    let _ =
+        m.rt.changes
+            .send(tern_core::models::Change::AgentsChanged {});
+    let _ =
+        m.rt.changes
+            .send(tern_core::models::Change::ChannelsChanged {});
     Ok(Json(out))
 }
 
@@ -130,8 +137,12 @@ async fn remove(State(m): State<Shared>, UrlPath(name): UrlPath<String>) -> ApiR
     if installer.installed(&name).map_err(internal)?.is_none() {
         return Err(not_found(&format!("bundle {name}")));
     }
-    installer
-        .remove(&name, &m.rt.store)
-        .map(Json)
-        .map_err(internal)
+    let out = installer.remove(&name, &m.rt.store).map_err(internal)?;
+    let _ =
+        m.rt.changes
+            .send(tern_core::models::Change::AgentsChanged {});
+    let _ =
+        m.rt.changes
+            .send(tern_core::models::Change::ChannelsChanged {});
+    Ok(Json(out))
 }

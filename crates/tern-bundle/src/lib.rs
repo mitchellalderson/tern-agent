@@ -104,6 +104,28 @@ pub fn installed(home: &TernHome) -> Vec<InstalledBundle> {
         .collect()
 }
 
+/// Drop agent `id` from every installed bundle's record, because the user
+/// deleted it: it is theirs to delete, and a dangling entry would make
+/// `remove` claim to archive an agent that is gone. A later `install` of
+/// the same bundle then makes the agent again. Returns the bundles that
+/// listed it.
+pub fn forget_agent(home: &TernHome, id: &str) -> Result<Vec<String>, BundleError> {
+    let paths = Paths::new(home);
+    let mut lock = Lock::load(&paths.lock())?;
+    let mut touched = Vec::new();
+    for b in &mut lock.bundles {
+        let before = b.agents.len();
+        b.agents.retain(|a| a.id != id);
+        if b.agents.len() != before {
+            touched.push(b.name.clone());
+        }
+    }
+    if !touched.is_empty() {
+        lock.save(&paths.lock())?;
+    }
+    Ok(touched)
+}
+
 /// Installed bundles with no signature: what `tern security audit` lists.
 pub fn unsigned(home: &TernHome) -> Vec<InstalledBundle> {
     installed(home)

@@ -13,6 +13,7 @@ mod members_repo;
 mod migrations;
 mod outbox_repo;
 mod repo;
+mod skill_offers_repo;
 mod subagents_repo;
 mod suggestions_repo;
 mod tasks_repo;
@@ -30,6 +31,7 @@ pub use ledger_repo::{
 pub use manage_repo::{AgentUse, ChannelUse, RoutineFate};
 pub use members_repo::{ChannelWakes, Member, mention_slugs};
 pub use outbox_repo::{NewOutbox, OutboxRow};
+pub use skill_offers_repo::SkillOfferRow;
 pub use subagents_repo::{MailRow, NewMail};
 pub use suggestions_repo::{NewSuggestion, SuggestionRow};
 pub use webhooks_repo::WebhookRow;

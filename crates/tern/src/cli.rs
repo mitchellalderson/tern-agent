@@ -105,6 +105,12 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<LedgerCommand>,
     },
+    /// Skills, and turning a good run into one: after a long, clean run tern
+    /// offers once; `save` writes a draft you review and `publish`.
+    Skills {
+        #[command(subcommand)]
+        command: Option<SkillsCommand>,
+    },
     /// Writes waiting for your approval (deferred because nobody answered).
     Outbox {
         #[command(subcommand)]
@@ -401,6 +407,8 @@ pub enum AgentsCommand {
         #[arg(long)]
         all: bool,
     },
+    /// List the starter agents `new --template` takes, by category.
+    Templates,
     /// Create an agent and its DM.
     New {
         /// Display name, e.g. "Research".
@@ -408,12 +416,29 @@ pub enum AgentsCommand {
         /// Its @name (default: from the name).
         #[arg(long)]
         slug: Option<String>,
-        /// Start from a template: research, inbox, marketing or blank.
+        /// Start from a starter (`tern agents templates` lists them).
         #[arg(long)]
         template: Option<String>,
         /// `private` (default) or `shared`.
         #[arg(long)]
         memory: Option<String>,
+        /// The most autonomy its runs may have: readonly, supervised,
+        /// autonomous or yolo (the lower of this and `autonomy` applies).
+        #[arg(long)]
+        autonomy: Option<String>,
+    },
+    /// Give an agent a Telegram bot of its own, or take it away. The token
+    /// is a secret (`tern secrets set <name>`); restart the daemon to apply.
+    Telegram {
+        agent: String,
+        /// The secret holding the BotFather token, or `none` to remove it.
+        secret: String,
+    },
+    /// Set or clear an agent's autonomy ceiling.
+    Autonomy {
+        agent: String,
+        /// readonly, supervised, autonomous, yolo, or `none` to remove it.
+        level: String,
     },
     /// Open an agent's persona in $EDITOR.
     Edit { agent: String },
@@ -564,6 +589,32 @@ pub struct LedgerArgs {
     pub limit: u32,
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SkillsCommand {
+    /// Skills and drafts.
+    List,
+    /// A skill's SKILL.md.
+    Show { name: String },
+    /// Runs offered as skills and waiting for your answer (`--all`: decided too).
+    Offers {
+        #[arg(long)]
+        all: bool,
+    },
+    /// Accept offer ID: one model call writes a draft skill from that run.
+    Save {
+        id: i64,
+        /// Name the skill yourself instead of using the model's.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Decline offer ID; that run is not offered again.
+    Dismiss { id: i64 },
+    /// Make a draft a skill: the next run lists it.
+    Publish { name: String },
+    /// Delete a draft.
+    Discard { name: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -772,6 +823,9 @@ pub enum BundleCommand {
         /// A routine id (sch_…) to include as a template.
         #[arg(long = "routine")]
         routines: Vec<String>,
+        /// An agent (its @name) to include as a template, with its routines.
+        #[arg(long = "profile")]
+        agents: Vec<String>,
         /// Everything of yours: active connectors, skills, and the routines
         /// of --agent, except what came from installed bundles.
         #[arg(long)]

@@ -59,6 +59,17 @@ class _SidebarState extends State<Sidebar> {
               ),
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('tern', style: wordmarkStyle(22, context.colors.text)),
+                const SizedBox(height: 6),
+                const Stripes(thickness: 3, width: 64, slant: true),
+              ],
+            ),
+          ),
           if (!store.hasChannels)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
@@ -157,7 +168,7 @@ class _HomeRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Material(
         color: selected ? c.selection : Colors.transparent,
-        borderRadius: BorderRadius.circular(8),
+        shape: rowShape(context, selected: selected),
         child: GestureDetector(
           // Home is the default agent's DM: right-click edits it.
           onSecondaryTapUp: tern == null
@@ -217,9 +228,9 @@ class _HomeRow extends StatelessWidget {
                         ),
                         child: Text(
                           '$waiting',
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 11,
-                            color: Colors.white,
+                            color: c.onAccent,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -320,7 +331,7 @@ class _AgentListRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
       child: Material(
         color: selected ? c.selection : Colors.transparent,
-        borderRadius: BorderRadius.circular(8),
+        shape: rowShape(context, selected: selected),
         child: GestureDetector(
           onSecondaryTapUp: (d) async {
             final pick = await _contextMenu(context, d.globalPosition, [
@@ -533,7 +544,7 @@ class _SearchField extends StatelessWidget {
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(color: c.accent, width: 1.2),
+            borderSide: BorderSide(color: c.ink, width: 1.5),
           ),
         ),
       ),
@@ -576,7 +587,7 @@ class _AgentRow extends StatelessWidget {
                     child: Text(
                       'Set up a model…',
                       style: Theme.of(context).textTheme.bodySmall
-                          ?.copyWith(color: context.colors.accent),
+                          ?.copyWith(color: context.colors.link),
                     ),
                   ),
               ],
@@ -719,7 +730,7 @@ class _LibraryRow extends StatelessWidget {
     final c = context.colors;
     return Material(
       color: selected ? c.selection : Colors.transparent,
-      borderRadius: BorderRadius.circular(8),
+      shape: rowShape(context, selected: selected),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
         onTap: onTap,
@@ -779,7 +790,7 @@ class _SessionRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 1),
       child: Material(
         color: selected ? c.selection : Colors.transparent,
-        borderRadius: BorderRadius.circular(8),
+        shape: rowShape(context, selected: selected),
         child: InkWell(
           borderRadius: BorderRadius.circular(8),
           onTap: onTap,
@@ -849,9 +860,9 @@ class WaitingBadge extends StatelessWidget {
       ),
       child: Text(
         '$count',
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 11,
-          color: Colors.white,
+          color: context.colors.onAccent,
           fontWeight: FontWeight.w600,
         ),
       ),

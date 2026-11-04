@@ -239,7 +239,11 @@ class _ProvidersDialogState extends State<ProvidersDialog> {
                 Text(text, style: TextStyle(fontSize: 12.5, color: color)),
               ],
               const SizedBox(height: 12),
-              Row(
+              Wrap(
+                alignment: setup == null
+                    ? WrapAlignment.spaceBetween
+                    : WrapAlignment.end,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   if (setup == null)
                     TextButton.icon(
@@ -255,22 +259,26 @@ class _ProvidersDialogState extends State<ProvidersDialog> {
                         style: TextStyle(color: c.muted),
                       ),
                     ),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () {
-                      // The navigator outlives this dialog's context.
-                      final nav = Navigator.of(context);
-                      nav.pop();
-                      showSecretsDialog(nav.context, widget.store);
-                    },
-                    child: Text(
-                      'Secrets (advanced)…',
-                      style: TextStyle(color: c.muted),
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Done'),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextButton(
+                        onPressed: () {
+                          // The navigator outlives this dialog's context.
+                          final nav = Navigator.of(context);
+                          nav.pop();
+                          showSecretsDialog(nav.context, widget.store);
+                        },
+                        child: Text(
+                          'Secrets (advanced)…',
+                          style: TextStyle(color: c.muted),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Done'),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -1070,6 +1078,6 @@ InputDecoration _box(
     contentPadding: const EdgeInsets.all(12),
     border: border(c.hairline),
     enabledBorder: border(c.hairline),
-    focusedBorder: border(c.accent),
+    focusedBorder: border(c.ink),
   );
 }

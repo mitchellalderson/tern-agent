@@ -47,6 +47,13 @@ const HELP: &str = "Send me a message and I'll work on it.\n\
 /status — what I'm doing\n\
 /outbox — actions waiting for your approval";
 
+const AGENT_BOT_HELP: &str = "Send me a message and I'll work on it.\n\
+/new — new topic (I keep a summary of this one)\n\
+/model [provider:model] — show or change the model\n\
+/stop — stop the current task\n\
+/status — what I'm doing\n\
+/outbox — actions waiting for your approval";
+
 const UNPAIRED: &str = "This bot is private. On the computer running tern, run `tern gateway pair` and send me the code it prints.";
 
 #[derive(Default)]
@@ -65,6 +72,12 @@ struct Stream {
 type Card = (i64, i64, String);
 
 pub struct TelegramGateway {
+    /// The gateway's name and the `source` of its chats' sessions:
+    /// `telegram`, or `telegram-<slug>` for an agent's own bot.
+    source: String,
+    /// The agent this bot is the chat of (agent profiles §6.4, AP3); the
+    /// main bot has none and switches with `/agent`.
+    bound_agent: Option<String>,
     api: Api,
     store: Store,
     poll_timeout_secs: u64,
@@ -80,6 +93,35 @@ pub struct TelegramGateway {
 impl TelegramGateway {
     pub fn new(api_url: &str, token: &str, store: Store) -> Result<Arc<Self>, reqwest::Error> {
         Ok(Arc::new(Self {
+            source: SOURCE.to_owned(),
+            bound_agent: None,
+            api: Api::new(api_url, token)?,
+            store,
+            poll_timeout_secs: 25,
+            streams: Mutex::new(HashMap::new()),
+            approvals: Mutex::new(HashMap::new()),
+            outbox_cards: Mutex::new(HashMap::new()),
+        }))
+    }
+
+    /// A bot that is `agent`'s own chat (agent profiles §6.4, AP3): every
+    /// chat on it talks to that agent, and nothing switches it. Its
+    /// sessions are `source` `telegram-<slug>`; pairing is the main bot's,
+    /// per Telegram user, so pairing once trusts you on every bot.
+    pub fn for_agent(
+        slug: &str,
+        agent_id: &str,
+        api_url: &str,
+        token: &str,
+        store: Store,
+    ) -> Result<Arc<Self>, reqwest::Error> {
+        let source = format!("{SOURCE}-{slug}");
+        if let Err(e) = crate::chat_agents::bind_bot(&store, &source, agent_id) {
+            tracing::warn!(error = %e, "could not record the bot's agent");
+        }
+        Ok(Arc::new(Self {
+            source,
+            bound_agent: Some(agent_id.to_owned()),
             api: Api::new(api_url, token)?,
             store,
             poll_timeout_secs: 25,
@@ -135,7 +177,10 @@ impl TelegramGateway {
     /// What a reply in `chat_ref` starts with: the agent's name, unless
     /// it's the default agent.
     fn prefix(&self, chat_ref: &str) -> String {
-        let id = crate::chat_agents::get(&self.store, SOURCE, chat_ref);
+        if self.bound_agent.is_some() {
+            return String::new();
+        }
+        let id = crate::chat_agents::get(&self.store, &self.source, chat_ref);
         match self.store.agent(&id) {
             Ok(Some(a)) if !a.is_default() => format!("{} · ", a.name),
             _ => String::new(),
@@ -144,7 +189,7 @@ impl TelegramGateway {
 
     /// `/agents`.
     fn agents_text(&self, chat_ref: &str) -> String {
-        let current = crate::chat_agents::get(&self.store, SOURCE, chat_ref);
+        let current = crate::chat_agents::get(&self.store, &self.source, chat_ref);
         let agents = self.store.agents(false).unwrap_or_default();
         if agents.len() < 2 {
             return "You have one agent, tern. Create more in the tern app or with `tern agents new`."
@@ -189,7 +234,7 @@ impl TelegramGateway {
                 Ok(topic) => {
                     let topic_ref = format!("{chat}/{topic}");
                     if let Err(e) =
-                        crate::chat_agents::set(&self.store, SOURCE, &topic_ref, &agent.id)
+                        crate::chat_agents::set(&self.store, &self.source, &topic_ref, &agent.id)
                     {
                         tracing::warn!(error = %e, "could not save the topic's agent");
                     }
@@ -209,7 +254,7 @@ impl TelegramGateway {
                 }
             }
         }
-        if let Err(e) = crate::chat_agents::set(&self.store, SOURCE, chat_ref, &agent.id) {
+        if let Err(e) = crate::chat_agents::set(&self.store, &self.source, chat_ref, &agent.id) {
             return self.reply_in(chat, thread, &format!("Error: {e}")).await;
         }
         let text = if agent.is_default() {
@@ -225,7 +270,7 @@ impl TelegramGateway {
 
     /// `/channels`.
     fn channels_text(&self, chat_ref: &str) -> String {
-        let current = crate::chat_channels::get(&self.store, SOURCE, chat_ref).map(|c| c.id);
+        let current = crate::chat_channels::get(&self.store, &self.source, chat_ref).map(|c| c.id);
         let topics: Vec<_> = self
             .store
             .channels(false)
@@ -271,7 +316,7 @@ impl TelegramGateway {
                 return self.reply_in(chat, thread, &text).await;
             }
             "home" => {
-                let _ = crate::chat_channels::clear(&self.store, SOURCE, chat_ref);
+                let _ = crate::chat_channels::clear(&self.store, &self.source, chat_ref);
                 let text = format!("Back to {}.", self.chat_agent_name(chat_ref));
                 return self.reply_in(chat, thread, &text).await;
             }
@@ -312,7 +357,7 @@ impl TelegramGateway {
         // One topic per channel where the chat has topics: the one made
         // before, else a new one if the bot may make it.
         let base = chat.to_string();
-        if let Some(topic) = crate::chat_channels::topic(&self.store, SOURCE, &base, &c.id)
+        if let Some(topic) = crate::chat_channels::topic(&self.store, &self.source, &base, &c.id)
             .and_then(|t| t.parse::<i64>().ok())
         {
             let text = format!("#{} · This topic is #{}: write there.", c.slug, c.slug);
@@ -325,11 +370,11 @@ impl TelegramGateway {
         {
             Ok(topic) => {
                 let topic_ref = format!("{chat}/{topic}");
-                let saved = crate::chat_channels::set(&self.store, SOURCE, &topic_ref, &c.id)
+                let saved = crate::chat_channels::set(&self.store, &self.source, &topic_ref, &c.id)
                     .and_then(|()| {
                         crate::chat_channels::set_topic(
                             &self.store,
-                            SOURCE,
+                            &self.source,
                             &base,
                             &c.id,
                             &topic.to_string(),
@@ -347,7 +392,9 @@ impl TelegramGateway {
             Err(e) => {
                 // No topics here: this chat follows the channel.
                 tracing::info!(error = %e, "no topic for the channel; following it in this chat");
-                if let Err(e) = crate::chat_channels::set(&self.store, SOURCE, chat_ref, &c.id) {
+                if let Err(e) =
+                    crate::chat_channels::set(&self.store, &self.source, chat_ref, &c.id)
+                {
                     return self.reply_in(chat, thread, &format!("Error: {e}")).await;
                 }
                 let text = format!(
@@ -377,8 +424,8 @@ impl TelegramGateway {
         if c.kind != "topic" {
             return;
         }
-        for chat_ref in crate::chat_channels::chats_of(&self.store, SOURCE, &c.id) {
-            if delivered_to.as_deref() == Some(format!("{SOURCE}:{chat_ref}").as_str()) {
+        for chat_ref in crate::chat_channels::chats_of(&self.store, &self.source, &c.id) {
+            if delivered_to.as_deref() == Some(format!("{}:{chat_ref}", self.source).as_str()) {
                 continue;
             }
             let Some((chat, thread)) = place(&chat_ref) else {
@@ -406,11 +453,15 @@ impl TelegramGateway {
 
     /// The name of the agent `chat_ref` talks to.
     fn chat_agent_name(&self, chat_ref: &str) -> String {
-        self.agent_name(&crate::chat_agents::get(&self.store, SOURCE, chat_ref))
+        self.agent_name(&crate::chat_agents::get(
+            &self.store,
+            &self.source,
+            chat_ref,
+        ))
     }
 
     fn prefix_or_tern(&self, chat_ref: &str) -> String {
-        let id = crate::chat_agents::get(&self.store, SOURCE, chat_ref);
+        let id = crate::chat_agents::get(&self.store, &self.source, chat_ref);
         let name = self
             .store
             .agent(&id)
@@ -438,7 +489,12 @@ impl TelegramGateway {
             if !code.is_empty() && self.store.consume_pairing_code(code).unwrap_or(false) {
                 let _ = self.store.pair_telegram_user(user);
                 tracing::info!(user, "telegram user paired");
-                self.reply(chat, &format!("Paired. {HELP}")).await;
+                let help = if self.bound_agent.is_some() {
+                    AGENT_BOT_HELP
+                } else {
+                    HELP
+                };
+                self.reply(chat, &format!("Paired. {help}")).await;
             } else {
                 self.reply(chat, UNPAIRED).await;
             }
@@ -455,14 +511,26 @@ impl TelegramGateway {
         };
         // Commands may arrive as `/stop@my_bot` in groups.
         let cmd = cmd.split('@').next().unwrap_or(cmd);
+        if let Some(agent) = &self.bound_agent
+            && matches!(cmd, "/agents" | "/agent" | "/channels" | "/channel")
+        {
+            let name = self.agent_name(agent);
+            let text = format!(
+                "This bot is {name}'s own chat, so there is nothing to switch. Use your main tern bot for other agents and channels."
+            );
+            return self.reply_in(chat, thread, &text).await;
+        }
         match cmd {
+            "/start" | "/help" if self.bound_agent.is_some() => {
+                self.reply_in(chat, thread, AGENT_BOT_HELP).await
+            }
             "/start" | "/help" => self.reply_in(chat, thread, HELP).await,
             "/agents" => {
                 let text = self.agents_text(&chat_ref);
                 self.reply_in(chat, thread, &text).await;
             }
             "/agent" => {
-                if let Some(c) = crate::chat_channels::get(&self.store, SOURCE, &chat_ref) {
+                if let Some(c) = crate::chat_channels::get(&self.store, &self.source, &chat_ref) {
                     if thread.is_some() {
                         let text = format!(
                             "#{} · This topic is #{}. Use /agent in the main chat.",
@@ -471,7 +539,7 @@ impl TelegramGateway {
                         return self.reply_in(chat, thread, &text).await;
                     }
                     // A chat follows one channel or agent at a time.
-                    let _ = crate::chat_channels::clear(&self.store, SOURCE, &chat_ref);
+                    let _ = crate::chat_channels::clear(&self.store, &self.source, &chat_ref);
                 }
                 self.switch_agent(&msg, &chat_ref, arg).await
             }
@@ -480,7 +548,7 @@ impl TelegramGateway {
                 self.reply_in(chat, thread, &text).await;
             }
             "/channel" => self.switch_channel(&msg, &chat_ref, arg).await,
-            "/new" if crate::chat_channels::get(&self.store, SOURCE, &chat_ref).is_some() => {
+            "/new" if crate::chat_channels::get(&self.store, &self.source, &chat_ref).is_some() => {
                 self.reply_in(
                     chat,
                     thread,
@@ -488,7 +556,7 @@ impl TelegramGateway {
                 )
                 .await
             }
-            "/new" => match host.new_session(SOURCE, &chat_ref).await {
+            "/new" => match host.new_session(&self.source, &chat_ref).await {
                 Ok(()) => {
                     let text = format!(
                         "{}New topic. I kept a summary of the last one.",
@@ -500,7 +568,7 @@ impl TelegramGateway {
             },
             "/model" => {
                 let set = (!arg.is_empty()).then_some(arg);
-                match host.model(SOURCE, &chat_ref, set).await {
+                match host.model(&self.source, &chat_ref, set).await {
                     Ok(m) if set.is_some() => {
                         self.reply_in(chat, thread, &format!("Model set to {m}."))
                             .await
@@ -510,7 +578,7 @@ impl TelegramGateway {
                 }
             }
             "/stop" => {
-                let msg = if host.stop(SOURCE, &chat_ref).await {
+                let msg = if host.stop(&self.source, &chat_ref).await {
                     "Stopping."
                 } else {
                     "Nothing is running."
@@ -539,13 +607,13 @@ impl TelegramGateway {
                 let text = format!(
                     "{}{}",
                     self.prefix(&chat_ref),
-                    host.status(SOURCE, &chat_ref).await
+                    host.status(&self.source, &chat_ref).await
                 );
                 self.reply_in(chat, thread, &text).await
             }
-            _ if let Some(c) = crate::chat_channels::get(&self.store, SOURCE, &chat_ref) => {
+            _ if let Some(c) = crate::chat_channels::get(&self.store, &self.source, &chat_ref) => {
                 self.api.typing(chat).await;
-                match host.send_to_channel(SOURCE, &chat_ref, &c.id, text).await {
+                match host.send_to_channel(&self.source, &chat_ref, &c.id, text).await {
                     Ok((run_id, agent)) => {
                         let prefix = channel_prefix(&c.slug, thread.is_some(), Some(&agent));
                         self.streams
@@ -564,7 +632,7 @@ impl TelegramGateway {
             }
             _ => {
                 self.api.typing(chat).await;
-                match host.send(SOURCE, &chat_ref, text).await {
+                match host.send(&self.source, &chat_ref, text).await {
                     // A queued message returns the run already streaming here.
                     Ok(run_id) => {
                         let prefix = self.prefix(&chat_ref);
@@ -834,6 +902,10 @@ fn live_view(text: &str) -> String {
 #[async_trait]
 impl Gateway for TelegramGateway {
     fn name(&self) -> &str {
+        self.source.as_str()
+    }
+
+    fn kind(&self) -> &str {
         SOURCE
     }
 
@@ -885,7 +957,7 @@ impl Gateway for TelegramGateway {
         // Persisted so a restart never handles the same message twice.
         let mut offset: i64 = self
             .store
-            .kv_get(SOURCE, OFFSET_KEY)
+            .kv_get(&self.source, OFFSET_KEY)
             .ok()
             .flatten()
             .and_then(|v| v.parse().ok())
@@ -901,7 +973,10 @@ impl Gateway for TelegramGateway {
                     backoff = Duration::from_secs(1);
                     if let Some(last) = updates.iter().map(|u| u.update_id).max() {
                         offset = offset.max(last + 1);
-                        if let Err(e) = self.store.kv_set(SOURCE, OFFSET_KEY, &offset.to_string()) {
+                        if let Err(e) =
+                            self.store
+                                .kv_set(&self.source, OFFSET_KEY, &offset.to_string())
+                        {
                             tracing::warn!(error = %e, "could not save telegram offset");
                         }
                     }

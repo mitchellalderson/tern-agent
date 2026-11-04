@@ -367,6 +367,6 @@ InputDecoration _box(BuildContext context, {String? hint, String? error}) {
     contentPadding: const EdgeInsets.all(10),
     border: border(c.hairline),
     enabledBorder: border(c.hairline),
-    focusedBorder: border(c.accent),
+    focusedBorder: border(c.ink),
   );
 }

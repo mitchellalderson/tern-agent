@@ -175,6 +175,9 @@ impl Backend for Fake {
     fn outbox(&self) -> BackendResult<Vec<tern_core::outbox::OutboxItem>> {
         Ok(self.outbox.lock().unwrap().clone())
     }
+    fn skills(&self, args: &str) -> BackendResult<String> {
+        Ok(format!("skills asked: {args:?}"))
+    }
     fn decide_outbox(
         &self,
         id: i64,
@@ -893,6 +896,17 @@ fn outbox_item(id: i64, to: &str) -> tern_core::outbox::OutboxItem {
         "taint": "result of inbox", "state": "pending", "created_at": 0, "expires_at": 0
     }))
     .unwrap()
+}
+
+#[test]
+fn skills_command_hands_its_arguments_to_the_backend() {
+    let (mut app, _fake) = new_app();
+    submit(&mut app, "/skills save 3 my-skill");
+    assert!(
+        notices(&app).contains("skills asked: \"save 3 my-skill\""),
+        "{}",
+        notices(&app)
+    );
 }
 
 #[test]

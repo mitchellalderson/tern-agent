@@ -821,6 +821,18 @@ impl Subagents {
             if let Some(a) = &delegate {
                 // Its session is the delegate's, in the caller's channel.
                 self.store.set_session_agent(&session_id, &a.id)?;
+                // It keeps its caller's autonomy (copied by the store),
+                // lowered to its own ceiling if that is stricter.
+                if let Some(ceiling) = a
+                    .autonomy
+                    .as_deref()
+                    .and_then(tern_core::approval::Autonomy::parse)
+                {
+                    let inherited =
+                        tern_core::approval::Autonomy::of_run(parent.autonomy.as_deref());
+                    self.store
+                        .set_run_autonomy(&run_id, inherited.min(ceiling).as_str())?;
+                }
             }
             if req.post {
                 self.store.set_run_can_post(&run_id)?;

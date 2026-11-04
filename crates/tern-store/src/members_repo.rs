@@ -14,6 +14,9 @@ pub struct ChannelWakes {
     pub max_hops: i64,
     /// Agent-started runs per hour, at most.
     pub wakes_per_hour: i64,
+    /// "Let agents decide" (§5.2): a post that mentions no one is routed
+    /// to the right members by the gate model, not always to the lead.
+    pub let_agents_decide: bool,
 }
 
 impl Default for ChannelWakes {
@@ -22,6 +25,7 @@ impl Default for ChannelWakes {
             agent_wakes: false,
             max_hops: 2,
             wakes_per_hour: 6,
+            let_agents_decide: false,
         }
     }
 }
@@ -261,13 +265,15 @@ impl Store {
         Ok(self
             .conn()?
             .query_row(
-                "SELECT agent_wakes, max_hops, wakes_per_hour FROM channels WHERE id = ?1",
+                "SELECT agent_wakes, max_hops, wakes_per_hour, let_agents_decide FROM channels
+                 WHERE id = ?1",
                 [channel_id],
                 |r| {
                     Ok(ChannelWakes {
                         agent_wakes: r.get::<_, i64>(0)? != 0,
                         max_hops: r.get(1)?,
                         wakes_per_hour: r.get(2)?,
+                        let_agents_decide: r.get::<_, i64>(3)? != 0,
                     })
                 },
             )
@@ -277,14 +283,16 @@ impl Store {
 
     pub fn set_channel_wakes(&self, channel_id: &str, w: &ChannelWakes) -> Result<()> {
         self.conn()?.execute(
-            "UPDATE channels SET agent_wakes = ?2, max_hops = ?3, wakes_per_hour = ?4, updated_at = ?5
+            "UPDATE channels SET agent_wakes = ?2, max_hops = ?3, wakes_per_hour = ?4,
+               let_agents_decide = ?6, updated_at = ?5
              WHERE id = ?1",
             params![
                 channel_id,
                 w.agent_wakes,
                 w.max_hops,
                 w.wakes_per_hour,
-                now_ms()
+                now_ms(),
+                w.let_agents_decide
             ],
         )?;
         Ok(())

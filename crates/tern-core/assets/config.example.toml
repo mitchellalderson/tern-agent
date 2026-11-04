@@ -118,6 +118,13 @@ docker_pids = 512          # 0 for no limit
 # memory_md_tokens = 1500      # cap for memory.md, the agent's own notes
 # flush = true                 # before compacting, let the agent save durable facts (memory_save)
 
+# Skill capture: after a long, clean run tern offers once to save it as a
+# skill. Accepting writes a draft to skills/<name>/SKILL.md (draft: true) that
+# stays out of the prompt until you publish it (`tern skills publish <name>`).
+# [skills]
+# capture = true               # false: never offer
+# capture_min_tool_calls = 8   # tool calls a run needs before it is offered
+
 # A write nobody approves in time waits in the outbox (`tern outbox`) instead
 # of being denied.
 # [outbox]

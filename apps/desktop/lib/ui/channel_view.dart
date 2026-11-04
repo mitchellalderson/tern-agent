@@ -201,7 +201,7 @@ class WaitingIn extends StatelessWidget {
               ),
               Text(
                 'Go to $where',
-                style: TextStyle(fontSize: 12.5, color: c.accent),
+                style: TextStyle(fontSize: 12.5, color: c.link),
               ),
             ],
           ),
@@ -649,7 +649,7 @@ class TimelinePost extends StatelessWidget {
                 onTapLink: (_, href, _) => openTernLink(context, store, href),
                 styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
                   p: theme.textTheme.bodyMedium,
-                  a: TextStyle(color: c.accent, fontWeight: FontWeight.w600),
+                  a: TextStyle(color: c.link, fontWeight: FontWeight.w600),
                 ),
               ),
               for (final id in routineLinksIn(post.text))
