@@ -1057,8 +1057,10 @@ login, Close this icon), `SMAppService` login items from the bundle with the pla
 `tern service install --tray`, the `tern Tray.app` helper and the app's first-launch "Where should tern run?" (this
 Mac with Start at login, or a paired server; tern Cloud reserved). Still open from this section: Needs you and approve-from-notification (T3), Recent posts and New
 message… (T2, `tern://` links), Initiative (the menu item; T1b built `PUT /v1/initiative`), `GET /v1/clients` and notification de-duplication, Restart tern to
-update, the tray watching a remote profile, the first-close notification, **Remove tern from this Mac…**, and Linux (T8c).
-DECISIONS.md, T8b, has the details.
+update, the tray watching a remote profile, the first-close notification and **Remove tern from this Mac…**.
+**T8c** shipped the same tray on Linux: `ksni` (StatusNotifierItem), the shared worker and menu model, an XDG autostart
+entry from `tern service install --tray`, and `zenity`/`kdialog` for the Quit question. Notifications through
+`notify-rust` came with neither T8b nor T8c (they wait for T3). DECISIONS.md, T8b and T8c, has the details.
 
 ## 12. Phases
 
@@ -1074,7 +1076,7 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 | **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests (done) · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles (done: T3a taint, then T3 the outbox and autonomy; the Tasks view is T6b) · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits (done) | L / M / S–M | Stage 1 (effects, budgets) |
 | **3. Organize and surface** | Make background work visible and tidy. Mostly UI plus straightforward store work. | **T2** channels, home, posts, reply-to-act, Telegram topics · **T6b** activity ledger with hash chain, Tasks view, `tern security audit` (done) · **T8b** `tern tray` on macOS (helper bundle, notifications with actions, login items, quit escalation, `tern://` links) · **T5b** skill capture | M each | Stage 2 (routines, outbox) |
 | **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** (done) `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) (done) · **T4b-ii** gateway connectors (ntfy, then Slack; done) | L | Stage 2 (taint before any external input); secret-requests spec built |
-| **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` (done) · **T6d** `tern mcp serve` (done) · **T4c** OpenAPI-to-connector and recorded test fixtures (done) · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
+| **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` (done) · **T6d** `tern mcp serve` (done) · **T4c** OpenAPI-to-connector and recorded test fixtures (done) · **T8c** tray on Linux (ksni; done) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
 | **6. Multiplayer** (later) | Several people with one agent: group rooms first, then members on one core, then hosted workspaces (§15) | **M0** Telegram, Slack and Discord group rooms with guests · **M1** members, per-member connections, approvals and memory · **M2** tern Cloud workspaces, invites, seats | M0 S–M, M1 L, M2 M | Stages 2–3 (taint, channels); M2 needs tern Cloud |
 
 **Sandboxed compute (PY0–PY3), alongside stage 2.** A `python` tool on Monty whose scripts call tern's tools as

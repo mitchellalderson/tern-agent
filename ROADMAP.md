@@ -51,7 +51,7 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 **Start, stop and tray**
 - **Start and stop without a terminal**: `tern service install`, `tern start` / `stop`, "Quit tern completely" (T8a).
 - **Menu-bar icon on macOS** (`tern tray`): status, Open, Start/Quit, Start at login through System Settings › Login
-  Items (T8b). The desktop app's first launch asks where tern runs: this Mac, or a tern server you pair with.
+  Items (T8b). **Tray icon on Linux** (StatusNotifierItem via `ksni`, XDG autostart; T8c). The desktop app's first launch asks where tern runs: this Mac, or a tern server you pair with.
 
 **Channels and agents**
 - **Channels** ([channels-design.md](docs/channels-design.md) C0–C4): Home as one stream, topic channels in the desktop
@@ -92,7 +92,7 @@ Being built on other branches right now; not done until merged.
 | Stage | What | Spec |
 |---|---|---|
 | 3. Organize | Skill capture (T5b). | tooling §8 |
-| 5. Ecosystem | Recipes (morning brief, follow-ups, meeting prep) and goals (T6c). Native browser behind a feature flag (T7b). Tray on Linux (T8c). | tooling §6.5, §9, §10 |
+| 5. Ecosystem | Recipes (morning brief, follow-ups, meeting prep) and goals (T6c). Native browser behind a feature flag (T7b). Tray on Linux (T8c, done). | tooling §6.5, §9, §10 |
 | Agent profiles | The rest of AP3: "Let agents decide" routing, a Telegram bot per agent, a per-agent autonomy ceiling, templates as signed bundles. | [agent-profiles-design.md](docs/agent-profiles-design.md) |
 | 6. Multiplayer | Group rooms with guests (M0), then several members on one core (M1), then hosted workspaces (M2). | tooling §15 |
 

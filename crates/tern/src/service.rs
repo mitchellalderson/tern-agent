@@ -6,7 +6,9 @@
 //!   but not a clean exit. That one key is what lets `tern stop` and the
 //!   app's Quit stick.
 //! - Linux: a systemd user unit `tern-daemon.service` with
-//!   `Restart=on-failure`, for the same reason.
+//!   `Restart=on-failure`, for the same reason. With `--tray`, an XDG
+//!   autostart entry `autostart/tern-tray.desktop` starts `tern tray` at
+//!   login (T8c).
 //!
 //! The service sets `TERN_SERVICE` in the daemon's environment, which the
 //! daemon reports in `/v1/status` and uses to exit cleanly (rather than in
@@ -35,6 +37,8 @@ pub const LABEL: &str = "ai.tern.daemon";
 /// The plain LaunchAgent that starts `tern tray` at login.
 pub const TRAY_LABEL: &str = "ai.tern.tray";
 pub const UNIT: &str = "tern-daemon.service";
+/// The XDG autostart entry that starts `tern tray` at login on Linux.
+pub const AUTOSTART_FILE: &str = "tern-tray.desktop";
 /// Set in the daemon's environment by the service: `launchd` or `systemd`.
 pub const SERVICE_ENV: &str = "TERN_SERVICE";
 
@@ -68,6 +72,16 @@ impl Kind {
         Ok(home
             .join("Library/LaunchAgents")
             .join(format!("{TRAY_LABEL}.plist")))
+    }
+
+    /// The XDG autostart entry for `tern tray` (Linux only).
+    pub fn autostart_path() -> anyhow::Result<PathBuf> {
+        let home = tern_core::home::user_home().context("$HOME is not set")?;
+        Ok(std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|v| !v.is_empty())
+            .map_or_else(|| home.join(".config"), PathBuf::from)
+            .join("autostart")
+            .join(AUTOSTART_FILE))
     }
 
     /// Where the plist or unit lives.
@@ -393,7 +407,7 @@ pub fn state() -> Option<State> {
         active,
         at_login: enabled,
         needs_approval: false,
-        tray_at_login: Some(false),
+        tray_at_login: Some(Kind::autostart_path().is_ok_and(|p| p.exists())),
     })
 }
 
@@ -411,9 +425,15 @@ pub fn describe(s: &State) -> String {
             w.push_str(", running");
         }
         match s.tray_at_login {
-            Some(true) => w.push_str("; menu-bar icon at login"),
-            Some(false) if s.kind == Kind::Launchd => w.push_str("; no menu-bar icon at login"),
-            _ => {}
+            Some(true) => w.push_str(match s.kind {
+                Kind::Launchd => "; menu-bar icon at login",
+                Kind::Systemd => "; tray icon at login",
+            }),
+            Some(false) => w.push_str(match s.kind {
+                Kind::Launchd => "; no menu-bar icon at login",
+                Kind::Systemd => "; no tray icon at login",
+            }),
+            None => {}
         }
         w
     };
@@ -812,10 +832,72 @@ pub fn install(home: &TernHome, at_login: bool, tray: bool) -> anyhow::Result<Ex
     if tray {
         match kind {
             Kind::Launchd => install_tray_plist(&spec)?,
-            Kind::Systemd => println!("The menu-bar icon isn't available on Linux yet."),
+            Kind::Systemd => install_autostart(&spec, home)?,
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// One word of a desktop entry's `Exec` line (Desktop Entry spec): quoted,
+/// with `"`, `` ` ``, `$` and `\` backslash-escaped (and the backslash of
+/// that escape doubled again by the key-value layer), and `%` doubled so it
+/// isn't a field code.
+fn desktop_arg(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\\\\\"),
+            '"' | '`' | '$' => {
+                out.push_str("\\\\");
+                out.push(c);
+            }
+            '%' => out.push_str("%%"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The XDG autostart entry that starts `tern tray` at login (T8c).
+/// Desktops without a tray host just see the tray exit with its reason.
+pub fn autostart_entry(exe: &Path, tern_home: &Path) -> String {
+    format!(
+        "[Desktop Entry]\nType=Application\nName=tern\nComment=tern's tray icon\n\
+         Exec=env {} {} tray\nTerminal=false\nNoDisplay=true\n\
+         X-GNOME-Autostart-enabled=true\n",
+        desktop_arg(&format!("TERN_HOME={}", tern_home.display())),
+        desktop_arg(&exe.to_string_lossy()),
+    )
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn install_autostart(spec: &Spec<'_>, home: &TernHome) -> anyhow::Result<()> {
+    let path = Kind::autostart_path()?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(&path, autostart_entry(spec.exe, spec.tern_home))
+        .with_context(|| format!("writing {}", path.display()))?;
+    println!(
+        "The tray icon will start when you log in ({}).",
+        path.display()
+    );
+    // And now, unless one is already up (a second one just leaves).
+    if !crate::tray::running(home) && crate::tray::desktop_session() {
+        match Command::new(spec.exe)
+            .arg("tray")
+            .env("TERN_HOME", spec.tern_home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => drop(child),
+            Err(e) => eprintln!("Couldn't start the tray icon now: {e}"),
+        }
+    }
+    Ok(())
 }
 
 /// `ai.tern.tray`: loading it starts the tray now (a second one leaves).
@@ -942,10 +1024,11 @@ pub fn uninstall(home: &TernHome) -> anyhow::Result<ExitCode> {
 /// The tray's plain LaunchAgent, if any. A tray it started keeps running
 /// (launchd forgets the job at logout).
 fn remove_tray_plist() -> anyhow::Result<()> {
-    if Kind::current() != Some(Kind::Launchd) {
-        return Ok(());
-    }
-    let path = Kind::tray_path()?;
+    let path = match Kind::current() {
+        Some(Kind::Launchd) => Kind::tray_path()?,
+        Some(Kind::Systemd) => Kind::autostart_path()?,
+        None => return Ok(()),
+    };
     if path.exists() {
         std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
     }
@@ -1055,6 +1138,18 @@ mod tests {
             at_login: false,
         });
         assert!(off.contains("<key>RunAtLoad</key>\n\t<false/>"));
+    }
+
+    #[test]
+    fn autostart_entry_starts_the_tray_with_quoted_paths() {
+        let text = autostart_entry(Path::new("/opt/tern co/tern"), Path::new("/home/a/.tern"));
+        assert!(text.starts_with("[Desktop Entry]\nType=Application\n"));
+        assert!(text.contains("Exec=env \"TERN_HOME=/home/a/.tern\" \"/opt/tern co/tern\" tray\n"));
+        assert!(text.contains("NoDisplay=true"));
+        // `%` is a field code, `$` and `"` need escaping inside the quotes.
+        assert_eq!(desktop_arg("50%"), "\"50%%\"");
+        assert_eq!(desktop_arg("a$b\"c"), "\"a\\\\$b\\\\\"c\"");
+        assert_eq!(desktop_arg("a\\b"), "\"a\\\\\\\\b\"");
     }
 
     #[test]
