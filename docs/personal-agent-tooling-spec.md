@@ -989,6 +989,10 @@ Why this order:
 - **Stage 2** is where the hard *design* lives (routines, taint, outbox). Doing it before connections means every
   external input that arrives later is already tainted and every write already goes through the outbox. Rule from
   W1: no email or webhook watch is on by default until T3 ships.
+- **Agent profiles** ([agent-profiles-design.md](agent-profiles-design.md), phases AP0–AP3) sit in stage 3 beside T2:
+  AP0–AP1 (configurable agents with their own DMs and routines) after C3, AP2 (agents in topic channels) after C4,
+  AP3 (delegation between agents) after T3's outbox. AP0 lands before T1b, so routines migrate already owned by an
+  agent.
 - **Stage 3** is mostly presentation of data Stage 2 creates. The tray waits until here because before routines and
   the outbox it has little to show (T8a already covers start and stop).
 - **Stage 4** is the hardest *engineering*: OAuth edge cases, per-provider quirks, account routing, migrations of

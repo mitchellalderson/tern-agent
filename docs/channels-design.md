@@ -327,7 +327,7 @@ otherwise `#slug ·` prefixes in the one chat. A reply in a topic goes to that c
 | C3 | The `channel` step, `channel_read`, `channel_post`, taint on posts. | Yes: agents now actually share the channel |
 | C4 | Sub-agents posting, `needs_you` pointers into Home, live member lines. | Yes |
 | C5 | `channel_suggest`, TUI `/channel`, Telegram topics. | Yes |
-| Later | Agent profiles (gui-spec §7.2): authors become agents, each profile gets its own Home-style stream (a DM per agent, as Grok Bot does), `@mention` wakes an agent in a channel. Precomputed carry summaries. | |
+| Later | Agent profiles, designed in [agent-profiles-design.md](agent-profiles-design.md): authors become agents, each profile gets its own Home-style stream (a DM per agent, as Grok Bot does), `@mention` wakes an agent in a channel. Its AP0–AP1 fit after C3, AP2 after C4 (§8 there). Precomputed carry summaries. | |
 
 C1 stands on its own even if topic channels wait. C0 to C2 together look like the channel view; C3 is what makes it
 more than a grouping.
@@ -337,7 +337,7 @@ more than a grouping.
 1. ~~**What "main channel" should mean.**~~ Decided 2026-11-03: a main channel is the user's direct line to an
    agent: one `home` now, one per agent profile later. First decided as today's list of separate chats, then revised
    the same day after the §8 research to one continuous stream cut into segments (§2.6).
-2. **Should posts ever wake agents?** v1 says no. Candidates for later: `@agent` mentions, or a channel setting "the
+2. **Should posts ever wake agents?** v1 says no. Agent profiles answer it for later: `@mentions` wake agents, with per-channel budgets and a hop limit ([agent-profiles-design.md](agent-profiles-design.md) §5.3). Candidates for later: `@agent` mentions, or a channel setting "the
    main agent replies to routine posts that need a decision". Both need a per-channel budget and a loop guard (no
    more than N agent-started runs per hour).
 3. **Side threads and the digest.** Should a side thread get every channel post, or only replies to its own root?
