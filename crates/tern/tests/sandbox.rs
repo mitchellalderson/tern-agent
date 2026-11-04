@@ -47,6 +47,7 @@ async fn run_for(b: &HostBackend, ws: &Path, cmd: &str, timeout: Duration) -> Ex
             timeout,
             max_output: 64 * 1024,
             on_output: None,
+            network: false,
         },
         CancellationToken::new(),
     )
@@ -160,6 +161,27 @@ async fn network_off_blocks_ip_connections() {
     let ws = tempfile::tempdir().unwrap();
     run(&off, ws.path(), &cmd).await;
     assert!(!accepted(&listener), "connected with network = false");
+
+    // One command may ask for network while the default stays off.
+    off.exec(
+        &cmd,
+        ExecOpts {
+            cwd: ws.path().to_path_buf(),
+            timeout: Duration::from_secs(10),
+            max_output: 64 * 1024,
+            on_output: None,
+            network: true,
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        accepted(&listener),
+        "no connection for a command given network"
+    );
+    run(&off, ws.path(), &cmd).await;
+    assert!(!accepted(&listener), "the next command is offline again");
 
     let on = backend(HostPolicy::confined()).unwrap();
     run(&on, ws.path(), &cmd).await;

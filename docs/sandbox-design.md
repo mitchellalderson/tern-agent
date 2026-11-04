@@ -62,13 +62,33 @@ Unchanged in shape (one long-lived container per workspace, your uid, workspace 
 - `network = false` starts the container with `--network none`.
 - The container is labelled with a fingerprint of its settings; changing the image, limits or network replaces it.
 
+## Network: off unless a command asks
+
+`network = false` is the default. A command that needs the network (`git push`, `npm install`) is called with
+`network: true` and gets it for that one command:
+
+- it asks every time: the shell allowlist doesn't cover it (`git *` doesn't approve `git push` with network), and the
+  prompt offers no "always". The prompt says `with network: <command>`;
+- its output is untrusted, so it taints the run (it may carry whatever the far end sent). Output is untrusted
+  whenever a command could reach the network: also with `network = true`, and on a host backend with no OS sandbox,
+  where `network = false` isn't enforced;
+- the next command is offline again.
+
+This is what keeps shell commands from going around tern's tools: a script that calls an API directly skips the
+connector's host allowlist, effect, taint and journal. With no network, data comes in only through tools, and
+compute over it goes to the `python` tool (docs/python-tool-spec.md). The Docker backend can't change a running
+container's network, so there a `network: true` command fails and says to set `network = true`.
+
+Configs written before this change by `tern config init` say `network = true` explicitly and keep every command on
+the network until that line is changed.
+
 ## Config
 
 ```toml
 [sandbox]
 backend = "host"            # "host" | "docker"
 shell_timeout_secs = 120
-network = true              # both backends
+network = false             # both backends; true gives every command network
 confine = "auto"            # host only: "auto" | "required" | "off"
 read_paths = ["~/.gitconfig", "~/.config/git"]   # host only, read-only
 write_paths = []            # host only, e.g. ["~/.cargo/registry", "~/.npm"]

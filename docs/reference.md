@@ -328,7 +328,7 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `memory.flush` | `true` | Before older context is summarized, give the agent one silent turn to save durable facts with `memory_save`. |
 | `sandbox.backend` | `host` | `host` or `docker`. |
 | `sandbox.shell_timeout_secs` | `120` | Per shell command. |
-| `sandbox.network` | `true` | IP networking for shell commands (both backends). While commands can reach the network, `shell` output is untrusted and taints the run ([Taint](#taint)); with connectors or MCP servers active, `false` keeps integrations going through their tools (`tern doctor` says so). |
+| `sandbox.network` | `false` | IP networking for every shell command (both backends). Off, a command gets the network only when called with `network: true`, which asks every time. While a command can reach the network (it asked, `network = true`, or no OS sandbox enforces off), its output is untrusted and taints the run ([Taint](#taint)); with connectors or MCP servers active and the network reachable for every command, `tern doctor` says so. |
 | `sandbox.confine` | `auto` | Host backend: `auto` (sandbox when the OS can, else warn), `required` (refuse to run unconfined), `off`. |
 | `sandbox.read_paths` | `["~/.gitconfig", "~/.config/git"]` | Host backend: extra read-only paths. |
 | `sandbox.write_paths` | `[]` | Host backend: extra writable paths. |
@@ -365,8 +365,8 @@ The desktop app shows all of this (except providers, MCP servers and the Telegra
 | `DELETE` | `/v1/config/settings/{key}` | Back to the default: the key is removed from the file. |
 
 ```sh
-curl --unix-socket ~/.tern/tern.sock -X PUT http://tern/v1/config/settings/sandbox.network \
-  -H 'content-type: application/json' -d '{"value": false}'
+curl --unix-socket ~/.tern/tern.sock -X PUT http://tern/v1/config/settings/sandbox.shell_timeout_secs \
+  -H 'content-type: application/json' -d '{"value": 300}'
 ```
 
 Secrets are looked up by name in the environment first, then in `~/.tern/secrets.toml` (mode 0600):
@@ -490,13 +490,13 @@ Restart `tern daemon`, then run `tern devices pair` (default scope `chat`: conve
 
 ## Sandboxing
 
-By default `shell` runs on this machine after an approval prompt, with a scrubbed environment (no secrets), a timeout, and an OS sandbox (Seatbelt on macOS, Landlock on Linux): it can write only to the workspace and temp directories, can't read `~/.ssh`, `~/.tern` or the rest of your home directory, and loses IP networking with `network = false`. Add paths a toolchain needs:
+By default `shell` runs on this machine after an approval prompt, with a scrubbed environment (no secrets), a timeout, and an OS sandbox (Seatbelt on macOS, Landlock on Linux): it can write only to the workspace and temp directories, can't read `~/.ssh`, `~/.tern` or the rest of your home directory, and has no IP networking. A command that needs the network (`git push`, `npm install`) asks for it with `network: true`: that asks you every time (the allowlist and "always" don't cover it), and its output counts as untrusted. `network = true` gives every command the network, as before (configs from older `tern config init` say so explicitly). Add paths a toolchain needs:
 
 ```toml
 [sandbox]
 read_paths = ["~/.gitconfig", "~/.config/git", "~/.rustup"]
 write_paths = ["~/.cargo/registry"]
-network = true
+network = false
 ```
 
 To run it in a container instead:
@@ -539,7 +539,7 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 
 A run is **tainted** once untrusted content reaches it (docs/personal-agent-tooling-spec.md §5.3):
 
-- **What taints**: the result of a tool marked untrusted (`http_fetch`, `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`, and `shell` while commands can reach the network: `sandbox.network = true`, the default, or no OS sandbox to enforce `false`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
+- **What taints**: the result of a tool marked untrusted (`http_fetch`, `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`, and `shell` when the command could reach the network: it asked for it with `network: true`, `sandbox.network = true`, or no OS sandbox enforces the default `false`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
 - **It sticks** for the rest of the run, survives a crash and `tern resume` exactly (it's rebuilt from the journal), and doesn't carry to the next run in the conversation.
 - **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, memory, schedules), and "always" isn't offered. The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) and `channel_post` keep their grants, since what they reach is tainted too. With nobody to ask (a routine at night), the call goes to the [outbox](#outbox). A network read (`http_fetch`) to a host the run hasn't reached yet asks too, so a page can't have the agent send what it knows somewhere new. A tainted run also skips the memory flush before compaction. Only `autonomy = "yolo"` turns this off.
 - **What the model sees**: untrusted results arrive as `<untrusted source="http_fetch">…</untrusted>`, and the system prompt says text inside is data, not instructions.

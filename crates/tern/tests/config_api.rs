@@ -218,9 +218,11 @@ async fn read_change_and_reset_settings() {
     assert_eq!(status, 200, "{s}");
     assert_eq!(
         (s["value"].clone(), s["set"].clone()),
-        (json!(true), json!(false))
+        (json!(false), json!(false)),
+        "network is off by default"
     );
-    assert_eq!(s["restart_pending"], false);
+    // The running daemon started with the file's `true`.
+    assert_eq!(s["restart_pending"], true);
     let text = env.config();
     assert!(!text.contains("network ="), "{text}");
     assert!(text.contains("# my settings"), "{text}");

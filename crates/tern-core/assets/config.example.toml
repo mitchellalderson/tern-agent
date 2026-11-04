@@ -42,7 +42,9 @@ secret_request_timeout_secs = 900
 # "docker" (a container per command).
 backend = "host"           # "host" | "docker"
 shell_timeout_secs = 120   # a command running longer is stopped
-network = true             # IP networking for shell commands; false: none
+# Off: a command gets the network only by asking (`network: true`), and you
+# approve each one; its output is untrusted. true: every command, always.
+network = false            # IP networking for every shell command
 # Host backend: shell commands run in an OS sandbox (Seatbelt on macOS,
 # Landlock on Linux): write only to the workspace and temp dirs, no reads of
 # your home directory beyond these paths. See docs/sandbox-design.md.

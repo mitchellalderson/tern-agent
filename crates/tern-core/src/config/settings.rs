@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn view_groups_types_and_marks_what_the_file_sets() {
         let dir = tempfile::tempdir().unwrap();
-        let path = file(&dir, "[sandbox]\nnetwork = false\nconfine = \"off\"\n");
+        let path = file(&dir, "[sandbox]\nnetwork = true\nconfine = \"off\"\n");
         let v = view(&ConfigFile::open(&path).unwrap(), &Config::default());
         assert!(v.error.is_none());
         let ids: Vec<&str> = v.sections.iter().map(|s| s.id.as_str()).collect();
@@ -705,9 +705,9 @@ mod tests {
         assert_eq!(net.kind, Kind::Bool);
         assert_eq!(
             (net.value.clone(), net.default.clone()),
-            (json!(false), json!(true))
+            (json!(true), json!(false))
         );
-        assert!(net.set && !net.risky && net.security.is_some());
+        assert!(net.set && net.risky && net.security.is_some());
         assert!(net.restart_pending, "running tern still has the default");
         let confine = s["sandbox.confine"];
         assert_eq!(confine.kind, Kind::Choice);
@@ -791,7 +791,7 @@ mod tests {
         assert!(!f.reset_setting("sandbox.network").unwrap());
         f.set_setting("default_model", &Value::Null).unwrap();
         let c = f.save().unwrap();
-        assert!(c.sandbox.network);
+        assert!(!c.sandbox.network, "back to the default: off");
         assert!(c.default_model.is_none());
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(

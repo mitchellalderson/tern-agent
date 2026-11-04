@@ -48,14 +48,15 @@ the `sandbox.write_paths` you list, and can never read or write tern's data dire
 macOS everything outside your home directory is readable and, inside it, only the workspace, `sandbox.read_paths`
 (default `~/.gitconfig` and `~/.config/git`) and `PATH` entries; on Linux only system directories (`/usr`, `/etc`,
 `/proc`, …) and those same paths are readable, so `~/.ssh`, `~/.aws` and the like are out of reach on both.
-`sandbox.network = false` blocks IP networking (Seatbelt rules on macOS; seccomp, and Landlock on 6.7+, on Linux).
+IP networking is off by default (Seatbelt rules on macOS; seccomp, and Landlock on 6.7+, on Linux): a command gets
+it only when it asks (`network: true`), which you approve every time; `sandbox.network = true` turns it on for all.
 macOS also denies Keychain lookups and signals to processes outside the sandbox; Linux sets `no_new_privs`, stops
 ptrace and `/proc/<pid>/environ` reads of outside processes, and scopes signals on 6.12+. Each command runs in its own
 process group, and timeout or cancel kills the whole group. If the OS can't sandbox (Linux without Landlock),
 `sandbox.confine = "auto"` runs commands unconfined and warns once and in `tern doctor`; `"required"` refuses to run
 them. With `sandbox.backend = "docker"`, commands run in one long-lived container per workspace, as your uid, with
 only the workspace mounted (read-write) at `/workspace`, all capabilities dropped, `no-new-privileges`, limits of
-2 GB memory, 2 CPUs and 512 processes by default, and `--network none` when `sandbox.network = false`. On macOS the
+2 GB memory, 2 CPUs and 512 processes by default, and `--network none` unless `sandbox.network = true` (per-command network isn't available there). On macOS the
 container runs inside your Docker runtime's Linux VM (Docker Desktop or similar). Approvals still apply in both
 backends. Details: [docs/sandbox-design.md](docs/sandbox-design.md).
 
@@ -67,7 +68,7 @@ backends. Details: [docs/sandbox-design.md](docs/sandbox-design.md).
   [roadmap](ROADMAP.md) (T0, T3).
 - **What you approve, inside the sandbox.** Once a shell command or an "always" pattern is approved, tern limits it
   only by the sandbox: it can change anything in the workspace, read what the sandbox allows, and use the network
-  unless `sandbox.network = false`. Network access is all or nothing (no per-host egress rules). The host backend
+  if it asked for it (or `sandbox.network = true`). Network access is all or nothing (no per-host egress rules). The host backend
   has no CPU, memory or process limits, can reach Unix sockets your user can (including Docker's, if you have
   access), and can leave background processes running after a command exits normally or by calling `setsid`. On
   Linux, `/proc` shows other processes' command lines.

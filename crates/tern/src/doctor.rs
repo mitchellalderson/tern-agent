@@ -529,9 +529,17 @@ fn check_database(r: &mut Report, path: &Path) {
 
 /// With integrations active, a shell that reaches the network is a way
 /// around them: a script can call the same API directly, skipping the
-/// connector's host allowlist, effect and the journal.
+/// connector's host allowlist, effect and the journal. Network is off by
+/// default (a command asks with `network: true`), so this is about configs
+/// that turn it on for every command, and hosts where nothing enforces off.
 fn check_shell_network(r: &mut Report, home: &TernHome, config: &Config) {
-    if !config.sandbox.network {
+    let unenforced = config.sandbox.backend == SandboxBackendKind::Host
+        && !config.sandbox.network
+        && matches!(
+            tern_sandbox::HostBackend::new(crate::runtime::host_policy(config, home)).confinement(),
+            tern_sandbox::Confinement::Off | tern_sandbox::Confinement::Unavailable(_)
+        );
+    if !config.sandbox.network && !unenforced {
         return;
     }
     let luau = std::fs::read_dir(home.connectors_dir())
@@ -544,17 +552,28 @@ fn check_shell_network(r: &mut Report, home: &TernHome, config: &Config) {
     if luau + mcp == 0 {
         return;
     }
+    let (why, fix) = if unenforced {
+        (
+            "[sandbox] network = false isn't enforced without an OS sandbox",
+            "Use an OS sandbox (sandbox.confine = \"auto\" on a kernel with Landlock) or \
+             sandbox.backend = \"docker\". Shell output is treated as untrusted meanwhile.",
+        )
+    } else {
+        (
+            "[sandbox] network = true",
+            "Remove network = true under [sandbox] (off is the default): integrations then go \
+             through their tools, and a command that needs the network asks for it each time. \
+             Shell output is treated as untrusted while the network is on.",
+        )
+    };
     r.check(
         Status::Info,
         format!(
-            "shell commands can reach the network directly ([sandbox] network = true), \
+            "shell commands can reach the network directly ({why}), \
              bypassing the allowlists of your {} active connector(s) and MCP server(s)",
             luau + mcp
         ),
-        Some(
-            "Set network = false under [sandbox] so integrations go through their tools. \
-             Shell output is treated as untrusted while the network is on.",
-        ),
+        Some(fix),
     );
 }
 

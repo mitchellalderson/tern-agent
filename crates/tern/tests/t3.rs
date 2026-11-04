@@ -195,7 +195,8 @@ async fn shell_output_taints_the_run_when_the_network_is_on() {
                 { "text": "Done." }
             ]}
         ]}),
-        "",
+        // Off by default; a config from before that change turns it on.
+        "[sandbox]\nnetwork = true\n",
     );
     let _d = env.daemon_with(None);
     let s = env.socket();
@@ -216,6 +217,6 @@ async fn shell_output_taints_the_run_when_the_network_is_on() {
     assert_eq!(
         taint.as_deref(),
         Some("result of shell"),
-        "network is on by default"
+        "every command can reach the network"
     );
 }
