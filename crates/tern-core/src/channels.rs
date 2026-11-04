@@ -119,17 +119,28 @@ pub fn check_slug(slug: &str) -> Result<(), String> {
     }
 }
 
-/// The system prompt section for runs in a channel with instructions.
-pub fn instructions_section(slug: &str, instructions: &str) -> Option<String> {
-    let text = instructions.trim();
-    (!text.is_empty()).then(|| {
-        format!(
-            "\n\n## Channel #{slug}\n\nThis conversation is in the #{slug} channel. The user's instructions for it:\n\n{text}"
-        )
-    })
+/// Where a run is, for [`where_section`].
+pub enum Place<'a> {
+    /// Home: the default agent's direct line with the user.
+    Home,
+    /// An agent's DM (its name).
+    Dm(&'a str),
+    /// A topic channel.
+    Topic { slug: &'a str, title: &'a str },
 }
 
-/// One agent in a topic channel, for [`members_section`].
+impl Place<'_> {
+    /// How the place is named in a sentence: `#slug`, Home, Research's DM.
+    pub fn name(&self) -> String {
+        match self {
+            Place::Home => "Home".into(),
+            Place::Dm(agent) => format!("{agent}'s DM"),
+            Place::Topic { slug, .. } => format!("#{slug}"),
+        }
+    }
+}
+
+/// One agent in a topic channel, for [`where_section`].
 pub struct MemberLine<'a> {
     pub slug: &'a str,
     pub name: &'a str,
@@ -138,39 +149,97 @@ pub struct MemberLine<'a> {
     pub you: bool,
 }
 
-/// Who else is in a topic channel and how to ask them (agent profiles
-/// §5.2), when there is anyone else. `agent_wakes`: the channel lets
-/// agents' mentions wake agents.
-pub fn members_section(
-    slug: &str,
+/// The always-present "Where you are" section of a conversation run's
+/// frozen prompt: the place, that the reply is delivered there by itself,
+/// who else is there (a topic channel's members, agent profiles §5), and
+/// the channel's instructions. `agent_wakes`: the channel lets agents'
+/// mentions wake agents.
+pub fn where_section(
+    place: &Place<'_>,
     members: &[MemberLine<'_>],
     agent_wakes: bool,
-) -> Option<String> {
-    if members.len() < 2 {
-        return None;
+    instructions: Option<&str>,
+) -> String {
+    let mut out = String::from("\n\n## Where you are\n\n");
+    match place {
+        Place::Home => out.push_str(
+            "You're in Home, your direct line with the user. Your reply is the next message here; the user sees it as you write it.",
+        ),
+        Place::Dm(agent) => out.push_str(&format!(
+            "You're in {agent}'s DM, a direct line with the user. Your reply is the next message here; the user sees it as you write it."
+        )),
+        Place::Topic { slug, title } => {
+            let named = if title.eq_ignore_ascii_case(slug) {
+                String::new()
+            } else {
+                format!(" (\"{title}\")")
+            };
+            out.push_str(&format!(
+                "You're in the #{slug} channel{named}. Your reply is posted to #{slug} automatically: don't offer to post it there. Use `channel_post` only for an update while you work, or to post in another channel."
+            ));
+        }
     }
-    let list = members
-        .iter()
-        .map(|m| {
-            let mut tags = vec![m.name.to_owned()];
-            if m.lead {
-                tags.push("lead".into());
-            }
-            if m.you {
-                tags.push("you".into());
-            }
-            format!("@{} ({})", m.slug, tags.join(", "))
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let wakes = if agent_wakes {
-        "An `@slug` in your answer or a `channel_post` asks that agent too; it answers in its own thread here, and agents can only wake each other a few times in a row, so ask for what you need in one go."
+    if let Place::Topic { slug, .. } = place {
+        if members.len() > 1 {
+            let list = members
+                .iter()
+                .map(|m| {
+                    let mut tags = vec![m.name.to_owned()];
+                    if m.lead {
+                        tags.push("lead".into());
+                    }
+                    if m.you {
+                        tags.push("you".into());
+                    }
+                    format!("@{} ({})", m.slug, tags.join(", "))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let wakes = if agent_wakes {
+                "An `@slug` in your answer or a `channel_post` asks that agent too; agents can only wake each other a few times in a row, so ask for what you need in one go."
+            } else {
+                "Here agents' `@mentions` don't wake anyone: to get another agent's help, say so and the user can ask it."
+            };
+            out.push_str(&format!(
+                "\n\nAgents in #{slug}: {list}. The lead answers posts that mention no one; a post that `@mentions` an agent is answered by that agent. {wakes}"
+            ));
+        }
+        out.push_str(
+            "\n\nThe channel is one conversation: everyone's posts here (the user's, other agents', routines') are context for your work, and you're shown the new ones before you answer.",
+        );
+    }
+    if let Some(text) = instructions.map(str::trim).filter(|t| !t.is_empty()) {
+        out.push_str(&format!(
+            "\n\nThe user's instructions for {}:\n\n{text}",
+            place.name()
+        ));
+    }
+    out
+}
+
+/// "Where you are" for a routine's run: its result goes to `posted_to`
+/// (a place name) and, when it has a push target, `delivered_to`.
+pub fn routine_where_section(title: &str, posted_to: &str, delivered_to: Option<&str>) -> String {
+    let push = delivered_to
+        .map(|d| format!(" and sent to {d}"))
+        .unwrap_or_default();
+    format!(
+        "\n\n## Where you are\n\nThis is a run of the routine \"{title}\". Your result is posted to {posted_to}{push} by itself: write it as the result, and don't offer to post or send it."
+    )
+}
+
+/// "Where you are" for a sub-agent or a delegate: whom it works for and
+/// that its report goes back to it. `can_post`: spawned with `"post": true`.
+pub fn subagent_where_section(caller: &str, place: Option<&str>, can_post: bool) -> String {
+    let at = place.map(|p| format!(" in {p}")).unwrap_or_default();
+    let post = if can_post {
+        " You may also `channel_post` updates there, and your report is posted when you finish."
     } else {
-        "In this channel agents' `@mentions` don't wake anyone: to get another agent's help, say so and the user can ask it."
+        " Don't post to the channel or offer to."
     };
-    Some(format!(
-        "\n\n## Agents in #{slug}\n\nMembers: {list}. The lead answers the user's posts that mention no one; a post that `@mentions` an agent is answered by that agent. Each agent works in its own threads and sees the others' posts in its digest. {wakes}"
-    ))
+    format!(
+        "\n\n## Where you are\n\nYou're working for {caller}{at}. Your final message is your report: it goes back to {caller}, not to the user or the channel.{post}"
+    )
 }
 
 /// `[home]`: when Home's stream (and each Telegram chat's) is cut into a
@@ -569,9 +638,53 @@ mod tests {
     }
 
     #[test]
-    fn instructions_become_a_prompt_section_only_when_given() {
-        assert_eq!(instructions_section("fin", "  "), None);
-        let s = instructions_section("fin", "Amounts in EUR.").unwrap();
-        assert!(s.contains("## Channel #fin") && s.ends_with("Amounts in EUR."));
+    fn every_place_says_where_the_run_is_and_where_its_reply_goes() {
+        // A topic channel without instructions still gets the section.
+        let topic = Place::Topic {
+            slug: "grokbot-research",
+            title: "Grokbot research",
+        };
+        let s = where_section(&topic, &[], false, None);
+        assert!(s.starts_with("\n\n## Where you are\n\n"), "{s}");
+        assert!(s.contains("You're in the #grokbot-research channel (\"Grokbot research\")"));
+        assert!(
+            s.contains("posted to #grokbot-research automatically: don't offer to post it there")
+        );
+        assert!(s.contains("everyone's posts here"));
+        assert!(!s.contains("Agents in"), "alone: no member list");
+        // Members, the lead and instructions.
+        let members = [
+            MemberLine {
+                slug: "research",
+                name: "Research",
+                lead: true,
+                you: false,
+            },
+            MemberLine {
+                slug: "tern",
+                name: "tern",
+                lead: false,
+                you: true,
+            },
+        ];
+        let s = where_section(&topic, &members, true, Some(" Amounts in EUR. "));
+        assert!(s.contains(
+            "Agents in #grokbot-research: @research (Research, lead), @tern (tern, you)."
+        ));
+        assert!(s.contains("ask for what you need in one go"));
+        assert!(s.ends_with("The user's instructions for #grokbot-research:\n\nAmounts in EUR."));
+        // Home and a DM.
+        let s = where_section(&Place::Home, &[], false, None);
+        assert!(s.contains("You're in Home, your direct line with the user."));
+        assert!(!s.contains("channel_post"));
+        let s = where_section(&Place::Dm("Research"), &[], false, None);
+        assert!(s.contains("You're in Research's DM"));
+        // A routine, and a sub-agent.
+        let s = routine_where_section("Morning brief", "#finances", Some("Telegram"));
+        assert!(s.contains("Your result is posted to #finances and sent to Telegram by itself"));
+        let s = subagent_where_section("tern", Some("#grokbot-research"), false);
+        assert!(s.contains("You're working for tern in #grokbot-research."));
+        assert!(s.contains("goes back to tern, not to the user or the channel. Don't post"));
+        assert!(subagent_where_section("tern", None, true).contains("You may also `channel_post`"));
     }
 }

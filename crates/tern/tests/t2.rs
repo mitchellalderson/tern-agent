@@ -174,7 +174,11 @@ async fn a_send_into_a_topic_channel_posts_and_the_answer_replies_to_it() {
 
     // The channel's instructions are in the run's system prompt.
     let system: String = env.query("SELECT system_prompt FROM runs LIMIT 1");
-    assert!(system.contains("## Channel #finances") && system.contains("Amounts in EUR."));
+    assert!(
+        system.contains("## Where you are")
+            && system.contains("#finances")
+            && system.contains("Amounts in EUR.")
+    );
 
     // Run events carry the channel; posts are announced.
     let channel_id = posts[0]["channel_id"].as_str().unwrap().to_owned();

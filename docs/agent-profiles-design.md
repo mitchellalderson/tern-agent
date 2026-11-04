@@ -61,7 +61,7 @@ and everything after it stays engine-owned:
 ```text
 <agent persona.md>                       ← user-editable, per agent
 ## Agents                                ← new, engine-owned (§1.4)
-## Channel #slug                         ← channel instructions, as today
+## Where you are                         ← always: the place, where the reply goes, members, channel instructions
 ## About the user / Memory / What you remember   ← per memory scope (§1.3)
 ## Current time · Workspace · Secrets · Untrusted content · Sub-agents   ← unchanged
 ```

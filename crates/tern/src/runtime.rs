@@ -500,24 +500,66 @@ impl Runtime {
     }
 
     /// Check that `model` resolves to a configured provider.
-    /// The "Agents in #slug" prompt section for a run of `agent_id` in a
-    /// topic channel with other agents (agent profiles §5.2).
-    fn members_section(&self, session: &str, agent_id: &str) -> anyhow::Result<Option<String>> {
-        let Some(c) = self.store.session_channel(session)? else {
+    /// The "Where you are" section of a run's frozen prompt: the place,
+    /// where its reply goes, who else is there, the channel's
+    /// instructions; for a routine, where its result goes. `None` for a
+    /// session in no channel.
+    fn where_section(
+        &self,
+        session: &tern_store::SessionRow,
+        agent_id: &str,
+        routine: bool,
+    ) -> anyhow::Result<Option<String>> {
+        use tern_core::channels::{MemberLine, Place, routine_where_section, where_section};
+        if routine && let Some(s) = self.store.schedule_for_session(&session.id)? {
+            let target = s.channel_id.as_deref().unwrap_or(tern_store::HOME);
+            let posted_to = match self.store.channel(target)? {
+                Some(c) => self.place_name(&c)?,
+                None => "Home".into(),
+            };
+            let delivered = s
+                .deliver_to
+                .as_deref()
+                .map(|t| t.split(':').next().unwrap_or(t))
+                .map(|g| {
+                    let mut c = g.chars();
+                    c.next()
+                        .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                        .unwrap_or_default()
+                });
+            return Ok(Some(routine_where_section(
+                &crate::daemon::scheduler::title(&s),
+                &posted_to,
+                delivered.as_deref(),
+            )));
+        }
+        let Some(c) = self.store.session_channel(&session.id)? else {
             return Ok(None);
         };
-        if c.kind != "topic" {
-            return Ok(None);
-        }
+        let owner = if c.kind == "main" {
+            self.store.agent(c.lead())?
+        } else {
+            None
+        };
+        let place = match (&*c.kind, &owner) {
+            ("topic", _) => Place::Topic {
+                slug: &c.slug,
+                title: &c.title,
+            },
+            (_, Some(a)) if c.id != tern_store::HOME => Place::Dm(&a.name),
+            _ => Place::Home,
+        };
         let mut agents = Vec::new();
-        for m in self.store.channel_members(&c)? {
-            if let Some(a) = self.store.agent(&m.agent_id)? {
-                agents.push((a, m.lead));
+        if c.kind == "topic" {
+            for m in self.store.channel_members(&c)? {
+                if let Some(a) = self.store.agent(&m.agent_id)? {
+                    agents.push((a, m.lead));
+                }
             }
         }
         let lines: Vec<_> = agents
             .iter()
-            .map(|(a, lead)| tern_core::channels::MemberLine {
+            .map(|(a, lead)| MemberLine {
                 slug: &a.slug,
                 name: &a.name,
                 lead: *lead,
@@ -525,7 +567,31 @@ impl Runtime {
             })
             .collect();
         let wakes = self.store.channel_wakes(&c.id)?.agent_wakes;
-        Ok(tern_core::channels::members_section(&c.slug, &lines, wakes))
+        Ok(Some(where_section(
+            &place,
+            &lines,
+            wakes,
+            c.instructions.as_deref(),
+        )))
+    }
+
+    /// A channel as a place in a sentence: `#slug`, Home, `Name's DM`.
+    pub fn place_name(&self, c: &tern_store::ChannelRow) -> anyhow::Result<String> {
+        use tern_core::channels::Place;
+        Ok(if c.kind == "topic" {
+            Place::Topic {
+                slug: &c.slug,
+                title: &c.title,
+            }
+            .name()
+        } else if c.id == tern_store::HOME {
+            Place::Home.name()
+        } else {
+            match self.store.agent(c.lead())? {
+                Some(a) => Place::Dm(&a.name).name(),
+                None => c.title.clone(),
+            }
+        })
     }
 
     pub fn check_model(&self, model: &str) -> anyhow::Result<ModelRef> {
@@ -596,15 +662,9 @@ impl Runtime {
         };
         let (prompt, scope) = agent_frame(&self.home, &self.store, &agent);
         let mut system = self.prompts.build(role, 0, prompt.as_ref(), scope.as_ref());
-        if let Some(c) = self.store.session_channel(&session.id)?
-            && let Some(section) = c
-                .instructions
-                .as_deref()
-                .and_then(|i| tern_core::channels::instructions_section(&c.slug, i))
-        {
-            system.push_str(&section);
-        }
-        if let Some(section) = self.members_section(&session.id, &agent.id)? {
+        // Always, so the agent knows where it is and that its reply is
+        // delivered there; frozen with the prompt, so replay sees the same.
+        if let Some(section) = self.where_section(&session, &agent.id, trigger == "cron")? {
             system.push_str(&section);
         }
         let tool_scope = scope
