@@ -158,6 +158,18 @@ pub enum StreamEvent {
         usage: Usage,
         stop_reason: StopReason,
     },
+    /// Sent first when a fallback model answers instead of the requested
+    /// one (T6a): what answered, and why the earlier ones didn't.
+    Fallback(Fallback),
+}
+
+/// A turn answered by a later model in a fallback chain (T6a).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fallback {
+    /// `provider:model` that answered.
+    pub model: String,
+    /// Why the models before it were passed over, e.g. `anthropic:x: HTTP 529`.
+    pub reason: String,
 }
 
 /// A fully assembled model turn: what the journal stores for an `llm` step.
@@ -166,6 +178,10 @@ pub struct AssistantTurn {
     pub message: Message,
     pub usage: Usage,
     pub stop_reason: StopReason,
+    /// Set when a fallback model answered. Absent otherwise, so journaled
+    /// turns from before T6a read back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<Fallback>,
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -191,6 +207,22 @@ impl ProviderError {
         match self {
             ProviderError::Http { status, .. } => {
                 *status == 429 || *status == 408 || *status >= 500
+            }
+            ProviderError::Network(_) => true,
+            ProviderError::Stream { retryable, .. } => *retryable,
+            ProviderError::Cancelled | ProviderError::Config(_) => false,
+        }
+    }
+
+    /// Whether the next model in a fallback chain should get the call once
+    /// retries are spent (T6a): server errors, overload, rate limits,
+    /// network trouble, and auth or billing failures (401, 402, 403), since
+    /// another provider has its own key and account. Never other 4xx: the
+    /// request itself is wrong and would be wrong anywhere.
+    pub fn moves_to_fallback(&self) -> bool {
+        match self {
+            ProviderError::Http { status, .. } => {
+                self.is_retryable() || (401..=403).contains(status)
             }
             ProviderError::Network(_) => true,
             ProviderError::Stream { retryable, .. } => *retryable,
@@ -251,5 +283,23 @@ mod tests {
         assert!(http(529).is_retryable());
         assert!(!http(400).is_retryable());
         assert!(!ProviderError::Cancelled.is_retryable());
+    }
+
+    #[test]
+    fn fallback_eligibility() {
+        let http = |status| ProviderError::Http {
+            status,
+            body: String::new(),
+            retry_after: None,
+        };
+        for s in [401, 402, 403, 429, 500, 503, 529] {
+            assert!(http(s).moves_to_fallback(), "{s}");
+        }
+        for s in [400, 404, 413, 422] {
+            assert!(!http(s).moves_to_fallback(), "{s}");
+        }
+        assert!(ProviderError::Network("reset".into()).moves_to_fallback());
+        assert!(!ProviderError::Cancelled.moves_to_fallback());
+        assert!(!ProviderError::Config("no key".into()).moves_to_fallback());
     }
 }

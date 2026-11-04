@@ -83,6 +83,10 @@ pub struct StepOutput<O> {
     /// Agent mail ids this step consumes, marked in the completing
     /// transaction (so a crash before completion leaves them pending).
     pub consumes: Vec<i64>,
+    /// `provider:model` of a fallback that answered instead of the run's
+    /// model (T6a). Stored as `model` in the step's usage, so cost is
+    /// counted against the model that did the work.
+    pub answered_by: Option<String>,
 }
 
 impl<O> StepOutput<O> {
@@ -93,7 +97,13 @@ impl<O> StepOutput<O> {
             messages: Vec::new(),
             summary_of: None,
             consumes: Vec::new(),
+            answered_by: None,
         }
+    }
+
+    pub fn answered_by(mut self, fallback: Option<&crate::types::Fallback>) -> Self {
+        self.answered_by = fallback.map(|f| f.model.clone());
+        self
     }
 
     pub fn with_consumes(mut self, ids: Vec<i64>) -> Self {
@@ -329,7 +339,14 @@ impl Journal {
     ) -> Result<(), StepError> {
         let mut output = serde_json::to_value(&out.output)?;
         self.redact(&mut output);
-        let usage = out.usage.as_ref().map(serde_json::to_string).transpose()?;
+        let usage = match (&out.usage, &out.answered_by) {
+            (Some(u), Some(model)) => {
+                let mut v = serde_json::to_value(u)?;
+                v["model"] = model.clone().into();
+                Some(v.to_string())
+            }
+            (u, _) => u.as_ref().map(serde_json::to_string).transpose()?,
+        };
         let messages = out
             .messages
             .iter()

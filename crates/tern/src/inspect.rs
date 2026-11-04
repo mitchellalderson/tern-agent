@@ -74,6 +74,11 @@ pub fn runs_show(home: &TernHome, run_id: &str) -> anyhow::Result<()> {
     println!("status   {}", run.status);
     println!("trigger  {}", run.trigger);
     println!("model    {}", run.model.as_deref().unwrap_or("-"));
+    let steps = store.steps(run_id)?;
+    let fallbacks = steps.iter().filter(|s| answered_by(s).is_some()).count();
+    if fallbacks > 0 {
+        println!("fallback {fallbacks} step(s) answered by a fallback model");
+    }
     println!("started  {}", time(run.started_at));
     if let Some(f) = run.finished_at {
         println!("finished {}", time(f));
@@ -99,7 +104,7 @@ pub fn runs_show(home: &TernHome, run_id: &str) -> anyhow::Result<()> {
         );
     }
     println!();
-    for step in store.steps(run_id)? {
+    for step in steps {
         let dur = step
             .finished_at
             .map(|f| format!("{:.1}s", (f - step.started_at) as f64 / 1000.0))
@@ -141,11 +146,26 @@ fn print_tree(store: &Store, child: &tern_store::RunRow, level: usize) -> anyhow
     Ok(())
 }
 
+/// The fallback model that answered `step`, when one did (T6a).
+fn answered_by(step: &StepRow) -> Option<String> {
+    let usage: Value = serde_json::from_str(step.usage_json.as_deref()?).ok()?;
+    usage["model"].as_str().map(str::to_owned)
+}
+
 /// One-line description of a step from its stored input and output.
 fn describe(step: &StepRow) -> String {
     if let Some(e) = &step.error {
         return format!("error: {}", one_line(e, 100));
     }
+    if step.kind != "llm"
+        && let Some(model) = answered_by(step)
+    {
+        return format!("{} (answered by {model})", describe_kind(step));
+    }
+    describe_kind(step)
+}
+
+fn describe_kind(step: &StepRow) -> String {
     let input: Value = serde_json::from_str(&step.input_json).unwrap_or(Value::Null);
     let output: Option<Value> = step
         .output_json
@@ -163,10 +183,14 @@ fn describe(step: &StepRow) -> String {
                 "[{} in / {} out]",
                 turn.usage.input_tokens, turn.usage.output_tokens
             );
-            match (text.is_empty(), calls.is_empty()) {
+            let line = match (text.is_empty(), calls.is_empty()) {
                 (_, false) if text.is_empty() => format!("→ {} {usage}", calls.join(", ")),
                 (_, false) => format!("{text:?} → {} {usage}", calls.join(", ")),
                 _ => format!("{text:?} {usage}"),
+            };
+            match turn.fallback {
+                Some(f) => format!("{line}\n{:34}answered by {} ({})", "", f.model, f.reason),
+                None => line,
             }
         }
         "tool" | "approval" => {

@@ -2,6 +2,7 @@
 //!
 //! Read-only: never creates the data directory or the database.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -150,14 +151,29 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
             ),
             None,
         ),
-        Some(Ok(m)) => r.check(Status::Ok, format!("default_model {m}"), None),
+        Some(Ok(_)) => r.check(
+            Status::Ok,
+            format!(
+                "default_model {}",
+                config
+                    .default_model
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default()
+            ),
+            None,
+        ),
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    let mut listed = BTreeMap::new();
     for (name, p) in &config.providers {
-        check_provider(&mut r, &runtime, &secrets, name, p, args.offline);
+        if let Some(ids) = check_provider(&mut r, &runtime, &secrets, name, p, args.offline) {
+            listed.insert(name.clone(), ids);
+        }
     }
+    check_chains(&mut r, &config, &listed);
 
     r.section("Database");
     check_database(&mut r, &home.db_path());
@@ -341,7 +357,7 @@ fn check_provider(
     name: &str,
     p: &ProviderConfig,
     offline: bool,
-) {
+) -> Option<Vec<String>> {
     let key = match &p.api_key_secret {
         Some(secret) => {
             check_secret(r, secrets, name, secret);
@@ -353,7 +369,7 @@ fn check_provider(
                 format!("{name}: anthropic needs api_key_secret"),
                 None,
             );
-            return;
+            return None;
         }
         None => None,
     };
@@ -363,7 +379,7 @@ fn check_provider(
             format!("{name}: openai_compat needs base_url"),
             None,
         );
-        return;
+        return None;
     }
     if offline {
         r.check(
@@ -371,14 +387,20 @@ fn check_provider(
             format!("{name}: reachability skipped (--offline)"),
             None,
         );
-        return;
+        return None;
     }
-    let (status, msg) = runtime.block_on(probe(name, p, key.as_deref()));
+    let (status, msg, ids) = runtime.block_on(probe(name, p, key.as_deref()));
     r.check(status, format!("{name}: {msg}"), None);
+    ids
 }
 
-/// List models as a cheap authenticated reachability probe.
-async fn probe(name: &str, p: &ProviderConfig, key: Option<&str>) -> (Status, String) {
+/// List models as a cheap authenticated reachability probe. Also returns
+/// the model ids, for checking fallback chains.
+async fn probe(
+    name: &str,
+    p: &ProviderConfig,
+    key: Option<&str>,
+) -> (Status, String, Option<Vec<String>>) {
     let base = p.effective_base_url().unwrap_or_default();
     match tern_providers::list_models(p, key).await {
         Ok(l) => {
@@ -386,14 +408,78 @@ async fn probe(name: &str, p: &ProviderConfig, key: Option<&str>) -> (Status, St
             if let Some(url) = l.suggested_base_url {
                 msg.push_str(&format!("; models answered at {url}, set base_url to that"));
             }
-            (Status::Ok, msg)
+            let ids = l.models.into_iter().map(|m| m.id).collect();
+            (Status::Ok, msg, Some(ids))
         }
         Err(e) => {
             let status = match e {
                 ListError::RateLimited | ListError::NotFound | ListError::Forbidden => Status::Warn,
                 _ => Status::Fail,
             };
-            (status, tern_core::models::describe(&e, name, Some(base)))
+            (
+                status,
+                tern_core::models::describe(&e, name, Some(base)),
+                None,
+            )
+        }
+    }
+}
+
+/// Every model in every fallback chain (T6a): it parses, its provider is
+/// configured, and, where the provider answered, it is in the model list.
+fn check_chains(
+    r: &mut Report,
+    config: &tern_core::Config,
+    listed: &BTreeMap<String, Vec<String>>,
+) {
+    let mut heads: Vec<(String, String)> = Vec::new();
+    for (key, chain) in config.model_chains() {
+        if chain.fallbacks().is_empty() {
+            continue;
+        }
+        let mut ok = true;
+        for entry in chain.entries() {
+            let m = match entry.parse::<tern_core::config::ModelRef>() {
+                Ok(m) => m,
+                Err(e) => {
+                    ok = false;
+                    r.check(Status::Fail, format!("{key}: {e}"), None);
+                    continue;
+                }
+            };
+            if !config.providers.contains_key(&m.provider) {
+                ok = false;
+                r.check(
+                    Status::Fail,
+                    format!(
+                        "{key}: {m} uses provider {:?}, which is not configured",
+                        m.provider
+                    ),
+                    Some("A fallback that can't be built is skipped when a run starts."),
+                );
+            } else if let Some(ids) = listed.get(&m.provider)
+                && !ids.contains(&m.model)
+            {
+                ok = false;
+                r.check(
+                    Status::Warn,
+                    format!("{key}: {m} is not in {}'s model list", m.provider),
+                    Some("Check the model id; `tern models` lists what the provider offers."),
+                );
+            }
+        }
+        if let Some((earlier, _)) = heads.iter().find(|(_, h)| h == chain.primary()) {
+            ok = false;
+            r.check(
+                Status::Warn,
+                format!("{key} starts with the same model as {earlier}; only {earlier}'s fallbacks apply"),
+                None,
+            );
+        } else {
+            heads.push((key.clone(), chain.primary().to_owned()));
+        }
+        if ok {
+            r.check(Status::Ok, format!("{key}: fallback chain {chain}"), None);
         }
     }
 }
@@ -471,7 +557,7 @@ fn check_schedules(r: &mut Report, home: &TernHome, config: &Config) {
                 .ok()
                 .flatten()
                 .and_then(|sess| sess.model)
-                .or_else(|| config.default_model.clone());
+                .or_else(|| config.default_model.as_deref().map(str::to_owned));
             if let Some(m) =
                 model.filter(|m| crate::providers::price_of(config, &models, m).is_none())
             {

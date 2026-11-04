@@ -10,7 +10,7 @@ use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use tern_core::Config;
 use tern_core::config::edit::ConfigFile;
-use tern_core::config::{ModelRef, Pricing, ProviderConfig, ProviderKind};
+use tern_core::config::{ModelChain, ModelRef, Pricing, ProviderConfig, ProviderKind};
 use tern_core::models::{
     Change, ListError, ModelInfo, ProviderDraft, ProviderModels, ProviderStatus, Resolved,
     Verified, describe, host_of,
@@ -591,7 +591,7 @@ impl Runtime {
         let mut file = ConfigFile::open(&self.home.config_path())?;
         file.upsert_provider(&plan.name, &plan.cfg)?;
         if let Some(m) = &set_default {
-            file.set_value("default_model", m.as_str().into())?;
+            file.set_value("default_model", self.default_chain(m))?;
         }
         file.save()?;
         self.models.forget(&plan.name);
@@ -611,8 +611,8 @@ impl Runtime {
         Ok((status, verified))
     }
 
-    /// Remove a provider. Clears `default_model` if it used the provider,
-    /// and with `remove_secret` deletes its key unless something else uses it.
+    /// Remove a provider. Drops it from `default_model` (a chain keeps its
+    /// other models; nothing left clears the key), and with `remove_secret` deletes its key unless something else uses it.
     pub fn remove_provider(&self, name: &str, remove_secret: bool) -> anyhow::Result<()> {
         let config = self.live();
         let p = config
@@ -621,12 +621,20 @@ impl Runtime {
             .with_context(|| format!("provider {name:?} is not configured"))?;
         let mut file = ConfigFile::open(&self.home.config_path())?;
         file.remove_provider(name);
-        if config
-            .default_model_ref()
-            .and_then(Result::ok)
-            .is_some_and(|m| m.provider == name)
-        {
-            file.remove("default_model");
+        if let Some(chain) = &config.default_model {
+            let uses = |m: &String| {
+                m.parse::<ModelRef>()
+                    .is_ok_and(|m: ModelRef| m.provider == name)
+            };
+            if chain.entries().iter().any(uses) {
+                let kept = chain.entries().iter().filter(|m| !uses(m)).cloned();
+                match ModelChain::new(kept.collect()) {
+                    Some(rest) => file.set_value("default_model", rest.to_toml())?,
+                    None => {
+                        file.remove("default_model");
+                    }
+                }
+            }
         }
         let saved = file.save()?;
         if remove_secret && let Some(secret) = &p.api_key_secret {
@@ -648,10 +656,19 @@ impl Runtime {
     pub fn set_default_model(&self, model: &str) -> anyhow::Result<Resolved> {
         let resolved = self.resolve_model(model)?;
         let mut file = ConfigFile::open(&self.home.config_path())?;
-        file.set_value("default_model", resolved.model.as_str().into())?;
+        file.set_value("default_model", self.default_chain(&resolved.model))?;
         file.save()?;
         self.reload_providers()?;
         Ok(resolved)
+    }
+
+    /// `default_model` with `model` first: a configured chain keeps its
+    /// fallbacks (T6a), so picking a model doesn't drop them.
+    fn default_chain(&self, model: &str) -> toml_edit::Value {
+        match &self.live().default_model {
+            Some(chain) => chain.with_primary(model).to_toml(),
+            None => model.into(),
+        }
     }
 }
 

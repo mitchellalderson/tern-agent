@@ -153,7 +153,7 @@ fn spend_since(manager: &Manager, s: &ScheduleRow, since: i64) -> anyhow::Result
         .store
         .session(&s.session_id)?
         .and_then(|sess| sess.model)
-        .or_else(|| rt.live().default_model);
+        .or_else(|| rt.live().default_model.map(|c| c.primary().to_owned()));
     let mut spent = 0.0;
     let models = usage
         .iter()
