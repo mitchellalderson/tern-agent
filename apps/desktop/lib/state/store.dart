@@ -186,6 +186,10 @@ class TernStore extends ChangeNotifier {
   Agent? agentOf(String channelId) =>
       agents.where((a) => a.mainChannelId == channelId).firstOrNull;
 
+  /// The agent of the stream `session` belongs to, if it's the loaded one.
+  Agent? streamAgentFor(String session) =>
+      _streamSessions.contains(session) ? agentOf(streamChannel) : null;
+
   /// The agent whose stream is open (the default agent in Home).
   Agent? get streamAgent => streamOpen ? agentOf(channel!) : null;
 
@@ -208,6 +212,28 @@ class TernStore extends ChangeNotifier {
               a.name.toLowerCase() == n.toLowerCase(),
         )
         .firstOrNull;
+  }
+
+  /// The agent profile an author id belongs to: `tern:research`, a
+  /// sub-agent's `tern:research/label`, or a routine's (`routine:<id>`)
+  /// owner. Null for the user.
+  Agent? agentOfAuthor(String authorId) {
+    final id = switch (authorId.split(':')) {
+      ['routine', final s] =>
+        schedules.where((x) => x.id == s).firstOrNull?.agentId,
+      _ => authorId.split('/').first,
+    };
+    return agents.where((a) => a.id == id).firstOrNull;
+  }
+
+  /// How to show an author: an agent's current name (with a sub-agent's
+  /// label), else `fallback` (the user, a routine's title).
+  String authorName(String authorId, String fallback) {
+    if (!authorId.startsWith(Agent.defaultId)) return fallback;
+    final a = agentOfAuthor(authorId);
+    if (a == null) return fallback;
+    final i = authorId.indexOf('/');
+    return i < 0 ? a.name : '${a.name}${authorId.substring(i)}';
   }
 
   /// The default agent, `tern`.
@@ -1132,9 +1158,12 @@ class TernStore extends ChangeNotifier {
     }
     if (e case RunStarted(:final runId, :final channelId?)) {
       final label = _labels[runId];
+      final agent = e.agentId ?? Agent.defaultId;
       _live[runId] = (
         channel: channelId,
-        author: e.parentRunId != null && label != null ? 'tern/$label' : 'tern',
+        author: e.parentRunId != null && label != null
+            ? '$agent/$label'
+            : agent,
       );
     }
     switch (e) {
@@ -1347,7 +1376,18 @@ class TernStore extends ChangeNotifier {
   void _notifyFinished(String session, RunFinished e) {
     // A quiet run (`NO_REPLY`) had nothing to say.
     if (!_unseen(session) || e.status == 'interrupted' || e.quiet) return;
-    final title = sessions.where((s) => s.id == session).firstOrNull?.title;
+    final s = sessions.where((s) => s.id == session).firstOrNull;
+    final agent =
+        (s?.channelId == null ? null : agentOf(s!.channelId!)) ??
+        streamAgentFor(session) ??
+        defaultAgent;
+    final name = agent?.name ?? 'tern';
+    // Another agent's chat says whose it is.
+    final title = switch ((s?.title, agent?.isDefault ?? true)) {
+      (final t?, true) => t,
+      (final t?, false) => '$name · $t',
+      (null, _) => name,
+    };
     final reply = transcriptOf(session)?.items
         .whereType<AssistantItem>()
         .lastOrNull
@@ -1358,7 +1398,7 @@ class TernStore extends ChangeNotifier {
     unawaited(
       notifier.show(
         id: session,
-        title: title ?? 'tern',
+        title: title,
         body: e.status == 'failed'
             ? 'Failed: ${e.error ?? 'unknown error'}'
             : reply ?? 'Done',

@@ -512,6 +512,7 @@ sealed class TernEvent {
     if (event is RunEvent) {
       if (j['session_id'] case final String s) _sessions[event] = s;
       if (j['channel_id'] case final String c) _channels[event] = c;
+      if (j['agent_id'] case final String a) _agents[event] = a;
       if (j['parent_run_id'] case final String p) _parents[event] = p;
       if (j['root_session_id'] case final String r) _roots[event] = r;
     }
@@ -609,6 +610,10 @@ sealed class RunEvent extends TernEvent {
 
   /// The channel of the run's session, which the daemon adds.
   String? get channelId => _channels[this];
+
+  /// The agent profile of the run's session (`tern` by default), which the
+  /// daemon adds.
+  String? get agentId => _agents[this];
 }
 
 // Kept beside the event rather than in every constructor, so events can
@@ -617,6 +622,7 @@ final _sessions = Expando<String>('session_id');
 final _parents = Expando<String>('parent_run_id');
 final _roots = Expando<String>('root_session_id');
 final _channels = Expando<String>('channel_id');
+final _agents = Expando<String>('agent_id');
 
 class RunStarted extends RunEvent {
   const RunStarted({
