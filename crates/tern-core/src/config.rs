@@ -608,7 +608,7 @@ impl Default for SubagentsConfig {
 
 /// `[schedules]`: defaults for every schedule; each can override them
 /// (docs/personal-agent-tooling-spec.md §4.1, §8.3).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SchedulesConfig {
     /// Deliveries finishing inside this window wait for its end.
@@ -619,6 +619,36 @@ pub struct SchedulesConfig {
     pub usd_per_day: Option<f64>,
     /// Tokens (input + output + cache) one run may use before it is stopped.
     pub tokens_per_run: Option<u64>,
+    /// New events one watch poll may start a run each for; the rest share
+    /// one batched run.
+    pub max_events_per_poll: usize,
+    /// How loudly a routine's result reaches its chat, unless the routine
+    /// sets its own: `silent`, `digest`, `notify` or `interrupt` (T1b).
+    pub initiative: crate::initiative::Initiative,
+    /// Every routine one level `quieter` or `louder`, or `vacation` (all
+    /// silent); `normal` leaves them as they are.
+    pub initiative_dial: crate::initiative::Dial,
+    /// Local times when held digest results are sent, as one message.
+    pub digest_times: crate::initiative::DigestTimes,
+    /// The model that decides whether a `notify` result is worth a push;
+    /// unset = the cheapest configured model with a known price.
+    pub gate_model: Option<ModelChain>,
+}
+
+impl Default for SchedulesConfig {
+    fn default() -> Self {
+        Self {
+            quiet_hours: crate::quiet::QuietHours::default(),
+            runs_per_day: None,
+            usd_per_day: None,
+            tokens_per_run: None,
+            max_events_per_poll: 20,
+            initiative: crate::initiative::Initiative::default(),
+            initiative_dial: crate::initiative::Dial::default(),
+            digest_times: crate::initiative::DigestTimes::default(),
+            gate_model: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

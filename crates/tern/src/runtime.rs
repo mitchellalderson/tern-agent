@@ -453,6 +453,20 @@ impl Runtime {
         }
     }
 
+    /// A Luau host over this runtime's store and secrets, for watches and
+    /// gates (T1b).
+    pub fn lua_host(&self) -> anyhow::Result<tern_lua::Host> {
+        crate::routines::lua_host(&self.store, &self.secrets)
+    }
+
+    /// Checks for routines' watches against the active connectors.
+    pub fn routine_checks(&self) -> anyhow::Result<crate::routines::LuaChecks> {
+        Ok(crate::routines::LuaChecks::new(
+            self.lua_host()?,
+            self.home.connectors_dir(),
+        ))
+    }
+
     /// Check that `model` resolves to a configured provider.
     pub fn check_model(&self, model: &str) -> anyhow::Result<ModelRef> {
         Ok(self.resolve_model(model)?.model.parse()?)
@@ -467,6 +481,20 @@ impl Runtime {
         text: &str,
         source: &str,
         trigger: &str,
+    ) -> anyhow::Result<StartedRun> {
+        self.start_run_tainted(session, model, text, source, trigger, None)
+    }
+
+    /// [`Runtime::start_run`] for untrusted input: the run starts tainted
+    /// for `taint` (tooling spec §5.3), e.g. a routine started by a watch.
+    pub fn start_run_tainted(
+        &self,
+        session: Option<&str>,
+        model: Option<&str>,
+        text: &str,
+        source: &str,
+        trigger: &str,
+        taint: Option<&str>,
     ) -> anyhow::Result<StartedRun> {
         let session = match session {
             Some(id) => self
@@ -528,6 +556,7 @@ impl Runtime {
             trigger,
             tool_scope.as_deref(),
             agent.private_memory().then_some("private"),
+            taint,
         )?;
         // Frozen on the run, like its model (tooling spec §5.4); a routine
         // overrides it in `Manager::start_scheduled`. An agent's autonomy
@@ -833,6 +862,18 @@ fn build_tools(
     };
     let connectors = Arc::new(tern_lua::Connectors::open(lua.clone(), dirs.active.clone()));
     registry.add_source(connectors.clone());
+    // Routines' watches are checked against the active connectors (T1b).
+    let checks: Arc<dyn tern_tools::schedule::RoutineChecks> = Arc::new(
+        crate::routines::LuaChecks::new(lua.clone(), dirs.active.clone()),
+    );
+    registry.register(Arc::new(tern_tools::schedule::ScheduleCreate {
+        store: store.clone(),
+        checks: Some(checks.clone()),
+    }));
+    registry.register(Arc::new(tern_tools::schedule::ScheduleUpdate {
+        store: store.clone(),
+        checks: Some(checks),
+    }));
     registry.register(Arc::new(tern_lua::tools::ConnectorWrite {
         host: lua.clone(),
         dirs: dirs.clone(),

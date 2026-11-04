@@ -214,6 +214,13 @@ impl Agent {
         &self.journal
     }
 
+    /// The provider (a fallback chain where configured) that serves
+    /// `model`, for one-off calls outside a run, such as a routine's
+    /// notification gate (T1b).
+    pub fn provider(&self, model: &ModelRef) -> Result<Arc<dyn Provider>, ProviderError> {
+        (self.providers)(model)
+    }
+
     pub fn tools(&self) -> &ToolRegistry {
         &self.tools
     }
@@ -245,11 +252,14 @@ impl Agent {
             trigger,
             None,
             None,
+            None,
         )
     }
 
     /// [`Agent::start_run`] for an agent profile: its tool scope (JSON tool
-    /// names and `*` patterns) and memory scope, frozen on the run.
+    /// names and `*` patterns) and memory scope, frozen on the run. `taint`
+    /// starts it tainted, for that reason (untrusted input, e.g. a watch
+    /// event).
     #[allow(clippy::too_many_arguments)]
     pub fn start_run_as(
         &self,
@@ -260,6 +270,7 @@ impl Agent {
         trigger: &str,
         tool_scope: Option<&str>,
         memory_scope: Option<&str>,
+        taint: Option<&str>,
     ) -> Result<RunRow, AgentError> {
         let run_id = new_id();
         let input = self
@@ -275,6 +286,7 @@ impl Agent {
                 system_prompt,
                 tool_scope,
                 memory_scope,
+                taint,
                 ..tern_store::NewRun::default()
             },
             &input,

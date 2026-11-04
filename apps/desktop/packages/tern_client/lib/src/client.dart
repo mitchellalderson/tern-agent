@@ -553,14 +553,16 @@ class TernClient {
     ScheduleLimits? limits,
     String? channel,
     String? agent,
+    RoutineOptions? options,
   }) async => Schedule.fromJson(
     await _json('POST', '/v1/schedules', {
-      'cron': cron,
+      if (!(options?.replacesCron ?? false) && cron.isNotEmpty) 'cron': cron,
       'prompt': prompt,
       'deliver_to': ?deliverTo,
       'channel': ?channel,
       'agent': ?agent,
       ...?limits?.toJson(),
+      ...?options?.toJson(),
     }),
   );
 
@@ -576,21 +578,31 @@ class TernClient {
     bool resume = false,
     String? channel,
     String? agent,
+    RoutineOptions? options,
   }) async => Schedule.fromJson(
     await _json('PATCH', '/v1/schedules/$id', {
-      'cron': ?cron,
+      if (!(options?.replacesCron ?? false) && (cron?.isNotEmpty ?? false))
+        'cron': cron,
       'prompt': ?prompt,
       'enabled': ?enabled,
       'deliver_to': ?deliverTo,
       'channel': ?channel,
       'agent': ?agent,
       ...?limits?.toJson(),
+      ...?options?.toJson(),
       if (resume) 'resume': true,
     }),
   );
 
   Future<void> deleteSchedule(String id) =>
       _json('DELETE', '/v1/schedules/$id');
+
+  /// The global initiative dial: `vacation`, `quieter`, `normal`, `louder`.
+  Future<String> initiative() async =>
+      (await _json('GET', '/v1/initiative'))['dial'] as String;
+
+  Future<String> setInitiative(String dial) async =>
+      (await _json('PUT', '/v1/initiative', {'dial': dial}))['dial'] as String;
 
   /// Run a routine now; its next scheduled run doesn't move.
   Future<Started> runSchedule(String id) async {

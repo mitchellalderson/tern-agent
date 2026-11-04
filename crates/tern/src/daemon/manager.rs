@@ -449,6 +449,32 @@ impl ApprovalHandler for Router {
     }
 }
 
+/// A watch run's input: the routine's prompt, then the events, wrapped as
+/// untrusted.
+pub(crate) fn watch_input(
+    prompt: &str,
+    watch: &str,
+    events: &[tern_store::RoutineEvent],
+) -> String {
+    let (what, body) = match events {
+        [one] => ("an event".to_owned(), one.payload.clone()),
+        many => (
+            format!("{} events", many.len()),
+            format!(
+                "[\n{}\n]",
+                many.iter()
+                    .map(|e| e.payload.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",\n")
+            ),
+        ),
+    };
+    format!(
+        "{prompt}\n\nThe watch {watch} reported {what}:\n{}",
+        tern_core::agent::taint::wrap(&format!("watch:{watch}"), &body)
+    )
+}
+
 pub struct Manager {
     pub rt: Arc<Runtime>,
     pub routes: Arc<Routes>,
@@ -538,6 +564,39 @@ impl Manager {
         let started = self
             .rt
             .start_run(Some(&s.session_id), None, &s.prompt, "cron", "cron")?;
+        self.drive_routine_run(s, started)
+    }
+
+    /// Start a run of watch routine `s` for `events` (one, or a batch).
+    /// The events are untrusted input: the run starts tainted (tooling spec
+    /// §3.1, §5.3), and they reach the model wrapped. Its trigger is
+    /// `cron`, like every routine's run.
+    pub async fn start_watch_run(
+        self: &Arc<Self>,
+        s: &tern_store::ScheduleRow,
+        events: &[tern_store::RoutineEvent],
+    ) -> anyhow::Result<crate::runtime::StartedRun> {
+        let watch = s.watch.as_deref().unwrap_or("watch");
+        let text = watch_input(&s.prompt, watch, events);
+        let reason = format!("started by watch {watch}");
+        let started = self.rt.start_run_tainted(
+            Some(&s.session_id),
+            None,
+            &text,
+            "cron",
+            "cron",
+            Some(&reason),
+        )?;
+        self.drive_routine_run(s, started)
+    }
+
+    /// A routine's run, just created: its delivery target, autonomy and
+    /// token cap, then drive it.
+    fn drive_routine_run(
+        self: &Arc<Self>,
+        s: &tern_store::ScheduleRow,
+        started: crate::runtime::StartedRun,
+    ) -> anyhow::Result<crate::runtime::StartedRun> {
         if let Some(t) = &s.deliver_to {
             self.rt.store.set_run_deliver_to(&started.run_id, t)?;
         }
@@ -635,12 +694,96 @@ impl Manager {
             })
             .flatten();
         match schedule {
-            Some(s) => self.hold_or_send(&s, &target, Some(&run.id), &text).await,
+            Some(s) => {
+                let failed = outcome.status == RunStatus::Failed;
+                self.deliver_routine(&s, &run, &target, &text, failed).await
+            }
             None => {
                 if let Err(e) = self.send_to(&target, Some(&run.id), &text).await {
                     tracing::warn!(target, error = %e, "delivery failed");
                 }
             }
+        }
+    }
+
+    /// Push a routine's result by its initiative (tooling spec §4.1): the
+    /// routine's own level or the default, moved by the global dial.
+    /// `silent` sends nothing, `digest` holds it for the next digest time,
+    /// `notify` asks the gate model and pushes only on yes (else digest),
+    /// `interrupt` pushes (quiet hours still hold it unless `urgent`). A
+    /// failed run isn't put to the gate model: `notify` pushes it.
+    async fn deliver_routine(
+        &self,
+        s: &tern_store::ScheduleRow,
+        run: &tern_store::RunRow,
+        target: &str,
+        text: &str,
+        failed: bool,
+    ) {
+        use tern_core::initiative::Initiative;
+        let cfg = self.rt.live().schedules;
+        let own = s
+            .initiative
+            .as_deref()
+            .and_then(Initiative::parse)
+            .unwrap_or(cfg.initiative);
+        let level = cfg.initiative_dial.apply(own);
+        match level {
+            Initiative::Silent => {
+                tracing::info!(schedule = %s.id, run = %run.id, "silent routine: posted, not pushed");
+            }
+            Initiative::Digest => self.hold_for_digest(s, target, &run.id, text),
+            Initiative::Notify if failed => {
+                self.hold_or_send(s, target, Some(&run.id), text).await;
+            }
+            Initiative::Notify => {
+                let model = run.model.as_deref().unwrap_or_default();
+                match crate::routines::ask_gate(&self.rt, &s.prompt, model, text).await {
+                    Ok(a) if a.interrupt => {
+                        tracing::info!(schedule = %s.id, headline = %a.headline, "gate model: interrupt");
+                        let text = if a.headline.is_empty() {
+                            text.to_owned()
+                        } else {
+                            format!("{}\n\n{text}", a.headline)
+                        };
+                        self.hold_or_send(s, target, Some(&run.id), &text).await;
+                    }
+                    Ok(_) => {
+                        tracing::info!(schedule = %s.id, "gate model: not now; into the digest");
+                        self.hold_for_digest(s, target, &run.id, text);
+                    }
+                    Err(e) => {
+                        tracing::warn!(schedule = %s.id, error = %e, "gate model failed; into the digest");
+                        self.hold_for_digest(s, target, &run.id, text);
+                    }
+                }
+            }
+            Initiative::Interrupt => self.hold_or_send(s, target, Some(&run.id), text).await,
+        }
+    }
+
+    /// Hold a routine's result until the next digest time (or the end of
+    /// quiet hours, if that time falls in them).
+    fn hold_for_digest(&self, s: &tern_store::ScheduleRow, target: &str, run_id: &str, text: &str) {
+        let cfg = self.rt.live().schedules;
+        let quiet = s
+            .quiet_hours
+            .as_deref()
+            .and_then(|q| q.parse::<tern_core::quiet::QuietHours>().ok())
+            .unwrap_or(cfg.quiet_hours);
+        let at = cfg.digest_times.next_after(chrono::Local::now());
+        let at = quiet.release_at(at).unwrap_or(at);
+        let label = super::scheduler::title(s);
+        match self.rt.store.hold_delivery_as(
+            target,
+            Some(run_id),
+            Some(&label),
+            text,
+            at.timestamp_millis(),
+            "digest",
+        ) {
+            Ok(()) => tracing::info!(schedule = %s.id, until = %at, "held for the digest"),
+            Err(e) => tracing::warn!(schedule = %s.id, error = %e, "could not hold for the digest"),
         }
     }
 

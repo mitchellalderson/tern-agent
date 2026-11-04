@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0012_outbox.sql"),
     include_str!("../migrations/0013_agents.sql"),
     include_str!("../migrations/0014_egress.sql"),
+    include_str!("../migrations/0015_routines.sql"),
 ];
 
 pub const LATEST_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -157,5 +158,39 @@ mod tests {
         ] {
             assert_eq!(count(sql), 0, "{sql}");
         }
+    }
+
+    #[test]
+    fn routines_backfill_makes_every_schedule_a_cron_routine_that_pushes() {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate_to(&mut c, 13);
+        c.execute_batch(
+            "INSERT INTO sessions (id, source, created_at, updated_at, channel_id)
+               VALUES ('cron', 'cron', 0, 20, 'home');
+             INSERT INTO schedules (id, cron, prompt, session_id, next_run_at, channel_id, urgent)
+               VALUES ('s', '0 8 * * *', 'brief', 'cron', 0, 'home', 1);
+             INSERT INTO held_deliveries (target, text, release_at, created_at)
+               VALUES ('telegram:1', 'held', 0, 0);",
+        )
+        .unwrap();
+        migrate(&mut c).unwrap();
+        let row: (String, String, Option<String>, i64, i64) = c
+            .query_row(
+                "SELECT trigger_kind, initiative, watch_cursor, urgent, backfill FROM schedules WHERE id = 's'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        // Before routines, every result was pushed: that is `interrupt`.
+        assert_eq!(row, ("cron".into(), "interrupt".into(), None, 1, 0));
+        let kind: String = c
+            .query_row("SELECT kind FROM held_deliveries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kind, "quiet");
+        let events: i64 = c
+            .query_row("SELECT count(*) FROM routine_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, 0);
     }
 }

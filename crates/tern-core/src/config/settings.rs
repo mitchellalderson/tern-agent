@@ -218,6 +218,26 @@ fn meta(key: &str) -> Meta {
             live: true,
             ..at_least(1.0)
         },
+        "schedules.initiative" => Meta {
+            choices: &["silent", "digest", "notify", "interrupt"],
+            live: true,
+            ..m
+        },
+        "schedules.initiative_dial" => Meta {
+            choices: &["vacation", "quieter", "normal", "louder"],
+            live: true,
+            ..m
+        },
+        "schedules.digest_times" => Meta { live: true, ..m },
+        "schedules.gate_model" => Meta {
+            kind: Some(Kind::Model),
+            live: true,
+            ..m
+        },
+        "schedules.max_events_per_poll" => Meta {
+            live: true,
+            ..at_least(1.0)
+        },
         "schedules.usd_per_day" => Meta {
             kind: Some(Kind::Float),
             live: true,

@@ -112,15 +112,16 @@ class _RoutineRow extends StatelessWidget {
     final budget = s.enabled && s.pausedByBudget;
     final active = s.enabled && !budget;
     // The panel is narrow: the schedule in words here, the next run on hover.
+    final when = routineWhen(s);
     final detail = !s.enabled
         ? 'Paused'
         : budget
         ? 'Paused: budget · resumes ${_resumes(s.pausedUntil)}'
         : failed
-        ? 'Last run failed · ${cronInWords(s.cron)}'
+        ? 'Last run failed · $when'
         : s.lastQuiet
-        ? 'Last run quiet · ${cronInWords(s.cron)}'
-        : cronInWords(s.cron);
+        ? 'Last run quiet · $when'
+        : when;
     final postsTo = store.channels
         .where((ch) => ch.id == s.channelId && !ch.isMain)
         .firstOrNull;
@@ -133,9 +134,18 @@ class _RoutineRow extends StatelessWidget {
               'Resume it now from the menu, or it continues on its own.'
         : s.lastQuiet && s.enabled
         ? 'The last run had nothing to report, so nothing was sent.'
+        : s.trigger == 'watch'
+        ? [
+            'Polls ${s.watch} every ${_every(s.everySecs ?? 300)}; each new '
+                'event starts a run, and nothing found costs nothing.',
+            if (s.lastCheck case final c?) 'Last check: $c.',
+          ].join(' ')
         : next == null
-        ? s.cron
-        : 'Next run ${whenInWords(next)} · ${s.cron}';
+        ? when
+        : [
+            'Next run ${whenInWords(next)} · $when',
+            if (s.lastCheck case final c?) 'Last check: $c.',
+          ].join('\n');
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       // Its own conversation: beside Home or a channel, with channels.
@@ -147,7 +157,11 @@ class _RoutineRow extends StatelessWidget {
         child: Row(
           children: [
             Icon(
-              budget ? Icons.pause_circle_outline : Icons.schedule,
+              budget
+                  ? Icons.pause_circle_outline
+                  : s.trigger == 'watch'
+                  ? Icons.sensors
+                  : Icons.schedule,
               size: 16,
               color: active ? c.accent : c.muted,
             ),
@@ -261,6 +275,27 @@ Future<void> showRoutineSheet(
   builder: (_) => RoutineSheet(store: store, editing: editing, agent: agent),
 );
 
+/// A routine's trigger in words: its cron, "Once, …", or "On … events".
+String routineWhen(Schedule s) => switch (s.trigger) {
+  'once' => s.at == null ? 'Once' : 'Once, ${whenInWords(s.at!)}',
+  'watch' => 'On ${s.watch} events',
+  _ => cronInWords(s.cron),
+};
+
+String _every(int secs) => secs % 3600 == 0
+    ? '${secs ~/ 3600}h'
+    : secs % 60 == 0
+    ? '${secs ~/ 60}m'
+    : '${secs}s';
+
+/// The initiative levels, as the editor offers them (T1b).
+const _initiatives = {
+  'silent': 'Silent: post only, never send',
+  'digest': 'Digest: send with the next digest',
+  'notify': 'Notify: send now if it matters, else digest',
+  'interrupt': 'Interrupt: send at once',
+};
+
 class _Preset {
   const _Preset(this.label, this.cron);
   final String label;
@@ -302,6 +337,35 @@ class _RoutineSheetState extends State<RoutineSheet> {
     text: widget.editing?.deliverTo?.replaceFirst('telegram:', ''),
   );
   late var _telegram = widget.editing?.deliverTo != null;
+
+  /// `cron`, `once` or `watch`.
+  late var _trigger = widget.editing?.trigger ?? 'cron';
+  late final _at = TextEditingController(text: _atBefore);
+
+  /// The reminder's time as it was, `YYYY-MM-DD HH:MM`.
+  String get _atBefore => switch (widget.editing?.at) {
+    final t? =>
+      '${t.year}-${_two(t.month)}-${_two(t.day)} ${_two(t.hour)}:${_two(t.minute)}',
+    null => '',
+  };
+  late final _watch = TextEditingController(text: widget.editing?.watch);
+  late final _every = TextEditingController(
+    text: switch (widget.editing?.everySecs) {
+      final s? => '${s ~/ 60}m',
+      null => '',
+    },
+  );
+
+  /// Null = the daemon's default (digest).
+  late String? _initiative = widget.editing?.initiative;
+  late final _gate = TextEditingController(text: widget.editing?.gate);
+  late final _gateConnector = TextEditingController(
+    text: widget.editing?.gateConnector,
+  );
+
+  static String _two(int n) => n.toString().padLeft(2, '0');
+  static final _atPattern = RegExp(r'^\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}$');
+  static final _watchPattern = RegExp(r'^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$');
 
   /// Who does it: an agent profile (the default agent without profiles).
   late var _agent =
@@ -355,6 +419,9 @@ class _RoutineSheetState extends State<RoutineSheet> {
     super.initState();
     _cron.addListener(_schedulePreview);
     _prompt.addListener(() => setState(() {}));
+    for (final c in [_at, _watch, _every]) {
+      c.addListener(() => setState(() {}));
+    }
     _checkCron();
   }
 
@@ -364,7 +431,17 @@ class _RoutineSheetState extends State<RoutineSheet> {
     _prompt.dispose();
     _cron.dispose();
     _chat.dispose();
-    for (final c in [_quiet, _runs, _usd, _tokens]) {
+    for (final c in [
+      _quiet,
+      _runs,
+      _usd,
+      _tokens,
+      _at,
+      _watch,
+      _every,
+      _gate,
+      _gateConnector,
+    ]) {
       c.dispose();
     }
     super.dispose();
@@ -423,9 +500,35 @@ class _RoutineSheetState extends State<RoutineSheet> {
     );
   }
 
+  bool get _triggerValid => switch (_trigger) {
+    'once' => _atPattern.hasMatch(_at.text.trim()),
+    'watch' => _watchPattern.hasMatch(_watch.text.trim()),
+    _ => _preview != null,
+  };
+
+  RoutineOptions get _options {
+    String? text(TextEditingController c) =>
+        c.text.trim().isEmpty ? null : c.text.trim();
+    return RoutineOptions(
+      // A reminder's time is sent when it changes: one that already ran
+      // keeps its (past) time when only its prompt is edited.
+      at:
+          _trigger == 'once' &&
+              (widget.editing?.trigger != 'once' ||
+                  _at.text.trim() != _atBefore)
+          ? _at.text.trim()
+          : null,
+      watch: _trigger == 'watch' ? _watch.text.trim() : null,
+      every: _trigger == 'watch' ? text(_every) : null,
+      initiative: _initiative,
+      gate: _trigger == 'watch' ? null : text(_gate),
+      gateConnector: _trigger == 'watch' ? null : text(_gateConnector),
+    );
+  }
+
   bool get _valid =>
       _prompt.text.trim().isNotEmpty &&
-      _preview != null &&
+      _triggerValid &&
       (!_telegram || int.tryParse(_chat.text.trim()) != null) &&
       _limitsValid;
 
@@ -436,12 +539,13 @@ class _RoutineSheetState extends State<RoutineSheet> {
     });
     final err = await widget.store.saveSchedule(
       id: widget.editing?.id,
-      cron: _cron.text.trim(),
+      cron: _trigger == 'cron' ? _cron.text.trim() : '',
       prompt: _prompt.text.trim(),
       deliverTo: _telegram ? 'telegram:${_chat.text.trim()}' : null,
       limits: _newLimits,
       channel: widget.store.hasChannels ? _channel : null,
       agent: widget.store.hasAgents ? _agent : null,
+      options: _options,
     );
     if (!mounted) return;
     if (err == null) {
@@ -536,6 +640,33 @@ class _RoutineSheetState extends State<RoutineSheet> {
         'once. A run over its tokens is stopped.',
         style: small,
       ),
+      if (_trigger != 'watch') ...[
+        const SizedBox(height: 12),
+        Text('GATE', style: labels),
+        const SizedBox(height: 6),
+        TextField(
+          key: const Key('routine-gate'),
+          controller: _gate,
+          minLines: 1,
+          maxLines: 4,
+          style: mono.copyWith(fontSize: 13),
+          decoration: _box(context, hint: 'Luau, e.g. os.date("*t").wday ~= 1'),
+        ),
+        const SizedBox(height: 6),
+        TextField(
+          key: const Key('routine-gate-connector'),
+          controller: _gateConnector,
+          style: mono.copyWith(fontSize: 13),
+          decoration: _box(context, hint: 'connector it may use (optional)'),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Checked before each run at no cost; false skips that run. With a '
+          'connector it can call its tools, e.g. '
+          '#connector.tools.unread.run(ctx, {}) > 0.',
+          style: small,
+        ),
+      ],
     ];
   }
 
@@ -583,37 +714,95 @@ class _RoutineSheetState extends State<RoutineSheet> {
               const SizedBox(height: 16),
               Text('WHEN', style: labels),
               const SizedBox(height: 6),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  for (final p in _presets)
-                    ChoiceChip(
-                      label: Text(p.label),
-                      selected: cron == p.cron,
-                      onSelected: (_) => _cron.text = p.cron,
-                      showCheckmark: false,
-                      visualDensity: VisualDensity.compact,
-                    ),
+              SegmentedButton<String>(
+                key: const Key('routine-trigger'),
+                segments: const [
+                  ButtonSegment(value: 'cron', label: Text('Repeating')),
+                  ButtonSegment(value: 'once', label: Text('Once')),
+                  ButtonSegment(value: 'watch', label: Text('On events')),
                 ],
+                selected: {_trigger},
+                showSelectedIcon: false,
+                onSelectionChanged: (v) => setState(() => _trigger = v.first),
               ),
               const SizedBox(height: 8),
-              TextField(
-                controller: _cron,
-                style: mono.copyWith(fontSize: 13),
-                decoration: _box(
-                  context,
-                  hint: 'minute hour day month weekday',
-                  error: _cronError,
+              if (_trigger == 'once') ...[
+                TextField(
+                  key: const Key('routine-at'),
+                  controller: _at,
+                  style: mono.copyWith(fontSize: 13),
+                  decoration: _box(context, hint: 'YYYY-MM-DD HH:MM'),
                 ),
-              ),
-              const SizedBox(height: 6),
-              if (_preview case final p?)
+                const SizedBox(height: 6),
                 Text(
-                  '${cronInWords(p.cron)}. Next: '
-                  '${p.next.map(whenInWords).join(', ')}',
+                  'Runs once at that local time, then turns itself off.',
                   style: TextStyle(fontSize: 12, color: c.muted),
                 ),
+              ],
+              if (_trigger == 'watch') ...[
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: TextField(
+                        key: const Key('routine-watch'),
+                        controller: _watch,
+                        style: mono.copyWith(fontSize: 13),
+                        decoration: _box(context, hint: 'connector.watch'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('routine-every'),
+                        controller: _every,
+                        style: mono.copyWith(fontSize: 13),
+                        decoration: _box(context, hint: 'every, e.g. 5m'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'A connector\'s watch is checked on its own, with no model '
+                  'call; each new event starts a run, read as untrusted. '
+                  'What is already there when it starts doesn\'t run.',
+                  style: TextStyle(fontSize: 12, color: c.muted),
+                ),
+              ],
+              if (_trigger == 'cron') ...[
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final p in _presets)
+                      ChoiceChip(
+                        label: Text(p.label),
+                        selected: cron == p.cron,
+                        onSelected: (_) => _cron.text = p.cron,
+                        showCheckmark: false,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _cron,
+                  style: mono.copyWith(fontSize: 13),
+                  decoration: _box(
+                    context,
+                    hint: 'minute hour day month weekday',
+                    error: _cronError,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                if (_preview case final p?)
+                  Text(
+                    '${cronInWords(p.cron)}. Next: '
+                    '${p.next.map(whenInWords).join(', ')}',
+                    style: TextStyle(fontSize: 12, color: c.muted),
+                  ),
+              ],
               const SizedBox(height: 16),
               Text('RESULTS', style: labels),
               const SizedBox(height: 6),
@@ -685,6 +874,32 @@ class _RoutineSheetState extends State<RoutineSheet> {
                   decoration: _box(context, hint: 'Telegram chat id'),
                 ),
               ],
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String?>(
+                key: const Key('routine-initiative'),
+                initialValue: _initiative,
+                isDense: true,
+                isExpanded: true,
+                decoration: _box(context),
+                items: [
+                  const DropdownMenuItem(
+                    value: null,
+                    child: Text('Default (digest)'),
+                  ),
+                  for (final e in _initiatives.entries)
+                    DropdownMenuItem(
+                      value: e.key,
+                      child: Text(e.value, overflow: TextOverflow.ellipsis),
+                    ),
+                ],
+                onChanged: (v) => setState(() => _initiative = v),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Results are always posted; this decides when they are also '
+                'sent to your chat. Digests go out at 08:30 and 17:30.',
+                style: TextStyle(fontSize: 12, color: c.muted),
+              ),
               const SizedBox(height: 8),
               Align(
                 alignment: Alignment.centerLeft,

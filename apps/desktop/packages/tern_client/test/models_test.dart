@@ -179,6 +179,20 @@ void main() {
     expect(t1a.pausedByBudget, isTrue);
     expect(t1a.pausedReason, 'runs_per_day');
     expect(t1a.pausedUntil, isNotNull);
+    expect(t1a.trigger, 'cron');
+    expect(t1a.initiative, 'interrupt');
+    expect(t1a.lastCheck, 'gate: passed');
+    expect(t1a.gate, contains('wday'));
+    expect(
+      const RoutineOptions(watch: 'github.reviews', every: '5m').toJson(),
+      {
+        'watch': 'github.reviews',
+        'every': '5m',
+        'initiative': 'default',
+        'gate': null,
+        'gate_connector': null,
+      },
+    );
     expect(const ScheduleLimits(runsPerDay: 3).toJson(), {
       'quiet_hours': null,
       'urgent': false,
