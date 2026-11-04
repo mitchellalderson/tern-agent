@@ -252,7 +252,7 @@ fn key_like(name: &str) -> bool {
         || n == "token.json"
 }
 
-fn skill_files(
+pub(crate) fn skill_files(
     dir: &Path,
     notes: &mut Vec<String>,
     slug: &str,

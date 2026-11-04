@@ -9,7 +9,7 @@ use tern_bundle::{InstallOptions, Installer, Paths, PublicKey, SecretKey, TrustS
 use tern_core::TernHome;
 use tern_store::Store;
 
-use crate::cli::BundleCommand;
+use crate::cli::{BundleCommand, ImportCommand};
 
 pub fn run(home: &TernHome, command: Option<BundleCommand>) -> anyhow::Result<ExitCode> {
     let paths = Paths::new(home);
@@ -423,6 +423,79 @@ fn export(
         } else {
             ""
         }
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `tern import openclaw`: the same plan and approval as a bundle, plus the
+/// profile files and what to set up by hand.
+pub fn import(home: &TernHome, command: ImportCommand) -> anyhow::Result<ExitCode> {
+    let ImportCommand::Openclaw {
+        dir,
+        agent,
+        dry_run,
+        yes,
+    } = command;
+    let dir = match dir.or_else(tern_bundle::openclaw::default_dir) {
+        Some(d) => d,
+        None => anyhow::bail!("give OpenClaw's directory: tern import openclaw <dir>"),
+    };
+    home.ensure_layout()?;
+    let imp = tern_bundle::openclaw::scan(&dir, home)?;
+    let installer = Installer::new(home);
+    let store = open_store(home)?;
+    let prepared = match tern_bundle::openclaw::as_raw(&imp, &dir)? {
+        Some(raw) => {
+            Some(installer.prepare(tern_bundle::source::verify(raw, None)?, Some(&store))?)
+        }
+        None => None,
+    };
+    print!("{}", imp.render());
+    if let Some(p) = &prepared {
+        println!();
+        print!("{}", p.plan.render());
+        let conflicts = p.plan.conflicts();
+        if !conflicts.is_empty() {
+            println!();
+            for c in conflicts {
+                eprintln!("✗ {c}");
+            }
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+    println!();
+    if prepared.is_none() && imp.profile.is_empty() {
+        println!("Nothing to import.");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if dry_run {
+        println!("(dry run: nothing imported)");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if !yes && !confirm("Import this?") {
+        println!("Nothing imported.");
+        return Ok(ExitCode::FAILURE);
+    }
+    if let Some(p) = &prepared {
+        let out = installer.install(
+            p,
+            &store,
+            &InstallOptions {
+                agent,
+                accept_new_key: false,
+            },
+        )?;
+        for l in &out.lines {
+            println!("  {l}");
+        }
+    }
+    for l in tern_bundle::openclaw::apply_profile(&imp)? {
+        println!("  {l}");
+    }
+    println!(
+        "Imported. Skills and routines are the bundle {} (`tern bundle remove {}` takes them back).",
+        tern_bundle::openclaw::BUNDLE_NAME,
+        tern_bundle::openclaw::BUNDLE_NAME
     );
     Ok(ExitCode::SUCCESS)
 }

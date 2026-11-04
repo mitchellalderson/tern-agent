@@ -106,6 +106,11 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<BundleCommand>,
     },
+    /// Bring another agent's setup across.
+    Import {
+        #[command(subcommand)]
+        command: ImportCommand,
+    },
     /// Accounts of connectors and MCP servers: list, add (sign in), and
     /// remove them, or pick the default.
     Connections {
@@ -486,6 +491,24 @@ pub enum HooksCommand {
 pub enum ConnectorsCommand {
     List,
     Test { name: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ImportCommand {
+    /// OpenClaw: SKILL.md skills, cron automations (as paused routines),
+    /// and SOUL.md, USER.md and MEMORY.md. Credentials are never read:
+    /// you're told which secrets and accounts to add.
+    Openclaw {
+        /// OpenClaw's directory (default ~/.openclaw) or its workspace.
+        dir: Option<std::path::PathBuf>,
+        /// The agent the routines belong to (default: tern).
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

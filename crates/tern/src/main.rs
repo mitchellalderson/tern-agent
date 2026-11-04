@@ -201,6 +201,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Some(Command::Bundle { command }) => bundle_cmd::run(&home, command),
+        Some(Command::Import { command }) => bundle_cmd::import(&home, command),
         Some(Command::Connections { command }) => {
             home.ensure_layout()?;
             connections_cmd::run(&home, command)

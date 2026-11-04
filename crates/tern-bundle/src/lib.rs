@@ -16,6 +16,7 @@ pub mod export;
 pub mod install;
 pub mod lookalike;
 pub mod manifest;
+pub mod openclaw;
 pub mod plan;
 pub mod sign;
 pub mod source;

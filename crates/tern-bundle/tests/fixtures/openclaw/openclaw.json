@@ -1,0 +1,28 @@
+// OpenClaw config (JSON5), a fixture for `tern import openclaw`.
+// Every credential here is fake.
+{
+  agents: {
+    defaults: {
+      workspace: "./workspace", // relative paths aren't OpenClaw's; tern falls back to ./workspace
+      heartbeat: { every: "30m" },
+    },
+  },
+  models: { providers: { anthropic: { apiKey: "sk-ant-fake-0000000000000000" } } },
+  channels: {
+    telegram: { botToken: "123456:FAKE-telegram-bot-token-abcdef" },
+    discord: { token: "FAKE.discord.token.0000" },
+  },
+  mcp: {
+    servers: {
+      linear: { url: "https://mcp.linear.app/mcp" },
+      github: { command: "github-mcp-server", args: ["stdio"] },
+    },
+  },
+  plugins: { entries: { "voice-call": { enabled: true } } },
+  skills: {
+    entries: {
+      weather: { apiKey: "FAKE-weather-key-1234", primaryEnv: "OPENWEATHER_API_KEY" },
+      "github-triage": { env: { GITHUB_TOKEN: "ghp_FAKE000000000000000000" } },
+    },
+  },
+}
