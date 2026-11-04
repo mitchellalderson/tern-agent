@@ -381,6 +381,20 @@ impl ApprovalHandler for Router {
     /// A local-only approval never goes to a chat: the TUI or desktop app
     /// on this host answers it.
     async fn ask(&self, req: &ApprovalRequest) -> Decision {
+        // A routine inside its quiet hours doesn't ping the chat: an app
+        // may answer, else a write goes to the outbox, which its morning
+        // delivery lists (spec W4).
+        if self
+            .0
+            .manager
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some_and(|m| m.routine_quiet_now(&req.run_id))
+        {
+            let (root, _) = self.place(&req.run_id);
+            let at = self.at(root.as_deref());
+            return self.0.api.ask(req, root, at).await;
+        }
         match self.place(&req.run_id) {
             (_, Some((g, chat))) if !req.local_only => g.ask_approval(&chat, req).await,
             (root, _) => {
@@ -685,7 +699,16 @@ impl Manager {
             return;
         };
         let text = match outcome.status {
-            RunStatus::Completed => outcome.final_text.clone(),
+            // What it left in the outbox, so a routine's morning delivery
+            // says what waits (spec W4).
+            RunStatus::Completed => {
+                let pending = super::outbox::pending_note(&self.rt.store, &run.id);
+                if pending.is_empty() {
+                    outcome.final_text.clone()
+                } else {
+                    format!("{}{pending}\nApprove with /outbox.", outcome.final_text)
+                }
+            }
             RunStatus::Failed => format!(
                 "Failed: {}",
                 outcome.error.as_deref().unwrap_or("unknown error")
@@ -794,6 +817,29 @@ impl Manager {
             Ok(()) => tracing::info!(schedule = %s.id, until = %at, "held for the digest"),
             Err(e) => tracing::warn!(schedule = %s.id, error = %e, "could not hold for the digest"),
         }
+    }
+
+    /// Whether `run_id`'s tree is a routine's, inside its quiet hours now
+    /// (and not `urgent`): its chat isn't pinged.
+    pub fn routine_quiet_now(&self, run_id: &str) -> bool {
+        let store = &self.rt.store;
+        let Some(root) = store
+            .root_run(run_id)
+            .ok()
+            .and_then(|r| store.run(&r).ok().flatten())
+            .filter(|r| r.trigger == "cron")
+        else {
+            return false;
+        };
+        let Some(s) = store.schedule_for_session(&root.session_id).ok().flatten() else {
+            return false;
+        };
+        let quiet = s
+            .quiet_hours
+            .as_deref()
+            .and_then(|q| q.parse::<tern_core::quiet::QuietHours>().ok())
+            .unwrap_or(self.rt.live().schedules.quiet_hours);
+        !s.urgent && quiet.release_at(chrono::Local::now()).is_some()
     }
 
     /// Deliver `text` for schedule `s` to its target, if it has one.
@@ -989,6 +1035,17 @@ pub struct Chats(pub Arc<Manager>);
 
 #[async_trait]
 impl ChatHost for Chats {
+    async fn pending_outbox(&self) -> Vec<tern_core::outbox::OutboxItem> {
+        let mut rows = self
+            .0
+            .rt
+            .store
+            .outbox(Some("pending"), 200)
+            .unwrap_or_default();
+        rows.reverse();
+        rows.into_iter().map(|r| self.0.outbox_view(r)).collect()
+    }
+
     /// A chat button: the chat is remote, so local-only items are refused.
     async fn decide_outbox(&self, id: i64, approve: bool) -> Result<String, String> {
         if approve {

@@ -28,7 +28,8 @@ const HELP: &str = "Send me a message and I'll work on it.\n\
 /new — new topic (I keep a summary of this one)\n\
 /model [provider:model] — show or change the model\n\
 /stop — stop the current task\n\
-/status — what I'm doing";
+/status — what I'm doing\n\
+/outbox — actions waiting for your approval";
 
 const UNPAIRED: &str = "This bot is private. On the computer running tern, run `tern gateway pair` and send me the code it prints.";
 
@@ -44,6 +45,9 @@ struct Stream {
     dirty: bool,
 }
 
+/// A message showing an outbox card: (chat, message id, text).
+type Card = (i64, i64, String);
+
 pub struct TelegramGateway {
     api: Api,
     store: Store,
@@ -52,6 +56,9 @@ pub struct TelegramGateway {
     streams: Mutex<HashMap<String, Stream>>,
     /// Pending approvals by callback id, with the chat they were sent to.
     approvals: Mutex<HashMap<String, (i64, oneshot::Sender<Decision>)>>,
+    /// Outbox cards sent, by item: (chat, message id, text), so a decision
+    /// made elsewhere updates them like a resolved pointer.
+    outbox_cards: Mutex<HashMap<i64, Vec<Card>>>,
 }
 
 impl TelegramGateway {
@@ -62,7 +69,35 @@ impl TelegramGateway {
             poll_timeout_secs: 25,
             streams: Mutex::new(HashMap::new()),
             approvals: Mutex::new(HashMap::new()),
+            outbox_cards: Mutex::new(HashMap::new()),
         }))
+    }
+
+    /// Send `item`'s card (buttons unless only the host may decide it) and
+    /// remember it.
+    async fn send_outbox_card(
+        &self,
+        chat: i64,
+        thread: Option<i64>,
+        item: &OutboxItem,
+        agent: &str,
+    ) {
+        let buttons: Buttons = vec![
+            ("Approve".into(), format!("ob:{}:approve", item.id)),
+            ("Reject".into(), format!("ob:{}:reject", item.id)),
+        ];
+        let buttons = (!item.local_only).then_some(&buttons);
+        let text = outbox_prompt(item, agent);
+        match self.api.send_message_in(chat, thread, &text, buttons).await {
+            Ok(message) => self
+                .outbox_cards
+                .lock()
+                .await
+                .entry(item.id)
+                .or_default()
+                .push((chat, message, text)),
+            Err(e) => tracing::warn!(error = %e, "could not send outbox notice"),
+        }
     }
 
     async fn reply(&self, chat: i64, text: &str) {
@@ -264,6 +299,24 @@ impl TelegramGateway {
                     "Nothing is running."
                 };
                 self.reply_in(chat, thread, msg).await;
+            }
+            "/outbox" => {
+                let items = host.pending_outbox().await;
+                if items.is_empty() {
+                    self.reply_in(chat, thread, "Nothing is waiting for you.")
+                        .await;
+                }
+                for item in items.iter().take(10) {
+                    let agent = match item.agent_id.as_deref() {
+                        Some(id) => self.agent_name(id),
+                        None => self.chat_agent_name(&chat_ref),
+                    };
+                    self.send_outbox_card(chat, thread, item, &agent).await;
+                }
+                if items.len() > 10 {
+                    let more = format!("{} more: `tern outbox` lists them all.", items.len() - 10);
+                    self.reply_in(chat, thread, &more).await;
+                }
             }
             "/status" => {
                 let text = format!(
@@ -486,7 +539,15 @@ impl TelegramGateway {
         choice: &str,
     ) {
         let outcome = match id.parse::<i64>() {
-            Ok(id) => host.decide_outbox(id, choice == "approve").await,
+            Ok(id) => {
+                // This card is updated below; the others when it resolves.
+                if let Some(m) = &cb.message
+                    && let Some(cards) = self.outbox_cards.lock().await.get_mut(&id)
+                {
+                    cards.retain(|(c, msg, _)| (*c, *msg) != (m.chat.id, m.message_id));
+                }
+                host.decide_outbox(id, choice == "approve").await
+            }
             Err(_) => Err("unknown item".into()),
         };
         let status = match &outcome {
@@ -686,17 +747,24 @@ impl Gateway for TelegramGateway {
             Some(id) => self.agent_name(id),
             None => self.chat_agent_name(target),
         };
-        let buttons: Buttons = vec![
-            ("Approve".into(), format!("ob:{}:approve", item.id)),
-            ("Reject".into(), format!("ob:{}:reject", item.id)),
-        ];
-        let buttons = (!item.local_only).then_some(&buttons);
-        if let Err(e) = self
-            .api
-            .send_message_in(chat, thread, &outbox_prompt(item, &agent), buttons)
-            .await
-        {
-            tracing::warn!(error = %e, "could not send outbox notice");
+        self.send_outbox_card(chat, thread, item, &agent).await;
+    }
+
+    async fn outbox_resolved(&self, item: &OutboxItem) {
+        let Some(cards) = self.outbox_cards.lock().await.remove(&item.id) else {
+            return;
+        };
+        let status = match item.state.as_str() {
+            "rejected" => "Rejected",
+            "expired" => "Expired",
+            "failed" => "Approved; it failed",
+            _ => "Approved",
+        };
+        for (chat, message, text) in cards {
+            let _ = self
+                .api
+                .edit_message(chat, message, &format!("{text}\n→ {status}"), None)
+                .await;
         }
     }
 

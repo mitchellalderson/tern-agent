@@ -33,6 +33,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(panel) = &app.secrets {
         draw_secrets(frame, panel, transcript);
     }
+    if let Some(panel) = &app.outbox {
+        draw_outbox(frame, panel, transcript);
+    }
     if let Some(panel) = &app.mcp {
         crate::ui_mcp::draw_mcp(frame, panel, transcript);
     }
@@ -217,6 +220,122 @@ fn draw_secrets(frame: &mut Frame<'_>, panel: &SecretsPanel, area: Rect) {
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
     frame.render_widget(Paragraph::new(body), inner);
+}
+
+/// The `/outbox` panel, centred over `area`.
+fn draw_outbox(frame: &mut Frame<'_>, panel: &crate::outbox::OutboxPanel, area: Rect) {
+    use crate::outbox::Mode;
+    let dim = Style::new().fg(Color::DarkGray);
+    let key = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let warn = Style::new().fg(Color::Yellow);
+    let width = area.width.saturating_sub(4).min(100);
+    let inner_width = width.saturating_sub(4) as usize;
+    let mut body: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(
+            "Writes that waited for approval while nobody was there. Approving runs one once.",
+            dim,
+        )),
+        Line::default(),
+    ];
+    if panel.items.is_empty() {
+        body.push(Line::from(Span::styled("Nothing is waiting for you.", dim)));
+    }
+    let chrome = body.len() + 9;
+    let room = (area.height as usize).saturating_sub(chrome).max(1);
+    let first = (panel.selected + 1).saturating_sub(room);
+    for (i, o) in panel.items.iter().enumerate().skip(first).take(room) {
+        let selected = i == panel.selected;
+        let line = format!("#{:<4} {}", o.id, o.headline());
+        let line: String = line.chars().take(inner_width.saturating_sub(2)).collect();
+        body.push(Line::from(vec![
+            Span::styled(if selected { "› " } else { "  " }, key),
+            Span::styled(
+                line,
+                if selected {
+                    Style::new().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new()
+                },
+            ),
+        ]));
+    }
+    if let Some(o) = panel.items.get(panel.selected) {
+        body.push(Line::default());
+        if let Some(t) = &o.taint {
+            body.push(Line::from(Span::styled(
+                format!("⚠ {}", tern_core::approval::taint_note(t)),
+                warn,
+            )));
+        }
+        if o.local_only {
+            body.push(Line::from(Span::styled(
+                "Runs a command on this computer outside the sandbox.",
+                warn,
+            )));
+        }
+        let args: String = o.input.to_string().chars().take(inner_width).collect();
+        body.push(Line::from(Span::styled(args, dim)));
+    }
+    body.push(Line::default());
+    let (prompt, help): (Line<'static>, Vec<(&str, &str)>) = match &panel.mode {
+        Mode::List => (
+            Line::default(),
+            vec![
+                ("a", "approve"),
+                ("e", "edit and approve"),
+                ("r", "reject"),
+                ("↑↓", "move"),
+                ("Esc", "close"),
+            ],
+        ),
+        Mode::Edit(text) => (
+            Line::from(vec![
+                Span::styled("Arguments: ", key),
+                Span::raw(text.clone()),
+                Span::raw("▌"),
+            ]),
+            vec![("Enter", "approve with these"), ("Esc", "cancel")],
+        ),
+        Mode::Reject(note) => (
+            Line::from(vec![
+                Span::styled("Note for tern (optional): ", key),
+                Span::raw(note.clone()),
+                Span::raw("▌"),
+            ]),
+            vec![("Enter", "reject"), ("Esc", "cancel")],
+        ),
+    };
+    body.push(prompt);
+    body.push(match &panel.message {
+        Some((true, m)) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Red))),
+        Some((false, m)) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Green))),
+        None => Line::default(),
+    });
+    let mut keys = Vec::new();
+    for (k, what) in help {
+        keys.push(Span::styled(format!("[{k}]"), key));
+        keys.push(Span::styled(format!(" {what}   "), dim));
+    }
+    body.push(Line::from(keys));
+
+    let height = (body.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .title(" outbox ")
+        .border_style(Style::new().fg(Color::Cyan));
+    let inner = block.inner(popup).inner(ratatui::layout::Margin::new(1, 0));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(
+        Paragraph::new(body).wrap(ratatui::widgets::Wrap { trim: false }),
+        inner,
+    );
 }
 
 fn draw_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {

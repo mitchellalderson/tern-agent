@@ -153,6 +153,7 @@ class Post {
     this.pointsToChannel,
     this.mentions = const [],
     this.wakeDepth = 0,
+    this.outboxId,
     required this.createdAt,
   });
 
@@ -177,6 +178,7 @@ class Post {
     pointsToChannel: j['points_to_channel'] as String?,
     mentions: [for (final m in j['mentions'] as List? ?? const []) m as String],
     wakeDepth: j['wake_depth'] as int? ?? 0,
+    outboxId: j['outbox_id'] as int?,
     createdAt: _time(j['created_at'] as int),
   );
 
@@ -219,6 +221,9 @@ class Post {
 
   /// How far down a chain of agents waking agents it is.
   final int wakeDepth;
+  /// The outbox item this `needs_you` post (or pointer) stands for. It
+  /// closes when the item is decided; "Done" alone is refused.
+  final int? outboxId;
   final DateTime createdAt;
 
   bool get mine => authorKind == 'user';
@@ -248,6 +253,7 @@ class Post {
     pointsToChannel: pointsToChannel,
     mentions: mentions,
     wakeDepth: wakeDepth,
+    outboxId: outboxId,
     createdAt: createdAt,
   );
 }

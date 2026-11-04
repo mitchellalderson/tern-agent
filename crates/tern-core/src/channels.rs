@@ -68,6 +68,10 @@ pub struct Post {
     /// How far down a chain of agents waking agents it is (§5.3).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub wake_depth: i64,
+    /// A `needs_you` post (or its pointer) for an outbox item: decide the
+    /// item, which resolves the post; "done" alone is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbox_id: Option<i64>,
     /// Unix ms.
     pub created_at: i64,
 }
@@ -96,6 +100,7 @@ impl From<tern_store::PostRow> for Post {
             points_to_channel: None,
             mentions: p.mentions,
             wake_depth: p.wake_depth,
+            outbox_id: None,
             created_at: p.created_at,
         }
     }

@@ -197,7 +197,13 @@ class PostCard extends StatelessWidget {
                 ),
               ),
               // A pointer: go to what waits, or mark it done here.
-              if (post.kind == 'pointer') ...[
+              if (post.outboxId != null)
+                // Decided in the outbox cards above the composer.
+                _CardButton(
+                  label: post.needsYou ? 'Waiting below' : 'Decided ✓',
+                  onPressed: null,
+                )
+              else if (post.kind == 'pointer') ...[
                 if (from != null)
                   _CardButton(
                     label: 'Go to #${from.slug}',

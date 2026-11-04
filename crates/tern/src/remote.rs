@@ -471,6 +471,26 @@ impl Backend for Remote {
         self.get("/v1/secrets")
     }
 
+    fn outbox(&self) -> BackendResult<Vec<tern_core::outbox::OutboxItem>> {
+        self.get("/v1/outbox")
+    }
+
+    fn decide_outbox(
+        &self,
+        id: i64,
+        d: tern_tui::outbox::Decide,
+    ) -> BackendResult<tern_core::outbox::OutboxItem> {
+        let (path, body) = if d.approve {
+            (
+                format!("/v1/outbox/{id}/approve"),
+                json!({ "input": d.input }),
+            )
+        } else {
+            (format!("/v1/outbox/{id}/reject"), json!({ "note": d.note }))
+        };
+        self.send_json(reqwest::Method::POST, &path, body)
+    }
+
     fn resolve_model(&self, model: &str) -> BackendResult<Resolved> {
         let v: Value = self.send_json(
             reqwest::Method::POST,

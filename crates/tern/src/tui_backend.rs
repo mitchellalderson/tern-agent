@@ -198,6 +198,13 @@ impl Backend for TuiBackend {
         self.rt().secrets.remove(name).map_err(err)
     }
 
+    /// Listed from the database; deciding needs the background agent,
+    /// which runs approved items (the trait's default says so).
+    fn outbox(&self) -> BackendResult<Vec<tern_core::outbox::OutboxItem>> {
+        let rows = self.rt().store.outbox(Some("pending"), 200).map_err(err)?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     fn resolve_model(&self, model: &str) -> BackendResult<Resolved> {
         self.rt().resolve_model(model).map_err(chain)
     }

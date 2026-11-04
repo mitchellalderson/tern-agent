@@ -558,7 +558,23 @@ class TimelinePost extends StatelessWidget {
               ),
               Row(
                 children: [
-                  if (post.needsYou)
+                  // An outbox item: decide it here (topic channels have no
+                  // outbox cards of their own).
+                  if (post.needsYou && post.outboxId != null) ...[
+                    if (store.outbox
+                            .where((o) => o.id == post.outboxId && o.pending)
+                            .firstOrNull
+                        case final item?) ...[
+                      _Action(
+                        label: 'Approve',
+                        onTap: () => store.decideOutbox(item, approve: true),
+                      ),
+                      _Action(
+                        label: 'Reject',
+                        onTap: () => store.decideOutbox(item, approve: false),
+                      ),
+                    ],
+                  ] else if (post.needsYou)
                     _Action(label: 'Done', onTap: () => store.resolvePost(post))
                   else if (post.kind == 'needs_you')
                     const _Action(label: 'Done ✓', onTap: null),

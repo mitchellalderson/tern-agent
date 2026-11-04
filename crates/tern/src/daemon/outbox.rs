@@ -292,12 +292,16 @@ impl Manager {
         store.run_deliver_to(&root).ok().flatten()
     }
 
-    /// A new item: tell clients, and the chat its run reports to.
+    /// A new item: its `needs_you` post (and Home pointer), clients, and
+    /// the chat its run reports to. A routine's chat gets no card now: the
+    /// routine's own delivery, which keeps its quiet hours and initiative,
+    /// lists what waits (spec W4: "in the morning").
     pub async fn announce_outbox(&self, id: i64) {
         let Ok(Some(item)) = self.rt.store.outbox_item(id) else {
             return;
         };
-        if let Some(target) = self.outbox_target(&item)
+        if !self.queued_by_routine(&item)
+            && let Some(target) = self.outbox_target(&item)
             && let Some((name, chat)) = target.split_once(':')
             && let Some(g) = self.gateway(name)
         {
@@ -306,11 +310,113 @@ impl Manager {
         self.outbox_changed(&item);
     }
 
+    /// Whether the run tree that queued `item` is a routine's.
+    fn queued_by_routine(&self, item: &OutboxRow) -> bool {
+        let store = &self.rt.store;
+        store
+            .root_run(&item.run_id)
+            .ok()
+            .and_then(|r| store.run(&r).ok().flatten())
+            .is_some_and(|r| r.trigger == "cron")
+    }
+
+    /// Every change to an item goes through here: its `needs_you` post
+    /// follows its state (open while pending, resolved after), chats that
+    /// show its card hear how it ended, and clients get `outbox_changed`.
     pub(super) fn outbox_changed(&self, item: &OutboxRow) {
+        if item.state == "pending" {
+            self.open_needs_you(item);
+        } else {
+            self.resolve_needs_you(item);
+            let view = self.outbox_view(item.clone());
+            for g in self
+                .routes
+                .gateways
+                .get()
+                .into_iter()
+                .flat_map(|g| g.values())
+            {
+                let (g, view) = (g.clone(), view.clone());
+                tokio::spawn(async move { g.outbox_resolved(&view).await });
+            }
+        }
         let _ = self.rt.changes.send(Change::OutboxChanged {
             id: item.id,
             state: item.state.clone(),
         });
+    }
+
+    /// A pending item's `needs_you` post, in the channel the run tree
+    /// started in (Home, an agent's DM, a topic channel), by its agent.
+    /// Outside Home the store adds the Home pointer (C4). Once per item.
+    fn open_needs_you(&self, item: &OutboxRow) {
+        let store = &self.rt.store;
+        let view = self.outbox_view(item.clone());
+        let channel = view
+            .channel_id
+            .clone()
+            .filter(|c| {
+                store
+                    .channel(c)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|c| c.archived_at.is_none())
+            })
+            .unwrap_or_else(|| HOME.into());
+        let agent = view
+            .agent_id
+            .as_deref()
+            .and_then(|a| store.agent(a).ok().flatten());
+        let (author_id, author_name) = agent
+            .map(|a| (a.id, a.name))
+            .unwrap_or_else(|| (author::AGENT.into(), author::AGENT.into()));
+        let mut text = format!(
+            "Waiting for your approval (outbox #{}): {}",
+            item.id,
+            view.headline()
+        );
+        if let Some(t) = &item.taint {
+            text.push_str(&format!("\n⚠ {}", tern_core::approval::taint_note(t)));
+        }
+        let key = needs_you_key(item.id);
+        match store.add_post(&NewPost {
+            channel_id: &channel,
+            session_id: Some(&item.session_id),
+            run_id: Some(&item.run_id),
+            author_kind: "agent",
+            author_id: &author_id,
+            author: &author_name,
+            kind: "needs_you",
+            text: &text,
+            // The summary is the model's arguments, which a tainted run's
+            // reading may have shaped.
+            tainted: item.taint.is_some(),
+            dedupe_key: Some(&key),
+            ..NewPost::default()
+        }) {
+            Ok((row, true)) => {
+                if let Some(pointer) = row_pointer(store, row.id) {
+                    self.publish(super::channels::view(store, pointer));
+                }
+                self.publish(super::channels::view(store, row));
+                self.channels_changed();
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(outbox = item.id, error = %e, "outbox needs-you post failed"),
+        }
+    }
+
+    /// Close an item's `needs_you` post and its Home pointer.
+    fn resolve_needs_you(&self, item: &OutboxRow) {
+        let store = &self.rt.store;
+        let resolved = store
+            .post_by_key(&needs_you_key(item.id))
+            .ok()
+            .flatten()
+            .is_some_and(|p| store.resolve_post(p.id).unwrap_or(false));
+        if resolved {
+            self.channels_changed();
+        }
     }
 
     /// Expire overdue items: each tells its run if it is still working and
@@ -384,6 +490,26 @@ impl Manager {
             }
         });
     }
+}
+
+/// The dedupe key of an item's `needs_you` post.
+pub fn needs_you_key(id: i64) -> String {
+    format!("outbox:{id}")
+}
+
+/// The outbox item a `needs_you` post or its Home pointer stands for.
+pub fn outbox_of_post(store: &tern_store::Store, post: &tern_store::PostRow) -> Option<i64> {
+    let key = match (post.kind.as_str(), post.points_to) {
+        ("pointer", Some(to)) => store.post(to).ok().flatten()?.dedupe_key,
+        ("needs_you", _) => post.dedupe_key.clone(),
+        _ => None,
+    }?;
+    key.strip_prefix("outbox:")?.parse().ok()
+}
+
+/// The Home pointer the store wrote for `needs_you` post `id`, if any.
+fn row_pointer(store: &tern_store::Store, id: i64) -> Option<tern_store::PostRow> {
+    store.post_by_key(&format!("pointer:{id}")).ok().flatten()
 }
 
 /// "Waiting for your approval: …" for a run's final post, or empty.

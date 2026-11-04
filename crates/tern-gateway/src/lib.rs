@@ -80,6 +80,10 @@ pub trait ChatHost: Send + Sync {
     async fn decide_outbox(&self, _id: i64, _approve: bool) -> Result<String, String> {
         Err("this tern can't decide outbox items".into())
     }
+    /// Items waiting for the user (`/outbox`), oldest first.
+    async fn pending_outbox(&self) -> Vec<OutboxItem> {
+        Vec::new()
+    }
 }
 
 #[async_trait]
@@ -104,4 +108,6 @@ pub trait Gateway: Send + Sync {
     /// Show a new outbox item (a call nobody approved in time) in `target`,
     /// with Approve and Reject buttons unless only this host may decide it.
     async fn outbox_notice(&self, _target: &str, _item: &OutboxItem) {}
+    /// An item was decided or expired: update any card showing it.
+    async fn outbox_resolved(&self, _item: &OutboxItem) {}
 }

@@ -8,6 +8,7 @@ mod history;
 mod input;
 mod mcp;
 mod models;
+pub mod outbox;
 mod secret_prompt;
 mod secrets;
 mod setup;
@@ -119,6 +120,19 @@ pub trait Backend: Send + Sync + 'static {
     /// Remove a secret from `secrets.toml`; false if it wasn't there.
     fn remove_secret(&self, _name: &str) -> BackendResult<bool> {
         Err("this backend can't manage secrets".into())
+    }
+    /// Outbox items waiting for the user, newest first.
+    fn outbox(&self) -> BackendResult<Vec<tern_core::outbox::OutboxItem>> {
+        Err("this backend has no outbox".into())
+    }
+    /// Approve (with edited arguments) or reject outbox item `id`. Only
+    /// the background agent runs items.
+    fn decide_outbox(
+        &self,
+        _id: i64,
+        _decide: outbox::Decide,
+    ) -> BackendResult<tern_core::outbox::OutboxItem> {
+        Err("outbox items run in the background agent; start it with `tern start`".into())
     }
     /// Resolve a model reference, filling in the provider when only one
     /// lists that model. The default only checks it.

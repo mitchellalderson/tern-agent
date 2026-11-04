@@ -94,6 +94,7 @@ class _AgentSheetState extends State<AgentSheet> {
 
   /// Its runs read any site without asking, even after untrusted content.
   late bool _browse = widget.editing?.egress == 'allow';
+
   /// Who it may hand work to, by id; null = unchanged from the agent's.
   List<String>? _delegates;
 

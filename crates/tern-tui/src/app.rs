@@ -15,6 +15,7 @@ use crate::history;
 use crate::input::Input;
 use crate::mcp::{McpAction, McpPanel};
 use crate::models::{ModelPicker, PickerAction};
+use crate::outbox::OutboxPanel;
 use crate::secret_prompt::{Done, SecretPrompt};
 use crate::secrets::SecretsPanel;
 use crate::setup::{SetupAction, SetupPanel, Task, TaskDone};
@@ -145,6 +146,8 @@ pub struct App {
     pub hint: Option<String>,
     /// The `/secrets` panel, drawn over the transcript while open.
     pub secrets: Option<SecretsPanel>,
+    /// The `/outbox` panel, drawn over the transcript while open.
+    pub outbox: Option<OutboxPanel>,
     /// The `/setup` panel, drawn over the transcript while open.
     pub setup: Option<SetupPanel>,
     /// The `/mcp` panel, drawn over the transcript while open.
@@ -178,6 +181,7 @@ Commands:
   /stop             cancel the current run
   /reload           re-read config and rebuild tools
   /secrets [NAME]   manage API keys and tokens in secrets.toml
+  /outbox           writes waiting for your approval: approve, edit, reject
   /mcp              add, test and manage MCP servers (/mcp add, /mcp paste,
                     /mcp restart|enable|disable <name>)
   /usage            token usage for this session
@@ -216,6 +220,7 @@ impl App {
             last_usage: None,
             hint: None,
             secrets: None,
+            outbox: None,
             setup,
             mcp: None,
             picker: None,
@@ -253,6 +258,12 @@ impl App {
         if let Some(panel) = &mut self.secrets {
             if !panel.on_key(key, self.backend.as_ref()) {
                 self.secrets = None;
+            }
+            return vec![];
+        }
+        if let Some(panel) = &mut self.outbox {
+            if !panel.on_key(key, self.backend.as_ref()) {
+                self.outbox = None;
             }
             return vec![];
         }
@@ -386,6 +397,8 @@ impl App {
     pub fn on_paste(&mut self, text: &str) {
         if let Some(panel) = &mut self.secrets {
             panel.on_paste(text);
+        } else if let Some(panel) = &mut self.outbox {
+            panel.on_paste(text);
         } else if let Some(panel) = &mut self.setup {
             panel.on_paste(text);
         } else if let Some(panel) = &mut self.mcp {
@@ -410,6 +423,7 @@ impl App {
         self.last_ctrl_c = Some(now);
         self.hint = Some("press Ctrl+C again to quit".into());
         if self.secrets.take().is_some()
+            || self.outbox.take().is_some()
             || self.setup.take().is_some()
             || self.mcp.take().is_some()
             || self.picker.take().is_some()
@@ -685,6 +699,10 @@ impl App {
                 }
             }
             "mcp" => return self.mcp_command(arg),
+            "outbox" => match OutboxPanel::open(self.backend.as_ref()) {
+                Ok(panel) => self.outbox = Some(panel),
+                Err(e) => self.error(e),
+            },
             "secrets" => {
                 let name = (!arg.is_empty()).then_some(arg);
                 match SecretsPanel::open(self.backend.as_ref(), name) {

@@ -24,6 +24,9 @@ use crate::{HistoryMessage, PendingSecret, Started, UserPrompt};
 /// (session, model, text) passed to `start_run`.
 type StartCall = (Option<String>, Option<String>, String);
 
+/// (id, approve, input, note) passed to `decide_outbox`.
+type Decided = (i64, bool, Option<serde_json::Value>, Option<String>);
+
 #[derive(Default)]
 struct Fake {
     started: Mutex<Vec<StartCall>>,
@@ -40,6 +43,9 @@ struct Fake {
     mcp_removed: Mutex<Vec<(String, bool)>>,
     /// (agent, text, new_topic) passed to `send_to_agent`.
     agent_sends: Mutex<Vec<(String, String, bool)>>,
+    /// Pending outbox items, and (id, approve, input, note) decisions.
+    outbox: Mutex<Vec<tern_core::outbox::OutboxItem>>,
+    decided: Mutex<Vec<Decided>>,
 }
 
 #[async_trait]
@@ -152,6 +158,26 @@ impl Backend for Fake {
     }
     fn remove_secret(&self, name: &str) -> BackendResult<bool> {
         Ok(self.secrets.lock().unwrap().remove(name).is_some())
+    }
+    fn outbox(&self) -> BackendResult<Vec<tern_core::outbox::OutboxItem>> {
+        Ok(self.outbox.lock().unwrap().clone())
+    }
+    fn decide_outbox(
+        &self,
+        id: i64,
+        d: crate::outbox::Decide,
+    ) -> BackendResult<tern_core::outbox::OutboxItem> {
+        let mut items = self.outbox.lock().unwrap();
+        let i = items
+            .iter()
+            .position(|o| o.id == id)
+            .ok_or("no such item")?;
+        let item = items.remove(i);
+        self.decided
+            .lock()
+            .unwrap()
+            .push((id, d.approve, d.input, d.note));
+        Ok(item)
     }
     fn children(&self, run_id: &str) -> BackendResult<Vec<ChildRun>> {
         if run_id != "r1" {
@@ -748,6 +774,67 @@ fn paste_keeps_newlines() {
     let (mut app, _) = new_app();
     app.on_paste("one\r\ntwo\rthree");
     assert_eq!(app.input.text(), "one\ntwo\nthree");
+}
+
+fn outbox_item(id: i64, to: &str) -> tern_core::outbox::OutboxItem {
+    serde_json::from_value(serde_json::json!({
+        "id": id, "run_id": "r", "session_id": "s", "tool": "gmail_send",
+        "input": { "to": to }, "summary": format!("gmail_send to {to}"), "effect": "write",
+        "taint": "result of inbox", "state": "pending", "created_at": 0, "expires_at": 0
+    }))
+    .unwrap()
+}
+
+#[test]
+fn outbox_panel_approves_edits_and_rejects() {
+    let (mut app, fake) = new_app();
+    *fake.outbox.lock().unwrap() = vec![
+        outbox_item(12, "bob@example.com"),
+        outbox_item(13, "dana@example.com"),
+        outbox_item(14, "eve@example.com"),
+    ];
+    submit(&mut app, "/outbox");
+    let shown = screen(&mut app, 100, 24);
+    assert!(
+        shown.contains("#12   write · gmail_send to bob@example.com"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("this run read untrusted content (result of inbox)"),
+        "{shown}"
+    );
+
+    // Approve the first as it is.
+    app.on_key(key(KeyCode::Char('a')), Instant::now());
+    assert!(screen(&mut app, 100, 24).contains("#12 approved"));
+    // Edit the next one's arguments, then approve.
+    app.on_key(key(KeyCode::Char('e')), Instant::now());
+    for _ in 0..40 {
+        app.on_key(key(KeyCode::Backspace), Instant::now());
+    }
+    type_text(&mut app, r#"{"to": "carol@example.com"}"#);
+    app.on_key(key(KeyCode::Enter), Instant::now());
+    // Reject the last with a note.
+    app.on_key(key(KeyCode::Char('r')), Instant::now());
+    type_text(&mut app, "not to Eve");
+    app.on_key(key(KeyCode::Enter), Instant::now());
+
+    let decided = fake.decided.lock().unwrap().clone();
+    assert_eq!(decided[0], (12, true, None, None));
+    assert_eq!(
+        decided[1],
+        (
+            13,
+            true,
+            Some(serde_json::json!({ "to": "carol@example.com" })),
+            None
+        )
+    );
+    assert_eq!(decided[2], (14, false, None, Some("not to Eve".into())));
+    assert!(screen(&mut app, 100, 24).contains("Nothing is waiting for you."));
+    assert!(app.input.text().is_empty() && fake.started.lock().unwrap().is_empty());
+    app.on_key(key(KeyCode::Esc), Instant::now());
+    assert!(app.outbox.is_none());
 }
 
 #[test]
