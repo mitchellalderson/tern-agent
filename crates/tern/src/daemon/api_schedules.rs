@@ -4,7 +4,7 @@
 //! | Method | Path | |
 //! |---|---|---|
 //! | GET | `/v1/schedules[?agent=]` | all schedules (or one agent's), with their last run's status |
-//! | POST | `/v1/schedules` | create `{cron, prompt, agent?, deliver_to?, channel?, autonomy?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
+//! | POST | `/v1/schedules` | create `{cron | at, prompt, agent?, deliver_to?, channel?, autonomy?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
 //! | POST | `/v1/schedules/preview` | `{cron}` → normalized form and next 3 runs |
 //! | PATCH | `/v1/schedules/{id}` | change any of those, `enabled`, or `resume: true` (lift a budget pause); `null` returns a cap or `quiet_hours` to the default |
 //!
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tern_core::cron::Cron;
 use tern_store::ScheduleRow;
-use tern_tools::schedule::{ScheduleChange, ScheduleLimits};
+use tern_tools::schedule::{ScheduleChange, ScheduleLimits, TriggerArgs};
 
 use super::api::{ApiError, ApiResult, Shared, bad, internal, not_found};
 
@@ -41,7 +41,14 @@ pub fn routes() -> Router<Shared> {
 #[derive(Serialize, Deserialize)]
 pub struct Schedule {
     pub id: String,
+    /// What starts it (T1b): `cron`, `once` or `watch`.
+    #[serde(default = "cron")]
+    pub trigger: String,
+    /// The cron expression; empty for other triggers.
     pub cron: String,
+    /// Unix ms: when a `once` routine runs (or ran).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<i64>,
     pub prompt: String,
     pub session_id: String,
     pub deliver_to: Option<String>,
@@ -87,6 +94,10 @@ pub struct Schedule {
     pub agent_id: String,
 }
 
+fn cron() -> String {
+    "cron".into()
+}
+
 fn default_agent() -> String {
     tern_store::DEFAULT_AGENT.into()
 }
@@ -102,8 +113,17 @@ fn view(m: &Shared, s: ScheduleRow) -> Schedule {
             .ok()
             .and_then(|runs| runs.into_iter().last());
     let paused_until = s.paused_until.filter(|u| *u > tern_store::now_ms());
+    let at = (s.trigger() == "once").then(|| {
+        if s.next_run_at == i64::MAX {
+            s.last_run_at.unwrap_or(s.next_run_at)
+        } else {
+            s.next_run_at
+        }
+    });
     Schedule {
         next_run_at: (s.enabled && s.next_run_at != i64::MAX).then_some(s.next_run_at),
+        trigger: s.trigger().to_owned(),
+        at,
         id: s.id,
         cron: s.cron,
         prompt: s.prompt,
@@ -158,7 +178,8 @@ fn owner(m: &Shared, a: &str) -> Result<String, ApiError> {
 
 #[derive(Deserialize)]
 struct CreateBody {
-    cron: String,
+    #[serde(flatten)]
+    trigger: TriggerArgs,
     prompt: String,
     /// `none` (default) or `telegram:<chat_id>`.
     deliver_to: Option<String>,
@@ -231,9 +252,9 @@ async fn create(
         Some(a) => owner(&m, a)?,
         None => tern_store::DEFAULT_AGENT.into(),
     };
-    let mut row = tern_tools::schedule::create_schedule(
+    let mut row = tern_tools::schedule::create_routine(
         &m.rt.store,
-        &b.cron,
+        &b.trigger,
         &b.prompt,
         deliver_to,
         &b.limits,
@@ -268,7 +289,8 @@ async fn preview(Json(b): Json<Value>) -> ApiResult<Value> {
 
 #[derive(Deserialize)]
 struct UpdateBody {
-    cron: Option<String>,
+    #[serde(flatten)]
+    trigger: TriggerArgs,
     prompt: Option<String>,
     enabled: Option<bool>,
     deliver_to: Option<String>,
@@ -302,7 +324,7 @@ async fn update(
         .transpose()?;
     let agent = b.agent.as_deref().map(|a| owner(&m, a)).transpose()?;
     let ch = ScheduleChange {
-        cron: b.cron,
+        trigger: b.trigger,
         prompt: b.prompt,
         enabled: b.enabled,
         deliver_to,

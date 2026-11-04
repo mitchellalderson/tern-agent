@@ -1,5 +1,9 @@
 //! `schedule_create`, `schedule_update`, `schedule_list`, `schedule_delete`
 //! (spec §12.5). The daemon runs due schedules.
+//!
+//! A schedule is a routine (tooling spec §3, T1b): a prompt with a trigger,
+//! `cron` or `once` (`at`). The tools keep their `schedule_*` names, so
+//! tool scopes and grants from before routines still apply.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer};
@@ -95,6 +99,113 @@ impl ScheduleLimits {
     }
 }
 
+/// What starts a routine (T1b). At most one of `cron` and `at`; on create,
+/// one of them is required.
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct TriggerArgs {
+    /// 5-field cron, local time.
+    pub cron: Option<String>,
+    /// Once, at a local `YYYY-MM-DD HH:MM` (or RFC 3339), then off.
+    pub at: Option<String>,
+}
+
+impl TriggerArgs {
+    pub fn cron(cron: &str) -> Self {
+        Self {
+            cron: Some(cron.to_owned()),
+            ..Self::default()
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.cron.is_none() && self.at.is_none()
+    }
+
+    /// Check the trigger and set it on `row`, with its next run.
+    fn apply(&self, row: &mut ScheduleRow) -> Result<(), String> {
+        match (&self.cron, &self.at) {
+            (Some(_), Some(_)) => Err("give either `cron` or `at`, not both".into()),
+            (Some(c), None) => {
+                let cron: Cron = c
+                    .parse()
+                    .map_err(|e: tern_core::cron::CronError| e.to_string())?;
+                let next = cron
+                    .next_after(chrono::Local::now())
+                    .ok_or("that schedule never fires")?;
+                row.trigger = "cron".into();
+                row.cron = cron.to_string();
+                row.next_run_at = next.timestamp_millis();
+                Ok(())
+            }
+            (None, Some(at)) => {
+                let at = parse_at(at)?;
+                if at <= chrono::Local::now() {
+                    return Err(format!(
+                        "{} has already passed",
+                        at.format("%Y-%m-%d %H:%M")
+                    ));
+                }
+                row.trigger = "once".into();
+                row.cron = String::new();
+                row.next_run_at = at.timestamp_millis();
+                Ok(())
+            }
+            (None, None) => Err("give `cron` (repeating) or `at` (once)".into()),
+        }
+    }
+}
+
+/// A local `YYYY-MM-DD HH:MM` (or with a `T`, or seconds), or RFC 3339.
+pub fn parse_at(s: &str) -> Result<chrono::DateTime<chrono::Local>, String> {
+    let s = s.trim();
+    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Ok(t.with_timezone(&chrono::Local));
+    }
+    for fmt in [
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+    ] {
+        if let Ok(t) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            return t
+                .and_local_timezone(chrono::Local)
+                .earliest()
+                .ok_or_else(|| format!("{s} doesn't exist in local time"));
+        }
+    }
+    Err(format!(
+        "`at` {s:?} must be a local \"YYYY-MM-DD HH:MM\" (or RFC 3339)"
+    ))
+}
+
+/// The trigger in words, for listings: `0 8 * * 1-5` or `once at …`.
+pub fn describe_trigger(s: &ScheduleRow) -> String {
+    match s.trigger() {
+        "once" => {
+            let at = if s.next_run_at == i64::MAX {
+                s.last_run_at.unwrap_or(s.next_run_at)
+            } else {
+                s.next_run_at
+            };
+            format!("once at {}", fmt_time(at))
+        }
+        _ => s.cron.clone(),
+    }
+}
+
+/// The JSON schema properties for [`TriggerArgs`], for tool specs.
+fn trigger_properties() -> serde_json::Map<String, Value> {
+    let props = json!({
+        "cron": { "type": "string", "description": "repeat on a 5-field cron (minute hour day-of-month month day-of-week, local time), e.g. \"0 8 * * 1-5\" is weekdays at 08:00" },
+        "at": { "type": "string", "description": "run once at this local time, \"YYYY-MM-DD HH:MM\" (reminders: \"tomorrow at 9\"), instead of `cron`" }
+    });
+    match props {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    }
+}
+
 /// The JSON schema properties for [`ScheduleLimits`], for tool specs.
 fn limit_properties() -> serde_json::Map<String, Value> {
     let props = json!({
@@ -127,10 +238,8 @@ fn owned(store: &Store, id: &str, agent: &str) -> Option<ScheduleRow> {
         .filter(|s| s.agent() == agent)
 }
 
-/// Validate and save a schedule owned by `agent`, with its own `cron`
-/// session. `deliver_to` is already resolved (`None` = keep results in the
-/// session). An agent's results are posted to its DM; the default agent's
-/// to Home.
+/// Validate and save a cron schedule owned by `agent` (see
+/// [`create_routine`]).
 pub fn create_schedule(
     store: &Store,
     cron: &str,
@@ -139,29 +248,44 @@ pub fn create_schedule(
     limits: &ScheduleLimits,
     agent: &str,
 ) -> Result<ScheduleRow, String> {
-    let cron: Cron = cron
-        .parse()
-        .map_err(|e: tern_core::cron::CronError| e.to_string())?;
+    create_routine(
+        store,
+        &TriggerArgs::cron(cron),
+        prompt,
+        deliver_to,
+        limits,
+        agent,
+    )
+}
+
+/// Validate and save a routine owned by `agent`, with its own `cron`
+/// session. `deliver_to` is already resolved (`None` = keep results in the
+/// session). An agent's results are posted to its DM; the default agent's
+/// to Home.
+pub fn create_routine(
+    store: &Store,
+    trigger: &TriggerArgs,
+    prompt: &str,
+    deliver_to: Option<String>,
+    limits: &ScheduleLimits,
+    agent: &str,
+) -> Result<ScheduleRow, String> {
     if prompt.trim().is_empty() {
         return Err("prompt is empty".into());
     }
     if let Some(t) = &deliver_to {
         check_deliver_to(t)?;
     }
-    let next = cron
-        .next_after(chrono::Local::now())
-        .ok_or("that schedule never fires")?;
     let mut row = ScheduleRow {
         id: format!("sch_{}", &tern_core::agent::new_id()[20..]),
-        cron: cron.to_string(),
         prompt: prompt.trim().to_owned(),
         session_id: tern_core::agent::new_id(),
         deliver_to,
         enabled: true,
-        next_run_at: next.timestamp_millis(),
         agent_id: (agent != tern_store::DEFAULT_AGENT).then(|| agent.to_owned()),
         ..ScheduleRow::default()
     };
+    trigger.apply(&mut row)?;
     if row.agent_id.is_some() {
         let dm = store
             .agent_channel(agent)
@@ -184,7 +308,8 @@ pub fn create_schedule(
 /// Changes to a schedule; `None` leaves a field as it is.
 #[derive(Debug, Default, Clone)]
 pub struct ScheduleChange {
-    pub cron: Option<String>,
+    /// A new trigger replaces the old one (`cron` alone stays a cron).
+    pub trigger: TriggerArgs,
     pub prompt: Option<String>,
     pub enabled: Option<bool>,
     /// Already resolved: `Some(None)` stops delivering.
@@ -204,9 +329,13 @@ pub fn update_schedule(
         return Ok(None);
     };
     let enabling = ch.enabled == Some(true) && !s.enabled;
-    let reschedule = ch.cron.is_some() || enabling;
-    if let Some(c) = &ch.cron {
-        s.cron = c.parse::<Cron>().map_err(|e| e.to_string())?.to_string();
+    let retrigger = !ch.trigger.is_empty();
+    if retrigger {
+        ch.trigger.apply(&mut s)?;
+        // A new time for a reminder that already ran turns it back on.
+        if s.trigger() == "once" && ch.enabled.is_none() {
+            s.enabled = true;
+        }
     }
     if let Some(p) = &ch.prompt {
         if p.trim().is_empty() {
@@ -224,14 +353,22 @@ pub fn update_schedule(
         s.deliver_to.clone_from(t);
     }
     ch.limits.apply(&mut s)?;
-    if reschedule {
+    if enabling && !retrigger {
         // Re-enabling starts from now rather than catching up missed slots.
-        s.next_run_at = s
-            .cron
-            .parse::<Cron>()
-            .map_err(|e| e.to_string())?
-            .next_after(chrono::Local::now())
-            .map_or(i64::MAX, |t| t.timestamp_millis());
+        match s.trigger() {
+            "once" if s.next_run_at <= tern_store::now_ms() || s.next_run_at == i64::MAX => {
+                return Err("its time has passed; give a new `at` to run it again".into());
+            }
+            "once" => {}
+            _ => {
+                s.next_run_at = s
+                    .cron
+                    .parse::<Cron>()
+                    .map_err(|e| e.to_string())?
+                    .next_after(chrono::Local::now())
+                    .map_or(i64::MAX, |t| t.timestamp_millis());
+            }
+        }
     }
     store.update_schedule(&s).map_err(|e| e.to_string())?;
     if ch.resume || enabling {
@@ -290,7 +427,8 @@ pub struct ScheduleCreate {
 
 #[derive(Deserialize)]
 struct CreateArgs {
-    cron: String,
+    #[serde(flatten)]
+    trigger: TriggerArgs,
     prompt: String,
     deliver_to: Option<String>,
     #[serde(flatten)]
@@ -315,13 +453,13 @@ impl Tool for ScheduleCreate {
     fn spec(&self) -> ToolSpec {
         spec(
             "schedule_create",
-            "Schedule a prompt to run on a cron schedule (5 fields: minute hour day-of-month month day-of-week, in the user's local time; e.g. \"0 8 * * 1-5\" is weekdays at 08:00). Each run happens in its own session and its final answer is delivered to `deliver_to`: \"here\" (default: this chat, if it's a messaging chat), \"none\", or \"telegram:<chat_id>\". A run with nothing to report answers NO_REPLY and sends nothing. Results finishing in quiet hours wait until they end, unless `urgent`. Scheduled runs only happen while `tern daemon` is running.",
+            "Schedule a prompt (a routine) to run repeatedly on a `cron`, or once `at` a time (reminders). Each run happens in its own session and its final answer is delivered to `deliver_to`: \"here\" (default: this chat, if it's a messaging chat), \"none\", or \"telegram:<chat_id>\". A run with nothing to report answers NO_REPLY and sends nothing. Results finishing in quiet hours wait until they end, unless `urgent`. Scheduled runs only happen while `tern daemon` is running.",
             {
                 let mut props = limit_properties();
-                props.insert("cron".into(), json!({ "type": "string" }));
+                props.extend(trigger_properties());
                 props.insert("prompt".into(), json!({ "type": "string", "description": "what to do each time, written as a standalone instruction" }));
                 props.insert("deliver_to".into(), json!({ "type": "string" }));
-                json!({ "type": "object", "properties": props, "required": ["cron", "prompt"] })
+                json!({ "type": "object", "properties": props, "required": ["prompt"] })
             },
         )
     }
@@ -336,9 +474,9 @@ impl Tool for ScheduleCreate {
             Err(e) => return e,
         };
         let deliver_to = resolve_target(&self.store, &ctx.session_id, a.deliver_to.as_deref());
-        let row = match create_schedule(
+        let row = match create_routine(
             &self.store,
-            &a.cron,
+            &a.trigger,
             &a.prompt,
             deliver_to.clone(),
             &a.limits,
@@ -350,7 +488,7 @@ impl Tool for ScheduleCreate {
         ToolResult::ok(format!(
             "created schedule {} ({}); next run {}; results go to {}{}",
             row.id,
-            row.cron,
+            describe_trigger(&row),
             fmt_time(row.next_run_at),
             deliver_to
                 .as_deref()
@@ -367,7 +505,8 @@ pub struct ScheduleUpdate {
 #[derive(Deserialize)]
 struct UpdateArgs {
     id: String,
-    cron: Option<String>,
+    #[serde(flatten)]
+    trigger: TriggerArgs,
     prompt: Option<String>,
     enabled: Option<bool>,
     deliver_to: Option<String>,
@@ -386,11 +525,11 @@ impl Tool for ScheduleUpdate {
     fn spec(&self) -> ToolSpec {
         spec(
             "schedule_update",
-            "Change a schedule by id: its cron, prompt, `deliver_to`, `enabled`, quiet hours, urgency or caps. Only the fields you pass change; pass null for a cap to return it to the default. `resume: true` lifts a pause caused by a daily cap.",
+            "Change a schedule by id: its trigger (`cron` or `at`), prompt, `deliver_to`, `enabled`, quiet hours, urgency or caps. Only the fields you pass change; pass null for a cap to return it to the default. `resume: true` lifts a pause caused by a daily cap.",
             {
                 let mut props = limit_properties();
+                props.extend(trigger_properties());
                 props.insert("id".into(), json!({ "type": "string" }));
-                props.insert("cron".into(), json!({ "type": "string" }));
                 props.insert("prompt".into(), json!({ "type": "string" }));
                 props.insert("enabled".into(), json!({ "type": "boolean" }));
                 props.insert("deliver_to".into(), json!({ "type": "string" }));
@@ -413,7 +552,7 @@ impl Tool for ScheduleUpdate {
             return ToolResult::error(format!("no schedule {:?} of yours", a.id));
         }
         let ch = ScheduleChange {
-            cron: a.cron,
+            trigger: a.trigger,
             prompt: a.prompt,
             enabled: a.enabled,
             deliver_to: a
@@ -427,7 +566,7 @@ impl Tool for ScheduleUpdate {
             Ok(Some(s)) => ToolResult::ok(format!(
                 "updated {} [{}] {}; next run {} → {}{}",
                 s.id,
-                s.cron,
+                describe_trigger(&s),
                 if s.enabled { "enabled" } else { "disabled" },
                 fmt_time(s.next_run_at),
                 s.deliver_to.as_deref().unwrap_or("none"),
@@ -477,7 +616,7 @@ impl Tool for ScheduleList {
                         format!(
                             "{} [{}] {} → {}{}: {}",
                             s.id,
-                            s.cron,
+                            describe_trigger(s),
                             if s.enabled {
                                 format!("next {}", fmt_time(s.next_run_at))
                             } else {
@@ -637,6 +776,65 @@ mod tests {
         };
         assert!(!del.call(&ctx, json!({"id": s.id})).await.is_error);
         assert!(del.call(&ctx, json!({"id": s.id})).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn a_once_routine_runs_at_a_time_and_can_be_set_again() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_session("s", "api", None).unwrap();
+        let ctx = ToolCtx {
+            workspace: std::env::temp_dir(),
+            run_id: "r".into(),
+            session_id: "s".into(),
+            cancel: CancellationToken::new(),
+        };
+        let create = ScheduleCreate {
+            store: store.clone(),
+        };
+        let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
+            .format("%Y-%m-%d 09:00")
+            .to_string();
+        for bad in [
+            json!({"prompt": "x"}),
+            json!({"prompt": "x", "at": "2001-01-01 09:00"}),
+            json!({"prompt": "x", "at": "tomorrow"}),
+            json!({"prompt": "x", "at": tomorrow, "cron": "0 9 * * *"}),
+        ] {
+            let r = create.call(&ctx, bad.clone()).await;
+            assert!(r.is_error, "{bad}: {}", r.content);
+        }
+        let r = create
+            .call(&ctx, json!({"prompt": "Call the dentist", "at": tomorrow}))
+            .await;
+        assert!(
+            !r.is_error && r.content.contains("once at"),
+            "{}",
+            r.content
+        );
+        let s = store.schedules().unwrap().remove(0);
+        assert_eq!((s.trigger(), s.cron.as_str()), ("once", ""));
+        assert_eq!(
+            s.next_run_at,
+            parse_at(&tomorrow).unwrap().timestamp_millis()
+        );
+        // After it ran, it is off; a new `at` turns it back on.
+        store.finish_once(&s.id, tern_store::now_ms()).unwrap();
+        let update = ScheduleUpdate {
+            store: store.clone(),
+        };
+        let r = update
+            .call(&ctx, json!({"id": s.id, "enabled": true}))
+            .await;
+        assert!(r.is_error && r.content.contains("passed"), "{}", r.content);
+        let r = update.call(&ctx, json!({"id": s.id, "at": tomorrow})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(store.schedule(&s.id).unwrap().unwrap().enabled);
+        // And a cron turns it into a repeating routine.
+        update
+            .call(&ctx, json!({"id": s.id, "cron": "0 9 * * *"}))
+            .await;
+        let s = store.schedule(&s.id).unwrap().unwrap();
+        assert_eq!((s.trigger(), s.cron.as_str()), ("cron", "0 9 * * *"));
     }
 
     #[tokio::test]

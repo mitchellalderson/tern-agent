@@ -35,17 +35,78 @@ pub struct ScheduleRow {
     /// The agent whose job it is; `None` = the default agent (agent
     /// profiles §4). Its session belongs to the same agent.
     pub agent_id: Option<String>,
+    /// What starts it (T1b): `cron`, `once` or `watch`; empty = `cron`.
+    pub trigger: String,
+    /// `<connector>.<watch>` for a watch trigger.
+    pub watch: Option<String>,
+    /// How often a watch is polled.
+    pub every_secs: Option<i64>,
+    /// Start runs for a watch's first poll instead of only recording it.
+    pub backfill: bool,
+    /// Keep watch events marked as caused by tern itself.
+    pub include_self: bool,
+    /// Luau run before a cron or once slot; false skips the run.
+    pub gate: Option<String>,
+    /// The active connector whose capabilities the gate runs with.
+    pub gate_connector: Option<String>,
+    /// `silent`, `digest`, `notify` or `interrupt`; `None` = the default.
+    pub initiative: Option<String>,
+    /// What the last watch poll or gate found, and when.
+    pub last_check: Option<String>,
+    pub last_check_at: Option<i64>,
 }
 
 impl ScheduleRow {
     pub fn agent(&self) -> &str {
         self.agent_id.as_deref().unwrap_or(crate::DEFAULT_AGENT)
     }
+
+    /// `cron`, `once` or `watch`.
+    pub fn trigger(&self) -> &str {
+        if self.trigger.is_empty() {
+            "cron"
+        } else {
+            &self.trigger
+        }
+    }
+}
+
+/// An event a watch reported (T1b), waiting for or past its run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutineEvent {
+    pub routine_id: String,
+    pub key: String,
+    /// JSON as the watch returned it; empty once a run has it.
+    pub payload: String,
+    /// `pending`, `batch`, `started`, `baseline` or `self`.
+    pub state: String,
+    pub run_id: Option<String>,
+    pub created_at: i64,
+}
+
+/// An event from one poll, before it is recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewEvent {
+    pub key: String,
+    pub payload: String,
+    /// `pending`, `baseline` or `self`. Pending events past the poll's
+    /// limit are recorded as `batch`.
+    pub state: &'static str,
+}
+
+/// What recording a poll changed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PollRecord {
+    /// Events not seen before.
+    pub new: usize,
+    /// Of those, the ones that will start runs (`pending` or `batch`).
+    pub to_run: usize,
 }
 
 const SCHEDULE_COLS: &str = "id, cron, prompt, session_id, deliver_to, enabled, next_run_at, last_run_at, \
     quiet_hours, urgent, runs_per_day, usd_per_day, tokens_per_run, paused_until, paused_reason, budget_since, \
-    channel_id, autonomy, agent_id";
+    channel_id, autonomy, agent_id, trigger_kind, watch, every_secs, backfill, include_self, gate, \
+    gate_connector, initiative, last_check, last_check_at";
 
 fn schedule_row(r: &Row<'_>) -> rusqlite::Result<ScheduleRow> {
     Ok(ScheduleRow {
@@ -68,6 +129,16 @@ fn schedule_row(r: &Row<'_>) -> rusqlite::Result<ScheduleRow> {
         channel_id: r.get(16)?,
         autonomy: r.get(17)?,
         agent_id: r.get(18)?,
+        trigger: r.get(19)?,
+        watch: r.get(20)?,
+        every_secs: r.get(21)?,
+        backfill: r.get::<_, i64>(22)? != 0,
+        include_self: r.get::<_, i64>(23)? != 0,
+        gate: r.get(24)?,
+        gate_connector: r.get(25)?,
+        initiative: r.get(26)?,
+        last_check: r.get(27)?,
+        last_check_at: r.get(28)?,
     })
 }
 
@@ -81,6 +152,19 @@ pub struct HeldDelivery {
     pub label: Option<String>,
     pub text: String,
     pub release_at: i64,
+    /// `quiet` (held for quiet hours) or `digest` (an initiative digest).
+    pub kind: String,
+}
+
+fn event_row(r: &Row<'_>) -> rusqlite::Result<RoutineEvent> {
+    Ok(RoutineEvent {
+        routine_id: r.get(0)?,
+        key: r.get(1)?,
+        payload: r.get(2)?,
+        state: r.get(3)?,
+        run_id: r.get(4)?,
+        created_at: r.get(5)?,
+    })
 }
 
 /// Tokens used: (input, output, cache read, cache write).
@@ -98,7 +182,8 @@ impl Store {
             &format!(
                 "INSERT INTO schedules ({SCHEDULE_COLS})
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                   COALESCE(?17, 'home'), ?18, NULLIF(?19, 'tern'))"
+                   COALESCE(?17, 'home'), ?18, NULLIF(?19, 'tern'), COALESCE(NULLIF(?20, ''), 'cron'),
+                   ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)"
             ),
             params![
                 s.id,
@@ -119,7 +204,17 @@ impl Store {
                 s.budget_since,
                 s.channel_id,
                 s.autonomy,
-                s.agent_id
+                s.agent_id,
+                s.trigger,
+                s.watch,
+                s.every_secs,
+                s.backfill as i64,
+                s.include_self as i64,
+                s.gate,
+                s.gate_connector,
+                s.initiative,
+                s.last_check,
+                s.last_check_at
             ],
         )?;
         Ok(())
@@ -206,12 +301,16 @@ impl Store {
     }
 
     /// Replace a schedule's editable fields (everything but its id, session
-    /// and pause state).
+    /// and pause state). A different watch starts over from a baseline.
     pub fn update_schedule(&self, s: &ScheduleRow) -> Result<bool> {
         Ok(self.conn()?.execute(
             "UPDATE schedules SET cron = ?2, prompt = ?3, deliver_to = ?4, enabled = ?5, next_run_at = ?6,
                quiet_hours = ?7, urgent = ?8, runs_per_day = ?9, usd_per_day = ?10, tokens_per_run = ?11,
-               autonomy = ?12
+               autonomy = ?12,
+               watch_cursor = CASE WHEN watch IS ?14 AND trigger_kind = COALESCE(NULLIF(?13, ''), 'cron')
+                 THEN watch_cursor END,
+               trigger_kind = COALESCE(NULLIF(?13, ''), 'cron'), watch = ?14, every_secs = ?15,
+               backfill = ?16, include_self = ?17, gate = ?18, gate_connector = ?19, initiative = ?20
              WHERE id = ?1",
             params![
                 s.id,
@@ -225,7 +324,15 @@ impl Store {
                 s.runs_per_day,
                 s.usd_per_day,
                 tokens(s.tokens_per_run),
-                s.autonomy
+                s.autonomy,
+                s.trigger,
+                s.watch,
+                s.every_secs,
+                s.backfill as i64,
+                s.include_self as i64,
+                s.gate,
+                s.gate_connector,
+                s.initiative
             ],
         )? > 0)
     }
@@ -315,10 +422,23 @@ impl Store {
         text: &str,
         release_at: i64,
     ) -> Result<()> {
+        self.hold_delivery_as(target, run_id, label, text, release_at, "quiet")
+    }
+
+    /// Hold a delivery until `release_at`, for `kind`: `quiet` or `digest`.
+    pub fn hold_delivery_as(
+        &self,
+        target: &str,
+        run_id: Option<&str>,
+        label: Option<&str>,
+        text: &str,
+        release_at: i64,
+        kind: &str,
+    ) -> Result<()> {
         self.conn()?.execute(
-            "INSERT INTO held_deliveries (target, run_id, label, text, release_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![target, run_id, label, text, release_at, now_ms()],
+            "INSERT INTO held_deliveries (target, run_id, label, text, release_at, created_at, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![target, run_id, label, text, release_at, now_ms(), kind],
         )?;
         Ok(())
     }
@@ -327,7 +447,7 @@ impl Store {
     pub fn due_held_deliveries(&self, now: i64) -> Result<Vec<HeldDelivery>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, target, run_id, label, text, release_at FROM held_deliveries
+            "SELECT id, target, run_id, label, text, release_at, kind FROM held_deliveries
              WHERE release_at <= ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([now], |r| {
@@ -338,6 +458,7 @@ impl Store {
                 label: r.get(3)?,
                 text: r.get(4)?,
                 release_at: r.get(5)?,
+                kind: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -362,6 +483,139 @@ impl Store {
             .conn()?
             .execute("DELETE FROM schedules WHERE id = ?1", [id])?
             > 0)
+    }
+
+    // ---- routines (T1b) ----
+
+    /// A `once` routine after its run: off, never due again.
+    pub fn finish_once(&self, id: &str, ran_at: i64) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE schedules SET last_run_at = ?2, next_run_at = ?3, enabled = 0 WHERE id = ?1",
+            params![id, ran_at, i64::MAX],
+        )?;
+        Ok(())
+    }
+
+    /// Record what a poll or gate found (`last_check`).
+    pub fn set_routine_check(&self, id: &str, check: &str) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE schedules SET last_check = ?2, last_check_at = ?3 WHERE id = ?1",
+            params![id, check, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// A watch routine's cursor: `None` before its first poll, else the
+    /// JSON its watch last returned (`null` included).
+    pub fn watch_cursor(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()?
+            .query_row(
+                "SELECT watch_cursor FROM schedules WHERE id = ?1",
+                [id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Record one poll in one transaction: the events (a key seen before is
+    /// ignored), then the cursor and `check`. A crash before the commit
+    /// keeps the old cursor, so the next poll finds the same events and
+    /// the dedup key absorbs them. New `pending` events past `max` become
+    /// `batch`: one run for all of them.
+    pub fn record_poll(
+        &self,
+        id: &str,
+        events: &[NewEvent],
+        cursor: &str,
+        check: &str,
+        max: usize,
+    ) -> Result<PollRecord> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let now = now_ms();
+        let mut rec = PollRecord::default();
+        for e in events {
+            let state = if e.state == "pending" && rec.to_run >= max {
+                "batch"
+            } else {
+                e.state
+            };
+            let added = tx.execute(
+                "INSERT OR IGNORE INTO routine_events (routine_id, event_key, payload, state, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, e.key, e.payload, state, now],
+            )?;
+            if added > 0 {
+                rec.new += 1;
+                if e.state == "pending" {
+                    rec.to_run += 1;
+                }
+            }
+        }
+        tx.execute(
+            "UPDATE schedules SET watch_cursor = ?2, last_check = ?3, last_check_at = ?4 WHERE id = ?1",
+            params![id, cursor, check, now],
+        )?;
+        tx.commit()?;
+        Ok(rec)
+    }
+
+    /// Routines with events waiting for a run, oldest event first.
+    pub fn routines_with_waiting_events(&self) -> Result<Vec<String>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT routine_id FROM routine_events WHERE state IN ('pending', 'batch')
+             GROUP BY routine_id ORDER BY min(created_at)",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The events the next run of routine `id` takes: its oldest `pending`
+    /// event alone, or else every `batch` event.
+    pub fn next_routine_events(&self, id: &str) -> Result<Vec<RoutineEvent>> {
+        let conn = self.conn()?;
+        let one = |state: &str, limit: i64| -> Result<Vec<RoutineEvent>> {
+            let mut stmt = conn.prepare(
+                "SELECT routine_id, event_key, payload, state, run_id, created_at FROM routine_events
+                 WHERE routine_id = ?1 AND state = ?2 ORDER BY created_at, rowid LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![id, state, limit], event_row)?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        };
+        let pending = one("pending", 1)?;
+        if !pending.is_empty() {
+            return Ok(pending);
+        }
+        one("batch", i64::MAX)
+    }
+
+    /// Events of routine `id`, newest first.
+    pub fn routine_events(&self, id: &str, limit: u32) -> Result<Vec<RoutineEvent>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT routine_id, event_key, payload, state, run_id, created_at FROM routine_events
+             WHERE routine_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![id, limit], event_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Hand events to run `run_id`; their payloads are in its input now.
+    pub fn mark_events_started(&self, id: &str, keys: &[String], run_id: &str) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        for k in keys {
+            tx.execute(
+                "UPDATE routine_events SET state = 'started', run_id = ?3, payload = ''
+                 WHERE routine_id = ?1 AND event_key = ?2",
+                params![id, k, run_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     // ---- chat sessions ----
@@ -578,5 +832,142 @@ mod tests {
             "new"
         );
         assert!(s.latest_session_for("telegram", "1").unwrap().is_none());
+    }
+
+    fn watch_routine(s: &Store) {
+        s.create_session("wsess", "cron", None).unwrap();
+        s.create_schedule(&ScheduleRow {
+            id: "w".into(),
+            prompt: "new PR".into(),
+            session_id: "wsess".into(),
+            enabled: true,
+            trigger: "watch".into(),
+            watch: Some("github.reviews".into()),
+            every_secs: Some(300),
+            ..ScheduleRow::default()
+        })
+        .unwrap();
+    }
+
+    fn ev(key: &str, state: &'static str) -> NewEvent {
+        NewEvent {
+            key: key.into(),
+            payload: format!("{{\"id\":\"{key}\"}}"),
+            state,
+        }
+    }
+
+    #[test]
+    fn a_new_routine_is_a_cron_routine_unless_it_says_otherwise() {
+        let s = Store::open_in_memory().unwrap();
+        s.create_session("sess", "cron", None).unwrap();
+        s.create_schedule(&ScheduleRow {
+            id: "c".into(),
+            cron: "0 8 * * *".into(),
+            prompt: "brief".into(),
+            session_id: "sess".into(),
+            ..ScheduleRow::default()
+        })
+        .unwrap();
+        let c = s.schedule("c").unwrap().unwrap();
+        assert_eq!((c.trigger.as_str(), c.trigger()), ("cron", "cron"));
+        assert_eq!(c.initiative, None, "new routines take the default");
+        s.finish_once("c", 5).unwrap();
+        let c = s.schedule("c").unwrap().unwrap();
+        assert!(!c.enabled && c.next_run_at == i64::MAX && c.last_run_at == Some(5));
+    }
+
+    #[test]
+    fn polls_dedup_events_and_save_the_cursor_with_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let s = Store::open(&path).unwrap();
+            watch_routine(&s);
+            assert_eq!(s.watch_cursor("w").unwrap(), None, "never polled");
+            let first = s
+                .record_poll(
+                    "w",
+                    &[ev("1", "baseline"), ev("2", "baseline")],
+                    "{\"n\":2}",
+                    "baseline",
+                    20,
+                )
+                .unwrap();
+            assert_eq!(first, PollRecord { new: 2, to_run: 0 });
+            assert!(s.routines_with_waiting_events().unwrap().is_empty());
+        }
+        // Across a restart, a key seen before never runs again.
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.watch_cursor("w").unwrap().as_deref(), Some("{\"n\":2}"));
+        let again = s
+            .record_poll(
+                "w",
+                &[ev("2", "pending"), ev("3", "pending"), ev("3", "pending")],
+                "{\"n\":3}",
+                "1 new",
+                20,
+            )
+            .unwrap();
+        assert_eq!(again, PollRecord { new: 1, to_run: 1 });
+        assert_eq!(s.routines_with_waiting_events().unwrap(), ["w"]);
+        let next = s.next_routine_events("w").unwrap();
+        assert_eq!(next.len(), 1);
+        assert_eq!(
+            (next[0].key.as_str(), next[0].state.as_str()),
+            ("3", "pending")
+        );
+        s.mark_events_started("w", &["3".into()], "run1").unwrap();
+        assert!(s.next_routine_events("w").unwrap().is_empty());
+        let all = s.routine_events("w", 10).unwrap();
+        let three = all.iter().find(|e| e.key == "3").unwrap();
+        assert_eq!(
+            (
+                three.state.as_str(),
+                three.run_id.as_deref(),
+                three.payload.as_str()
+            ),
+            ("started", Some("run1"), "")
+        );
+        let sched = s.schedule("w").unwrap().unwrap();
+        assert_eq!(sched.last_check.as_deref(), Some("1 new"));
+        // Deleting the routine deletes its events.
+        assert!(s.delete_schedule("w").unwrap());
+        assert!(s.routine_events("w", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn events_past_the_limit_collapse_into_one_batch() {
+        let s = Store::open_in_memory().unwrap();
+        watch_routine(&s);
+        let evs: Vec<NewEvent> = (0..5).map(|i| ev(&i.to_string(), "pending")).collect();
+        let rec = s.record_poll("w", &evs, "null", "5 new", 2).unwrap();
+        assert_eq!(rec, PollRecord { new: 5, to_run: 5 });
+        let mut keys = Vec::new();
+        loop {
+            let next = s.next_routine_events("w").unwrap();
+            if next.is_empty() {
+                break;
+            }
+            let k: Vec<String> = next.iter().map(|e| e.key.clone()).collect();
+            s.mark_events_started("w", &k, "r").unwrap();
+            keys.push(k);
+        }
+        assert_eq!(keys, [vec!["0"], vec!["1"], vec!["2", "3", "4"]]);
+    }
+
+    #[test]
+    fn digests_are_held_with_their_kind() {
+        let s = Store::open_in_memory().unwrap();
+        s.hold_delivery_as("telegram:1", None, None, "d", 10, "digest")
+            .unwrap();
+        s.hold_delivery("telegram:1", None, None, "q", 10).unwrap();
+        let kinds: Vec<String> = s
+            .due_held_deliveries(20)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.kind)
+            .collect();
+        assert_eq!(kinds, ["digest", "quiet"]);
     }
 }

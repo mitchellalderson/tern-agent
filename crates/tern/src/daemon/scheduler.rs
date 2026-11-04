@@ -46,17 +46,14 @@ async fn run_due(manager: &Arc<Manager>) -> anyhow::Result<()> {
     let now = Local::now();
     let defaults = manager.rt.live().schedules;
     for s in store.due_schedules(now.timestamp_millis())? {
-        let cron = match s.cron.parse::<Cron>() {
-            Ok(c) => c,
+        let next = match next_slot(&s, now) {
+            Ok(n) => n,
             Err(e) => {
-                tracing::error!(schedule = %s.id, error = %e, "invalid cron; parking schedule");
+                tracing::error!(schedule = %s.id, error = %e, "invalid trigger; parking routine");
                 store.mark_schedule_ran(&s.id, now.timestamp_millis(), i64::MAX)?;
                 continue;
             }
         };
-        let next = cron
-            .next_after(now)
-            .map_or(i64::MAX, |t| t.timestamp_millis());
         if let Some(until) = s.paused_until {
             if until > now.timestamp_millis() {
                 store.advance_schedule(&s.id, next)?;
@@ -80,13 +77,32 @@ async fn run_due(manager: &Arc<Manager>) -> anyhow::Result<()> {
             continue;
         }
         // Advance first, so a crash mid-run doesn't start it twice.
-        store.mark_schedule_ran(&s.id, now.timestamp_millis(), next)?;
+        if s.trigger() == "once" {
+            store.finish_once(&s.id, now.timestamp_millis())?;
+        } else {
+            store.mark_schedule_ran(&s.id, now.timestamp_millis(), next)?;
+        }
         tracing::info!(schedule = %s.id, "running scheduled prompt");
         if let Err(e) = manager.start_scheduled(&s).await {
             tracing::error!(schedule = %s.id, error = %e, "scheduled run failed to start");
         }
     }
     Ok(())
+}
+
+/// When a due routine is due next: its cron's next slot after `now`, never
+/// for a `once` routine.
+fn next_slot(s: &ScheduleRow, now: DateTime<Local>) -> Result<i64, String> {
+    match s.trigger() {
+        "once" => Ok(i64::MAX),
+        "cron" => Ok(s
+            .cron
+            .parse::<Cron>()
+            .map_err(|e| e.to_string())?
+            .next_after(now)
+            .map_or(i64::MAX, |t| t.timestamp_millis())),
+        other => Err(format!("unknown trigger {other:?}")),
+    }
 }
 
 /// The first line of a schedule's prompt, for notices.
@@ -232,6 +248,7 @@ mod tests {
             label: label.map(Into::into),
             text: text.into(),
             release_at: 0,
+            kind: "quiet".into(),
         }
     }
 
