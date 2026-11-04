@@ -52,6 +52,8 @@ qrcode.workspace = true
 rcgen.workspace = true
 regex.workspace = true
 reqwest.workspace = true
+# `tern mcp serve` (T6d): an MCP server over stdio.
+rmcp = { workspace = true, features = ["server", "transport-io"] }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true

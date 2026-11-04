@@ -312,6 +312,9 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
         check_mcp(&mut r, &runtime, &secrets, name, s, args.offline);
     }
 
+    r.section("tern as an MCP server");
+    check_mcp_serve(&mut r, &config);
+
     println!();
     if r.fails > 0 {
         println!("{} problem(s), {} warning(s).", r.fails, r.warns);
@@ -323,6 +326,33 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
         println!("All good.");
         Ok(ExitCode::SUCCESS)
     }
+}
+
+/// `tern mcp serve` (T6d): which MCP clients launch it, and what they get.
+fn check_mcp_serve(r: &mut Report, config: &Config) {
+    let clients = std::env::var_os("HOME")
+        .map(|h| crate::mcp_serve::configured_clients(std::path::Path::new(&h)))
+        .unwrap_or_default();
+    if clients.is_empty() {
+        r.check(
+            Status::Info,
+            "no MCP client runs `tern mcp serve`",
+            Some("`tern mcp serve --print-config` prints the snippet for Claude Desktop, Cursor or Claude Code"),
+        );
+        return;
+    }
+    let scope = match &config.mcp.serve.agent {
+        Some(a) => format!("agent {a}'s tools"),
+        None => "read-only tools (set [mcp.serve] agent for more)".to_owned(),
+    };
+    r.check(
+        Status::Ok,
+        format!(
+            "configured in {}: {scope}; calls start tainted and ask in tern",
+            clients.join(", ")
+        ),
+        None,
+    );
 }
 
 /// Active Luau connectors: each one's credentials and rate, with a warning

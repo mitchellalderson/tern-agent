@@ -15,6 +15,7 @@ mod lifecycle;
 mod logging;
 mod mcp;
 mod mcp_cmd;
+mod mcp_serve;
 mod mcp_tools;
 mod outbox_cmd;
 mod providers;

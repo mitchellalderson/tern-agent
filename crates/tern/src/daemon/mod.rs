@@ -8,6 +8,7 @@ mod api_config;
 mod api_connections;
 pub mod api_lifecycle;
 mod api_mcp;
+pub mod api_mcp_serve;
 mod api_outbox;
 mod api_providers;
 mod api_runs;
@@ -140,6 +141,16 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     // Sub-agents are ordinary runs here; a parent that gets to waiting on
     // one first starts it itself, and `spawn` won't drive a run twice.
     for run in triage_running_runs(&rt.store, RESUME_MAX_AGE)? {
+        // An MCP client's call: the client is gone and may retry it, so it
+        // isn't run again with nobody to return the result to.
+        if run.trigger == tern_core::agent::mcp::TRIGGER {
+            rt.store.set_run_status(
+                &run.id,
+                tern_core::agent::RunStatus::Interrupted.as_str(),
+                Some("tern restarted during this MCP client's call"),
+            )?;
+            continue;
+        }
         tracing::info!(run = %run.id, "resuming run after restart");
         if run.trigger == tern_core::outbox::TRIGGER {
             manager.drive_outbox_run(run.id);

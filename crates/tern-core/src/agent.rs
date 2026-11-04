@@ -34,6 +34,7 @@ mod channel;
 mod script;
 pub use carry::CarryOutput;
 pub use channel::DigestOutput;
+pub mod mcp;
 mod outbox;
 pub use outbox::tell_run as tell_outbox_run;
 pub mod taint;
@@ -133,6 +134,9 @@ pub struct RunOutcome {
     /// A scheduled run that completed with `NO_REPLY`: deliver nothing.
     #[serde(default)]
     pub quiet: bool,
+    /// An `mcp` run's one call: what the MCP client gets back (T6d).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result: Option<ToolResult>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -335,6 +339,7 @@ impl Agent {
             error: None,
             usage: Usage::default(),
             quiet: false,
+            tool_result: None,
         };
         let result = self.drive_inner(&run, &cancel, &mut outcome).await;
         match result {
@@ -383,6 +388,17 @@ impl Agent {
         cancel: &CancellationToken,
         outcome: &mut RunOutcome,
     ) -> Result<RunStatus, AgentError> {
+        // A call from an MCP client runs no model.
+        if run.trigger == mcp::TRIGGER {
+            let ctx = ToolCtx {
+                workspace: self.cfg.workspace.clone(),
+                run_id: run.id.clone(),
+                session_id: run.session_id.clone(),
+                cancel: cancel.clone(),
+            };
+            self.tools.prepare().await;
+            return self.mcp_exec(run, &ctx, cancel, outcome).await;
+        }
         let model: ModelRef = run
             .model
             .as_deref()

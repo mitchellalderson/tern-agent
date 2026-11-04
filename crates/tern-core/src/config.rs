@@ -789,6 +789,31 @@ impl Default for SchedulesConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct McpConfig {
     pub servers: BTreeMap<String, McpServerConfig>,
+    /// `tern mcp serve`: what tern shows other MCP clients (T6d).
+    #[serde(skip_serializing_if = "McpServeConfig::is_default")]
+    pub serve: McpServeConfig,
+}
+
+/// `[mcp.serve]`: which of tern's tools `tern mcp serve` offers MCP
+/// clients, and how freely they run. Every call still goes through the
+/// effect policy, and starts tainted.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpServeConfig {
+    /// The agent profile (slug) whose tool scope applies. Unset: only
+    /// `memory_search`, `channel_read`, `schedule_list` and `skill_read`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Caps the global `autonomy` for MCP calls (it can't raise it):
+    /// `readonly` makes the server read-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autonomy: Option<crate::approval::Autonomy>,
+}
+
+impl McpServeConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

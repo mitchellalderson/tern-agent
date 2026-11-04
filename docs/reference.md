@@ -9,7 +9,7 @@ Everything tern does, command by command. For installing and a first chat, see t
 | **Models** | Anthropic, plus any OpenAI-compatible endpoint (OpenRouter, Ollama, vLLM, LM Studio). Models are `provider:model`; switch with `--model` or `/model`. |
 | **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `python` (sandboxed compute that calls your tools), `http_fetch`, long-term memory and capped profile notes (`user.md`, `memory.md`), search over past conversations, skills, schedules. |
 | **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. A run that has read untrusted content (a web page, mail, a tool marked `untrusted`) is **tainted**: its `write` and `destructive` calls ask whatever "always" says, and the prompt says why ([Taint](#taint)). A write nobody answers in time waits in the [outbox](#outbox) instead of being denied, and `autonomy` sets how much runs may do without asking ([Autonomy](#autonomy)). |
-| **MCP** | Ask the agent ("add the GitHub MCP server"; you approve the exact command each time, and only on this machine for local commands), or add, test, toggle and remove servers with `/mcp` in the chat or [`tern mcp`](#tern-mcp), or edit `[mcp.servers.<name>]` (stdio or streamable HTTP); changes apply without a restart, a server's pasted `mcpServers` JSON works too, and their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. For a browser, see [Recipe: give tern a browser](recipes/browser.md). |
+| **MCP** | Ask the agent ("add the GitHub MCP server"; you approve the exact command each time, and only on this machine for local commands), or add, test, toggle and remove servers with `/mcp` in the chat or [`tern mcp`](#tern-mcp), or edit `[mcp.servers.<name>]` (stdio or streamable HTTP); changes apply without a restart, a server's pasted `mcpServers` JSON works too, and their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. For a browser, see [Recipe: give tern a browser](recipes/browser.md). The other way round, [`tern mcp serve`](#tern-as-an-mcp-server) offers your connectors, memory and channels to Claude Desktop, Cursor or Claude Code, under tern's approvals. |
 | **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and paths they may reach, which credentials tern adds to their requests (the script never sees them), a request rate, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
 | **Telegram** | Chat from your phone, approve tool calls with buttons, get scheduled results. |
@@ -293,11 +293,22 @@ tern mcp add NAME --url URL [--bearer-secret NAME] [--header-secret H=NAME]
 tern mcp import [FILE]                                 # mcpServers JSON, from stdin without FILE
 tern mcp test NAME
 tern mcp enable|disable|restart|rm NAME
+tern mcp serve [--agent SLUG]                          # tern as an MCP server over stdio
+tern mcp serve --print-config [--agent SLUG]           # the mcpServers snippet for a client
 ```
 
 `add` and `import` start the server and list its tools before saving (`--no-test` skips that), and ask for missing secrets without echoing them. Values in a pasted snippet that look like keys are stored in `secrets.toml`, never `config.toml`. In the chat, `/mcp` opens the same as a panel (`/mcp add`, `/mcp paste`, `/mcp restart|enable|disable NAME`).
 
 To browse the web, add a browser MCP server; [Recipe: give tern a browser](recipes/browser.md) has the commands, effects and cautions.
+
+#### tern as an MCP server
+
+`tern mcp serve` lets other AI clients (Claude Desktop, Cursor, Claude Code) use your Luau connectors, memory, channels and routines through tern. Add the snippet `tern mcp serve --print-config` prints to the client's `mcpServers` (Claude Desktop: `claude_desktop_config.json`; Cursor: `~/.cursor/mcp.json`; Claude Code: `claude mcp add tern -- tern mcp serve`). The client launches it over stdio; it talks to the running daemon (starting it if needed) over the local socket. `tern doctor` says which clients have it configured.
+
+- **What a client sees**: with no `[mcp.serve] agent`, only `memory_search`, `channel_read`, `schedule_list` and `skill_read`. With `agent = "<slug>"` (or `--agent`), that agent's tool scope, limited to its Luau connector tools (`lua__<name>__<tool>`), `memory_search`, `memory_save`, `channel_read`, `channel_post`, `schedule_*` and `skill_read`. Tools that read files, run commands or Python, fetch URLs, ask for secrets, sign in or manage MCP servers are never offered, and a tool outside the list can't be called by name.
+- **Policy holds**: each call is a run with trigger `mcp` in one session per client (source `mcp`), journaled and visible in tern like any run. It **starts tainted** ("a call from an MCP client"): every `write` and `destructive` call asks, no "always" grant covers it, and "always" isn't offered. Approvals appear in tern (the app, the TUI), not in the client; with nobody attached the call goes to the [outbox](#outbox) and the client is told it is queued. A denial reaches the client as a tool error. `[mcp.serve] autonomy` can lower `autonomy` for MCP calls (`readonly` makes the server read-only) but not raise it.
+- **Results**: an untrusted tool's text reaches the client inside `<untrusted source="…">`; every known secret value is redacted from results and tool descriptions; posts a client makes are tainted posts.
+- **API**: `GET /v1/mcp-serve/tools[?agent=]` and `POST /v1/mcp-serve/call` `{name, arguments, session_id?, client?, agent?}` (owner scope over TCP; the stdio server uses the local socket). Streamable HTTP isn't offered yet.
 
 ### `tern config`
 
@@ -401,6 +412,8 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `mcp.servers.<name>.requires_approval` | `false` | Ask before each of its tool calls. |
 | `mcp.servers.<name>.untrusted` | `false` | Its tools return third-party text (a browser, mail, chat): their results taint the run ([Taint](#taint)). |
 | `mcp.servers.<name>.effects` | `{}` | Effect per tool, by the server's tool name (`"*"` for the rest): `{ search_issues = "read", delete_repo = "destructive" }`. Overrides the server's `readOnlyHint` / `destructiveHint`; tools without either are `write`. |
+| `mcp.serve.agent` | none | The agent profile (slug) whose tool scope [`tern mcp serve`](#tern-as-an-mcp-server) offers MCP clients. Unset: `memory_search`, `channel_read`, `schedule_list` and `skill_read` only. |
+| `mcp.serve.autonomy` | none | Caps `autonomy` for MCP calls (never raises it); `readonly` makes the server read-only. |
 | `subagents.default_model` | none | Sub-agents' model when `agent_spawn` names none (unset = the parent's). May be a fallback chain. |
 | `subagents.models` | `{}` | Aliases `agent_spawn` can pass as `model`: `{ fast = "anthropic:claude-haiku-4-5" }`. Each may be a fallback chain. |
 | `secret_request_timeout_secs` | `900` | How long the agent's prompt for a secret waits for you. |

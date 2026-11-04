@@ -284,6 +284,17 @@ pub enum McpCommand {
         #[arg(long)]
         keep_secrets: bool,
     },
+    /// Serve tern to other AI clients (Claude Desktop, Cursor, Claude Code)
+    /// as an MCP server over stdio, through the running daemon. Calls run
+    /// under tern's approvals, start tainted, and show in tern.
+    Serve {
+        /// Offer this agent profile's tools (overrides `[mcp.serve] agent`).
+        #[arg(long)]
+        agent: Option<String>,
+        /// Print the `mcpServers` snippet for a client's config and exit.
+        #[arg(long)]
+        print_config: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]

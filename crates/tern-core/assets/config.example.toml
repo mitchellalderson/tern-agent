@@ -85,6 +85,16 @@ docker_pids = 512          # 0 for no limit
 # url = "https://mcp.linear.app/mcp"
 # bearer_token_secret = "LINEAR_TOKEN"
 
+# tern as an MCP server (`tern mcp serve`): Claude Desktop, Cursor or Claude
+# Code launch it and use your connectors, memory, channels and routines
+# through tern. `tern mcp serve --print-config` prints the client snippet.
+# Every call is a run in tern (trigger `mcp`) that starts tainted: writes ask
+# in tern, never in the client, and wait in the outbox when nobody answers.
+# Files, commands, URLs, secrets and sign-ins are never offered.
+# [mcp.serve]
+# agent = "scribe"             # whose tool scope applies (unset: memory_search, channel_read, schedule_list, skill_read)
+# autonomy = "readonly"        # caps `autonomy` for MCP calls; it can't raise it
+
 # Sub-agents: the agent_spawn / agent_wait / agent_cancel / agent_status tools.
 # [subagents]
 # enabled = true             # false: no agent_* tools, and the prompt doesn't mention them
