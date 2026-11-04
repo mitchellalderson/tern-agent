@@ -195,6 +195,21 @@ class TernStore extends ChangeNotifier {
       agents.where((x) => x.id == a.agentId).firstOrNull?.name ??
       'tern';
 
+  /// The agent `name` names: an id, an @name or a name (what a parent
+  /// passed to `agent_spawn {agent}`).
+  Agent? agentNamed(String? name) {
+    if (name == null) return null;
+    final n = name.startsWith('@') ? name.substring(1) : name;
+    return agents
+        .where(
+          (a) =>
+              a.id == n ||
+              a.slug == n ||
+              a.name.toLowerCase() == n.toLowerCase(),
+        )
+        .firstOrNull;
+  }
+
   /// The default agent, `tern`.
   Agent? get defaultAgent => agents.where((a) => a.isDefault).firstOrNull;
 

@@ -5,7 +5,7 @@
 //! |---|---|---|
 //! | GET | `/v1/agents[?archived=1]` | `[Agent]`: the default first, with `main_channel_id`, `last_activity`, `needs_you`, `active_runs` |
 //! | POST | `/v1/agents` | create `{name, slug?, avatar?, persona?, model?, subagent_model?, tools?, memory?, template?}`, with its DM channel |
-//! | PATCH | `/v1/agents/{id}` | any of those but `template` and `persona`; `archived: true` archives (not the default agent) |
+//! | PATCH | `/v1/agents/{id}` | any of those but `template` and `persona`, and `delegates` (agents it may hand work to; `null`: all for the default agent, none for others); `archived: true` archives (not the default agent) |
 //! | GET / PUT | `/v1/agents/{id}/persona` | `{persona}`; GET adds `system_sections`, what tern adds to every persona |
 //! | GET | `/v1/agents/templates` | `[Template]` for the create sheet |
 //! | GET | `/v1/memories?agent=&q=&limit=` | memories: `agent` = `shared`, an agent (its own), or absent for all |
@@ -60,8 +60,10 @@ pub struct Agent {
     pub tools: Option<ToolScope>,
     /// `shared` or `private`.
     pub memory: String,
+    /// Agent ids it may hand work to with `agent_spawn {agent}`. Absent:
+    /// every agent for the default agent, none for others.
     #[serde(default)]
-    pub delegates: Vec<String>,
+    pub delegates: Option<Vec<String>>,
     /// Its DM: `home` for the default agent.
     pub main_channel_id: Option<String>,
     #[serde(default)]
@@ -132,11 +134,7 @@ pub(super) fn agent_view(m: &Shared, a: AgentRow) -> Agent {
             .as_deref()
             .and_then(ModelChain::from_stored),
         tools: a.tools.as_deref().and_then(|t| ToolScope::parse(t).ok()),
-        delegates: a
-            .delegates
-            .as_deref()
-            .and_then(|d| serde_json::from_str(d).ok())
-            .unwrap_or_default(),
+        delegates: a.delegate_list(),
         archived: a.archived_at.is_some(),
         is_default: a.is_default(),
         id: a.id,
@@ -342,11 +340,13 @@ async fn update(
             .transpose()
             .map_err(internal)?,
         memory: b.memory,
-        delegates: b
-            .delegates
-            .map(|v| v.map(|d| serde_json::to_string(&d)).transpose())
-            .transpose()
-            .map_err(internal)?,
+        delegates: match b.delegates {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(list)) => Some(Some(
+                serde_json::to_string(&delegate_ids(&m, &a, &list)?).map_err(internal)?,
+            )),
+        },
         archived: b.archived,
         ..AgentChange::default()
     };
@@ -371,6 +371,21 @@ async fn update(
     m.rt.store.update_agent(&a.id, &ch).map_err(internal)?;
     changed(&m);
     Ok(Json(agent_view(&m, find(&m, &a.id)?)))
+}
+
+/// `list` (ids, @names or names) as agent ids: other agents that exist.
+fn delegate_ids(m: &Shared, me: &AgentRow, list: &[String]) -> Result<Vec<String>, ApiError> {
+    let mut out = Vec::new();
+    for name in list {
+        let a = find(m, name.trim().trim_start_matches('@'))?;
+        if a.id == me.id {
+            return Err(bad("an agent can't delegate to itself"));
+        }
+        if !out.contains(&a.id) {
+            out.push(a.id);
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Serialize, Deserialize)]

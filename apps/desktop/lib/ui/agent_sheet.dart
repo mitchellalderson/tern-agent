@@ -92,6 +92,9 @@ class _AgentSheetState extends State<AgentSheet> {
       AgentAvatar.colorNames[DateTime.now().millisecond % 8];
   late String _memory = widget.editing?.memory ?? 'private';
 
+  /// Who it may hand work to, by id; null = unchanged from the agent's.
+  List<String>? _delegates;
+
   /// The scope being edited; null = everything (the default agent's).
   late ToolScope? _tools = widget.editing == null
       ? _narrow()
@@ -195,6 +198,7 @@ class _AgentSheetState extends State<AgentSheet> {
               : model,
         if (!_isDefault) 'memory': _memory,
         if (!_isDefault || _tools != null) 'tools': _tools?.toJson(),
+        'delegates': ?_delegates,
       };
       err = await store.updateAgent(
         a,
@@ -423,6 +427,21 @@ class _AgentSheetState extends State<AgentSheet> {
                         ],
                       ),
                     ),
+                    if (widget.editing case final a?
+                        when widget.store.agents.any(
+                          (o) => o.id != a.id && !o.archived,
+                        )) ...[
+                      _section('CAN HAND WORK TO'),
+                      _DelegatesPicker(
+                        agent: a,
+                        agents: [
+                          for (final o in widget.store.agents)
+                            if (o.id != a.id && !o.archived) o,
+                        ],
+                        chosen: _delegates,
+                        onChanged: (v) => setState(() => _delegates = v),
+                      ),
+                    ],
                     if (_routine case final r? when _creating)
                       CheckboxListTile(
                         contentPadding: EdgeInsets.zero,
@@ -487,6 +506,61 @@ class _AgentSheetState extends State<AgentSheet> {
     _persona.dispose();
     _model.dispose();
     super.dispose();
+  }
+}
+
+/// "Can hand work to": the agents this one may delegate to with
+/// `agent_spawn {agent}` (agent profiles §6.1).
+class _DelegatesPicker extends StatelessWidget {
+  const _DelegatesPicker({
+    required this.agent,
+    required this.agents,
+    required this.chosen,
+    required this.onChanged,
+  });
+
+  final Agent agent;
+  final List<Agent> agents;
+
+  /// Edited so far; null = the agent's own setting.
+  final List<String>? chosen;
+  final ValueChanged<List<String>> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final on =
+        chosen ??
+        [
+          for (final o in agents)
+            if (agent.mayDelegateTo(o)) o.id,
+        ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final o in agents)
+              FilterChip(
+                avatar: AgentAvatar.of(o, size: 18),
+                label: Text(o.name, style: const TextStyle(fontSize: 12.5)),
+                selected: on.contains(o.id),
+                onSelected: (v) => onChanged([
+                  for (final id in on)
+                    if (id != o.id) id,
+                  if (v) o.id,
+                ]),
+              ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'It sends them tasks that match their job, and they report back.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
+    );
   }
 }
 

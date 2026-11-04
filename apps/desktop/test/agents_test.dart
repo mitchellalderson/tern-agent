@@ -514,6 +514,64 @@ void main() {
     expect(private.enabled, isFalse);
   });
 
+  test('a delegated sub-agent is marked with its agent', () async {
+    final (store, _) = await _store();
+    final t = Transcript()
+      ..apply(
+        const SubagentSpawned(
+          runId: 'r1',
+          callId: 'c1',
+          childRunId: 'k1',
+          childSessionId: 'ks',
+          label: 'acme',
+          task: 'Find pricing',
+          model: 'mock:m',
+          status: 'running',
+          agent: 'tern:research',
+        ),
+      );
+    final child = t.items.whereType<AgentsItem>().single.children.single;
+    expect(store.agentNamed(child.agent)?.name, 'Research');
+    // From history the parent's own words name it.
+    expect(store.agentNamed('research')?.id, 'tern:research');
+    expect(_tern.mayDelegateTo(_research), isTrue);
+    expect(_research.mayDelegateTo(_tern), isFalse);
+  });
+
+  testWidgets('the sheet saves who an agent can hand work to', (tester) async {
+    final (store, client) = await _store();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ternTheme(TernColors.light, Brightness.light),
+        home: Scaffold(
+          body: AgentSheet(store: store, editing: _tern),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final chip = find.widgetWithText(FilterChip, 'Research');
+    final sheet = find
+        .descendant(
+          of: find.descendant(
+            of: find.byType(AgentSheet),
+            matching: find.byType(SingleChildScrollView),
+          ),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(chip.hitTestable(), 200, scrollable: sheet);
+    await tester.pumpAndSettle();
+    // tern may hand work to every agent until restricted.
+    expect(tester.widget<FilterChip>(chip).selected, isTrue);
+    await tester.tap(chip);
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    final (id, fields) = client.updated.single;
+    expect(id, 'tern');
+    expect(fields['delegates'], isEmpty);
+  });
+
   test('agentAllows follows the scope and keeps the system layer', () {
     expect(agentAllows(_research, 'read_file'), isTrue);
     expect(agentAllows(_research, 'write_file'), isFalse);

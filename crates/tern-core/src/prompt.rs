@@ -16,8 +16,14 @@ pub enum AgentRole<'a> {
     Main,
     /// The main agent running a schedule's prompt on its own.
     Scheduled,
-    /// A sub-agent another run started with `agent_spawn`, by its label.
-    Subagent { label: &'a str },
+    /// A sub-agent another run started with `agent_spawn`, by its label;
+    /// `caller` is set when it runs as another agent profile the caller
+    /// delegated to (`agent_spawn {agent}`, agent profiles §6.1): the
+    /// caller's name.
+    Subagent {
+        label: &'a str,
+        caller: Option<&'a str>,
+    },
 }
 
 /// What the "Sub-agents" section needs, when this run may start them.
@@ -61,6 +67,10 @@ pub struct AgentPrompt {
     /// The other active agents, one line each (`@slug · Name · first
     /// line`); empty when it's the only one, and then no section.
     pub others: Vec<String>,
+    /// The agents this one may hand work to with `agent_spawn {agent}`,
+    /// one line each (`slug` · Name · what it's for). Shown only to runs
+    /// that may start sub-agents.
+    pub delegates: Vec<String>,
 }
 
 /// Appended when the `python` tool is registered (docs/python-tool-spec.md §6.1).
@@ -80,9 +90,14 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
     let mut out = persona;
 
     match inp.role {
-        AgentRole::Subagent { label } => {
+        AgentRole::Subagent { label, caller } => {
             out.push_str("\n\n");
-            out.push_str(&SUBAGENT_ROLE.replace("{label}", label));
+            out.push_str(&match caller {
+                None => SUBAGENT_ROLE.replace("{label}", label),
+                Some(c) => DELEGATE_ROLE
+                    .replace("{label}", label)
+                    .replace("{caller}", c),
+            });
         }
         AgentRole::Scheduled => {
             out.push_str("\n\n");
@@ -96,6 +111,13 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
         out.push_str(AGENTS);
         for line in &a.others {
             out.push_str(&format!("\n- {line}"));
+        }
+        if inp.subagents.is_some() && !a.delegates.is_empty() {
+            out.push_str("\n\n");
+            out.push_str(DELEGATING);
+            for line in &a.delegates {
+                out.push_str(&format!("\n- {line}"));
+            }
         }
     }
 
@@ -281,6 +303,31 @@ waiting in one run; your schedules are yours, and their results come to your cha
 
 Other agents:";
 
+const DELEGATING: &str = "You can hand work to these agents: `agent_spawn` with `\"agent\": \"<name>\"` runs \
+the sub-agent as that agent, with its own persona, tools, model and memory, and it reports back to you like any \
+sub-agent. When a request, or a part of one, matches one of their jobs, delegate it to that agent instead of \
+spawning a generic sub-agent or doing it yourself: it is set up for exactly that. Brief it as fully as any \
+sub-agent. You may delegate to:";
+
+const DELEGATE_ROLE: &str = "## You are working for another agent
+
+{caller}, another of the user's agents, handed you one task, as \"{label}\", described in the first message. You \
+work as yourself: your own job, tools and memory. The user doesn't see this conversation. Your final message is \
+returned to {caller} as your report.
+
+- Stay within the task. If you notice something important outside it, mention it in your report rather than acting on \
+it.
+- Work on your own. Ask {caller} with `agent_ask_parent` only when you are blocked on a decision that is really its \
+call: one clear question, with the answer you'd choose. Otherwise make a sensible assumption and state it in your \
+report.
+- Messages that start with \"[message from the main agent]\" or \"[answer from the main agent]\" come from \
+{caller}; follow them.
+- Don't ask the user anything. Save what your own job will need again with `memory_save` (it goes to your memory); \
+don't create routines or change connectors unless the task says to.
+- Check your work before you finish: rerun the test, re-read the file, confirm the source.
+- Your final message is the report. Lead with the answer in the shape the brief asked for, then what you checked, what \
+you assumed, and anything left undone. Use exact paths, links and figures. No preamble, and no \"let me know if…\".";
+
 const MEMORY: &str = "## Memory\n\n`user.md` (about the user, above) and `memory.md` (core facts, below) are in \
 this prompt in every conversation, capped at {user} and {memory} tokens. Keep them short and current with \
 `profile_edit`: only what every conversation needs. Save everything else that's durable with `memory_save`; \
@@ -447,12 +494,24 @@ mod tests {
         // Before Skills, after the workspace.
         assert!(main.find("## Workspace") < main.find("## Sub-agents"));
 
-        let child = system_prompt(&inp(AgentRole::Subagent { label: "pricing" }, None));
+        let child = system_prompt(&inp(
+            AgentRole::Subagent {
+                label: "pricing",
+                caller: None,
+            },
+            None,
+        ));
         assert!(child.starts_with("I am tern.\n\n## You are a sub-agent"));
         assert!(child.contains("as \"pricing\""));
         assert!(!child.contains("## Sub-agents"));
 
-        let nested = system_prompt(&inp(AgentRole::Subagent { label: "a" }, Some(&sub)));
+        let nested = system_prompt(&inp(
+            AgentRole::Subagent {
+                label: "a",
+                caller: None,
+            },
+            Some(&sub),
+        ));
         assert!(nested.contains("## You are a sub-agent") && nested.contains("## Sub-agents"));
 
         let scheduled = system_prompt(&inp(AgentRole::Scheduled, None));
@@ -493,7 +552,10 @@ mod tests {
         assert!(memory::tokens(core) <= 100, "{}", memory::tokens(core));
         assert!(core.contains("memory.md is over its 100-token cap"));
 
-        let child = system_prompt(&inp(AgentRole::Subagent { label: "x" }));
+        let child = system_prompt(&inp(AgentRole::Subagent {
+            label: "x",
+            caller: None,
+        }));
         assert!(child.contains("## What you remember") && !child.contains("## Memory\n"));
     }
 
@@ -512,6 +574,7 @@ mod tests {
             persona_path: dir.join("persona.md"),
             memory_path: dir.join("memory.md"),
             others: vec!["@tern · tern · You are tern".into()],
+            delegates: Vec::new(),
         };
         let memory = MemoryConfig::default();
         let build = |agent: &AgentPrompt| {
@@ -537,5 +600,60 @@ mod tests {
         // Alone, no Agents section.
         agent.others.clear();
         assert!(!build(&agent).contains("## Agents"));
+    }
+
+    #[test]
+    fn delegable_agents_are_listed_only_to_runs_that_can_spawn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = TernHome::new(tmp.path());
+        let agent = AgentPrompt {
+            persona_path: home.persona_path(),
+            memory_path: home.memory_path(),
+            others: vec!["@research · Research · You are Research.".into()],
+            delegates: vec!["`research` · Research · use for: find things out.".into()],
+        };
+        let memory = MemoryConfig::default();
+        let sub = SubagentPrompt {
+            max_concurrent: 2,
+            max_iterations: 10,
+            budget_tokens: 1000,
+            models: vec![],
+            can_nest: false,
+        };
+        let build = |subagents| {
+            system_prompt(&PromptInputs {
+                home: &home,
+                now: Local::now(),
+                workspace: Path::new("/ws"),
+                skills: &[],
+                integrations: &[],
+                role: AgentRole::Main,
+                subagents,
+                memory: &memory,
+                agent: Some(&agent),
+            })
+        };
+        let p = build(Some(&sub));
+        assert!(p.contains("You can hand work to these agents"));
+        assert!(p.contains("- `research` · Research · use for: find things out."));
+        assert!(p.contains("instead of spawning a generic sub-agent"));
+        assert!(!build(None).contains("You can hand work to"));
+        // A delegate's role names who it works for.
+        let child = system_prompt(&PromptInputs {
+            home: &home,
+            now: Local::now(),
+            workspace: Path::new("/ws"),
+            skills: &[],
+            integrations: &[],
+            role: AgentRole::Subagent {
+                label: "acme",
+                caller: Some("tern"),
+            },
+            subagents: None,
+            memory: &memory,
+            agent: Some(&agent),
+        });
+        assert!(child.contains("## You are working for another agent"));
+        assert!(child.contains("returned to tern as your report"));
     }
 }

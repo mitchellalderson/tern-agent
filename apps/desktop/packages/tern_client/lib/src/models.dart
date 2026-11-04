@@ -534,6 +534,7 @@ sealed class TernEvent {
         task: j['task'] as String? ?? '',
         model: j['model'] as String? ?? '',
         status: j['status'] as String? ?? 'running',
+        agent: j['agent'] as String?,
       ),
       'subagent_message' => SubagentMessage(
         runId: run,
@@ -642,7 +643,11 @@ class SubagentSpawned extends RunEvent {
     required this.task,
     required this.model,
     required this.status,
+    this.agent,
   }) : super(runId);
+
+  /// The agent profile it runs as, when the parent delegated to one.
+  final String? agent;
 
   /// The `agent_spawn` tool call.
   final String callId;

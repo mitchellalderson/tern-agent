@@ -111,6 +111,10 @@ pub struct SpawnRequest {
     /// when it finishes (docs/channels-design.md §2.4, open question 4).
     #[serde(default)]
     pub post: bool,
+    /// Run it as this agent profile (id, @name or name), one the caller
+    /// may delegate to (agent profiles §6.1).
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 /// `"all"`, `"read_only"`, or a list of tool names.
@@ -218,6 +222,9 @@ pub struct ChildRun {
     /// The first 300 characters of its report.
     pub result_preview: Option<String>,
     pub pending_question: Option<String>,
+    /// The agent profile it runs as, when the parent delegated to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 /// Body of `finished` mail: how a child ended, as its parent sees it.
