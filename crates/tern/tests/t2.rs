@@ -112,11 +112,11 @@ async fn channels_are_created_listed_changed_and_archived() {
 async fn a_send_into_a_topic_channel_posts_and_the_answer_replies_to_it() {
     let env = Env::with_config(
         &json!({ "conversations": [
-            // First: a side thread's first message carries the channel's digest.
-            { "matches": "Why so much?", "turns": [{ "text": "Mostly card fees." }] },
+            // One conversation: the reply is its third turn.
             { "matches": "How much did we spend", "turns": [
                 { "text": "About 1,240 EUR." },
-                { "text": "Northwind is 310 EUR." }
+                { "text": "Northwind is 310 EUR." },
+                { "text": "Mostly card fees." }
             ]}
         ]}),
         "",
@@ -199,58 +199,43 @@ async fn a_send_into_a_topic_channel_posts_and_the_answer_replies_to_it() {
     assert_eq!(again["session_id"], main.as_str());
     wait_run(&s, again["run_id"].as_str().unwrap()).await;
 
-    // A reply starts a side thread branched from that post, and its answer
-    // replies to the reply.
-    let (_, side) = post(
+    // A reply is a post in the same flat timeline: answered in the same
+    // conversation, quoting what it replies to (DECISIONS.md "Flat
+    // conversations everywhere").
+    let (_, reply) = post(
         &s,
         "/v1/channels/finances/posts",
         json!({ "text": "Why so much?", "reply_to": answer["id"] }),
     )
     .await;
-    assert_ne!(side["session_id"], main.as_str());
-    assert_eq!(side["post"]["reply_to"], answer["id"]);
-    wait_run(&s, side["run_id"].as_str().unwrap()).await;
+    assert_eq!(reply["session_id"], main.as_str());
+    assert_eq!(reply["post"]["reply_to"], answer["id"]);
+    wait_run(&s, reply["run_id"].as_str().unwrap()).await;
     let posts = wait_get(&s, "/v1/channels/finances/posts", |v| {
         v.as_array().is_some_and(|a| a.len() == 6)
     })
     .await;
     assert_eq!(posts[0]["text"], "Mostly card fees.");
-    assert_eq!(posts[0]["reply_to"], side["post"]["id"]);
-    let replied = posts
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["id"] == answer["id"])
-        .unwrap();
-    assert_eq!(replied["replies"], 1);
-
-    let (_, threads) = get(&s, "/v1/sessions?channel=finances").await;
-    let side_thread = threads
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["id"] == side["session_id"])
-        .unwrap();
-    assert_eq!(
-        side_thread["branched_from"],
-        format!("post:{}", answer["id"])
+    assert_eq!(posts[0]["reply_to"], reply["post"]["id"]);
+    assert_eq!(posts[0]["session_id"], main.as_str());
+    assert!(
+        posts
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p.get("replies").is_none())
     );
+    let (_, threads) = get(&s, "/v1/sessions?channel=finances").await;
+    assert_eq!(threads.as_array().unwrap().len(), 1, "{threads:#}");
 
-    // A new thread over /v1/runs.
-    let (_, run) = post(
+    // Threads beside the channel's conversation can't be started any more.
+    let (code, _) = post(
         &s,
         "/v1/runs",
         json!({ "text": "Why so much?", "channel": "finances" }),
     )
     .await;
-    let (_, threads) = get(&s, "/v1/sessions?channel=finances").await;
-    assert!(
-        threads
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|t| t["id"] == run["session_id"])
-    );
+    assert_eq!(code, 400);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -485,32 +470,24 @@ async fn new_topic_cuts_home_and_carries_the_last_segment_over() {
     assert_eq!(stream_types(&p2), types[2..]);
     assert_eq!(get(&s, "/v1/channels/home/stream?before=junk").await.0, 400);
 
-    // A side chat is a card in the stream, not part of it.
-    let (_, side) = post(
-        &s,
-        "/v1/runs",
-        json!({ "text": "> Northwind\nWhy 310?", "channel": "home", "branched_from": "message:1" }),
-    )
-    .await;
-    wait_run(&s, side["run_id"].as_str().unwrap()).await;
+    // Side chats were removed: starting one is refused.
     assert_eq!(
         post(
             &s,
             "/v1/runs",
-            json!({ "text": "x", "channel": "home", "branched_from": "nope" })
+            json!({ "text": "> Northwind\nWhy 310?", "channel": "home", "branched_from": "message:1" }),
         )
         .await
         .0,
         400
     );
     let (_, page) = get(&s, "/v1/channels/home/stream").await;
-    assert_eq!(page["items"][0]["type"], "side_chat");
-    assert_eq!(page["items"][0]["session_id"], side["session_id"]);
-    assert_eq!(page["items"][0]["branched_from"], "message:1");
-    let (_, home) = get(&s, "/v1/channels").await;
-    assert_eq!(
-        home[0]["main_session_id"], next["session_id"],
-        "a side chat doesn't move the stream"
+    assert!(
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["type"] != "side_chat")
     );
 
     // History lists both segments.
@@ -533,13 +510,6 @@ async fn new_topic_cuts_home_and_carries_the_last_segment_over() {
         .unwrap();
     assert_eq!(seg["prev_session_id"], first["session_id"]);
     assert_eq!(seg["segment_reason"], "new_topic");
-    assert!(
-        history
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|h| h["branched_from"] == "message:1")
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1115,13 +1085,24 @@ async fn topics_from_home_a_side_chat_and_another_channel_move_into_a_new_channe
         b["session_id"].as_str().unwrap().to_owned(),
         c["session_id"].as_str().unwrap().to_owned(),
     );
-    let (_, side) = post(
-        &s,
-        "/v1/runs",
-        json!({ "text": "Caterer?", "channel": "home", "branched_from": "message:1" }),
-    )
-    .await;
-    wait_run(&s, side["run_id"].as_str().unwrap()).await;
+    // A side chat from before they were removed: still in the store and
+    // in History, and it can be moved like any conversation.
+    let side_id = "019a0b1c2d3e7f00a1b2c3d4e5f60799".to_owned();
+    {
+        let db = env.db();
+        db.execute(
+            "INSERT INTO sessions (id, source, channel_id, branched_from, title, created_at, updated_at)
+             VALUES (?1, 'api', 'home', 'message:1', 'Caterer?', 1, 1)",
+            [&side_id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO messages (session_id, role, content_json, text, created_at)
+             VALUES (?1, 'user', '[{\"type\":\"text\",\"text\":\"Caterer?\"}]', 'Caterer?', 2)",
+            [&side_id],
+        )
+        .unwrap();
+    }
     post(&s, "/v1/channels", json!({ "slug": "ops" })).await;
     let (_, ops) = post(
         &s,
@@ -1162,7 +1143,6 @@ async fn topics_from_home_a_side_chat_and_another_channel_move_into_a_new_channe
         "no channel left behind"
     );
 
-    let side_id = side["session_id"].as_str().unwrap().to_owned();
     let ops_id = ops["session_id"].as_str().unwrap().to_owned();
     let (code, moved) = post(
         &s,

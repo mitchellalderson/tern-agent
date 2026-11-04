@@ -148,7 +148,6 @@ class Post {
     this.replyTo,
     this.pointsTo,
     this.tainted = false,
-    this.replies = 0,
     this.resolvedAt,
     this.pointsToChannel,
     this.mentions = const [],
@@ -170,7 +169,6 @@ class Post {
     replyTo: j['reply_to'] as int?,
     pointsTo: j['points_to'] as int?,
     tainted: j['tainted'] as bool? ?? false,
-    replies: j['replies'] as int? ?? 0,
     resolvedAt: switch (j['resolved_at']) {
       final int t => _time(t),
       _ => null,
@@ -203,12 +201,11 @@ class Post {
   /// `note` (a quiet line from tern: "Research joined").
   final String kind;
   final String text;
+  /// The post this one answers or replies to: shown as a quote above it,
+  /// never as a thread.
   final int? replyTo;
   final int? pointsTo;
   final bool tainted;
-
-  /// Posts replying to this one in a side thread.
-  final int replies;
 
   /// A `needs_you` post or pointer the user marked done.
   final DateTime? resolvedAt;
@@ -248,7 +245,6 @@ class Post {
     replyTo: replyTo,
     pointsTo: pointsTo,
     tainted: tainted,
-    replies: replies,
     resolvedAt: DateTime.now(),
     pointsToChannel: pointsToChannel,
     mentions: mentions,
@@ -278,12 +274,7 @@ sealed class StreamItem {
       carry: j['carry'] as String?,
       createdAt: _time(j['created_at'] as int),
     ),
-    'side_chat' => StreamSideChat(
-      sessionId: j['session_id'] as String,
-      title: j['title'] as String?,
-      branchedFrom: j['branched_from'] as String? ?? '',
-      createdAt: _time(j['created_at'] as int),
-    ),
+    // Side chats were removed; an older daemon's are left out.
     _ => const StreamUnknown(),
   };
 }
@@ -329,20 +320,6 @@ class StreamCut extends StreamItem {
 
   /// What the new segment's first run was given about the last one.
   final String? carry;
-  final DateTime createdAt;
-}
-
-/// A side chat branched off the stream.
-class StreamSideChat extends StreamItem {
-  const StreamSideChat({
-    required this.sessionId,
-    this.title,
-    required this.branchedFrom,
-    required this.createdAt,
-  });
-  final String sessionId;
-  final String? title;
-  final String branchedFrom;
   final DateTime createdAt;
 }
 

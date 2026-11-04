@@ -508,22 +508,18 @@ class TernClient {
   Future<Usage> usage(String session) async =>
       Usage.fromJson(await _json('GET', '/v1/sessions/$session/usage'));
 
-  /// Send a message. Without `session` the daemon starts a new one (in
-  /// `channel`, as a side chat with `branchedFrom`). A run already in
-  /// progress in that session is cancelled first.
+  /// Send a message. Without `session` the daemon starts a new
+  /// conversation. A run already in progress in that session is cancelled
+  /// first. (Conversations in a channel go through [sendToChannel].)
   Future<Started> send(
     String text, {
     String? session,
     String? model,
-    String? channel,
-    String? branchedFrom,
   }) async => Started.fromJson(
     await _json('POST', '/v1/runs', {
       'text': text,
       'session_id': ?session,
       'model': ?model,
-      'channel': ?channel,
-      'branched_from': ?branchedFrom,
     }),
   );
 

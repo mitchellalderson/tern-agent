@@ -61,7 +61,6 @@ Post _post(
   String author = 'tern',
   String session = 'fin-main',
   int? replyTo,
-  int replies = 0,
   int ago = 0,
 }) => Post(
   id: id,
@@ -73,7 +72,6 @@ Post _post(
   kind: authorKind == 'user' ? 'message' : 'answer',
   text: text,
   replyTo: replyTo,
-  replies: replies,
   createdAt: _now.subtract(Duration(minutes: ago)),
 );
 
@@ -87,7 +85,7 @@ TernStore _store() {
       _ch('fin', 'finances', 'Finances', last: 9),
       _ch('launch', 'launch', 'Launch', last: 4),
     ];
-  store.lastSeen['fin'] = 9;
+  store.lastSeen['fin'] = 10;
   final home = Transcript.fromStream([
     _m('h1', 1, 'user', 'Which invoices are still open?', ago: 900),
     _m(
@@ -145,12 +143,6 @@ TernStore _store() {
           'you asked yesterday.',
       ago: 28,
     ),
-    StreamSideChat(
-      sessionId: 'side',
-      title: '> Two: Acme and Northwind\n\nWhy is Acme so high?',
-      branchedFrom: 'message:2',
-      createdAt: _now.subtract(const Duration(minutes: 20)),
-    ),
     _m('h2', 12, 'user', 'Pay Acme from the business account.', ago: 2),
   ]);
   home.items.whereType<UserItem>().last.queued = true;
@@ -181,7 +173,6 @@ TernStore _store() {
       6,
       'About **€1,240** across 38 charges; card fees are €61 of that.',
       replyTo: 5,
-      replies: 1,
       ago: 298,
     ),
     _post(
@@ -189,9 +180,7 @@ TernStore _store() {
       'Why so much?',
       authorKind: 'user',
       author: 'you',
-      session: 'fin-side',
-      replyTo: 6,
-      ago: 200,
+      ago: 62,
     ),
     _post(
       8,
@@ -201,7 +190,15 @@ TernStore _store() {
       session: 'cron-2',
       ago: 60,
     ),
-    _post(9, 'Card fees comparison done; Mercury is cheapest for us.', ago: 5),
+    // Answering post 7, with the routine's post in between: quoted.
+    _post(
+      9,
+      'Mostly card fees on foreign transactions: 14 of the 38 charges were '
+      'in USD.',
+      replyTo: 7,
+      ago: 59,
+    ),
+    _post(10, 'Card fees comparison done; Mercury is cheapest for us.', ago: 5),
   ];
   return store;
 }
@@ -281,21 +278,13 @@ void main() {
       await _shot(tester, key, 'move_${dark ? 'dark' : 'light'}');
       Navigator.of(tester.element(find.byType(MoveDialog))).pop();
       await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
 
-      // #finances, with a side thread open beside it, and the approval its
-      // run is waiting on answered in Home.
+      // #finances: one flat timeline, a reply quoting what it answers,
+      // and the approval its run is waiting on answered in Home.
       store
         ..channel = 'fin'
-        ..selected = 'fin-main'
-        ..thread = 'fin-side'
-        ..transcripts['fin-side'] = (Transcript()
-          ..items.addAll([
-            UserItem('Why so much?'),
-            AssistantItem(
-              'Mostly card fees on foreign transactions: 14 of the 38 '
-              'charges were in USD.',
-            ),
-          ]));
+        ..selected = 'fin-main';
       store.onEventForTest(
         TernEvent.fromJson({
           'type': 'run_started',

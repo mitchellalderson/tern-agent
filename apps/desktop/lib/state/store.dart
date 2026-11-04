@@ -137,16 +137,9 @@ class TernStore extends ChangeNotifier {
   /// Sub-agent run → its label, from `subagent_spawned`.
   final _labels = <String, String>{};
 
-  /// The conversation open in the right pane: a History entry, a side
-  /// chat, a post's thread.
+  /// The conversation open (to read) in the right pane: a History entry,
+  /// a moved conversation, the run behind a post.
   String? thread;
-
-  /// A post about to get a reply in its side thread (the right pane).
-  Post? replying;
-
-  /// A side chat about to start from a message: what it quotes, and the
-  /// message it branched from.
-  ({String quote, String? from})? branch;
 
   /// The model a new conversation will use, when chosen before sending.
   String? draftModel;
@@ -357,9 +350,19 @@ class TernStore extends ChangeNotifier {
         channel: channelId,
         newChannelTitle: newTitle,
       );
+      // A run shown as working in the stream goes with its session; the
+      // stream's next segment starts idle. (The daemon refuses to move a
+      // conversation with work running, so this is normally stale state,
+      // which the resync below clears.)
+      final streamRun = transcripts[streamKey]?.activeRun;
       for (final s in sessions) {
         _streamSessions.remove(s);
+        if (streamRun != null && _runSession[streamRun] == s) {
+          transcripts[streamKey]!.activeRun = null;
+          transcripts.putIfAbsent(s, Transcript.new).activeRun = streamRun;
+        }
       }
+      unawaited(resyncRuns());
       channels = await client.channels();
       this.sessions = await client.sessions();
       posts.remove(r.channel.id);
@@ -548,6 +551,10 @@ class TernStore extends ChangeNotifier {
         onDone: () => _lost(null),
       );
       await _resync();
+      _staleTimer ??= Timer.periodic(
+        const Duration(seconds: 15),
+        (_) => _checkStale(),
+      );
       link = Link.online;
       linkError = null;
       _backoff = const Duration(milliseconds: 500);
@@ -612,6 +619,12 @@ class TernStore extends ChangeNotifier {
         _activeIn[r.runId] = ch;
         _runChannel[r.runId] = ch;
       }
+    }
+    // A run that finished while this app was away still shows as working
+    // in the views it kept: it isn't.
+    final live = {for (final r in active) r.runId};
+    for (final t in transcripts.values) {
+      if (t.activeRun case final run? when !live.contains(run)) t.endRun(run);
     }
     for (final a in await client.pendingApprovals()) {
       _transcriptFor(hasChannels ? homeKey : a.sessionId)
@@ -684,6 +697,13 @@ class TernStore extends ChangeNotifier {
     if (!t.items.contains(item)) t.items.add(item);
   }
 
+  /// Whether [run] is in a session of the open stream (or one this app
+  /// can't place yet).
+  bool _inStream(String run) => switch (_runSession[run]) {
+    final s? => _streamSessions.contains(s),
+    null => true,
+  };
+
   /// Rebuild the open stream (Home or a DM) from the daemon: the newest
   /// page (as many items as were loaded), or with `older` the page before
   /// what's loaded.
@@ -710,9 +730,15 @@ class TernStore extends ChangeNotifier {
         ?head,
       ]);
     final previous = transcripts[streamKey];
+    // Busy state belongs to the run's session: keep it only while that
+    // session is still part of this stream (it may have moved away).
+    final kept = switch (previous?.activeRun) {
+      final run? when _inStream(run) => run,
+      _ => null,
+    };
     final t = Transcript.fromStream(_streamItems)
-      ..activeRun = previous?.activeRun
-      ..runSince = previous?.runSince;
+      ..activeRun = kept
+      ..runSince = kept == null ? null : previous?.runSince;
     for (final a
         in previous?.items.whereType<ApprovalItem>() ?? <ApprovalItem>[]) {
       if (a.outcome == null) t.items.add(a);
@@ -835,10 +861,6 @@ class TernStore extends ChangeNotifier {
       final list = posts[post.channelId];
       if (list != null && !list.any((p) => p.id == post.id)) {
         list.add(post);
-        // A reply in a side thread changes its root's count.
-        if (post.replyTo != null && post.kind == 'message') {
-          unawaited(_loadChannel(post.channelId));
-        }
       }
       if (post.channelId == channel) _markRead(post.channelId, post.id);
       notifyListeners();
@@ -1027,14 +1049,6 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Answer `post` in its side thread, from the right pane.
-  void replyTo(Post post) {
-    thread = null;
-    branch = null;
-    replying = post;
-    notifyListeners();
-  }
-
   /// Send into the open topic channel: a post and a run in its main
   /// thread, or queued for the run already working there.
   Future<void> _sendChannel(String text) async {
@@ -1062,11 +1076,11 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Open a conversation in the right pane (History, a side chat).
+  /// Open a conversation to read in the right pane (a History entry, a
+  /// moved conversation, the run behind a post). It has no composer:
+  /// conversations go on in their stream or channel.
   Future<void> openThread(String session) async {
     thread = session;
-    branch = null;
-    replying = null;
     notifyListeners();
     try {
       await _load(session);
@@ -1078,92 +1092,7 @@ class TernStore extends ChangeNotifier {
 
   void closeThread() {
     thread = null;
-    branch = null;
-    replying = null;
     notifyListeners();
-  }
-
-  /// Start a side chat about `text` in the right pane (sent with its
-  /// first message).
-  void branchFrom(String text, {int? messageId}) {
-    thread = null;
-    replying = null;
-    branch = (
-      quote: text,
-      from: messageId == null ? null : 'message:$messageId',
-    );
-    notifyListeners();
-  }
-
-  /// Send in the right pane: the side chat's first message, or the next
-  /// one in the open conversation (which stops a run in progress there).
-  Future<void> sendThread(String text) async {
-    error = null;
-    try {
-      if (replying case final post?) {
-        final sent = await client.sendToChannel(
-          post.channelId,
-          text,
-          replyTo: post.id,
-        );
-        _runSession[sent.runId] = sent.sessionId;
-        _runChannel[sent.runId] = post.channelId;
-        replying = null;
-        thread = sent.sessionId;
-        await _load(sent.sessionId);
-        transcripts[sent.sessionId]?.activeRun ??= sent.runId;
-      } else if (branch case final b?) {
-        final quoted = '${_quote(b.quote)}\n\n$text';
-        final started = await client.send(
-          quoted,
-          channel: streamOpen ? streamChannel : homeId,
-          branchedFrom: b.from,
-        );
-        _runSession[started.runId] = started.sessionId;
-        branch = null;
-        thread = started.sessionId;
-        final t = transcripts.putIfAbsent(started.sessionId, Transcript.new);
-        t.items.insert(0, UserItem(quoted));
-        t.activeRun ??= started.runId;
-        // Its card in the stream.
-        if (streamOpen) {
-          if (transcripts[streamKey]?.activeRun == null) {
-            await _loadHome();
-          } else {
-            _streamDirty = true;
-          }
-        }
-      } else if (thread case final s?) {
-        // Continuing an earlier segment: its run shows here, not in Home.
-        if (s != stream?.mainSessionId) _streamSessions.remove(s);
-        final t = transcripts.putIfAbsent(s, Transcript.new);
-        t.items.add(UserItem(text));
-        notifyListeners();
-        final started = await client.send(text, session: s);
-        _runSession[started.runId] = s;
-        t.activeRun ??= started.runId;
-      }
-    } on TernException catch (e) {
-      error = e.message;
-    }
-    notifyListeners();
-  }
-
-  Future<void> stopThread() async {
-    if (threadTranscript?.activeRun case final run?) {
-      try {
-        await client.cancel(run);
-      } on TernException catch (e) {
-        error = e.message;
-        notifyListeners();
-      }
-    }
-  }
-
-  static String _quote(String text) {
-    final lines = text.trim().split('\n');
-    final kept = lines.take(6).map((l) => '> $l').join('\n');
-    return lines.length > 6 ? '$kept\n> …' : kept;
   }
 
   /// Load a sub-agent's conversation, to show inside its parent's.
@@ -1215,6 +1144,13 @@ class TernStore extends ChangeNotifier {
   void onEventForTest(TernEvent e) => _onEvent(e);
 
   void _onEvent(TernEvent e) {
+    _lastEvent = DateTime.now();
+    if (e is EventsDropped) {
+      // The daemon skipped events this app was too slow for: a
+      // run_finished may be among them.
+      unawaited(resyncRuns());
+      return;
+    }
     if (e case RunEvent(:final runId, :final channelId?)) {
       _runChannel[runId] = channelId;
       if (e is RunStarted && e.parentRunId == null) {
@@ -1309,7 +1245,7 @@ class TernStore extends ChangeNotifier {
         if (state != 'pending') _resolveOutboxPosts(id);
         unawaited(refreshOutbox());
         return;
-      case UnknownEvent():
+      case UnknownEvent() || EventsDropped():
         return;
     }
     if (session == null) {
@@ -1522,6 +1458,69 @@ class TernStore extends ChangeNotifier {
     super.notifyListeners();
   }
 
+  /// Make every "working" state match the daemon's active runs: a run it
+  /// no longer has (its `run_finished` was missed) stops showing as busy,
+  /// and the open views reload what it did. On reconnect, when the event
+  /// stream says it dropped events, from Stop, and when a run has been
+  /// silent too long.
+  Future<void> resyncRuns() async {
+    final List<ActiveRun> active;
+    try {
+      active = await client.activeRuns();
+    } on TernException {
+      return;
+    }
+    _lastEvent = DateTime.now();
+    final live = {for (final r in active) r.runId};
+    var reload = false;
+    for (final MapEntry(key: key, value: t) in transcripts.entries) {
+      if (t.activeRun case final run? when !live.contains(run)) {
+        t.endRun(run);
+        reload |= key == streamKey || key == selected || key == thread;
+      }
+    }
+    _activeIn.removeWhere((run, _) => !live.contains(run));
+    _live.removeWhere((run, _) => !live.contains(run));
+    _phase.removeWhere((run, _) => !live.contains(run));
+    for (final r in active) {
+      _runSession[r.runId] = r.sessionId;
+      if (r.parentRunId case final p?) {
+        _parentOf[r.runId] = p;
+        continue;
+      }
+      _transcriptFor(r.sessionId)!.activeRun = r.runId;
+      if (r.channelId case final ch?) _activeIn[r.runId] = ch;
+    }
+    if (reload) {
+      try {
+        if (streamOpen) await _loadHome();
+        if (selected case final id? when !streamOpen) await _load(id);
+        if (thread case final id?) await _load(id);
+      } on TernException {
+        // The next resync or reconnect tries again.
+      }
+    }
+    notifyListeners();
+  }
+
+  /// When the last event arrived, for [_checkStale].
+  DateTime _lastEvent = DateTime.now();
+  Timer? _staleTimer;
+
+  /// How long a run may be silent before the app asks the daemon whether
+  /// it is still working. Runs waiting on a tool or a model can be quiet
+  /// for a while; asking costs one request.
+  static const staleAfter = Duration(seconds: 45);
+
+  void _checkStale() {
+    final busy = transcripts.values.any((t) => t.activeRun != null);
+    if (busy &&
+        link == Link.online &&
+        DateTime.now().difference(_lastEvent) > staleAfter) {
+      unawaited(resyncRuns());
+    }
+  }
+
   Future<void> _learnRuns() async {
     try {
       for (final r in await client.activeRuns()) {
@@ -1662,8 +1661,14 @@ class TernStore extends ChangeNotifier {
     final run = current?.activeRun;
     if (run == null) return;
     try {
-      await client.cancel(run);
+      // Not cancelled: the daemon has no such run working (it finished and
+      // this app missed it). Don't leave Stop doing nothing.
+      if (!await client.cancel(run)) await resyncRuns();
     } on TernException catch (e) {
+      if (e.status == 404) {
+        await resyncRuns();
+        return;
+      }
       error = e.message;
       notifyListeners();
     }
@@ -1673,7 +1678,7 @@ class TernStore extends ChangeNotifier {
     try {
       await client.resume(run);
       current?.items.removeWhere((i) => i is RunEndItem && i.runId == run);
-      current?.activeRun = run;
+      current?.resumeRun(run);
     } on TernException catch (e) {
       error = e.message;
     }
@@ -1941,6 +1946,7 @@ class TernStore extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _retry?.cancel();
+    _staleTimer?.cancel();
     _events?.cancel();
     client.close();
     super.dispose();

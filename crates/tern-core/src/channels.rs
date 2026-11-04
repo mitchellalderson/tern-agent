@@ -53,9 +53,6 @@ pub struct Post {
     pub points_to: Option<i64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tainted: bool,
-    /// Posts replying to this one in a side thread.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub replies: i64,
     /// A pointer: the channel of the post it points to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub points_to_channel: Option<String>,
@@ -95,7 +92,6 @@ impl From<tern_store::PostRow> for Post {
             reply_to: p.reply_to,
             points_to: p.points_to,
             tainted: p.tainted,
-            replies: 0,
             resolved_at: p.resolved_at,
             points_to_channel: None,
             mentions: p.mentions,

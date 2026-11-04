@@ -1,6 +1,6 @@
 # tern channels: shared timelines for many agents
 
-Status: C0–C2 built (2026-11-03); C3's prerequisite, the taint slice of T3 (T3a), is built: tainted runs write `tainted` posts. Home is one continuous stream (§2.6, decided §7.1). This is the detailed design for phase T2 in
+Status: **conversations are flat everywhere** (§6.2, 2026-11-04): side chats, reply threads and the thread pane were removed; where this document describes them, §6.2 supersedes it. C0–C2 built (2026-11-03); C3's prerequisite, the taint slice of T3 (T3a), is built: tainted runs write `tainted` posts. Home is one continuous stream (§2.6, decided §7.1). This is the detailed design for phase T2 in
 [personal-agent-tooling-spec.md](personal-agent-tooling-spec.md) §4.2, which it follows and extends. Related:
 [subagents-design.md](subagents-design.md) (child runs, the `inbox` step and `agent_mail`, which this reuses; its
 option C, "agents as peers posting to channels", is the idea this revisits), [gui-spec.md](gui-spec.md) §2.1 (sidebar)
@@ -202,9 +202,9 @@ summary carried over", expandable to the carry message). A tool, `history_search
 (`{"query": string, "limit"?: 1..20}`, FTS over earlier Home segments' messages), lets the agent find details the
 summary dropped. Memory is unchanged and still does the long-term work.
 
-**Side chats.** "Branch into side chat" on any message starts a session in Home with `branched_from` set, whose first
-message quotes the branched text. It doesn't join the stream: it appears as a card there and in History, and its own
-context stays clean. This is how you keep a tangent from filling the main stream.
+**Side chats** (removed, §6.2). They used to branch a session off a message, shown as a card in the stream. The
+stream is now one flat conversation; tangents are New topic or a move to a channel. Old side chats stay in History as
+earlier conversations.
 
 **Telegram.** Its chat follows the same rules: one stream per paired chat, cut the same way, with `/new` as New topic.
 Whether Telegram and the desktop should share one Home stream is open question 9.
@@ -257,8 +257,9 @@ information, but the taint flag does the actual enforcing.
   running run as `agent_mail` from the user. The existing inbox step gives it to the model at its next call (the path
   `POST /v1/runs/{id}/message` already uses for sub-agents). The post appears in the timeline straight away. Stop stays
   explicit: the stop button cancels.
-- **Side threads:** "Reply in thread" on a post, or "New thread" in the channel, starts a session in the channel
-  (`POST /v1/runs` with `channel`). Its answer is posted with `reply_to` set, so the timeline nests it.
+- **Replies** (§6.2): there are no side threads. `reply_to` on a send only quotes: the agent that wrote the
+  replied-to post answers, in its own conversation in the channel, and `POST /v1/runs` refuses `channel` and
+  `branched_from`.
 - **Home:** a send goes to the current segment, or starts a new one when §2.6 says to cut. While the segment is busy,
   it queues as above. "New topic" forces a cut.
 
@@ -274,8 +275,8 @@ information, but the taint flag does the actual enforcing.
 | GET | `/v1/channels/{id}/posts?before=&limit=` | newest page first; each post with its author and run |
 | POST | `/v1/channels/{id}/posts` | `{text, reply_to?, new_topic?}` → `{post?, run_id, session_id, queued: bool, new_segment: bool}`. On Home this is how you send. |
 | GET | `/v1/channels/home/stream?before=&limit=` | Home's segments' messages and Home's posts, interleaved, newest page first, with a marker at each cut |
-| GET | `/v1/sessions?channel=` | threads in a channel; for Home, this is History (segments, side chats, migrated conversations) |
-| POST | `/v1/runs` | gains `channel` (slug or id) for new threads |
+| GET | `/v1/sessions?channel=` | conversations in a channel; for Home, this is History (segments, old side chats, migrated conversations) |
+| POST | `/v1/runs` | refuses `channel` and `branched_from` (§6.2): a channel's conversation goes through its posts |
 | PATCH | `/v1/schedules/{id}` | gains `channel` |
 
 Events, additive (the Dart `UnknownEvent` fallback keeps older apps working): `post_created {post}` and
@@ -302,10 +303,11 @@ Sidebar, top to bottom:
   asked (Grok Bot does the same: never in group chats). The asking channel's timeline shows "waiting for you in
   Home", which jumps there. The Home badge counts open ones.
 - **A topic channel** opens the timeline: posts with the author's `AgentAvatar` and a small tag (◷ routine, ↳ under a
-  parent agent), relative time, and a thread count for posts with replies. At the bottom, one live line per member
-  that's running ("research-1 · Running http_fetch", from run events). The composer posts to the channel.
-- **Opening a post** ("Open thread", or click) shows its session in the right pane with the existing
-  `ConversationView`: tool steps and sub-agent cards. Approvals there are links to their card in Home.
+  parent agent) and relative time, in one flat list (§6.2): a reply carries a one-line quote of what it answers when
+  that isn't right above it. At the bottom, one live line per member that's running ("research-1 · Running
+  http_fetch", from run events). The composer posts to the channel.
+- **See work** on an agent's post shows its session in the right pane to read (no composer): tool steps and
+  sub-agent cards. A moved-in conversation's post has **Read conversation**. Approvals are in Home.
 - **Header:** channel title, an instructions editor, the members who posted recently, and the context meter for the
   main thread.
 - **State:** `TernStore` gains `channels` and `posts[channel]`, applies `post_created`, and tracks read state per
@@ -334,10 +336,35 @@ more than a grouping.
 
 ### 6.1 Moving conversations into channels (built after C4)
 
-A topic that started in Home (a segment of the stream or a side chat), a thread in another channel, or anything in
-History can be moved into a topic channel, new or existing, one at a time or several together. It becomes a thread
-there with its history intact; where it was, a "Moved to #slug" note takes its place, and the channel gets a
+A topic that started in Home (a segment of the stream, or an old side chat), another channel's conversation, or
+anything in History can be moved into a topic channel, new or existing, one at a time or several together. Its
+history stays intact, and if its agent has no conversation in that channel yet, it becomes that agent's conversation
+there (the lead's: the channel's main one), so the channel carries on from it (§6.2); where it was, a "Moved to #slug" note takes its place, and the channel gets a
 "Moved here from …" post, which its agents see in their next digest. Details in DECISIONS.md "T2 moves".
+
+### 6.2 Flat conversations everywhere (2026-11-04)
+
+The user's call: reply threads in channels and side chats in Home were "deep nesting" that was "just too confusing".
+Every conversation is now one flat sequence, and everything said in a channel is context for everything else there.
+Details and reasons: DECISIONS.md "Flat conversations everywhere".
+
+- **Topic channels** are one timeline of posts in time order: sends, answers, routine posts, notes, moved-in markers,
+  needs-you posts. Nothing nests; "Reply in thread", the thread pane's composer and reply counts are gone. `reply_to`
+  stays on posts as a quote ("↪ replying to you: …") and to pick who answers a reply.
+- **Context.** Each agent has **one conversation per channel** (the lead's is `main_session_id`, a member's is its
+  `channel_agents` row, AP2): every run of that agent there runs in it, so it has its own history, compacted as any
+  session is. Everyone else's posts reach it through C3's `channel` digest step before each model call (journaled,
+  so replay is exact; the newest 20 posts, 6 KB, framed and taint-propagating as before), and older posts through
+  `channel_read`. This is the token-bounded window: no new step, no new replay rule. Routines' own runs stay private
+  (§2.5); "reply-to-act" on a routine's post is a post in the channel that the routine's agent sees in its digest.
+- **Home and agent DMs** are one stream with segments, carry and New topic (those keep a long stream affordable;
+  they aren't nesting). Side chats can't be started (`POST /v1/runs` refuses `branched_from` and `channel`), the
+  stream no longer lists them, and messages have no branch action.
+- **History** lists the stream's past segments and older conversations to read in the right pane (no composer).
+  Old side chats appear there as earlier conversations; nothing is deleted, and the `branched_from` column stays for
+  them.
+- **Moved conversations** show in the timeline as their arrival post, with **Read conversation** to read the whole
+  thing beside it; if the moved conversation's agent had none in the channel, it becomes that agent's conversation.
 
 ## 7. Open questions
 
@@ -347,8 +374,7 @@ there with its history intact; where it was, a "Moved to #slug" note takes its p
 2. **Should posts ever wake agents?** v1 says no. Agent profiles answer it for later: `@mentions` wake agents, with per-channel budgets and a hop limit ([agent-profiles-design.md](agent-profiles-design.md) §5.3). Candidates for later: `@agent` mentions, or a channel setting "the
    main agent replies to routine posts that need a decision". Both need a per-channel budget and a loop guard (no
    more than N agent-started runs per hour).
-3. **Side threads and the digest.** Should a side thread get every channel post, or only replies to its own root?
-   Starting with all of them is simpler; it may be noisy in busy channels.
+3. ~~**Side threads and the digest.**~~ Moot: there are no side threads (§6.2).
 4. ~~**Sub-agent reports as posts.**~~ Decided in C4: default off (the parent's answer is posted); `agent_spawn`
    `"post": true` lets the child `channel_post` and posts its report.
 5. **Read state across devices.** Local for v1. Moving it into the store is one table if the phone app needs it.

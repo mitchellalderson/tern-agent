@@ -7,7 +7,7 @@
 //! | GET | `/v1/info` | default model and tools |
 //! | GET | `/v1/tools` | full tool specs: `[{name, description, input_schema, effect, untrusted}]` |
 //! | POST | `/v1/models/check` | validate `{model}` |
-//! | POST | `/v1/runs` | send a message: `{text, session_id?, model?, channel?, branched_from?}` (`channel`: a new thread there; `branched_from`: a side chat) |
+//! | POST | `/v1/runs` | send a message: `{text, session_id?, model?}`; `channel` and `branched_from` (side chats) are refused: channels take `POST /v1/channels/{id}/posts` |
 //! | GET | `/v1/runs/active` | runs in progress: `[{run_id, session_id, parent_run_id?, label?, channel_id?, author_id?}]` |
 //! | POST | `/v1/runs/{id}/resume` | resume an interrupted run |
 //! | POST | `/v1/runs/{id}/cancel` | cancel a run and its sub-agents |
@@ -264,12 +264,10 @@ pub struct StartBody {
     pub text: String,
     pub session_id: Option<String>,
     pub model: Option<String>,
-    /// Without `session_id`: start a new thread in this channel (slug or
-    /// id) instead of a new conversation in Home.
+    /// Refused: threads beside a channel's conversation were removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
-    /// With `channel`: a side chat branched from `message:<id>` or
-    /// `post:<id>` (docs/channels-design.md §2.6).
+    /// Refused: side chats were removed. Old side chats keep the column.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branched_from: Option<String>,
 }
@@ -282,31 +280,20 @@ pub struct Started {
 }
 
 async fn start_run(State(m): State<Shared>, Json(b): Json<StartBody>) -> ApiResult<Started> {
-    let thread = match (&b.session_id, &b.channel) {
-        (None, Some(c)) => {
-            let c = super::api_channels::find(&m, c)?;
-            if let Some(b) = &b.branched_from {
-                let ok = b.split_once(':').is_some_and(|(k, id)| {
-                    matches!(k, "message" | "post") && id.parse::<i64>().is_ok()
-                });
-                if !ok {
-                    return Err(bad("branched_from must be message:<id> or post:<id>"));
-                }
-            }
-            let s =
-                m.rt.store
-                    .create_thread(&tern_store::NewThread {
-                        id: &tern_core::agent::new_id(),
-                        source: "api",
-                        channel_id: &c.id,
-                        branched_from: b.branched_from.as_deref(),
-                        ..tern_store::NewThread::default()
-                    })
-                    .map_err(internal)?;
-            Some(s.id)
-        }
-        _ => b.session_id.clone(),
-    };
+    // Side chats and new threads beside a stream were removed: a
+    // conversation in a channel goes through the channel (DECISIONS.md
+    // "Flat conversations everywhere").
+    if b.branched_from.is_some() {
+        return Err(bad(
+            "side chats were removed: send in the stream (POST /v1/channels/{id}/posts)",
+        ));
+    }
+    if b.channel.is_some() {
+        return Err(bad(
+            "starting a thread in a channel was removed: use POST /v1/channels/{id}/posts",
+        ));
+    }
+    let thread = b.session_id.clone();
     let s = m
         .start(
             thread.as_deref(),
@@ -650,10 +637,35 @@ async fn usage(
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ApiEvent {
-    Approval { approval_requested: ApiApproval },
-    SecretRequest { secret_requested: ApiSecretRequest },
+    Approval {
+        approval_requested: ApiApproval,
+    },
+    SecretRequest {
+        secret_requested: ApiSecretRequest,
+    },
     Change(tern_core::models::Change),
     Agent(tern_core::events::AgentEvent),
+    /// This connection fell behind and `missed` events were skipped (a
+    /// `run_finished` may be among them): the client should re-read what
+    /// it keeps, such as `/v1/runs/active`.
+    Dropped {
+        events_dropped: EventsDropped,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct EventsDropped {
+    pub missed: u64,
+}
+
+fn dropped(missed: u64) -> ApiEvent {
+    tracing::warn!(
+        missed,
+        "an event stream client fell behind; told it to resync"
+    );
+    ApiEvent::Dropped {
+        events_dropped: EventsDropped { missed },
+    }
 }
 
 async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
@@ -671,39 +683,37 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
             HashMap::<String, RunPlace>::new(),
         ),
         |(mut agent, mut approvals, mut secrets, mut changes, m, mut sessions)| async move {
-            loop {
-                let ev = tokio::select! {
-                    e = agent.recv() => match e {
-                        Ok(e) => ApiEvent::Agent(e),
-                        Err(RecvError::Lagged(_)) => continue,
-                        Err(RecvError::Closed) => return None,
-                    },
-                    a = approvals.recv() => match a {
-                        Ok(a) => ApiEvent::Approval { approval_requested: a },
-                        Err(RecvError::Lagged(_)) => continue,
-                        Err(RecvError::Closed) => return None,
-                    },
-                    r = secrets.recv() => match r {
-                        Ok(r) => ApiEvent::SecretRequest { secret_requested: r },
-                        Err(RecvError::Lagged(_)) => continue,
-                        Err(RecvError::Closed) => return None,
-                    },
-                    c = changes.recv() => match c {
-                        Ok(c) => ApiEvent::Change(c),
-                        Err(RecvError::Lagged(_)) => continue,
-                        Err(RecvError::Closed) => return None,
-                    },
-                };
-                let mut data = serde_json::to_value(&ev).unwrap_or_default();
-                if let ApiEvent::Agent(_) = ev {
-                    with_session(&m, &mut sessions, &mut data);
-                }
-                let data = serde_json::to_string(&data).unwrap_or_default();
-                return Some((
-                    Ok(Event::default().data(data)),
-                    (agent, approvals, secrets, changes, m, sessions),
-                ));
+            let ev = tokio::select! {
+                e = agent.recv() => match e {
+                    Ok(e) => ApiEvent::Agent(e),
+                    Err(RecvError::Lagged(n)) => dropped(n),
+                    Err(RecvError::Closed) => return None,
+                },
+                a = approvals.recv() => match a {
+                    Ok(a) => ApiEvent::Approval { approval_requested: a },
+                    Err(RecvError::Lagged(n)) => dropped(n),
+                    Err(RecvError::Closed) => return None,
+                },
+                r = secrets.recv() => match r {
+                    Ok(r) => ApiEvent::SecretRequest { secret_requested: r },
+                    Err(RecvError::Lagged(n)) => dropped(n),
+                    Err(RecvError::Closed) => return None,
+                },
+                c = changes.recv() => match c {
+                    Ok(c) => ApiEvent::Change(c),
+                    Err(RecvError::Lagged(n)) => dropped(n),
+                    Err(RecvError::Closed) => return None,
+                },
+            };
+            let mut data = serde_json::to_value(&ev).unwrap_or_default();
+            if let ApiEvent::Agent(_) = ev {
+                with_session(&m, &mut sessions, &mut data);
             }
+            let data = serde_json::to_string(&data).unwrap_or_default();
+            Some((
+                Ok(Event::default().data(data)),
+                (agent, approvals, secrets, changes, m, sessions),
+            ))
         },
     );
     Sse::new(stream).keep_alive(KeepAlive::default())
@@ -816,5 +826,16 @@ async fn approve(
         Ok(Json(json!({ "ok": true })))
     } else {
         Err(not_found("pending approval"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lagging_client_is_told_to_resync() {
+        let v = serde_json::to_value(dropped(40)).unwrap_or_default();
+        assert_eq!(v, json!({ "events_dropped": { "missed": 40 } }));
     }
 }

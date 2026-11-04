@@ -48,7 +48,7 @@ impl Tool for HistorySearch {
     fn spec(&self) -> ToolSpec {
         spec(
             "history_search",
-            "Full-text search over the earlier sessions of this conversation (your chat with the user before the latest summary, and side chats), not this session. Use it when the summary you were given leaves out a detail.",
+            "Full-text search over the earlier sessions of this conversation (your chat with the user before the latest summary, and older conversations here), not this session. Use it when the summary you were given leaves out a detail.",
             json!({
                 "type": "object",
                 "properties": {

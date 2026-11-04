@@ -274,11 +274,13 @@ async fn the_lead_answers_and_each_mention_wakes_its_agent_in_its_own_thread() {
 async fn agents_wake_agents_only_when_the_channel_allows_within_hops_and_budget() {
     let env = Env::with_config(
         &json!({ "conversations": [
-            // A reply's thread quotes the post, and what Ops is woken with
-            // quotes Research's: the more specific scripts come first.
-            { "matches": "Again: book", "turns": [{ "text": "@ops once more, please." }] },
+            // What Ops is woken with quotes Research's post, so it's first.
+            // A reply is Research's next turn in its one conversation.
             { "matches": "please book the hall", "turns": [{ "text": "Booked. @research it's done." }] },
-            { "matches": "book the hall", "turns": [{ "text": "@ops please book the hall." }] }
+            { "matches": "book the hall", "turns": [
+                { "text": "@ops please book the hall." },
+                { "text": "@ops once more, please." }
+            ]}
         ]}),
         "",
     );
@@ -363,7 +365,8 @@ async fn agents_wake_agents_only_when_the_channel_allows_within_hops_and_budget(
     send(&s, "tight", "Please book the hall").await;
     posts_until(&s, "tight", |p| !by(p, &ops).is_empty()).await;
     idle(&s).await;
-    // Research's next @ops (in a reply, so in a fresh side thread) is over it.
+    // Research's next @ops (answering a reply, in its same conversation)
+    // is over it.
     let (_, posts) = get(&s, "/v1/channels/tight/posts?limit=100").await;
     let ask = posts
         .as_array()
@@ -455,4 +458,90 @@ async fn a_run_woken_by_a_tainted_post_starts_tainted() {
         input.contains("<untrusted source=\"post by tern\">"),
         "{input}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_in_conversation_continues_and_a_mentioned_agent_answers_in_the_timeline() {
+    // The user's #home-service-market sequence: a Home conversation moved
+    // into a new channel, then a post @mentioning Research.
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "matches": "county assessor", "turns": [{ "text": "**Short answer:** some are asking." }] },
+            { "matches": "market research", "turns": [
+                { "text": "Here is the market." },
+                { "text": "Continuing the market work." }
+            ]}
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let research = agent(&s, "Research").await;
+    let (_, home) = post(
+        &s,
+        "/v1/channels/home/posts",
+        json!({ "text": "lets do market research on home services" }),
+    )
+    .await;
+    get(
+        &s,
+        &format!("/v1/runs/{}/wait", home["run_id"].as_str().unwrap()),
+    )
+    .await;
+    let moved_session = home["session_id"].as_str().unwrap().to_owned();
+    let (code, moved) = post(
+        &s,
+        "/v1/channels/move",
+        json!({ "sessions": [moved_session], "new_channel": { "title": "Home service market" } }),
+    )
+    .await;
+    assert_eq!(code, 200, "{moved}");
+    let slug = moved["channel"]["slug"].as_str().unwrap().to_owned();
+    // The moved conversation is now the channel's own: tern carries on in it.
+    let (_, c) = get(&s, "/v1/channels").await;
+    let c = c
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["slug"] == slug.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(c["main_session_id"], moved_session.as_str());
+
+    let sent = send(
+        &s,
+        &slug,
+        "lets research if any users are asking the county assessor? @research",
+    )
+    .await;
+    assert_eq!(sent["woke"][0]["agent_id"], research.as_str());
+    let mine = sent["post"]["id"].as_i64().unwrap();
+    let posts = posts_until(&s, &slug, |p| !by(p, &research).is_empty()).await;
+    let answer = by(&posts, &research)[0];
+    assert_eq!(answer["text"], "**Short answer:** some are asking.");
+    assert_eq!(
+        answer["reply_to"], mine,
+        "a quote of the send, in the same flat timeline"
+    );
+    let kinds: Vec<_> = posts.iter().map(|p| p["kind"].as_str().unwrap()).collect();
+    assert_eq!(
+        kinds,
+        vec!["moved", "note", "message", "answer"],
+        "{:#?}",
+        texts(&posts)
+    );
+
+    // A post mentioning no one continues the moved conversation itself.
+    let sent = send(&s, &slug, "and what next?").await;
+    assert_eq!(sent["session_id"], moved_session.as_str());
+    get(
+        &s,
+        &format!("/v1/runs/{}/wait", sent["run_id"].as_str().unwrap()),
+    )
+    .await;
+    let posts = posts_until(&s, &slug, |p| {
+        p.iter().any(|p| p["text"] == "Continuing the market work.")
+    })
+    .await;
+    assert_eq!(posts.last().unwrap()["author_id"], "tern");
 }

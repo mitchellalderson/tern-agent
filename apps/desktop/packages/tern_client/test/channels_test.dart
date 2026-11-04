@@ -11,8 +11,7 @@ void main() {
           as Json,
     );
     expect(page.next, '1762185600000.2.3');
-    final [side, reply, queued, cut, post] = page.items;
-    expect((side as StreamSideChat).branchedFrom, 'message:12');
+    final [reply, queued, cut, post] = page.items;
     expect((reply as StreamMessage).message.role, 'assistant');
     expect(reply.messageId, 14);
     expect((queued as StreamMessage).queued, isTrue);

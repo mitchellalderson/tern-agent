@@ -22,7 +22,7 @@ much like Grok Bot's group chats.
   memory is still `memory.md` and the shared `memories` table, and Home is still its stream. There is one additive
   migration, and nothing breaks.
 - **Each agent has its own DM, and the DM is a channel.** It is a `main` channel like Home, so it gets C1's segments,
-  carry-over, History, side chats and queued sends without new machinery. Opening "Research" in the sidebar is
+  carry-over, History and queued sends without new machinery (side chats were removed: channels-design §6.2). Opening "Research" in the sidebar is
   opening Research's channel.
 - **Agents replace standalone routines as the thing you set up.** A routine becomes a job an agent does on a schedule
   ("every weekday at 8, sweep my inbox"). Its result goes to that agent's DM by default, or to a topic channel such as
@@ -185,14 +185,14 @@ works per main channel because it was written against `main_session_id`:
 - **Segments and carry**: cut at the same `[home] idle_hours` / `day_starts` rules, so the agent's DM reads as one
   continuous chat with dividers. The setting is renamed `[main]` with `[home]` kept as an alias.
 - **Queue instead of cancel**: sending while the agent works becomes mail at its next step.
-- **History and side chats**: per DM (`/v1/sessions?channel=dm-research`).
+- **History**: per DM (`/v1/sessions?channel=dm-research`).
 - **Stream**: `GET /v1/channels/{id}/stream` already serves any main channel.
 - **Routine results**: posted into the DM by default, interleaved like routine posts in Home today (§4).
 
 **What stays Home-only:**
 
 - **Approvals and secret requests**: every one appears in Home, with the Home badge counting them, as C2 built. If the
-  asking run belongs to an agent's DM (its main thread, a side chat there, a routine posting there, or their
+  asking run belongs to an agent's DM (its stream, a routine posting there, or their
   sub-agents), the same card also appears inline in that DM. It is one request, so answering in either place closes
   both. Topic channels still only show "Waiting for you in Home". This mirror is open question 1; without it, a DM
   shows a waiting line like topic channels.
@@ -240,13 +240,16 @@ profiles, **a routine is a job owned by an agent**:
   pill in the timeline ("Marketing joined").
 - An agent reads (`channel_read`) only channels it is a member of, plus its own DM. It never reads other agents' DMs.
 
+Everything is in one flat timeline (channels-design §6.2): an agent's "own main thread" is its conversation in
+the channel, not a thread the user sees; its answers are posts like any other, quoting what they answer.
+
 ### 5.2 Who answers: `@mentions`
 
 | Post | Who runs |
 |---|---|
 | Yours, no mention | the lead |
-| Yours, `@research` | Research (in its thread in this channel), not the lead |
-| Yours, `@research @ops` | both, in parallel, each in its own thread |
+| Yours, `@research` | Research (in its own conversation in this channel), not the lead |
+| Yours, `@research @ops` | both, in parallel, each in its own conversation there |
 | An agent's, `@ops` | Ops, if the channel allows agent wakes and the guards below pass |
 | A routine's | nobody (as in C0–C2), unless it mentions an agent, which counts as an agent's post |
 
@@ -368,7 +371,7 @@ Sidebar, top to bottom (today: the lone `AgentAvatar('tern')` row, then ⌂ Home
 
 - **The top avatar row goes away** and Home carries tern's avatar. Home is the default agent's DM, so listing tern
   again under AGENTS would show the same stream twice. Right-click on Home (or its header's ⋯) → **Edit tern**.
-- **An agent row** opens its DM: the same view as Home (stream, dividers, New topic, History, side chats), with the
+- **An agent row** opens its DM: the same view as Home (stream, dividers, New topic, History), with the
   agent's avatar and name in the header, its model picker, and **Edit**.
 - **The side panel** (gui-spec §2.3) becomes per agent, as it was always drawn: Activity, **Routines** (this agent's
   jobs, with "+ New routine" prefilled with the agent), Tools (its scope, with status), and Memory (its private

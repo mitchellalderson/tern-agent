@@ -313,4 +313,148 @@ void main() {
       debugDefaultTargetPlatformOverride = null;
     });
   }
+
+  // The user's #home-service-market: a Home conversation moved in, then a
+  // post @mentioning Research, whose answer (in Research's own
+  // conversation, not the channel's main one) arrives live.
+  for (final dark in [false, true]) {
+    final mode = dark ? 'dark' : 'light';
+    testWidgets('a mentioned agent answers in the flat timeline $mode', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(1280, 800) * 2;
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.reset);
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      final c = dark ? TernColors.dark : TernColors.light;
+      final theme = ternTheme(c, dark ? Brightness.dark : Brightness.light);
+      final key = GlobalKey();
+      final store = _store();
+      store.channels = [
+        ...store.channels.where((x) => x.isMain),
+        Channel(
+          id: 'market',
+          slug: 'home-service-market',
+          title: 'Home service market',
+          kind: 'topic',
+          mainSessionId: 'moved',
+          lastPostId: 5,
+          agents: ChannelAgents(
+            members: [
+              ChannelMember(agentId: 'tern', lead: true, addedAt: _now),
+              ChannelMember(agentId: 'tern:research', addedAt: _now),
+            ],
+          ),
+          updatedAt: _now,
+        ),
+      ];
+      store
+        ..channel = 'market'
+        ..selected = 'moved'
+        ..lastSeen['market'] = 5;
+      Post p(
+        int id,
+        String kind,
+        String text, {
+        String authorKind = 'user',
+        String authorId = 'owner',
+        String author = 'you',
+        String? session,
+        int? replyTo,
+        List<String> mentions = const [],
+        bool tainted = false,
+        int ago = 0,
+      }) => Post(
+        id: id,
+        channelId: 'market',
+        sessionId: session,
+        authorKind: authorKind,
+        authorId: authorId,
+        author: author,
+        kind: kind,
+        text: text,
+        replyTo: replyTo,
+        mentions: mentions,
+        tainted: tainted,
+        createdAt: _now.subtract(Duration(minutes: ago)),
+      );
+      store.posts['market'] = [
+        p(
+          1,
+          'moved',
+          'Moved here from Home: lets do market research on home services\n'
+              'Last reply: Here is the market: 3 segments growing.',
+          session: 'moved',
+          ago: 20,
+        ),
+        p(
+          3,
+          'note',
+          'Research joined',
+          authorKind: 'system',
+          authorId: 'system',
+          author: 'tern',
+          ago: 6,
+        ),
+        p(
+          4,
+          'message',
+          'lets research if any users are asking the county assessor? @research',
+          session: 'research-thread',
+          mentions: ['tern:research'],
+          ago: 6,
+        ),
+      ];
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: key,
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: theme.copyWith(
+              textTheme: theme.textTheme.apply(
+                fontFamily: '.AppleSystemUIFont',
+              ),
+            ),
+            home: Home(store: store),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      // Research's answer arrives live: posted in its own conversation.
+      store.onEventForTest(
+        TernEvent.fromJson({
+          'post_created': {
+            'post': {
+              'id': 5,
+              'channel_id': 'market',
+              'session_id': 'research-thread',
+              'run_id': 'r5',
+              'author_kind': 'agent',
+              'author_id': 'tern:research',
+              'author': 'Research',
+              'kind': 'answer',
+              'text':
+                  '**Short answer:** I found supply-side evidence: county '
+                  'assessor appeal services advertise widely, and a few '
+                  'forums ask about protesting valuations.',
+              'reply_to': 4,
+              'tainted': true,
+              'wake_depth': 1,
+              'created_at': _now.millisecondsSinceEpoch,
+            },
+          },
+        }),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        find.textContaining('I found supply-side evidence'),
+        findsOneWidget,
+      );
+      expect(find.text('Read conversation'), findsOneWidget);
+      expect(find.text('Reply in thread'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await _shot(tester, key, 'channel_flat_$mode');
+      debugDefaultTargetPlatformOverride = null;
+    });
+  }
 }

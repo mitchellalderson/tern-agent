@@ -10,7 +10,7 @@
 //! | POST | `/v1/channels/{id}/agents` | add `{agent}` (id or slug), with a "Name joined" note |
 //! | DELETE | `/v1/channels/{id}/agents/{agent}` | take an agent out (not the lead or `tern`) |
 //! | GET | `/v1/channels/{id}/posts?before=&limit=` | `[Post]`, newest first |
-//! | GET | `/v1/channels/{id}/stream?before=&limit=` | a main channel's stream: its segments' messages, its posts and its side chats, interleaved, newest first, with a `cut` item where each segment starts (`next`: the cursor for older items) |
+//! | GET | `/v1/channels/{id}/stream?before=&limit=` | a main channel's stream: its segments' messages and its posts, interleaved, newest first, with a `cut` item where each segment starts (`next`: the cursor for older items) |
 //! | POST | `/v1/channels/move` | move conversations into a topic channel: `{sessions: [id], channel? \| new_channel?: {slug?, title, instructions?}}` → `{channel, moved: [MovedThread]}` (owner scope) |
 //! | POST | `/v1/posts/{id}/resolve` | mark a `needs_you` post or its Home `pointer` done (both close) |
 //! | POST | `/v1/channels/{id}/posts` | send `{text, reply_to?, new_topic?, model?}` → `{post?, run_id, session_id, queued, new_segment, woke?: [{agent_id, run_id, session_id, queued}]}`; in a topic channel the lead answers, or each agent `@mentioned` (who joins if it wasn't a member) |
@@ -555,15 +555,6 @@ pub enum StreamItem {
     },
     /// A post from elsewhere: a routine's result, later pointers and cards.
     Post { post: Box<Post> },
-    /// A side chat branched off the stream; its messages stay in it.
-    SideChat {
-        session_id: String,
-        #[serde(default)]
-        title: Option<String>,
-        /// `message:<id>` or `post:<id>`.
-        branched_from: String,
-        created_at: i64,
-    },
     /// Where a segment starts: why it was cut, and what was carried over.
     Cut {
         session_id: String,
@@ -590,16 +581,6 @@ impl StreamItem {
                 ..
             } => (*created_at, 1, *message_id),
             StreamItem::Post { post } => (post.created_at, 2, post.id),
-            // Session ids are UUIDv7, so their first hex digits order by time.
-            StreamItem::SideChat {
-                created_at,
-                session_id,
-                ..
-            } => (
-                *created_at,
-                3,
-                i64::from_str_radix(session_id.get(..12).unwrap_or("0"), 16).unwrap_or(0),
-            ),
         }
     }
 }
@@ -742,20 +723,6 @@ async fn stream(
     for p in store.posts_between(&c.id, floor, top).map_err(internal)? {
         let item = StreamItem::Post {
             post: Box::new(view(store, p)),
-        };
-        if item.key() < before {
-            items.push(item);
-        }
-    }
-    for t in store
-        .side_threads_between(&c.id, floor, top)
-        .map_err(internal)?
-    {
-        let item = StreamItem::SideChat {
-            branched_from: t.branched_from.unwrap_or_default(),
-            session_id: t.id,
-            title: t.title,
-            created_at: t.created_at,
         };
         if item.key() < before {
             items.push(item);

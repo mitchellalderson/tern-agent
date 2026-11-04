@@ -11,8 +11,7 @@ class UserItem extends Item {
   UserItem(this.text, {this.messageId, this.queued = false});
   final String text;
 
-  /// The stored message, when it came from history (side chats branch
-  /// from it).
+  /// The stored message's id, when it came from history.
   final int? messageId;
 
   /// Sent while a run was working: it reads it at its next step.
@@ -40,12 +39,6 @@ class CutItem extends Item {
 class PostItem extends Item {
   PostItem(this.post);
   Post post;
-}
-
-/// A side chat branched off the stream; it opens beside it.
-class SideChatItem extends Item {
-  SideChatItem(this.chat);
-  final StreamSideChat chat;
 }
 
 enum StepStatus { running, ok, error }
@@ -200,14 +193,33 @@ const _agentTools = {
 class Transcript {
   final items = <Item>[];
 
-  /// The run in progress here, if any.
+  /// The run in progress here, if any. A run that already finished here
+  /// can't become it again (a send's reply or an active-runs list can
+  /// arrive after its `run_finished`); [resumeRun] says it really did.
   String? get activeRun => _activeRun;
   set activeRun(String? run) {
+    if (run != null && _ended.contains(run)) return;
     if (run != _activeRun) runSince = run == null ? null : DateTime.now();
     _activeRun = run;
   }
 
   String? _activeRun;
+
+  /// Runs that finished here, newest last (a few are enough).
+  final _ended = <String>{};
+
+  /// [run] finished here: it isn't in progress any more.
+  void endRun(String run) {
+    _ended.add(run);
+    if (_ended.length > 64) _ended.remove(_ended.first);
+    if (activeRun == run) activeRun = null;
+  }
+
+  /// [run], which finished here, is running again (resumed).
+  void resumeRun(String run) {
+    _ended.remove(run);
+    activeRun = run;
+  }
 
   /// When this app first saw [activeRun] (not necessarily when it began:
   /// the daemon doesn't say).
@@ -257,8 +269,7 @@ class Transcript {
   }
 
   /// Rebuild a main channel's stream (oldest first): its segments'
-  /// messages with a divider at each cut, and posts and side chats where
-  /// they happened.
+  /// messages with a divider at each cut, and posts where they happened.
   static Transcript fromStream(Iterable<StreamItem> oldestFirst) {
     final t = Transcript();
     final b = _Builder(t);
@@ -270,8 +281,6 @@ class Transcript {
           t.items.add(CutItem(i));
         case StreamPost(:final post):
           t.items.add(PostItem(post));
-        case StreamSideChat():
-          t.items.add(SideChatItem(i));
         case StreamUnknown():
           break;
       }
@@ -284,7 +293,8 @@ class Transcript {
     now ??= DateTime.now();
     switch (e) {
       case RunStarted(:final runId):
-        activeRun = runId;
+        // A sub-agent's start never takes over its parent's run here.
+        if (e.parentRunId == null || activeRun == null) resumeRun(runId);
       case TextDelta(:final text):
         final last = items.lastOrNull;
         if (last is AssistantItem && last.streaming) {
@@ -417,7 +427,7 @@ class Transcript {
       case Compacted():
         items.add(PillItem(PillKind.compacted, 'Earlier messages summarized'));
       case RunFinished(:final runId, :final status, :final error):
-        if (activeRun == runId) activeRun = null;
+        endRun(runId);
         _agentCalls.clear();
         expireApprovals(runId);
         expireSecretRequests(runId);
@@ -435,6 +445,7 @@ class Transcript {
         }
       case UsageEvent() ||
           UnknownEvent() ||
+          EventsDropped() ||
           ProvidersChanged() ||
           ModelsChanged() ||
           McpChanged() ||
