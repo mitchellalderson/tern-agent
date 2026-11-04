@@ -433,6 +433,7 @@ fn approvals_are_answered_inline() {
             pattern: Some("git *".into()),
             parent_run_id: None,
             agent_label: None,
+            local_only: false,
         },
         reply: tx,
     });
@@ -491,6 +492,7 @@ fn ctrl_c_denies_a_pending_approval() {
             pattern: Some("*".into()),
             parent_run_id: None,
             agent_label: None,
+            local_only: false,
         },
         reply: tx,
     });
@@ -964,6 +966,7 @@ fn approval(
                 pattern: None,
                 parent_run_id: label.map(|_| "r1".into()),
                 agent_label: label.map(Into::into),
+                local_only: false,
             },
             reply: tx,
         },

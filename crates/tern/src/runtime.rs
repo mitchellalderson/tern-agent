@@ -98,8 +98,8 @@ pub struct Runtime {
     /// apply on their next use.
     pub secrets: Secrets,
     connectors: Arc<tern_lua::Connectors>,
-    /// The live MCP server set; config writes go through [`Runtime::reload_mcp`].
-    pub(crate) mcp: Arc<tern_mcp::McpServers>,
+    /// The live MCP server set and its config writes.
+    pub(crate) mcp_admin: Arc<crate::mcp::McpAdmin>,
     /// Set when `TERN_PROVIDER=mock:<script>` overrides real providers.
     pub mock: bool,
 }
@@ -141,6 +141,14 @@ impl Runtime {
             secret_uses(home, live.clone(), &secrets, &store)?,
             Duration::from_secs(config.secret_request_timeout_secs),
         )));
+        let mcp_admin = Arc::new(crate::mcp::McpAdmin {
+            home: home.clone(),
+            live: live.clone(),
+            secrets: secrets.clone(),
+            mcp,
+            connectors: connectors.clone(),
+        });
+        crate::mcp_tools::register(&mut tools, mcp_admin.clone());
         let tools = Arc::new(tools);
 
         // Every value in secrets.toml, plus env-provided secrets the config
@@ -209,7 +217,7 @@ impl Runtime {
             prompts,
             secrets,
             connectors,
-            mcp,
+            mcp_admin,
             mock,
         })
     }

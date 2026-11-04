@@ -45,6 +45,10 @@ pub struct ApiApproval {
     pub agent_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session_id: Option<String>,
+    /// Only a client on this host (the Unix socket) may answer: the call
+    /// would run a command here outside the sandbox.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local_only: bool,
 }
 
 /// Approvals for API clients: published on a channel, answered over HTTP.
@@ -79,6 +83,7 @@ impl ApiApprovals {
             parent_run_id: req.parent_run_id.clone(),
             agent_label: req.agent_label.clone(),
             root_session_id: root_session_id.filter(|_| req.parent_run_id.is_some()),
+            local_only: req.local_only,
         };
         if let Ok(mut p) = self.pending.lock() {
             p.insert(req.id.clone(), (msg.clone(), tx));
@@ -95,6 +100,15 @@ impl ApiApprovals {
     pub fn answer(&self, id: &str, decision: Decision) -> bool {
         let tx = self.pending.lock().ok().and_then(|mut p| p.remove(id));
         tx.is_some_and(|(_, tx)| tx.send(decision).is_ok())
+    }
+
+    /// Whether `id` may only be answered from this host.
+    pub fn is_local_only(&self, id: &str) -> bool {
+        self.pending
+            .lock()
+            .ok()
+            .and_then(|p| p.get(id).map(|(a, _)| a.local_only))
+            .unwrap_or(false)
     }
 
     /// Approvals still waiting for an answer, for clients that attach late.
@@ -298,10 +312,12 @@ impl Drop for Notice {
 
 #[async_trait]
 impl ApprovalHandler for Router {
+    /// A local-only approval never goes to a chat: the TUI or desktop app
+    /// on this host answers it.
     async fn ask(&self, req: &ApprovalRequest) -> Decision {
         match self.place(&req.run_id) {
-            (_, Some((g, chat))) => g.ask_approval(&chat, req).await,
-            (root, None) => self.0.api.ask(req, root).await,
+            (_, Some((g, chat))) if !req.local_only => g.ask_approval(&chat, req).await,
+            (root, _) => self.0.api.ask(req, root).await,
         }
     }
 

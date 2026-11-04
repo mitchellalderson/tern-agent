@@ -73,6 +73,10 @@ pub struct ToolPolicy {
     /// Set for tools flagged `money_movement` or `trade`: refused, and
     /// nothing can approve them.
     pub forbidden: Option<&'static str>,
+    /// Only a front end on this host may approve the call (the TUI or the
+    /// desktop app over the local socket), not a chat gateway or a paired
+    /// device: it would run a command here outside the sandbox.
+    pub local_approval: bool,
 }
 
 impl ToolPolicy {
@@ -83,6 +87,7 @@ impl ToolPolicy {
             requires_approval: false,
             granted: false,
             forbidden: None,
+            local_approval: false,
         }
     }
 

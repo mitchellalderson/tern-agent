@@ -334,3 +334,152 @@ async fn paired_devices_cannot_add_stdio_servers() {
     .await;
     assert_eq!(status, 201, "{s}");
 }
+
+/// Wait for the next approval, as `/v1/approvals` lists it.
+async fn next_approval(http: &reqwest::Client) -> Value {
+    let end = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, list) = send(http.get("http://tern/v1/approvals")).await;
+        if let Some(a) = list.as_array().and_then(|l| l.first()) {
+            return a.clone();
+        }
+        assert!(Instant::now() < end, "no approval was asked for");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The session's messages as text, for checking tool results.
+async fn session_text(http: &reqwest::Client, run_id: &str) -> String {
+    send(http.get(format!("http://tern/v1/runs/{run_id}/wait"))).await;
+    let (_, sid) = send(http.get(format!("http://tern/v1/runs/{run_id}/session"))).await;
+    let sid = sid["session_id"].as_str().unwrap().to_owned();
+    let (_, session) = send(http.get(format!("http://tern/v1/sessions/{sid}"))).await;
+    session.to_string()
+}
+
+/// A run in the test's one session (the mock provider picks its turn from
+/// the session's history).
+async fn start(http: &reqwest::Client, session: &mut Option<String>) -> String {
+    let (_, started) = send(
+        http.post("http://tern/v1/runs")
+            .json(&json!({ "text": "go", "session_id": session })),
+    )
+    .await;
+    *session = started["session_id"].as_str().map(str::to_owned);
+    started["run_id"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agent_adds_servers_with_approval_on_the_host() {
+    let env = Env::new();
+    let mut add = fx_config();
+    add["name"] = json!("fx");
+    std::fs::write(
+        &env.script,
+        json!({ "turns": [
+            // 1: the secret isn't set yet, so nothing is saved.
+            { "tool_calls": [{ "name": "mcp_add", "input": add }] },
+            { "text": "need the token" },
+            // 2: the same call once it is.
+            { "tool_calls": [{ "name": "mcp_add", "input": add }] },
+            { "text": "added" },
+            // 3: its tools work in the next run.
+            { "tool_calls": [{ "name": "mcp__fx__add", "input": { "a": 1234, "b": 4321 } }] },
+            { "text": "done" },
+            // 4: remove it, secret too.
+            { "tool_calls": [{ "name": "mcp_remove", "input": { "name": "fx", "remove_secrets": true } }] },
+            { "text": "removed" },
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let _daemon = env.daemon();
+    let http = env.local();
+    // Approvals go to listening clients; with none they're denied at once.
+    let _events = http.get("http://tern/v1/events").send().await.unwrap();
+    let link = env.ok(&["devices", "pair", "--scope", "owner", "--name", "phone"]);
+    let token = env.ok(&["devices", "join", &link]);
+    let device = reqwest::Client::builder()
+        .tls_danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+
+    let mut session = None;
+    // Run 1: approval is asked every time, can't be "always", and a paired
+    // device can't give it for a command.
+    let run = start(&http, &mut session).await;
+    let a = next_approval(&http).await;
+    assert_eq!(a["tool"], "mcp_add");
+    assert_eq!(a["local_only"], true, "{a}");
+    assert_eq!(a["pattern"], Value::Null);
+    assert_eq!(a["effect"], "destructive");
+    let summary = a["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("outside the sandbox") && summary.contains("python3"),
+        "{summary}"
+    );
+    let id = a["id"].as_str().unwrap();
+    let (status, e) = send(
+        device
+            .post(format!("https://127.0.0.1:{}/v1/approvals/{id}", env.port))
+            .header("authorization", format!("Bearer {token}"))
+            .json(&json!({ "decision": "once" })),
+    )
+    .await;
+    assert_eq!(status, 403, "{e}");
+    send(
+        http.post(format!("http://tern/v1/approvals/{id}"))
+            .json(&json!({ "decision": "once" })),
+    )
+    .await;
+    let text = session_text(&http, &run).await;
+    assert!(
+        text.contains("FIXTURE_TOKEN not set") && text.contains("secret_request"),
+        "{text}"
+    );
+    assert!(!env.read("config.toml").contains("mcp.servers.fx"));
+
+    // Run 2: with the secret set (as secret_request would), it's tested and saved.
+    send(
+        http.put("http://tern/v1/secrets/FIXTURE_TOKEN")
+            .json(&json!({ "value": "tok-123" })),
+    )
+    .await;
+    let run = start(&http, &mut session).await;
+    let a = next_approval(&http).await;
+    send(
+        http.post(format!(
+            "http://tern/v1/approvals/{}",
+            a["id"].as_str().unwrap()
+        ))
+        .json(&json!({ "decision": "once" })),
+    )
+    .await;
+    let text = session_text(&http, &run).await;
+    assert!(text.contains(r#"\"saved\":true"#), "{text}");
+    assert!(text.contains("mcp__fx__add"), "{text}");
+    wait_state(&http, "fx", |s| s["state"]["kind"] == "running").await;
+
+    // Run 3: the new tools are offered (add is marked read, so no approval).
+    let run = start(&http, &mut session).await;
+    let text = session_text(&http, &run).await;
+    assert!(text.contains("5555"), "{text}");
+
+    // Run 4: removal is asked for too, and takes the secret with it.
+    let run = start(&http, &mut session).await;
+    let a = next_approval(&http).await;
+    assert_eq!(a["tool"], "mcp_remove");
+    assert_eq!(a["pattern"], Value::Null);
+    send(
+        http.post(format!(
+            "http://tern/v1/approvals/{}",
+            a["id"].as_str().unwrap()
+        ))
+        .json(&json!({ "decision": "once" })),
+    )
+    .await;
+    session_text(&http, &run).await;
+    let (status, _) = send(http.get("http://tern/v1/mcp/fx")).await;
+    assert_eq!(status, 404);
+    assert!(!env.read("secrets.toml").contains("tok-123"));
+}

@@ -11,6 +11,7 @@ mod lifecycle;
 mod logging;
 mod mcp;
 mod mcp_cmd;
+mod mcp_tools;
 mod providers;
 mod providers_cmd;
 mod remote;

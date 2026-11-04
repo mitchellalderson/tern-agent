@@ -162,9 +162,22 @@ stdio servers run on the daemon's host, **outside the sandbox**, with the daemon
 - **stdio writes over TCP are refused** unless `api.remote_mcp_stdio = true` (default `false`). Over the Unix socket (the local owner) they're always allowed. A paired remote owner device can still add HTTP servers, enable, disable, restart and remove. The error says how to turn it on.
 - `verify` on a stdio config is held to the same rule, since it spawns the command.
 
-### 6.2 The agent can't do this
+### 6.2 The agent, with approval every time
 
-There is no tool for adding MCP servers. If the model asks the user to "add this MCP server", the user does it through these surfaces. This mirrors connectors, where the agent writes drafts but activation goes through approval.
+The user can also ask in the chat ("add the GitHub MCP server", or paste a README's `mcpServers` JSON). The agent has four tools (`crates/tern/src/mcp_tools.rs`):
+
+| Tool | Effect | Approval |
+|---|---|---|
+| `mcp_list` | read | none; output is marked untrusted (server stderr and tool descriptions) |
+| `mcp_add` | `destructive` for stdio, `write` for http | every call, never "always" |
+| `mcp_update` | write | every call, never "always" |
+| `mcp_remove` | destructive | every call, never "always" |
+
+- **What the user approves**: the summary spells out the exact command and arguments ("run `npx -y …` on this machine, outside the sandbox") or the URL, plus plain `env` values and secret names. A stdio server is as powerful as an unsandboxed shell command, and this is the guard against prompt injection talking the agent into "installing" one.
+- **Host-only approval for commands**: a stdio `mcp_add` sets `ToolPolicy::local_approval` unless `api.remote_mcp_stdio` is on. The request carries `local_only`: the daemon never sends it to a chat gateway, and `POST /v1/approvals/{id}` refuses it from a paired device (403). Only the TUI or the desktop app on the host can answer. With no such client listening it's denied straight away, as any approval is.
+- **Secrets**: the tools take secret names only. `check_config` refuses key-like values in `env` and `args`. When a named secret isn't set, `mcp_add` saves nothing and tells the agent to call `secret_request`, so the user types the value into the masked prompt and the agent never sees it.
+- **Test first**: after approval, `mcp_add` verifies the config; on failure it returns the error kind, message and stderr tail and saves nothing, so the agent can fix the config and try again (another approval). On success it saves and reloads like any other write, so `/mcp` and the desktop page update live. A run's tool list is fixed when it starts, so the new tools are usable from the next message.
+- `mcp_add` with `replace: true` edits a server (command, URL, secrets); `mcp_update` covers the quick toggles.
 
 ### 6.3 Keeping secrets out of config
 
