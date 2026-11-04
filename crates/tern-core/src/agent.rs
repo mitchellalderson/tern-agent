@@ -604,7 +604,7 @@ impl Agent {
                         );
                         // A script's own tool calls are sub-steps after this one.
                         let (mut r, consumes) = self
-                            .serve_scripts(run, idx, &call, scope, &ctx, taint.is_set(), call_fut)
+                            .serve_scripts(run, idx, &call, scope, &ctx, gate, call_fut)
                             .await?;
                         // A tool may mark its own result (channel_read of
                         // tainted posts).
