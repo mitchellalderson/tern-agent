@@ -347,6 +347,8 @@ mod tests {
             budget_tokens: budget,
             max_iterations: None,
             quiet: false,
+            input_taint: None,
+            taint: None,
         }
     }
 

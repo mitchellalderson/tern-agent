@@ -290,6 +290,7 @@ mod tests {
                     budget_tokens: Some(1000),
                     max_iterations: Some(3),
                     queued,
+                    taint: None,
                 },
                 &msg(),
             )
@@ -334,6 +335,53 @@ mod tests {
         };
         assert!(dup("call_1", "other").is_err());
         assert!(dup("call_3", "c1").is_err());
+    }
+
+    #[test]
+    fn taint_is_sticky_and_children_of_a_tainted_run_start_tainted() {
+        let s = setup();
+        assert_eq!(s.run("p").unwrap().unwrap().taint, None);
+        assert!(s.set_run_taint("p", "result of http_fetch").unwrap());
+        assert!(!s.set_run_taint("p", "later").unwrap());
+        let p = s.run("p").unwrap().unwrap();
+        assert_eq!(p.taint.as_deref(), Some("result of http_fetch"));
+        assert_eq!(p.input_taint, None, "input taint is fixed at creation");
+        // Children made before the parent was tainted stay clean.
+        assert_eq!(s.run("c1").unwrap().unwrap().taint, None);
+        s.create_session("sx", "subagent", None).unwrap();
+        let kid = s
+            .create_run(
+                &NewRun {
+                    id: "c3",
+                    session_id: "sx",
+                    parent_run_id: Some("p"),
+                    parent_call_id: Some("call_3"),
+                    label: Some("c3"),
+                    ..NewRun::default()
+                },
+                &msg(),
+            )
+            .unwrap();
+        assert_eq!(kid.input_taint.as_deref(), Some(crate::SPAWNED_BY_TAINTED));
+        assert_eq!(kid.taint, kid.input_taint);
+        // Untrusted input taints a run from the start.
+        s.create_session("sy", "telegram", None).unwrap();
+        let run = s
+            .create_run(
+                &NewRun {
+                    id: "t",
+                    session_id: "sy",
+                    taint: Some("message from a non-paired sender"),
+                    ..NewRun::default()
+                },
+                &msg(),
+            )
+            .unwrap();
+        assert_eq!(
+            run.taint.as_deref(),
+            Some("message from a non-paired sender")
+        );
+        assert_eq!(run.input_taint, run.taint);
     }
 
     #[test]

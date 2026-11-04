@@ -45,6 +45,10 @@ pub struct ApiApproval {
     pub agent_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session_id: Option<String>,
+    /// Set when the run is tainted: why. Show it as "this run read untrusted
+    /// content (…)"; grants don't apply and "always" isn't offered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taint: Option<String>,
     /// Only a client on this host (the Unix socket) may answer: the call
     /// would run a command here outside the sandbox.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -83,6 +87,7 @@ impl ApiApprovals {
             parent_run_id: req.parent_run_id.clone(),
             agent_label: req.agent_label.clone(),
             root_session_id: root_session_id.filter(|_| req.parent_run_id.is_some()),
+            taint: req.taint.clone(),
             local_only: req.local_only,
         };
         if let Ok(mut p) = self.pending.lock() {

@@ -311,6 +311,18 @@ This is deliberately blunt. It makes injection-driven exfiltration through tool 
 exfiltration (a `read` tool whose URL encodes data) is closed by the per-connector host and path allowlists (§6.1):
 `http_fetch` in a tainted run is limited to hosts already contacted in this run, or it asks.
 
+**Status (T3a shipped, 2026-11-03).** The taint slice, pulled ahead of the rest of T3 so channels C3 can land:
+a journaled, sticky bit per run (`runs.input_taint` fixed at creation, `runs.taint` for views; the loop rebuilds
+its own bit from the journal, so resume is exact); set by `untrusted` tool results (`ToolResult.untrusted` in the
+step output), by mail from a tainted run, and by being spawned by one (the open question in §12: yes). Untrusted
+results are wrapped as above, with the system-prompt line. In a tainted run every `write`/`destructive` call asks,
+grants and host grants notwithstanding, without "always", except the four `agent_*` calls that carry taint along
+themselves; the prompt says "this run read untrusted content (…)". Posts written by a tainted run are
+`tainted`. MCP servers take `untrusted = true`. **Still open in T3**: the outbox (tainted asks with nobody there
+are denied, not queued), the `http_fetch` host limit above, taint from watch/webhook/non-owner input (the
+`NewRun.taint` hook exists; no such input does yet), and autonomy profiles (§5.4; there is no `yolo` escape yet).
+See DECISIONS.md, T3a.
+
 ### 5.4 Autonomy profiles
 
 `autonomy = "readonly" | "supervised" (default) | "autonomous" | "yolo"`, globally and per routine:
@@ -958,7 +970,7 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 | Stage | Theme | Items | Complexity | Needs |
 |---|---|---|---|---|
 | **1. Quick wins** | Small changes to what exists. No new data model, no new protocols. Each item is days, not weeks. | **T0** effects on every tool, money-movement deny · **T1a** on today's schedules: `NO_REPLY`, quiet hours, per-schedule run caps and budget · **T5a** memory flush before compaction, capped `user.md`/`memory.md` · **T6a** provider fallback chains · **T8a** `/v1/status`, `/v1/shutdown`, `tern start`/`stop`, `tern service install` with `SuccessfulExit = false`, "Quit tern completely" in the app (one-click stop for non-technical users, before the tray exists) · **T7a** browser via an MCP recipe (docs only; done) | S each | nothing |
-| **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits | L / M / S–M | Stage 1 (effects, budgets) |
+| **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles (**T3a**, taint and untrusted wrapping, done; outbox and autonomy profiles open) · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits | L / M / S–M | Stage 1 (effects, budgets) |
 | **3. Organize and surface** | Make background work visible and tidy. Mostly UI plus straightforward store work. | **T2** channels, home, posts, reply-to-act, Telegram topics · **T6b** activity ledger with hash chain, Tasks view, `tern security audit` · **T8b** `tern tray` on macOS (helper bundle, notifications with actions, login items, quit escalation, `tern://` links) · **T5b** skill capture | M each | Stage 2 (routines, outbox) |
 | **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) · **T4b-ii** gateway connectors (ntfy, then Slack) | L | Stage 2 (taint before any external input); secret-requests spec built |
 | **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` · **T6d** `tern mcp serve` · **T4c** OpenAPI-to-connector and recorded test fixtures · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
@@ -1049,8 +1061,8 @@ Acceptance highlights (each phase also passes clippy `-D warnings` and `cargo te
   token-exchange broker (which is a hosted dependency, and then belongs to tern Cloud)?
 - Should the gate model also judge **channel routing** ("this post belongs in #finances"), as Duet appears to do, or
   is that `channel_suggest` only?
-- Taint and sub-agents: should a tainted parent's children start tainted? Proposed: yes, since the brief may carry
-  the injected text.
+- ~~Taint and sub-agents: should a tainted parent's children start tainted?~~ Decided in T3a: yes, since the brief
+  may carry the injected text. Their mail back taints the parent too.
 - Tray on macOS: is `tray-icon`/`muda` plus hand-written objc2 calls for `UNUserNotificationCenter` and
   `SMAppService` enough, or is a ~200-line Swift helper bundle simpler to maintain? Swift adds a build step but no
   runtime weight. Decide in a T8 spike.

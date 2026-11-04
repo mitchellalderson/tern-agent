@@ -25,11 +25,14 @@ pub enum Check {
 /// - `destructive` asks every time;
 /// - `requires_approval` asks for any effect unless an allowlist grant
 ///   covers it;
-/// - `money_movement` / `trade` tools are refused outright.
+/// - `money_movement` / `trade` tools are refused outright;
+/// - in a `tainted` run (tooling spec §5.3) every `write` and `destructive`
+///   call asks, whatever grants say, and never offers "always" (W7), except
+///   the [`TAINT_CONTAINED`] tools.
 ///
 /// `shell` is the exception that defines the allowlist: a command outside
 /// it is destructive, one inside it is a granted write.
-pub fn check(tool: &str, policy: &ToolPolicy, granted: bool) -> Check {
+pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, tainted: bool) -> Check {
     if let Some(flag) = policy.forbidden {
         return Check::Forbid(flag);
     }
@@ -43,6 +46,12 @@ pub fn check(tool: &str, policy: &ToolPolicy, granted: bool) -> Check {
         effect,
         always: effect != Effect::Destructive || shell,
     };
+    if tainted && effect != Effect::Read && !TAINT_CONTAINED.contains(&tool) {
+        return Check::Ask {
+            effect,
+            always: false,
+        };
+    }
     match effect {
         Effect::Destructive => ask,
         _ if granted => Check::Allow,
@@ -53,10 +62,25 @@ pub fn check(tool: &str, policy: &ToolPolicy, granted: bool) -> Check {
     }
 }
 
+/// Writes that stay inside the run tree and carry taint along themselves: a
+/// tainted run's sub-agents start tainted, and its mail taints whoever reads
+/// it. They keep their grants in a tainted run.
+pub const TAINT_CONTAINED: &[&str] = &[
+    "agent_spawn",
+    "agent_send",
+    "agent_cancel",
+    "agent_ask_parent",
+];
+
+/// Why a tainted run asks, for approval prompts.
+pub fn taint_note(reason: &str) -> String {
+    format!("this run read untrusted content ({reason})")
+}
+
 /// Whether a call must go through an approval step at all: some answer
 /// other than [`Check::Allow`] is possible before looking at grants.
-pub fn needs_check(tool: &str, policy: &ToolPolicy) -> bool {
-    check(tool, policy, false) != Check::Allow
+pub fn needs_check(tool: &str, policy: &ToolPolicy, tainted: bool) -> bool {
+    check(tool, policy, false, tainted) != Check::Allow
 }
 
 /// The message the model gets for a forbidden call.
@@ -102,6 +126,9 @@ pub struct ApprovalRequest {
     /// say who is asking.
     pub parent_run_id: Option<String>,
     pub agent_label: Option<String>,
+    /// Set when the run is tainted: why ([`taint_note`] says it to the
+    /// user). Grants don't cover its writes, and "always" isn't offered.
+    pub taint: Option<String>,
     /// Only a front end on the host may answer ([`ToolPolicy::local_approval`]).
     ///
     /// [`ToolPolicy::local_approval`]: crate::tool::ToolPolicy::local_approval
@@ -112,6 +139,12 @@ impl ApprovalRequest {
     /// `write · gmail_send to bob@…`: the effect, then the summary.
     pub fn headline(&self) -> String {
         format!("{} · {}", self.effect, self.summary)
+    }
+
+    /// Why this prompt is stricter than usual: "this run read untrusted
+    /// content (…)", for front ends to show under the headline.
+    pub fn taint_note(&self) -> Option<String> {
+        self.taint.as_deref().map(taint_note)
     }
 }
 
@@ -307,18 +340,24 @@ mod tests {
 
     #[test]
     fn read_never_asks() {
-        assert_eq!(check("t", &policy(Effect::Read), false), Check::Allow);
-        assert!(!needs_check("t", &policy(Effect::Read)));
+        assert_eq!(
+            check("t", &policy(Effect::Read), false, false),
+            Check::Allow
+        );
+        assert!(!needs_check("t", &policy(Effect::Read), false));
     }
 
     #[test]
     fn write_asks_unless_granted() {
-        assert_eq!(check("t", &policy(Effect::Write), false), ASK_WRITE);
-        assert_eq!(check("t", &policy(Effect::Write), true), Check::Allow);
+        assert_eq!(check("t", &policy(Effect::Write), false, false), ASK_WRITE);
+        assert_eq!(
+            check("t", &policy(Effect::Write), true, false),
+            Check::Allow
+        );
         // The host's own grant (workspace writes, grandfathered connectors).
         let own = ToolPolicy::granted_write(false);
-        assert_eq!(check("t", &own, false), Check::Allow);
-        assert!(!needs_check("t", &own));
+        assert_eq!(check("t", &own, false, false), Check::Allow);
+        assert!(!needs_check("t", &own, false));
     }
 
     #[test]
@@ -328,10 +367,14 @@ mod tests {
             effect: Effect::Destructive,
             always: false,
         };
-        assert_eq!(check("t", &p, false), ask);
-        assert_eq!(check("t", &p, true), ask, "grants don't cover destructive");
+        assert_eq!(check("t", &p, false, false), ask);
+        assert_eq!(
+            check("t", &p, true, false),
+            ask,
+            "grants don't cover destructive"
+        );
         let p = ToolPolicy { granted: true, ..p };
-        assert_eq!(check("t", &p, true), ask);
+        assert_eq!(check("t", &p, true, false), ask);
     }
 
     #[test]
@@ -341,23 +384,23 @@ mod tests {
             effect: Effect::Read,
             always: true,
         };
-        assert_eq!(check("t", &p, false), ask);
-        assert_eq!(check("t", &p, true), Check::Allow);
+        assert_eq!(check("t", &p, false, false), ask);
+        assert_eq!(check("t", &p, true, false), Check::Allow);
         let p = ToolPolicy::granted_write(false).forced(true);
-        assert_eq!(check("t", &p, false), ASK_WRITE);
+        assert_eq!(check("t", &p, false, false), ASK_WRITE);
     }
 
     #[test]
     fn shell_outside_the_allowlist_is_destructive() {
         let p = policy(Effect::Destructive).forced(true);
         assert_eq!(
-            check("shell", &p, false),
+            check("shell", &p, false, false),
             Check::Ask {
                 effect: Effect::Destructive,
                 always: true
             }
         );
-        assert_eq!(check("shell", &p, true), Check::Allow);
+        assert_eq!(check("shell", &p, true, false), Check::Allow);
     }
 
     #[test]
@@ -368,10 +411,42 @@ mod tests {
                 ..ToolPolicy::granted_write(true)
             };
             let p = ToolPolicy { effect, ..p };
-            assert_eq!(check("t", &p, true), Check::Forbid("money_movement"));
-            assert!(needs_check("t", &p));
+            assert_eq!(check("t", &p, true, false), Check::Forbid("money_movement"));
+            assert!(needs_check("t", &p, false));
         }
         assert!(forbidden_message("trade").contains("`trade`"));
+    }
+
+    #[test]
+    fn grants_never_cover_a_tainted_write() {
+        let never = |effect| Check::Ask {
+            effect,
+            always: false,
+        };
+        // An "always" entry, the host's own grant, and the shell allowlist.
+        assert_eq!(
+            check("t", &policy(Effect::Write), true, true),
+            never(Effect::Write)
+        );
+        let own = ToolPolicy::granted_write(true);
+        assert_eq!(check("write_file", &own, false, true), never(Effect::Write));
+        assert!(needs_check("write_file", &own, true));
+        let shell = policy(Effect::Destructive).forced(true);
+        assert_eq!(check("shell", &shell, true, true), never(Effect::Write));
+        assert_eq!(
+            check("t", &policy(Effect::Destructive), true, true),
+            never(Effect::Destructive)
+        );
+        // Reads don't ask, coordinating sub-agents keeps its grant, and
+        // forbidden stays forbidden.
+        assert_eq!(check("t", &policy(Effect::Read), false, true), Check::Allow);
+        assert!(!needs_check("agent_spawn", &own, true));
+        let money = ToolPolicy {
+            forbidden: Some("trade"),
+            ..own
+        };
+        assert_eq!(check("t", &money, true, true), Check::Forbid("trade"));
+        assert!(taint_note("http_fetch").contains("untrusted content"));
     }
 
     #[test]

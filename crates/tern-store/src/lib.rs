@@ -13,8 +13,8 @@ pub use devices_repo::{DeviceGrant, DeviceRow};
 pub use subagents_repo::{MailRow, NewMail};
 
 pub use repo::{
-    MemoryRow, MessageHit, MessageRow, NewMessage, NewRun, RunRow, SessionRow, SessionSummary,
-    StepRow, fts_query, now_ms,
+    MemoryRow, MessageHit, MessageRow, NewMessage, NewRun, RunRow, SPAWNED_BY_TAINTED, SessionRow,
+    SessionSummary, StepRow, fts_query, now_ms,
 };
 
 use std::path::Path;

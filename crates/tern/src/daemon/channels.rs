@@ -334,6 +334,8 @@ impl Manager {
         if text.trim().is_empty() {
             return Ok(None);
         }
+        // A tainted run's answer may carry what it read (tooling spec §5.3).
+        let tainted = run.taint.is_some();
         let key = format!("answer:{}", run.id);
         let schedule = (run.trigger == "cron")
             .then(|| store.schedule_for_session(&run.session_id))
@@ -351,6 +353,7 @@ impl Manager {
                 author: &title,
                 kind: "answer",
                 text: &text,
+                tainted,
                 dedupe_key: Some(&key),
                 ..NewPost::default()
             })?
@@ -378,6 +381,7 @@ impl Manager {
                 kind: "answer",
                 text: &text,
                 reply_to,
+                tainted,
                 dedupe_key: Some(&key),
                 ..NewPost::default()
             })?

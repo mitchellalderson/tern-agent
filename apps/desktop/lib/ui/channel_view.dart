@@ -312,6 +312,10 @@ class TimelinePost extends StatelessWidget {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
+                  if (post.tainted) ...[
+                    const SizedBox(width: 5),
+                    const TaintMark(),
+                  ],
                   if (tag case (final icon, final words)) ...[
                     const SizedBox(width: 5),
                     Tooltip(

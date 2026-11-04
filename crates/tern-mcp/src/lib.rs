@@ -670,6 +670,7 @@ fn convert(result: CallToolResult) -> ToolResult {
     ToolResult {
         content: parts.join("\n"),
         is_error: result.is_error.unwrap_or(false),
+        untrusted: false,
     }
 }
 
@@ -720,6 +721,10 @@ impl Tool for McpTool {
 
     fn effect(&self) -> Effect {
         effect_for(&self.server.cfg, &self.tool.remote, self.tool.hinted)
+    }
+
+    fn untrusted(&self) -> bool {
+        self.server.cfg.untrusted
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
@@ -963,6 +968,34 @@ mod tests {
         assert_eq!(effect_for(&cfg, "search", Effect::Write), Effect::Read);
         let bad = serde_json::json!({ "transport": "stdio", "effects": { "x": "delete" } });
         assert!(serde_json::from_value::<McpServerConfig>(bad).is_err());
+    }
+
+    #[test]
+    fn untrusted_servers_taint_with_every_tool() {
+        let tool = |untrusted: bool| McpTool {
+            server: McpServer::new(
+                "browser",
+                McpServerConfig {
+                    untrusted,
+                    ..McpServerConfig::default()
+                },
+                Arc::default(),
+            ),
+            tool: RemoteTool {
+                remote: "browser_snapshot".into(),
+                exposed: "mcp__browser__browser_snapshot".into(),
+                description: String::new(),
+                schema: Value::Null,
+                hinted: Effect::Read,
+            },
+        };
+        assert!(tool(true).untrusted());
+        assert!(!tool(false).untrusted());
+        let cfg: McpServerConfig = serde_json::from_value(serde_json::json!({
+            "transport": "stdio", "command": "npx", "untrusted": true
+        }))
+        .unwrap();
+        assert!(cfg.untrusted);
     }
 
     #[test]

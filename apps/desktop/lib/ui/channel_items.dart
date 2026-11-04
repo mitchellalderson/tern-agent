@@ -152,6 +152,10 @@ class PostCard extends StatelessWidget {
                         ),
                       ),
                     ),
+                    if (post.tainted) ...[
+                      const SizedBox(width: 5),
+                      const TaintMark(),
+                    ],
                     if (tag case (final icon, final words)) ...[
                       const SizedBox(width: 6),
                       Tooltip(

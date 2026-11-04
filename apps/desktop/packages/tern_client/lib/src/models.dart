@@ -396,6 +396,7 @@ class Approval {
     this.parentRunId,
     this.agentLabel,
     this.rootSessionId,
+    this.taint,
   });
 
   factory Approval.fromJson(Json j) => Approval(
@@ -410,6 +411,7 @@ class Approval {
     parentRunId: j['parent_run_id'] as String?,
     agentLabel: j['agent_label'] as String?,
     rootSessionId: j['root_session_id'] as String?,
+    taint: j['taint'] as String?,
   );
 
   final String id;
@@ -434,6 +436,14 @@ class Approval {
   /// What "always allow" adds to the allowlist, or null if this call
   /// can't be always-allowed (hide the option).
   final String? pattern;
+
+  /// Set when the run is tainted (it read third-party text): why. Grants
+  /// don't cover its writes, so it asks.
+  final String? taint;
+
+  /// "this run read untrusted content (…)", for the card.
+  String? get taintNote =>
+      taint == null ? null : 'this run read untrusted content ($taint)';
 }
 
 enum Decision {
@@ -925,6 +935,7 @@ class RunItem {
     this.parentRunId,
     this.label,
     this.depth = 0,
+    this.taint,
   });
 
   factory RunItem.fromJson(Json j) => RunItem(
@@ -938,6 +949,7 @@ class RunItem {
     parentRunId: j['parent_run_id'] as String?,
     label: j['label'] as String?,
     depth: j['depth'] as int? ?? 0,
+    taint: j['taint'] as String?,
   );
 
   final String id;
@@ -957,6 +969,11 @@ class RunItem {
   final DateTime startedAt;
   final DateTime? finishedAt;
   final String? error;
+
+  /// Why the run is tainted (it read third-party text, so its writes ask);
+  /// null while clean.
+  final String? taint;
+  bool get tainted => taint != null;
 }
 
 /// One journal step of a run.

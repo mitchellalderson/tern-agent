@@ -178,6 +178,11 @@ pub fn consume_mail(ids: &[i64]) {
 pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
+    /// Third-party text from an [`Tool::untrusted`] tool. Set by the agent
+    /// loop, not the tool, and journaled with the step, so a replayed run
+    /// is tainted at the same step (tooling spec §5.3).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub untrusted: bool,
 }
 
 impl ToolResult {
@@ -185,12 +190,14 @@ impl ToolResult {
         Self {
             content: content.into(),
             is_error: false,
+            untrusted: false,
         }
     }
     pub fn error(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
             is_error: true,
+            untrusted: false,
         }
     }
 }
@@ -202,7 +209,8 @@ pub trait Tool: Send + Sync {
     /// [`Tool::policy`]'s `effect`.
     fn effect(&self) -> Effect;
     /// Returns third-party text (web pages, mail, chat messages) that may
-    /// carry instructions. Recorded now; tainting runs is T3.
+    /// carry instructions. Its results taint the run and reach the model
+    /// wrapped in `<untrusted>` (tooling spec §5.3).
     fn untrusted(&self) -> bool {
         false
     }
@@ -319,6 +327,11 @@ impl ToolRegistry {
             .into_iter()
             .map(|(name, t)| (name, (t.effect(), t.untrusted())))
             .collect()
+    }
+
+    /// Whether `name` returns third-party text ([`Tool::untrusted`]).
+    pub fn untrusted(&self, name: &str) -> bool {
+        self.get(name).is_some_and(|t| t.untrusted())
     }
 
     pub fn summarize(&self, call: &ToolCall) -> String {

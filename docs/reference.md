@@ -8,7 +8,7 @@ Everything tern does, command by command. For installing and a first chat, see t
 |---|---|
 | **Models** | Anthropic, plus any OpenAI-compatible endpoint (OpenRouter, Ollama, vLLM, LM Studio). Models are `provider:model`; switch with `--model` or `/model`. |
 | **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `http_fetch`, long-term memory and capped profile notes (`user.md`, `memory.md`), search over past conversations, skills, schedules. |
-| **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. |
+| **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. A run that has read untrusted content (a web page, mail, a tool marked `untrusted`) is **tainted**: its `write` and `destructive` calls ask whatever "always" says, and the prompt says why ([Taint](#taint)). |
 | **MCP** | Ask the agent ("add the GitHub MCP server"; you approve the exact command each time, and only on this machine for local commands), or add, test, toggle and remove servers with `/mcp` in the chat or [`tern mcp`](#tern-mcp), or edit `[mcp.servers.<name>]` (stdio or streamable HTTP); changes apply without a restart, a server's pasted `mcpServers` JSON works too, and their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. For a browser, see [Recipe: give tern a browser](recipes/browser.md). |
 | **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
@@ -182,11 +182,11 @@ A session is a conversation; its source is where it started (`cli`, `tui`, `api`
 ### `tern runs`
 
 ```sh
-tern runs list            # the 20 most recent runs: id, status, start time, model
+tern runs list            # the 20 most recent runs: id, status, start time, model, "tainted"
 tern runs show <run-id>   # run details and its step journal
 ```
 
-A run is one prompt driven to a final answer within a session. Its journal records each model call and tool result; `runs show` is the quickest way to see what a run did, and where an unfinished one stopped.
+A run is one prompt driven to a final answer within a session. Its journal records each model call and tool result; `runs show` is the quickest way to see what a run did, and where an unfinished one stopped. A tainted run shows `tainted  <why>` in its details, untrusted tool results are marked `[untrusted]`, and mail from a tainted run `[tainted]`.
 
 ### `tern connectors`
 
@@ -334,6 +334,7 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `mcp.servers.<name>.disabled_tools` | `[]` | The server's own tool names to hide from the model. |
 | `mcp.servers.<name>.idempotent` | `false` | Its tools are safe to re-run when resuming. |
 | `mcp.servers.<name>.requires_approval` | `false` | Ask before each of its tool calls. |
+| `mcp.servers.<name>.untrusted` | `false` | Its tools return third-party text (a browser, mail, chat): their results taint the run ([Taint](#taint)). |
 | `mcp.servers.<name>.effects` | `{}` | Effect per tool, by the server's tool name (`"*"` for the rest): `{ search_issues = "read", delete_repo = "destructive" }`. Overrides the server's `readOnlyHint` / `destructiveHint`; tools without either are `write`. |
 | `secret_request_timeout_secs` | `900` | How long the agent's prompt for a secret waits for you. |
 
@@ -457,7 +458,18 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 - **Luau connectors** run in sandboxed VMs (no files, processes, or `require`; 5 s and 64 MB per call) and can only reach the hosts and secrets they declare, including across redirects. An activated connector that changes, or that declares different capabilities than you approved, isn't loaded.
 - **`shell`** runs in an OS sandbox (Seatbelt on macOS, Landlock on Linux) that confines writes to the workspace and keeps your home directory and `~/.tern` unreadable; see [Sandboxing](#sandboxing).
 - **Effects** are enforced by tern, not the model: `destructive` calls ask every time and `money_movement` / `trade` tools are refused outright, even with `--yes`.
-- **"Always allow"** is never offered for destructive tools, for commands that run other commands (`bash`, `env`, `sudo`, `find`, interpreters, …) or for activating connectors, and allowlisted shell commands can't chain (`;`, `|`, `$( )`, …).
+- **Taint** ([below](#taint)): once a run has read untrusted content, its `write` and `destructive` calls ask, whatever "always" grants say.
+- **"Always allow"** is never offered for destructive tools, for calls in a tainted run, for commands that run other commands (`bash`, `env`, `sudo`, `find`, interpreters, …) or for activating connectors, and allowlisted shell commands can't chain (`;`, `|`, `$( )`, …).
+
+### Taint
+
+A run is **tainted** once untrusted content reaches it (docs/personal-agent-tooling-spec.md §5.3):
+
+- **What taints**: the result of a tool marked untrusted (`http_fetch`, `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
+- **It sticks** for the rest of the run, survives a crash and `tern resume` exactly (it's rebuilt from the journal), and doesn't carry to the next run in the conversation.
+- **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, memory, schedules), and "always" isn't offered. The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) keep their grants, since what they reach starts tainted. With nobody to ask (a routine at night), the call is denied. A tainted run also skips the memory flush before compaction. There's no setting to turn this off.
+- **What the model sees**: untrusted results arrive as `<untrusted source="http_fetch">…</untrusted>`, and the system prompt says text inside is data, not instructions.
+- **Where it shows**: `tern runs list` / `runs show`, `taint` on runs in `GET /v1/sessions/{id}/runs` (absent while clean), `taint` on approval requests, `untrusted: true` on tool step outputs, the desktop's run inspector (a "tainted" badge), and approval cards in the desktop, the TUI, Telegram and `tern run`. A routine or channel answer written by a tainted run is a **tainted post** (`tainted: true`, a shield next to the author in the desktop).
 
 ## Measurements
 

@@ -476,6 +476,21 @@ class _ApprovalCardState extends State<ApprovalCard> {
                 ),
               ],
             ),
+            if (a.taintNote case final note?) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Icon(Icons.shield_outlined, size: 13, color: c.warn),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Asking because $note',
+                      style: TextStyle(fontSize: 12.5, color: c.warn),
+                    ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 6),
             Container(
               width: double.infinity,

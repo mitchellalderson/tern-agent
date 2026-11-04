@@ -228,6 +228,7 @@ impl Tool for HttpFetch {
                 ToolResult {
                     content: out,
                     is_error: !status.is_success(),
+                    untrusted: false,
                 }
             }
             Err(e) => ToolResult::error(format!("fetch failed: {e}")),

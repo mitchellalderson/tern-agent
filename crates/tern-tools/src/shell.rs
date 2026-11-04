@@ -110,6 +110,7 @@ impl Tool for Shell {
         ToolResult {
             content: text,
             is_error: out.exit_code != Some(0),
+            untrusted: false,
         }
     }
 }
