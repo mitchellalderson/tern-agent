@@ -384,6 +384,7 @@ impl Runtime {
             tools: Some(serde_json::to_string(&tools)?),
             memory,
             egress: a.egress.map(|e| e.as_str().to_owned()),
+            autonomy: a.autonomy.map(|e| e.as_str().to_owned()),
             ..tern_store::AgentRow::default()
         })?;
         self.refresh_agent_chains();
@@ -609,6 +610,25 @@ impl Runtime {
         })
     }
 
+    /// The autonomy a run of `agent` gets: `requested` (a routine's own) or
+    /// else the configured one, capped by the agent's ceiling. `Autonomy`
+    /// is ordered, so the cap is a `min`.
+    pub fn autonomy_for(
+        &self,
+        agent: &tern_store::AgentRow,
+        requested: Option<tern_core::approval::Autonomy>,
+    ) -> tern_core::approval::Autonomy {
+        let base = requested.unwrap_or(self.live().autonomy);
+        match agent
+            .autonomy
+            .as_deref()
+            .and_then(tern_core::approval::Autonomy::parse)
+        {
+            Some(ceiling) => base.min(ceiling),
+            None => base,
+        }
+    }
+
     pub fn check_model(&self, model: &str) -> anyhow::Result<ModelRef> {
         Ok(self.resolve_model(model)?.model.parse()?)
     }
@@ -697,10 +717,10 @@ impl Runtime {
             taint,
         )?;
         // Frozen on the run, like its model (tooling spec §5.4); a routine
-        // overrides it in `Manager::start_scheduled`. An agent's autonomy
-        // ceiling (agent profiles AP3) will cap this value here.
+        // overrides it in `Manager::start_scheduled`, and the agent's
+        // ceiling caps either (agent profiles AP3).
         self.store
-            .set_run_autonomy(&run.id, self.live().autonomy.as_str())?;
+            .set_run_autonomy(&run.id, self.autonomy_for(&agent, None).as_str())?;
         // The tainted host limit: the agent's own setting, else the
         // config's; frozen like autonomy.
         let egress = agent
@@ -732,6 +752,8 @@ pub struct NewAgent {
     pub memory: Option<String>,
     /// The tainted host limit for its runs; `None` = `[taint] egress`.
     pub egress: Option<tern_core::approval::Egress>,
+    /// The most autonomy its runs may have; `None` = no ceiling.
+    pub autonomy: Option<tern_core::approval::Autonomy>,
     pub template: Option<String>,
 }
 

@@ -409,6 +409,16 @@ pub enum AgentsCommand {
         /// `private` (default) or `shared`.
         #[arg(long)]
         memory: Option<String>,
+        /// The most autonomy its runs may have: readonly, supervised,
+        /// autonomous or yolo (the lower of this and `autonomy` applies).
+        #[arg(long)]
+        autonomy: Option<String>,
+    },
+    /// Set or clear an agent's autonomy ceiling.
+    Autonomy {
+        agent: String,
+        /// readonly, supervised, autonomous, yolo, or `none` to remove it.
+        level: String,
     },
     /// Open an agent's persona in $EDITOR.
     Edit { agent: String },

@@ -23,12 +23,15 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
             slug,
             template,
             memory,
+            autonomy,
         } => {
+            let autonomy = autonomy.as_deref().map(parse_autonomy).transpose()?;
             let a = rt.create_agent(NewAgent {
                 name,
                 slug,
                 template,
                 memory,
+                autonomy,
                 ..NewAgent::default()
             })?;
             println!(
@@ -42,6 +45,24 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
                 "persona: {}",
                 tern_core::agents::persona_path(home, &a.id).display()
             );
+        }
+        AgentsCommand::Autonomy { agent, level } => {
+            let a = find(&rt, &agent)?;
+            let ceiling = match level.as_str() {
+                "none" | "default" => None,
+                l => Some(parse_autonomy(l)?),
+            };
+            rt.store.update_agent(
+                &a.id,
+                &AgentChange {
+                    autonomy: Some(ceiling.map(|c| c.as_str().to_owned())),
+                    ..AgentChange::default()
+                },
+            )?;
+            match ceiling {
+                Some(c) => println!("@{}'s runs are capped at autonomy {c}", a.slug),
+                None => println!("@{} has no autonomy ceiling", a.slug),
+            }
         }
         AgentsCommand::Edit { agent } => edit(&rt, &agent)?,
         AgentsCommand::Archive { agent, undo } => {
@@ -72,6 +93,11 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
     Ok(ExitCode::SUCCESS)
 }
 
+fn parse_autonomy(s: &str) -> anyhow::Result<tern_core::approval::Autonomy> {
+    tern_core::approval::Autonomy::parse(s)
+        .with_context(|| format!("autonomy must be readonly, supervised, autonomous or yolo, not {s:?}"))
+}
+
 fn find(rt: &Runtime, agent: &str) -> anyhow::Result<tern_store::AgentRow> {
     rt.store
         .agent(agent.trim_start_matches('@'))?
@@ -92,8 +118,13 @@ fn list(rt: &Runtime, all: bool) -> anyhow::Result<()> {
         } else {
             ""
         };
+        let cap = a
+            .autonomy
+            .as_deref()
+            .map(|c| format!("  max {c}"))
+            .unwrap_or_default();
         println!(
-            "@{:<16} {:<16} {:<8} memory  {model}  {routines} routine(s){archived}",
+            "@{:<16} {:<16} {:<8} memory  {model}  {routines} routine(s){cap}{archived}",
             a.slug, a.name, a.memory
         );
     }

@@ -813,7 +813,21 @@ impl Manager {
             self.rt.store.set_run_deliver_to(&started.run_id, t)?;
         }
         if let Some(a) = s.autonomy.as_deref() {
-            self.rt.store.set_run_autonomy(&started.run_id, a)?;
+            // The routine's own profile, still under its agent's ceiling.
+            let agent = self
+                .rt
+                .store
+                .agent(s.agent())?
+                .unwrap_or_else(|| tern_store::AgentRow {
+                    id: tern_store::DEFAULT_AGENT.into(),
+                    ..tern_store::AgentRow::default()
+                });
+            let level = self
+                .rt
+                .autonomy_for(&agent, tern_core::approval::Autonomy::parse(a));
+            self.rt
+                .store
+                .set_run_autonomy(&started.run_id, level.as_str())?;
         }
         let cap = s.tokens_per_run.or(self.rt.live().schedules.tokens_per_run);
         if let Some(cap) = cap {
