@@ -265,6 +265,12 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 p.request.call.name
             )));
         }
+        if let Some(host) = &p.request.egress_host {
+            options.push(Span::styled("[r]", warn));
+            options.push(Span::raw(" all sites this run   "));
+            options.push(Span::styled("[h]", warn));
+            options.push(Span::raw(format!(" always {host}   ")));
+        }
         options.extend([Span::styled("[n]", warn), Span::raw(" no")]);
         out.push(Line::from(options));
     }

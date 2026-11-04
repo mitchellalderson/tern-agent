@@ -2947,3 +2947,279 @@ async fn a_tainted_run_asks_before_reaching_a_new_host() {
     assert_eq!(h.kinds(&run), before);
     assert_eq!(asks.0.lock().unwrap().len(), 1);
 }
+
+// ---- saying yes once to the tainted host limit ----
+
+/// Answers every prompt with `decision` and records what it was asked.
+struct Answer(Decision, Mutex<Vec<ApprovalRequest>>);
+
+impl Answer {
+    fn new(decision: Decision) -> Arc<Self> {
+        Arc::new(Self(decision, Mutex::new(vec![])))
+    }
+    fn asked(&self) -> Vec<ApprovalRequest> {
+        self.1.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ApprovalHandler for Answer {
+    async fn ask(&self, req: &ApprovalRequest) -> Decision {
+        self.1.lock().unwrap().push(req.clone());
+        self.0
+    }
+}
+
+/// A run in a session of its own (the script counts a session's turns).
+fn start_fresh(h: &Harness, agent: &Agent, session: &str) -> String {
+    h.store.create_session(session, "cli", None).unwrap();
+    let model: ModelRef = "script:m".parse().unwrap();
+    agent
+        .start_run(session, "go", &model, "system", "user")
+        .unwrap()
+        .id
+}
+
+fn fetches(hosts: &[&'static str]) -> Vec<Reply> {
+    let mut r: Vec<Reply> = hosts
+        .iter()
+        .map(|h| Reply::Tool("fetch", json!({ "host": h })))
+        .collect();
+    r.push(Reply::Text("done"));
+    r
+}
+
+#[tokio::test]
+async fn allowing_all_sites_lifts_the_limit_for_the_run_and_replays_the_same() {
+    let h = Harness::new();
+    let fetch = Arc::new(Fetch(AtomicU32::new(0)));
+    let answer = Answer::new(Decision::AllowRun);
+    let script = Arc::new(Script::new(fetches(&[
+        "a.example",
+        "b.example",
+        "c.example",
+        "d.example",
+    ])));
+    let agent = h.agent(script, vec![fetch.clone()], answer.clone());
+    let run = h.start(&agent, "research");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    // `a` tainted the run; `b` asked, offering the host-limit choices; the
+    // answer covered `c` and `d`.
+    let asked = answer.asked();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].egress_host.as_deref(), Some("b.example"));
+    assert_eq!(fetch.0.load(Ordering::SeqCst), 4);
+    let approval = h
+        .store
+        .steps(&run)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.kind == "approval")
+        .unwrap();
+    assert_eq!(
+        approval.output_json.as_deref(),
+        Some("\"approved_for_run\"")
+    );
+
+    // Replay rebuilds the lifted limit from that step: nothing new asks.
+    let before = h.kinds(&run);
+    h.store.set_run_status(&run, "running", None).unwrap();
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(h.kinds(&run), before);
+    assert_eq!(answer.asked().len(), 1);
+
+    // Another run starts with the limit on again.
+    let script = Arc::new(Script::new(fetches(&["a.example", "e.example"])));
+    let agent = h.agent(script, vec![fetch.clone()], answer.clone());
+    let other = start_fresh(&h, &agent, "s2");
+    agent.drive(&other, CancellationToken::new()).await.unwrap();
+    assert_eq!(answer.asked().len(), 2);
+}
+
+#[tokio::test]
+async fn always_allowing_a_site_answers_its_prompt_in_later_runs() {
+    let h = Harness::new();
+    let fetch = Arc::new(Fetch(AtomicU32::new(0)));
+    let answer = Answer::new(Decision::AlwaysAllowHost);
+    let agent = h.agent(
+        Arc::new(Script::new(fetches(&["a.example", "b.example"]))),
+        vec![fetch.clone()],
+        answer.clone(),
+    );
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(answer.asked().len(), 1);
+    assert_eq!(h.store.allowlist("fetch").unwrap(), ["host:b.example"]);
+
+    // A later tainted run reaches b without asking (the grant answers the
+    // journaled approval step); c still asks.
+    let deny = Answer::new(Decision::Deny);
+    let agent = h.agent(
+        Arc::new(Script::new(fetches(&[
+            "a.example",
+            "b.example",
+            "c.example",
+        ]))),
+        vec![fetch.clone()],
+        deny.clone(),
+    );
+    let run = start_fresh(&h, &agent, "s2");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let asked = deny.asked();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].egress_host.as_deref(), Some("c.example"));
+    assert_eq!(
+        h.kinds(&run)
+            .iter()
+            .filter(|k| *k == "approval:completed")
+            .count(),
+        2,
+        "b's prompt is a step too, answered by the grant"
+    );
+    // The grant never covers a write.
+    assert_eq!(approval::host_pattern("b.example"), "host:b.example");
+    assert!(!approval::allowed_by(
+        &["host:b.example".to_owned()],
+        &ToolCall {
+            id: "x".into(),
+            name: "send".into(),
+            input: json!({}),
+        }
+    ));
+}
+
+#[tokio::test]
+async fn egress_allow_on_the_run_turns_the_limit_off_and_children_keep_it() {
+    let h = Harness::new();
+    let fetch = Arc::new(Fetch(AtomicU32::new(0)));
+    let answer = Answer::new(Decision::Deny);
+    let agent = h.agent(
+        Arc::new(Script::new(fetches(&[
+            "a.example",
+            "b.example",
+            "c.example",
+        ]))),
+        vec![fetch.clone()],
+        answer.clone(),
+    );
+    let run = h.start(&agent, "browse");
+    // What `Runtime::start_run` freezes from `[taint] egress` or the agent.
+    h.store.set_run_egress(&run, "allow").unwrap();
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert!(answer.asked().is_empty());
+    assert_eq!(fetch.0.load(Ordering::SeqCst), 3);
+    assert!(
+        h.store.run(&run).unwrap().unwrap().taint.is_some(),
+        "still tainted"
+    );
+
+    h.store.create_session("sc", "subagent", None).unwrap();
+    let input = Journal::new(h.store.clone())
+        .to_row(&Message::user_text("brief"))
+        .unwrap();
+    let child = h
+        .store
+        .create_run(
+            &tern_store::NewRun {
+                id: "child",
+                session_id: "sc",
+                parent_run_id: Some(&run),
+                parent_call_id: Some("c1"),
+                label: Some("child"),
+                ..tern_store::NewRun::default()
+            },
+            &input,
+        )
+        .unwrap();
+    assert_eq!(child.egress.as_deref(), Some("allow"));
+}
+
+/// A stand-in for the `python` tool: fetches each host in `hosts` through
+/// the script host, as a script's loop would.
+struct FakePython;
+
+#[async_trait]
+impl Tool for FakePython {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: crate::script::PYTHON.into(),
+            description: "py".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+        ToolPolicy::new(Effect::Read, true)
+    }
+    async fn call(&self, _: &ToolCtx, args: Value) -> ToolResult {
+        let host = crate::script::current_host().expect("the loop serves scripts");
+        let mut out = vec![];
+        for h in args["hosts"].as_array().unwrap() {
+            let r = host.call("fetch", json!({ "host": h })).await;
+            out.push(match r {
+                crate::script::HostReply::Done(r) => r.content,
+                crate::script::HostReply::Refused(why) => format!("refused: {why}"),
+            });
+        }
+        ToolResult::ok(out.join("\n"))
+    }
+}
+
+#[tokio::test]
+async fn scripts_keep_the_host_limit_and_count_the_hosts_they_reach() {
+    let h = Harness::new();
+    let fetch = Arc::new(Fetch(AtomicU32::new(0)));
+    let answer = Answer::new(Decision::AllowOnce);
+    let script = Arc::new(Script::new(vec![
+        // Untainted: the script reaches x, then tainted by its results.
+        Reply::Tool("python", json!({ "hosts": ["x.example"] })),
+        // x was reached by the script: no prompt.
+        Reply::Tool("fetch", json!({ "host": "x.example" })),
+        // A script can't ask: y is refused inside it.
+        Reply::Tool("python", json!({ "hosts": ["x.example", "y.example"] })),
+        Reply::Text("done"),
+    ]));
+    let agent = h.agent(
+        script.clone(),
+        vec![fetch.clone(), Arc::new(FakePython)],
+        answer.clone(),
+    );
+    let run = h.start(&agent, "compare");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert!(answer.asked().is_empty(), "{:?}", answer.asked());
+    assert_eq!(fetch.0.load(Ordering::SeqCst), 3, "x, x, x; never y");
+    let (said, _) = last_tool_result(&script.seen.lock().unwrap()[3]).unwrap();
+    assert!(
+        said.contains("y.example is a site it hasn't reached yet"),
+        "{said}"
+    );
+
+    // Replay: the same steps, the hosts rebuilt from the scripts' sub-steps.
+    let before = h.kinds(&run);
+    h.store.set_run_status(&run, "running", None).unwrap();
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(h.kinds(&run), before);
+    assert!(answer.asked().is_empty());
+
+    // After "allow all sites for this run", a script may reach new ones.
+    let h = Harness::new();
+    let fetch = Arc::new(Fetch(AtomicU32::new(0)));
+    let answer = Answer::new(Decision::AllowRun);
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("fetch", json!({ "host": "a.example" })),
+        Reply::Tool("fetch", json!({ "host": "b.example" })),
+        Reply::Tool("python", json!({ "hosts": ["c.example", "d.example"] })),
+        Reply::Text("done"),
+    ]));
+    let agent = h.agent(
+        script,
+        vec![fetch.clone(), Arc::new(FakePython)],
+        answer.clone(),
+    );
+    let run = h.start(&agent, "research");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(answer.asked().len(), 1);
+    assert_eq!(fetch.0.load(Ordering::SeqCst), 4);
+}

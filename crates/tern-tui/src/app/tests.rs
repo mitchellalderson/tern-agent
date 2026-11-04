@@ -467,6 +467,7 @@ fn approvals_are_answered_inline() {
             agent_label: None,
             taint: None,
             local_only: false,
+            egress_host: None,
         },
         reply: tx,
     });
@@ -527,6 +528,7 @@ fn ctrl_c_denies_a_pending_approval() {
             agent_label: None,
             taint: None,
             local_only: false,
+            egress_host: None,
         },
         reply: tx,
     });
@@ -1002,6 +1004,7 @@ fn approval(
                 agent_label: label.map(Into::into),
                 taint: None,
                 local_only: false,
+                egress_host: None,
             },
             reply: tx,
         },

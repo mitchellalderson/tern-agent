@@ -220,3 +220,61 @@ async fn shell_output_taints_the_run_when_the_network_is_on() {
         "every command can reach the network"
     );
 }
+
+/// Send `text` into a channel and wait for its run; returns the run id.
+async fn say(socket: &std::path::Path, channel: &str, text: &str) -> String {
+    let (code, sent) = post(
+        socket,
+        &format!("/v1/channels/{channel}/posts"),
+        json!({ "text": text }),
+    )
+    .await;
+    assert_eq!(code, 200, "{sent}");
+    let run = sent["run_id"].as_str().unwrap().to_owned();
+    get(socket, &format!("/v1/runs/{run}/wait")).await;
+    run
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_host_limit_setting_comes_from_the_agent_then_the_config() {
+    let env = Env::with_config(
+        &json!({ "turns": [{ "text": "ok" }] }),
+        "[taint]\negress = \"ask\"\n",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let egress = |run: &str| -> Option<String> {
+        env.db()
+            .query_row("SELECT egress FROM runs WHERE id = ?1", [run], |r| r.get(0))
+            .unwrap()
+    };
+    let run = say(&s, "home", "hello").await;
+    assert_eq!(egress(&run).as_deref(), Some("ask"));
+
+    let (code, a) = post(
+        &s,
+        "/v1/agents",
+        json!({ "name": "Scout", "egress": "allow" }),
+    )
+    .await;
+    assert_eq!(code, 201, "{a}");
+    assert_eq!(a["egress"], "allow");
+    let dm = a["main_channel_id"].as_str().unwrap().to_owned();
+    let run = say(&s, &dm, "find things").await;
+    assert_eq!(
+        egress(&run).as_deref(),
+        Some("allow"),
+        "the agent's own wins"
+    );
+
+    // Back to the config's.
+    let a = patch(&s, "/v1/agents/scout", json!({ "egress": null })).await;
+    assert_eq!(a.get("egress"), None, "{a}");
+    let (code, bad) = post(
+        &s,
+        "/v1/agents",
+        json!({ "name": "X", "egress": "sometimes" }),
+    )
+    .await;
+    assert_eq!(code, 422, "{bad}");
+}

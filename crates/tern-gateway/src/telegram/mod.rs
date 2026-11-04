@@ -300,11 +300,15 @@ impl TelegramGateway {
         let decision = match choice {
             "once" => Decision::AllowOnce,
             "always" => Decision::AlwaysAllow,
+            "run" => Decision::AllowRun,
+            "host" => Decision::AlwaysAllowHost,
             _ => Decision::Deny,
         };
         let label = match decision {
             Decision::AllowOnce => "Allowed",
             Decision::AlwaysAllow => "Always allowed",
+            Decision::AllowRun => "Allowed all sites for this run",
+            Decision::AlwaysAllowHost => "Site always allowed",
             Decision::Deny | Decision::Unanswered => "Denied",
         };
         // Only a tap in the chat the request was sent to counts.
@@ -639,6 +643,11 @@ impl Gateway for TelegramGateway {
         let mut buttons: Buttons = vec![("Allow once".into(), format!("ap:{id}:once"))];
         if let Some(pattern) = &req.pattern {
             buttons.push((format!("Always ({pattern})"), format!("ap:{id}:always")));
+        }
+        // The tainted host limit's choices.
+        if let Some(host) = &req.egress_host {
+            buttons.push(("All sites this run".into(), format!("ap:{id}:run")));
+            buttons.push((format!("Always {host}"), format!("ap:{id}:host")));
         }
         buttons.push(("Deny".into(), format!("ap:{id}:deny")));
         if let Err(e) = self

@@ -327,6 +327,7 @@ class TernClient {
     List<String>? model,
     ToolScope? tools,
     String? memory,
+    String? egress,
     String? template,
   }) async => Agent.fromJson(
     await _json('POST', '/v1/agents', {
@@ -338,6 +339,7 @@ class TernClient {
         'model': model.length == 1 ? model.first : model,
       'tools': ?tools?.toJson(),
       'memory': ?memory,
+      'egress': ?egress,
       'template': ?template,
     }),
   );

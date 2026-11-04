@@ -92,6 +92,9 @@ class _AgentSheetState extends State<AgentSheet> {
       AgentAvatar.colorNames[DateTime.now().millisecond % 8];
   late String _memory = widget.editing?.memory ?? 'private';
 
+  /// Its runs read any site without asking, even after untrusted content.
+  late bool _browse = widget.editing?.egress == 'allow';
+
   /// The scope being edited; null = everything (the default agent's).
   late ToolScope? _tools = widget.editing == null
       ? _narrow()
@@ -194,6 +197,8 @@ class _AgentSheetState extends State<AgentSheet> {
               ? model.first
               : model,
         if (!_isDefault) 'memory': _memory,
+        if (_browse != (a.egress == 'allow'))
+          'egress': _browse ? 'allow' : null,
         if (!_isDefault || _tools != null) 'tools': _tools?.toJson(),
       };
       err = await store.updateAgent(
@@ -211,6 +216,7 @@ class _AgentSheetState extends State<AgentSheet> {
         model: _modelChain(),
         tools: _tools,
         memory: _memory,
+        egress: _browse ? 'allow' : null,
         template: _template,
         routine: _addRoutine ? _routine : null,
       );
@@ -421,6 +427,19 @@ class _AgentSheetState extends State<AgentSheet> {
                             enabled: !_isDefault,
                           ),
                         ],
+                      ),
+                    ),
+                    _section('BROWSING'),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      value: _browse,
+                      onChanged: (v) => setState(() => _browse = v ?? false),
+                      title: const Text('Read any site without asking'),
+                      subtitle: const Text(
+                        'For research agents. Otherwise, once it has read a web '
+                        'page or an email, each new site asks first, so injected '
+                        'text can\'t send what it knows somewhere new.',
                       ),
                     ),
                     if (_routine case final r? when _creating)

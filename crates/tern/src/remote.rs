@@ -175,6 +175,7 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                         parent_run_id: a.parent_run_id,
                         agent_label: a.agent_label,
                         taint: a.taint,
+                        egress_host: a.egress_host,
                         local_only: a.local_only,
                     };
                     if prompts
@@ -190,6 +191,8 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                         let decision = match rx.await.unwrap_or(Decision::Deny) {
                             Decision::AllowOnce => "once",
                             Decision::AlwaysAllow => "always",
+                            Decision::AllowRun => "run",
+                            Decision::AlwaysAllowHost => "host",
                             Decision::Deny | Decision::Unanswered => "deny",
                         };
                         let _ = http

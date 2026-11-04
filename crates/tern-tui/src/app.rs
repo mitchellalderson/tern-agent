@@ -331,6 +331,9 @@ impl App {
                 {
                     Decision::AlwaysAllow
                 }
+                // The tainted host limit's choices.
+                KeyCode::Char('r' | 'R') if self.egress_prompt() => Decision::AllowRun,
+                KeyCode::Char('h' | 'H') if self.egress_prompt() => Decision::AlwaysAllowHost,
                 KeyCode::Char('n' | 'N') | KeyCode::Esc => Decision::Deny,
                 _ => return vec![],
             };
@@ -431,6 +434,13 @@ impl App {
         }
         self.input.clear();
         vec![]
+    }
+
+    /// The prompt asks only because of the tainted host limit.
+    fn egress_prompt(&self) -> bool {
+        self.approval
+            .as_ref()
+            .is_some_and(|p| p.request.egress_host.is_some())
     }
 
     fn answer_approval(&mut self, decision: Decision) {

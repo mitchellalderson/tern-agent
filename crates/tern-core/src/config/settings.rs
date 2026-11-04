@@ -184,6 +184,16 @@ fn meta(key: &str) -> Meta {
             security: Some("Every shell command can change these."),
             ..m
         },
+        "taint.egress" => Meta {
+            choices: &["ask", "allow"],
+            live: true,
+            security: Some(
+                "Allow: once a run has read a web page or an email, it can still send what it \
+                 knows to any site without asking. Better set per agent for agents meant to browse.",
+            ),
+            risky: |v| v == "allow",
+            ..m
+        },
         "sandbox.shell_timeout_secs" => at_least(1.0),
         "sandbox.docker_cpus" | "sandbox.docker_pids" => at_least(0.0),
         "subagents.default_model" => Meta {
@@ -696,6 +706,7 @@ mod tests {
                 "memory",
                 "home",
                 "outbox",
+                "taint",
                 "api"
             ]
         );

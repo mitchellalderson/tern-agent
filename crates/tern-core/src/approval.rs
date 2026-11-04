@@ -73,6 +73,42 @@ impl std::fmt::Display for Autonomy {
     }
 }
 
+/// The tainted host limit (tooling spec §5.3): in a tainted run, a network
+/// read to a host the run hasn't reached asks (`ask`), or doesn't (`allow`,
+/// for runs meant to browse). Set in `[taint] egress`, overridden per agent,
+/// and frozen on the run when it starts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Egress {
+    #[default]
+    Ask,
+    Allow,
+}
+
+impl Egress {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Egress::Ask => "ask",
+            Egress::Allow => "allow",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "ask" => Some(Egress::Ask),
+            "allow" => Some(Egress::Allow),
+            _ => None,
+        }
+    }
+}
+
+/// The allowlist pattern of a standing grant for reads from `host` (the
+/// tainted host limit). Never matches a call's subject, so it can't grant
+/// the tool as a whole.
+pub fn host_pattern(host: &str) -> String {
+    format!("host:{host}")
+}
+
 /// What a run brings to [`check`]: its taint and its autonomy profile.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Gate {
@@ -207,6 +243,12 @@ pub enum Decision {
     /// didn't go out). The agent queues the call in the outbox if it can,
     /// else treats it as a denial.
     Unanswered,
+    /// The tainted host limit only ([`ApprovalRequest::egress_host`]):
+    /// allow, and don't ask about new hosts again in this run.
+    AllowRun,
+    /// The tainted host limit only: allow, and grant reads from this host
+    /// for good ([`host_pattern`]).
+    AlwaysAllowHost,
 }
 
 /// Journaled output of an `approval` step.
@@ -219,6 +261,10 @@ pub enum ApprovalOutcome {
     /// Nobody answered in time: the call went to the outbox (tooling spec
     /// §5.2) and the run carried on without it.
     Deferred,
+    /// Approved, and no more host-limit prompts in this run ("Allow all
+    /// sites for this run"). Journaled, so a replay lifts the limit at the
+    /// same step.
+    ApprovedForRun,
 }
 
 #[derive(Debug, Clone)]
@@ -246,6 +292,11 @@ pub struct ApprovalRequest {
     ///
     /// [`ToolPolicy::local_approval`]: crate::tool::ToolPolicy::local_approval
     pub local_only: bool,
+    /// Set when this asks only because of the tainted host limit: the new
+    /// host. Front ends then also offer "Allow all sites for this run"
+    /// ([`Decision::AllowRun`]) and "Always allow <host>"
+    /// ([`Decision::AlwaysAllowHost`]).
+    pub egress_host: Option<String>,
 }
 
 impl ApprovalRequest {

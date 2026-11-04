@@ -336,6 +336,7 @@ impl Runtime {
             subagent_model: a.subagent_model,
             tools: Some(serde_json::to_string(&tools)?),
             memory,
+            egress: a.egress.map(|e| e.as_str().to_owned()),
             ..tern_store::AgentRow::default()
         })?;
         self.refresh_agent_chains();
@@ -532,6 +533,14 @@ impl Runtime {
         // ceiling (agent profiles AP3) will cap this value here.
         self.store
             .set_run_autonomy(&run.id, self.live().autonomy.as_str())?;
+        // The tainted host limit: the agent's own setting, else the
+        // config's; frozen like autonomy.
+        let egress = agent
+            .egress
+            .as_deref()
+            .and_then(tern_core::approval::Egress::parse)
+            .unwrap_or(self.live().taint.egress);
+        self.store.set_run_egress(&run.id, egress.as_str())?;
         Ok(StartedRun {
             session_id: session.id,
             run_id: run.id,
@@ -553,6 +562,8 @@ pub struct NewAgent {
     pub subagent_model: Option<String>,
     pub tools: Option<tern_core::agents::ToolScope>,
     pub memory: Option<String>,
+    /// The tainted host limit for its runs; `None` = `[taint] egress`.
+    pub egress: Option<tern_core::approval::Egress>,
     pub template: Option<String>,
 }
 

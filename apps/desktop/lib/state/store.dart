@@ -800,6 +800,7 @@ class TernStore extends ChangeNotifier {
     List<String> model = const [],
     ToolScope? tools,
     required String memory,
+    String? egress,
     String? template,
     ({String cron, String prompt})? routine,
   }) async {
@@ -811,6 +812,7 @@ class TernStore extends ChangeNotifier {
         model: model,
         tools: tools,
         memory: memory,
+        egress: egress,
         template: template,
       );
       if (routine != null) {
@@ -1564,6 +1566,8 @@ class TernStore extends ChangeNotifier {
       item.outcome = switch (d) {
         Decision.once => 'approved',
         Decision.always => 'always allowed',
+        Decision.run => 'allowed all sites for this run',
+        Decision.host => 'site always allowed',
         Decision.deny => 'denied',
       };
     } on TernException catch (e) {

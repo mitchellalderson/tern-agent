@@ -12,6 +12,7 @@ class Agent {
     this.subagentModel = const [],
     this.tools,
     this.memory = 'private',
+    this.egress,
     this.mainChannelId,
     this.lastActivity,
     this.needsYou = 0,
@@ -31,6 +32,7 @@ class Agent {
     subagentModel: chainFromJson(j['subagent_model']),
     tools: j['tools'] is Json ? ToolScope.fromJson(j['tools'] as Json) : null,
     memory: j['memory'] as String? ?? 'private',
+    egress: j['egress'] as String?,
     mainChannelId: j['main_channel_id'] as String?,
     lastActivity: j['last_activity'] is int
         ? DateTime.fromMillisecondsSinceEpoch(j['last_activity'] as int)
@@ -63,6 +65,10 @@ class Agent {
 
   /// `shared` or `private`.
   final String memory;
+
+  /// After untrusted content, whether reading a new site asks (`ask`) or
+  /// not (`allow`); null = the configured default.
+  final String? egress;
 
   /// Its DM: `home` for the default agent.
   final String? mainChannelId;

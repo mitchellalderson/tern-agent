@@ -25,6 +25,9 @@ pub struct AgentRow {
     pub memory: String,
     /// JSON list of agent ids it may delegate to (AP3).
     pub delegates: Option<String>,
+    /// The tainted host limit for its runs: `ask` or `allow`; `None` = the
+    /// configured `[taint] egress`.
+    pub egress: Option<String>,
     pub archived_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -51,11 +54,12 @@ pub struct AgentChange {
     pub tools: Option<Option<String>>,
     pub memory: Option<String>,
     pub delegates: Option<Option<String>>,
+    pub egress: Option<Option<String>>,
     pub archived: Option<bool>,
 }
 
 const AGENT_COLS: &str = "id, slug, name, avatar, model, subagent_model, tools, memory, delegates, \
-    archived_at, created_at, updated_at";
+    archived_at, created_at, updated_at, egress";
 
 fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
     Ok(AgentRow {
@@ -71,6 +75,7 @@ fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
         archived_at: r.get(9)?,
         created_at: r.get(10)?,
         updated_at: r.get(11)?,
+        egress: r.get(12)?,
     })
 }
 
@@ -90,7 +95,7 @@ impl Store {
         tx.execute(
             &format!(
                 "INSERT INTO agents ({AGENT_COLS})
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10, ?11)"
             ),
             params![
                 a.id,
@@ -102,7 +107,8 @@ impl Store {
                 a.tools,
                 a.memory,
                 a.delegates,
-                now
+                now,
+                a.egress
             ],
         )?;
         tx.execute(
@@ -197,6 +203,9 @@ impl Store {
         }
         if let Some(v) = &ch.delegates {
             set("delegates", v.as_deref())?;
+        }
+        if let Some(v) = &ch.egress {
+            set("egress", v.as_deref())?;
         }
         if let Some(a) = ch.archived {
             tx.execute(
