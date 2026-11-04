@@ -105,12 +105,15 @@ class _FakeClient extends TernClient {
     AvatarSpec? avatar,
     String? persona,
     List<String>? model,
+    List<String>? subagentModel,
     ToolScope? tools,
     String? memory,
     String? egress,
     String? template,
   }) async {
     created.add({
+      'model': model,
+      'subagent_model': subagentModel,
       'egress': ?egress,
       'name': name,
       'persona': persona,
@@ -128,6 +131,41 @@ class _FakeClient extends TernClient {
     agentList = [...agentList, a];
     return a;
   }
+
+  @override
+  Future<List<AgentWork>> agentWork(String id, {int limit = 10}) async => [
+    if (id == 'tern:research')
+      AgentWork(
+        kind: 'delegated',
+        title: 'Size the demand for home services',
+        caller: 'Home',
+        status: 'done',
+        sessionId: 'h1',
+        runId: 'rp',
+        tasks: 4,
+        startedAt: _t0,
+        finishedAt: _t0.add(const Duration(minutes: 6)),
+        postId: 9,
+      ),
+  ];
+
+  @override
+  Future<List<ProviderModels>> models({
+    String? provider,
+    bool refresh = false,
+  }) async => const [
+    ProviderModels(
+      provider: 'anthropic',
+      models: [
+        ModelInfo(id: 'claude-sonnet-5-5'),
+        ModelInfo(id: 'claude-haiku-5-5'),
+      ],
+    ),
+    ProviderModels(
+      provider: 'openrouter',
+      models: [ModelInfo(id: 'kimi-k3')],
+    ),
+  ];
 
   @override
   Future<Agent> updateAgent(String id, Map<String, Object?> fields) async {
@@ -258,7 +296,7 @@ Future<(TernStore, _FakeClient)> _store() async {
     ..health = const Health(
       pid: 1,
       version: '0.2.0',
-      features: {'channels', 'agents'},
+      features: {'channels', 'agents', 'providers'},
     )
     ..info = const Info(
       defaultModel: 'mock:m',
@@ -653,6 +691,261 @@ void main() {
       store.authorName('routine:s2', 'Weekly Acme digest'),
       'Weekly Acme digest',
     );
+  });
+
+  group('model pickers', () {
+    Future<(TernStore, _FakeClient)> sheet(
+      WidgetTester tester,
+      Agent agent,
+    ) async {
+      final (store, client) = await _store();
+      await store.loadModels();
+      tester.view.physicalSize = const Size(1200, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ternTheme(TernColors.light, Brightness.light),
+          home: Scaffold(
+            body: AgentSheet(store: store, editing: agent),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return (store, client);
+    }
+
+    Finder button(Key field) => find
+        .descendant(of: find.byKey(field), matching: find.byType(InkWell))
+        .first;
+
+    Future<void> pick(WidgetTester tester, Key field, Finder choice) async {
+      await tester.ensureVisible(button(field));
+      await tester.tap(button(field));
+      await tester.pumpAndSettle();
+      await tester.tap(choice);
+      await tester.pumpAndSettle();
+    }
+
+    Future<Map<String, Object?>> save(
+      WidgetTester tester,
+      _FakeClient client,
+    ) async {
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+      return client.updated.single.$2;
+    }
+
+    testWidgets('picks a listed model, and Default clears it', (tester) async {
+      final (_, client) = await sheet(tester, _research);
+      // Unset: "Default", and what that is.
+      final field = find.byKey(const Key('agent-model'));
+      expect(
+        find.descendant(of: field, matching: find.textContaining('Default')),
+        findsOneWidget,
+      );
+      await pick(
+        tester,
+        const Key('agent-model'),
+        find.text('claude-haiku-5-5', findRichText: true),
+      );
+      expect(
+        find.descendant(
+          of: field,
+          matching: find.text('anthropic:claude-haiku-5-5'),
+        ),
+        findsOneWidget,
+      );
+      await pick(
+        tester,
+        const Key('agent-subagent-model'),
+        find.text('kimi-k3', findRichText: true),
+      );
+      final fields = await save(tester, client);
+      expect(fields['model'], 'anthropic:claude-haiku-5-5');
+      expect(fields['subagent_model'], 'openrouter:kimi-k3');
+    });
+
+    testWidgets('Default sends no model', (tester) async {
+      const pinned = Agent(
+        id: 'tern:research',
+        slug: 'research',
+        name: 'Research',
+        model: ['anthropic:claude-sonnet-5-5'],
+        mainChannelId: 'dm:research',
+      );
+      final (_, client) = await sheet(tester, pinned);
+      await pick(
+        tester,
+        const Key('agent-model'),
+        find.byKey(const Key('model-default')),
+      );
+      final fields = await save(tester, client);
+      expect(fields.containsKey('model'), isTrue);
+      expect(fields['model'], isNull);
+    });
+
+    testWidgets('a new primary keeps the chain\'s fallbacks', (tester) async {
+      const chained = Agent(
+        id: 'tern:research',
+        slug: 'research',
+        name: 'Research',
+        model: ['anthropic:claude-sonnet-5-5', 'openrouter:kimi-k3'],
+        mainChannelId: 'dm:research',
+      );
+      final (_, client) = await sheet(tester, chained);
+      expect(
+        find.textContaining('openrouter:kimi-k3. These fallbacks stay'),
+        findsOneWidget,
+      );
+      await pick(
+        tester,
+        const Key('agent-model'),
+        find.text('claude-haiku-5-5', findRichText: true),
+      );
+      final fields = await save(tester, client);
+      expect(fields['model'], [
+        'anthropic:claude-haiku-5-5',
+        'openrouter:kimi-k3',
+      ]);
+      expect(withPrimary(['a:1', 'b:2', 'c:3'], 'b:2'), ['b:2', 'c:3']);
+    });
+
+    testWidgets('a saved model the providers don\'t list is kept, flagged', (
+      tester,
+    ) async {
+      const odd = Agent(
+        id: 'tern:research',
+        slug: 'research',
+        name: 'Research',
+        model: ['gone:old-model'],
+        mainChannelId: 'dm:research',
+      );
+      final (_, client) = await sheet(tester, odd);
+      expect(find.text('gone:old-model'), findsOneWidget);
+      expect(find.text("Not in your providers' model lists."), findsOneWidget);
+      // Saving something else doesn't touch it.
+      await tester.enterText(
+        find.byKey(const Key('agent-persona')),
+        'You are Research, still.',
+      );
+      final fields = await save(tester, client);
+      expect(fields.containsKey('model'), isFalse);
+    });
+
+    testWidgets('a typed provider:model is the way in when unlisted', (
+      tester,
+    ) async {
+      final (_, client) = await sheet(tester, _research);
+      await tester.ensureVisible(button(const Key('agent-model')));
+      await tester.tap(button(const Key('agent-model')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('model-filter')),
+        'ollama:llama4',
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.textContaining('Use "ollama:llama4"', findRichText: true),
+      );
+      await tester.pumpAndSettle();
+      final fields = await save(tester, client);
+      expect(fields['model'], 'ollama:llama4');
+    });
+
+    testWidgets('the default agent has no Default: it is the default', (
+      tester,
+    ) async {
+      final (_, client) = await sheet(tester, _tern);
+      await tester.ensureVisible(button(const Key('agent-model')));
+      await tester.tap(button(const Key('agent-model')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('model-default')), findsNothing);
+      await tester.tap(find.text('claude-haiku-5-5', findRichText: true));
+      await tester.pumpAndSettle();
+      final fields = await save(tester, client);
+      expect(fields['model'], 'anthropic:claude-haiku-5-5');
+    });
+  });
+
+  group('delegated work', () {
+    Post pointer(String text, {bool tainted = false}) => Post(
+      id: 9,
+      channelId: 'dm:research',
+      sessionId: 'h1',
+      runId: 'rp',
+      authorKind: 'agent',
+      authorId: 'tern:research',
+      author: 'Research',
+      kind: 'delegated',
+      text: text,
+      tainted: tainted,
+      createdAt: _t0,
+    );
+
+    testWidgets('a pointer in the DM opens tern\'s thread and takes replies', (
+      tester,
+    ) async {
+      final (store, _) = await _store();
+      await store.openAgent(_research);
+      store.onEventForTest(
+        PostCreated(
+          pointer('Working for Home · "Size the demand" · 4 tasks · 4 running'),
+        ),
+      );
+      await _pump(tester, store);
+      expect(find.textContaining('Working for Home'), findsOneWidget);
+      // Live: the daemon rewrites it as the work finishes.
+      store.onEventForTest(
+        PostUpdated(
+          pointer(
+            'Worked for Home · "Size the demand" · 4 tasks · 6m',
+            tainted: true,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.textContaining('Worked for Home'), findsOneWidget);
+      expect(find.textContaining('Working for Home'), findsNothing);
+      expect(find.byType(TaintMark), findsWidgets);
+      // Its side panel lists it too.
+      expect(find.text('RECENT WORK'), findsOneWidget);
+      expect(find.text('Size the demand for home services'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Open').first);
+      await tester.pump();
+      expect(store.thread, 'h1', reason: 'the sub-runs live in tern\'s thread');
+      store.closeThread();
+      await tester.pump();
+      await tester.tap(find.widgetWithText(TextButton, 'Reply'));
+      await tester.pump();
+      expect(store.replying?.id, 9);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    test('an agent working for another one shows as busy', () async {
+      final (store, _) = await _store();
+      expect(store.agentBusy(_research), isFalse);
+      store.onEventForTest(
+        TernEvent.fromJson({
+          'type': 'run_started',
+          'run_id': 'kid',
+          'session_id': 'ks',
+          'parent_run_id': 'rp',
+          'channel_id': 'home',
+          'agent_id': 'tern:research',
+        }),
+      );
+      expect(store.agentBusy(_research), isTrue);
+      store.onEventForTest(
+        TernEvent.fromJson({
+          'type': 'run_finished',
+          'run_id': 'kid',
+          'status': 'completed',
+          'agent_id': 'tern:research',
+        }),
+      );
+      expect(store.agentBusy(_research), isFalse);
+    });
   });
 
   test('agentAllows follows the scope and keeps the system layer', () {

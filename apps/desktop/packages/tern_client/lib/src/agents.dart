@@ -262,3 +262,55 @@ class Memory {
 
   bool get shared => agentId == null;
 }
+
+/// A line of an agent's recent work: a batch delegated to it, or a routine
+/// run (`GET /v1/agents/{id}/work`).
+class AgentWork {
+  const AgentWork({
+    required this.kind,
+    required this.title,
+    this.caller,
+    required this.status,
+    required this.sessionId,
+    required this.runId,
+    this.tasks = 1,
+    required this.startedAt,
+    this.finishedAt,
+    this.postId,
+  });
+
+  factory AgentWork.fromJson(Json j) => AgentWork(
+    kind: j['kind'] as String,
+    title: j['title'] as String? ?? '',
+    caller: j['caller'] as String?,
+    status: j['status'] as String,
+    sessionId: j['session_id'] as String,
+    runId: j['run_id'] as String,
+    tasks: j['tasks'] as int? ?? 1,
+    startedAt: DateTime.fromMillisecondsSinceEpoch(j['started_at'] as int),
+    finishedAt: j['finished_at'] is int
+        ? DateTime.fromMillisecondsSinceEpoch(j['finished_at'] as int)
+        : null,
+    postId: j['post_id'] as int?,
+  );
+
+  /// `delegated` or `routine`.
+  final String kind;
+
+  /// The brief, or the routine's title.
+  final String title;
+
+  /// Who asked, for delegated work.
+  final String? caller;
+
+  /// `running`, `done` or `failed`.
+  final String status;
+
+  /// Where it opens: the caller's thread, or the routine's session.
+  final String sessionId;
+  final String runId;
+  final int tasks;
+  final DateTime startedAt;
+  final DateTime? finishedAt;
+  final int? postId;
+}

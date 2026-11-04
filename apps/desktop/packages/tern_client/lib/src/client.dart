@@ -325,6 +325,7 @@ class TernClient {
     AvatarSpec? avatar,
     String? persona,
     List<String>? model,
+    List<String>? subagentModel,
     ToolScope? tools,
     String? memory,
     String? egress,
@@ -337,6 +338,10 @@ class TernClient {
       'persona': ?persona,
       if (model != null && model.isNotEmpty)
         'model': model.length == 1 ? model.first : model,
+      if (subagentModel != null && subagentModel.isNotEmpty)
+        'subagent_model': subagentModel.length == 1
+            ? subagentModel.first
+            : subagentModel,
       'tools': ?tools?.toJson(),
       'memory': ?memory,
       'egress': ?egress,
@@ -348,6 +353,14 @@ class TernClient {
   /// `archived: true` archives it).
   Future<Agent> updateAgent(String id, Json fields) async =>
       Agent.fromJson(await _json('PATCH', '/v1/agents/${_seg(id)}', fields));
+
+  /// What `id` did lately: delegated batches and routine runs.
+  Future<List<AgentWork>> agentWork(String id, {int limit = 10}) async => [
+    for (final w
+        in await _json('GET', '/v1/agents/${_seg(id)}/work?limit=$limit')
+            as List)
+      AgentWork.fromJson(w as Json),
+  ];
 
   Future<Persona> persona(String id) async =>
       Persona.fromJson(await _json('GET', '/v1/agents/${_seg(id)}/persona'));

@@ -8,6 +8,7 @@
 //! | PATCH | `/v1/agents/{id}` | any of those but `template` and `persona`, and `delegates` (agents it may hand work to; `null`: all for the default agent, none for others); `archived: true` archives (not the default agent) |
 //! | GET / PUT | `/v1/agents/{id}/persona` | `{persona}`; GET adds `system_sections`, what tern adds to every persona |
 //! | GET | `/v1/agents/templates` | `[Template]` for the create sheet |
+//! | GET | `/v1/agents/{id}/work?limit=` | its recent work, newest first: delegated batches (`delegated` posts in its DM) and routine runs |
 //! | GET | `/v1/memories?agent=&q=&limit=` | memories: `agent` = `shared`, an agent (its own), or absent for all |
 //!
 //! `model` is a model or a fallback chain (a list). The default agent's
@@ -35,6 +36,7 @@ pub fn routes() -> Router<Shared> {
         .route("/v1/agents/templates", get(templates))
         .route("/v1/agents/{id}", axum::routing::patch(update))
         .route("/v1/agents/{id}/persona", get(persona).put(set_persona))
+        .route("/v1/agents/{id}/work", get(work))
         .route("/v1/memories", get(memories))
 }
 
@@ -89,15 +91,23 @@ pub struct Agent {
 
 pub(super) fn agent_view(m: &Shared, a: AgentRow) -> Agent {
     let store = &m.rt.store;
+    // Its own runs (its DM, its routines) and work delegated to it; not
+    // the ordinary sub-agents of its runs.
     let active_runs = m
         .active_runs()
         .into_iter()
-        .filter(|(session, _)| {
-            store
-                .session(session)
-                .ok()
-                .flatten()
-                .is_some_and(|s| s.agent() == a.id && s.source != "subagent")
+        .filter(|(session, run)| {
+            store.session(session).ok().flatten().is_some_and(|s| {
+                s.agent() == a.id
+                    && (s.source != "subagent"
+                        || store.run(run).ok().flatten().is_some_and(|r| {
+                            r.parent_run_id
+                                .as_deref()
+                                .and_then(|p| store.run(p).ok().flatten())
+                                .and_then(|p| store.session_agent(&p.session_id).ok())
+                                .is_some_and(|parent| parent != a.id)
+                        }))
+            })
         })
         .count();
     let needs_you = m
@@ -443,6 +453,23 @@ async fn set_persona(
         persona: b.persona.trim().to_owned(),
         system_sections: None,
     }))
+}
+
+#[derive(Deserialize)]
+struct WorkQuery {
+    limit: Option<usize>,
+}
+
+/// What it did lately: delegated batches and routine runs.
+async fn work(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<WorkQuery>,
+) -> ApiResult<Vec<super::delegations::Work>> {
+    let a = find(&m, &id)?;
+    m.recent_work(&a.id, q.limit.unwrap_or(10).clamp(1, 50))
+        .map(Json)
+        .map_err(internal)
 }
 
 #[derive(Deserialize)]

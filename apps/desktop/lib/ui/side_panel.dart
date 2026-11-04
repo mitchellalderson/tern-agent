@@ -6,6 +6,7 @@ import '../theme.dart';
 import 'agents.dart';
 import 'inspector.dart';
 import 'memory_section.dart';
+import 'recent_work.dart';
 import 'routines.dart';
 import 'tools.dart';
 import 'widgets.dart';
@@ -173,6 +174,10 @@ class SidePanel extends StatelessWidget {
                       child: const Text('All runs…'),
                     ),
                   ),
+                if (store.hasAgents && store.streamAgent != null) ...[
+                  const SizedBox(height: 22),
+                  RecentWorkSection(store: store),
+                ],
                 const SizedBox(height: 22),
                 RoutinesSection(store: store),
                 const SizedBox(height: 16),

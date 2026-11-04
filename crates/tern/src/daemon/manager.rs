@@ -655,6 +655,7 @@ impl Manager {
         }
         let (me, session_id, run_id) = (self.clone(), session_id.to_owned(), run_id.to_owned());
         tokio::spawn(async move {
+            me.delegation_changed(&run_id);
             let result = if resume {
                 me.rt.agent.resume(&run_id, cancel).await
             } else {
@@ -671,6 +672,7 @@ impl Manager {
             {
                 a.remove(&session_id);
             }
+            me.delegation_changed(&run_id);
             let _ = done_tx.send(true);
             if let Err(e) = me.follow_up_queued(&run_id).await {
                 tracing::warn!(run = %run_id, error = %e, "answering queued messages failed");

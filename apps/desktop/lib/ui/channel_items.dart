@@ -215,6 +215,28 @@ class PostCard extends StatelessWidget {
                       ? () => store.resolvePost(post)
                       : null,
                 ),
+              ] else if (post.kind == 'delegated' && session != null) ...[
+                // Work done for another agent: its sub-runs live in the
+                // caller's thread; a reply continues it here.
+                if (post.text.startsWith('Working'))
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: SizedBox.square(
+                      dimension: 11,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: c.muted,
+                      ),
+                    ),
+                  ),
+                _CardButton(
+                  label: 'Open',
+                  onPressed: () => store.openThread(session),
+                ),
+                _CardButton(
+                  label: 'Reply',
+                  onPressed: () => store.replyTo(post),
+                ),
               ] else if (session != null)
                 TextButton(
                   onPressed: () => store.openThread(session),

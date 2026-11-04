@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
 import 'channel_view.dart' show slugFor;
+import 'model_picker.dart' show ModelList;
 import 'widgets.dart';
 
 /// Create an agent (`agent` null) or edit one: the sheet of agent profiles
@@ -76,9 +79,10 @@ class AgentSheet extends StatefulWidget {
 class _AgentSheetState extends State<AgentSheet> {
   late final _name = TextEditingController(text: widget.editing?.name);
   final _persona = TextEditingController();
-  late final _model = TextEditingController(
-    text: widget.editing?.model.join(', '),
-  );
+
+  /// The model chain (T6a): empty = the default model.
+  late List<String> _model = [...?widget.editing?.model];
+  late List<String> _subagentModel = [...?widget.editing?.subagentModel];
   String? _personaBefore;
   String? _system;
   List<AgentTemplate> _templates = [];
@@ -175,10 +179,12 @@ class _AgentSheetState extends State<AgentSheet> {
     });
   }
 
-  List<String> _modelChain() => [
-    for (final m in _model.text.split(','))
-      if (m.trim().isNotEmpty) m.trim(),
-  ];
+  /// A chain as the API takes it: null, one model, or a list.
+  static Object? _wire(List<String> chain) => switch (chain) {
+    [] => null,
+    [final one] => one,
+    _ => chain,
+  };
 
   Future<void> _save() async {
     setState(() {
@@ -189,16 +195,16 @@ class _AgentSheetState extends State<AgentSheet> {
     final avatar = AvatarSpec(glyph: _glyph, color: _color);
     final String? err;
     if (widget.editing case final a?) {
-      final model = _modelChain();
+      final model = _model;
       final fields = <String, Object?>{
         if (_name.text.trim() != a.name) 'name': _name.text.trim(),
         'avatar': avatar.toJson(),
+        // The default agent's model is `default_model`: send the model,
+        // and the daemon keeps that setting's fallbacks.
         if (model.join(',') != a.model.join(','))
-          'model': model.isEmpty
-              ? null
-              : model.length == 1
-              ? model.first
-              : model,
+          'model': _isDefault ? model.firstOrNull : _wire(model),
+        if (_subagentModel.join(',') != a.subagentModel.join(','))
+          'subagent_model': _wire(_subagentModel),
         if (!_isDefault) 'memory': _memory,
         if (_browse != (a.egress == 'allow'))
           'egress': _browse ? 'allow' : null,
@@ -217,7 +223,8 @@ class _AgentSheetState extends State<AgentSheet> {
         name: _name.text.trim(),
         avatar: avatar,
         persona: _persona.text,
-        model: _modelChain(),
+        model: _model,
+        subagentModel: _subagentModel,
         tools: _tools,
         memory: _memory,
         egress: _browse ? 'allow' : null,
@@ -386,17 +393,34 @@ class _AgentSheetState extends State<AgentSheet> {
                       ),
                     ),
                     _section('MODEL'),
-                    TextField(
-                      controller: _model,
-                      style: const TextStyle(fontSize: 13),
-                      decoration: input.copyWith(
-                        hintText:
-                            widget.store.info?.defaultModel ?? 'provider:model',
-                        helperText: _isDefault
-                            ? 'Your default model.'
-                            : 'Empty: your default model. A list separated '
-                                  'by commas is a fallback chain.',
+                    AgentModelField(
+                      key: const Key('agent-model'),
+                      store: widget.store,
+                      chain: _model,
+                      allowDefault: !_isDefault,
+                      defaultLabel: 'Default',
+                      onChanged: (v) => setState(() => _model = v),
+                    ),
+                    if (_isDefault)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          'Your default model: other agents without a model '
+                          'of their own use it too.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
                       ),
+                    _section('SUB-AGENT MODEL'),
+                    AgentModelField(
+                      key: const Key('agent-subagent-model'),
+                      store: widget.store,
+                      chain: _subagentModel,
+                      allowDefault: true,
+                      defaultLabel: 'Default for sub-agents',
+                      defaultDetail:
+                          "sub-agents' configured model, else this "
+                          "agent's",
+                      onChanged: (v) => setState(() => _subagentModel = v),
                     ),
                     _section('TOOLS'),
                     _ToolScopeEditor(
@@ -523,7 +547,6 @@ class _AgentSheetState extends State<AgentSheet> {
   void dispose() {
     _name.dispose();
     _persona.dispose();
-    _model.dispose();
     super.dispose();
   }
 }
@@ -872,6 +895,246 @@ class _ToolScopeEditor extends StatelessWidget {
           style: small,
         ),
       ],
+    );
+  }
+}
+
+/// `chain` with `model` first, its other fallbacks kept: what picking a
+/// model does to a chain (T6a's `with_primary`).
+List<String> withPrimary(List<String> chain, String model) => [
+  model,
+  for (final m in chain.skip(1))
+    if (m != model) m,
+];
+
+/// A model setting of the agent sheet: a dropdown-style field that opens
+/// the app's model list (with "Default" first when the setting may be
+/// unset). A chain's primary is the pick; its fallbacks stay, shown
+/// read-only. A saved model the providers don't list is kept and flagged.
+class AgentModelField extends StatelessWidget {
+  const AgentModelField({
+    super.key,
+    required this.store,
+    required this.chain,
+    required this.onChanged,
+    this.allowDefault = true,
+    this.defaultLabel = 'Default',
+    this.defaultDetail,
+  });
+
+  final TernStore store;
+
+  /// Empty: the default.
+  final List<String> chain;
+  final ValueChanged<List<String>> onChanged;
+  final bool allowDefault;
+  final String defaultLabel;
+
+  /// What the default resolves to; `default_model` when unset.
+  final String? defaultDetail;
+
+  /// Whether the providers' lists, once loaded, include `model`.
+  bool? _listed(String model) {
+    final lists = store.modelLists;
+    if (lists == null) return null;
+    final colon = model.indexOf(':');
+    if (colon < 0) return false;
+    final provider = model.substring(0, colon);
+    final id = model.substring(colon + 1);
+    return lists.any(
+      (l) => l.provider == provider && l.models.any((m) => m.id == id),
+    );
+  }
+
+  Future<void> _open(BuildContext context) async {
+    if (store.modelLists == null && !store.loadingModels) {
+      unawaited(store.loadModels());
+    }
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (_) => _ModelChooser(
+        store: store,
+        current: chain.firstOrNull,
+        defaultLabel: allowDefault ? defaultLabel : null,
+        defaultDetail: defaultDetail,
+      ),
+    );
+    if (picked == null) return;
+    onChanged(picked.isEmpty ? const [] : withPrimary(chain, picked));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final primary = chain.firstOrNull;
+    final fallback = defaultDetail ?? store.info?.defaultModel;
+    final unknown = primary != null && _listed(primary) == false;
+    return ListenableBuilder(
+      listenable: store,
+      builder: (context, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => _open(context),
+            child: InputDecorator(
+              isEmpty: false,
+              decoration: InputDecoration(
+                isDense: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                suffixIcon: Icon(Icons.unfold_more, size: 18, color: c.muted),
+              ),
+              child: Row(
+                children: [
+                  if (unknown) ...[
+                    Tooltip(
+                      message:
+                          "Your providers don't list this model (a provider "
+                          'was removed, or the value was typed by hand). It '
+                          'is kept as it is; pick another to change it.',
+                      child: Icon(
+                        Icons.warning_amber_rounded,
+                        size: 16,
+                        color: c.warn,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  Expanded(
+                    child: primary == null
+                        ? Text.rich(
+                            TextSpan(
+                              children: [
+                                TextSpan(text: defaultLabel),
+                                if (fallback != null)
+                                  TextSpan(
+                                    text: '  $fallback',
+                                    style: mono.copyWith(
+                                      fontSize: 12,
+                                      color: c.muted,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            style: const TextStyle(fontSize: 13),
+                          )
+                        : Text(
+                            primary,
+                            overflow: TextOverflow.ellipsis,
+                            style: mono.copyWith(fontSize: 12.5),
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (unknown)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'Not in your providers\' model lists.',
+                style: TextStyle(fontSize: 12, color: c.warn),
+              ),
+            ),
+          if (chain.length > 1)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'Then, if it fails: ${chain.skip(1).join(' → ')}. These '
+                'fallbacks stay when you pick another model.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The app's model list in a dialog, with the default first. Returns the
+/// model, `''` for the default, or null when dismissed. Typing a
+/// `provider:model` the list doesn't have is the "Other…" way in.
+class _ModelChooser extends StatelessWidget {
+  const _ModelChooser({
+    required this.store,
+    required this.current,
+    required this.defaultLabel,
+    this.defaultDetail,
+  });
+
+  final TernStore store;
+  final String? current;
+  final String? defaultDetail;
+
+  /// Null: no default choice (the default agent's own model).
+  final String? defaultLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+          child: ListenableBuilder(
+            listenable: store,
+            builder: (context, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (defaultLabel case final label?)
+                  ListTile(
+                    key: const Key('model-default'),
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    selected: current == null,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    leading: Icon(
+                      current == null ? Icons.check : Icons.auto_mode,
+                      size: 17,
+                    ),
+                    title: Text(label, style: const TextStyle(fontSize: 13)),
+                    subtitle: Text(
+                      defaultDetail ??
+                          store.info?.defaultModel ??
+                          'No default model yet',
+                      style: mono.copyWith(fontSize: 11.5, color: c.muted),
+                    ),
+                    onTap: () => Navigator.of(context).pop(''),
+                  ),
+                if (store.daemonTooOld)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Text(
+                      'This tern can\'t list models yet: type one as '
+                      'provider:model.',
+                      style: TextStyle(fontSize: 12.5, color: c.warn),
+                    ),
+                  ),
+                const SizedBox(height: 6),
+                ModelList(
+                  lists: store.modelLists,
+                  loading: store.loadingModels,
+                  current: current,
+                  maxHeight: 300,
+                  onChoose: (m) => Navigator.of(context).pop(m),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Other: type provider:model in the search box.',
+                  style: TextStyle(fontSize: 11.5, color: c.muted),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

@@ -662,6 +662,32 @@ impl Store {
         Ok(())
     }
 
+    /// Rewrite a post the daemon keeps current (a delegation's pointer).
+    pub fn update_post_text(&self, id: i64, text: &str, tainted: bool) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE posts SET text = ?2, tainted = ?3 WHERE id = ?1",
+            params![id, text, tainted],
+        )?;
+        Ok(())
+    }
+
+    /// The side thread of `channel` branched from `branched_from`
+    /// (`post:<id>`), newest first.
+    pub fn thread_branched_from(
+        &self,
+        channel_id: &str,
+        branched_from: &str,
+    ) -> Result<Option<SessionRow>> {
+        let sql = format!(
+            "SELECT {SESSION_COLS} FROM sessions WHERE channel_id = ?1 AND branched_from = ?2
+             ORDER BY created_at DESC LIMIT 1"
+        );
+        Ok(self
+            .conn()?
+            .query_row(&sql, params![channel_id, branched_from], session_row)
+            .optional()?)
+    }
+
     pub fn post(&self, id: i64) -> Result<Option<PostRow>> {
         let sql = format!("SELECT {POST_COLS} FROM posts WHERE id = ?1");
         Ok(self.conn()?.query_row(&sql, [id], post_row).optional()?)

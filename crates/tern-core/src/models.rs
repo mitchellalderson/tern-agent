@@ -93,6 +93,12 @@ pub enum Change {
         /// Boxed: a post is much bigger than the other changes.
         post: Box<crate::channels::Post>,
     },
+    /// A post the daemon keeps current was rewritten (a delegation's
+    /// pointer as its work goes on).
+    PostUpdated {
+        /// Boxed, as for `PostCreated`.
+        post: Box<crate::channels::Post>,
+    },
     /// A channel was created, renamed, archived, or got a new main thread.
     ChannelsChanged {},
     /// An agent profile was created, edited or archived.

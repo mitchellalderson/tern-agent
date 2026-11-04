@@ -14,6 +14,7 @@ import 'package:tern_client/tern_client.dart';
 import 'package:tern_desktop/state/store.dart';
 import 'package:tern_desktop/state/transcript.dart';
 import 'package:tern_desktop/theme.dart';
+import 'package:tern_desktop/ui/agent_sheet.dart';
 import 'package:tern_desktop/ui/home.dart';
 
 Future<void> _font(String family, List<String> paths) async {
@@ -98,6 +99,66 @@ class _Client extends TernClient {
   ];
 
   @override
+  Future<List<AgentWork>> agentWork(String id, {int limit = 10}) async => [
+    AgentWork(
+      kind: 'delegated',
+      title: 'Size the demand for home-services software',
+      caller: 'Home',
+      status: 'done',
+      sessionId: 'home-main',
+      runId: 'rp',
+      tasks: 4,
+      startedAt: _now.subtract(const Duration(minutes: 76)),
+      finishedAt: _now.subtract(const Duration(minutes: 70)),
+    ),
+    AgentWork(
+      kind: 'routine',
+      title: 'Weekly digest of what changed at Acme',
+      status: 'done',
+      sessionId: 'cron-1',
+      runId: 'rr',
+      startedAt: _now.subtract(const Duration(days: 2)),
+    ),
+  ];
+
+  @override
+  Future<List<ProviderModels>> models({
+    String? provider,
+    bool refresh = false,
+  }) async => const [
+    ProviderModels(
+      provider: 'anthropic',
+      models: [
+        ModelInfo(
+          id: 'claude-sonnet-5-5',
+          name: 'Claude Sonnet 5.5',
+          contextWindow: 400000,
+        ),
+        ModelInfo(
+          id: 'claude-haiku-5-5',
+          name: 'Claude Haiku 5.5',
+          contextWindow: 200000,
+        ),
+        ModelInfo(
+          id: 'claude-opus-5-5',
+          name: 'Claude Opus 5.5',
+          contextWindow: 400000,
+        ),
+      ],
+    ),
+    ProviderModels(
+      provider: 'openrouter',
+      models: [ModelInfo(id: 'moonshot/kimi-k3', name: 'Kimi K3')],
+    ),
+  ];
+
+  @override
+  Future<Persona> persona(String id) async => const Persona(
+    persona: "You are Research, the user's research agent.",
+    systemSections: '## Untrusted content',
+  );
+
+  @override
   Future<List<Memory>> memories({String? agent, String? query}) async => [
     Memory(
       id: 1,
@@ -132,7 +193,7 @@ TernStore _store() {
     ..health = const Health(
       pid: 1,
       version: '0.2.0',
-      features: {'channels', 'agents'},
+      features: {'channels', 'agents', 'providers'},
     )
     ..info = const Info(
       defaultModel: 'anthropic:claude-sonnet-5-5',
@@ -218,6 +279,24 @@ TernStore _store() {
     ),
     _m('dm:research-main', 3, 'user', 'Save that to my notes.', ago: 3),
   ]);
+  // Work Research did for tern in Home, pointed at from its DM.
+  dm.items.insert(
+    0,
+    PostItem(
+      Post(
+        id: 21,
+        channelId: 'dm:research',
+        sessionId: 'home-main',
+        runId: 'rp',
+        authorKind: 'agent',
+        authorId: 'tern:research',
+        author: 'Research',
+        kind: 'delegated',
+        text: 'Worked for Home · "Size the demand for home-services software" · 4 tasks · 6m',
+        createdAt: _now.subtract(const Duration(minutes: 70)),
+      ),
+    ),
+  );
   store.transcripts[TernStore.streamKeyOf('dm:research')] = dm;
   final approval = ApprovalItem(
     const Approval(
@@ -323,6 +402,63 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       await _shot(tester, key, 'agent_sheet_${dark ? 'dark' : 'light'}');
+      debugDefaultTargetPlatformOverride = null;
+    });
+  }
+
+  for (final dark in [false, true]) {
+    testWidgets('the model pickers ${dark ? 'dark' : 'light'}', (tester) async {
+      tester.view.physicalSize = const Size(1280, 800) * 2;
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.reset);
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      final c = dark ? TernColors.dark : TernColors.light;
+      final theme = ternTheme(c, dark ? Brightness.dark : Brightness.light);
+      final key = GlobalKey();
+      final store = _store();
+      await store.loadModels();
+      const agent = Agent(
+        id: 'tern:research',
+        slug: 'research',
+        name: 'Research',
+        avatar: AvatarSpec(glyph: '★', color: 'blue'),
+        model: ['anthropic:claude-sonnet-5-5', 'openrouter:moonshot/kimi-k3'],
+        mainChannelId: 'dm:research',
+      );
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: key,
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: theme.copyWith(
+              textTheme: theme.textTheme.apply(
+                fontFamily: '.AppleSystemUIFont',
+              ),
+            ),
+            home: Scaffold(
+              backgroundColor: c.sidebar,
+              body: Center(
+                child: AgentSheet(store: store, editing: agent),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final field = find
+          .descendant(
+            of: find.byKey(const Key('agent-model')),
+            matching: find.byType(InkWell),
+          )
+          .first;
+      await tester.ensureVisible(field);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await _shot(tester, key, 'agent_models_${dark ? 'dark' : 'light'}');
+      await tester.tap(field);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await _shot(tester, key, 'agent_model_list_${dark ? 'dark' : 'light'}');
       debugDefaultTargetPlatformOverride = null;
     });
   }

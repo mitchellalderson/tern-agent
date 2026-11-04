@@ -287,8 +287,14 @@ class TernStore extends ChangeNotifier {
       channels.where((c) => c.id == a.mainChannelId).firstOrNull;
 
   /// Someone is working in the agent's DM.
+  /// The agent is working anywhere: its DM, a routine, or work delegated
+  /// to it from another agent's run.
   bool agentBusy(Agent a) =>
-      a.mainChannelId != null && _activeIn.containsValue(a.mainChannelId);
+      _activeAgents.containsValue(a.id) ||
+      (a.mainChannelId != null && _activeIn.containsValue(a.mainChannelId));
+
+  /// Runs in progress → the agent they run as (from run events).
+  final _activeAgents = <String, String>{};
 
   /// Approvals, secret requests and outbox items waiting from `a`'s runs.
   int waitingFor(Agent a) =>
@@ -606,11 +612,15 @@ class TernStore extends ChangeNotifier {
     if (thread case final id?) await _load(id);
     if (topicOpen) await _loadChannel(channel!);
     _activeIn.clear();
+    _activeAgents.clear();
     _live.clear();
     for (final r in active) {
       if (r.channelId case final ch?) {
         _live[r.runId] = (channel: ch, author: r.authorId ?? 'tern');
         if (r.label case final l?) _labels[r.runId] = l;
+      }
+      if (agentOfAuthor(r.authorId ?? Agent.defaultId) case final a?) {
+        _activeAgents[r.runId] = a.id;
       }
       if (r.parentRunId != null) continue;
       transcriptOf(r.sessionId)?.activeRun = r.runId;
@@ -846,10 +856,32 @@ class TernStore extends ChangeNotifier {
     }
   }
 
+  /// A post was rewritten (a delegation's pointer as its work goes on):
+  /// replace it wherever it shows.
+  void _onPostUpdated(Post post) {
+    for (final list in posts.values) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id == post.id) list[i] = post;
+      }
+    }
+    for (final t in transcripts.values) {
+      for (final item in t.items.whereType<PostItem>()) {
+        if (item.post.id == post.id) item.post = post;
+      }
+    }
+    workVersion++;
+    notifyListeners();
+  }
+
+  /// Bumped when an agent's recent work may have changed, so the side
+  /// panel reloads it.
+  var workVersion = 0;
+
   /// A post came in: the open stream (Home or a DM) shows it where it
   /// happened; an open topic channel adds it to its timeline.
   void _onPost(Post post) {
     unawaited(_refreshChannels());
+    if (post.kind == 'delegated') workVersion++;
     final main =
         post.channelId == homeId ||
         (channels.where((c) => c.id == post.channelId).firstOrNull?.isMain ??
@@ -920,6 +952,7 @@ class TernStore extends ChangeNotifier {
     AvatarSpec? avatar,
     required String persona,
     List<String> model = const [],
+    List<String> subagentModel = const [],
     ToolScope? tools,
     required String memory,
     String? egress,
@@ -932,6 +965,7 @@ class TernStore extends ChangeNotifier {
         avatar: avatar,
         persona: persona,
         model: model,
+        subagentModel: subagentModel,
         tools: tools,
         memory: memory,
         egress: egress,
@@ -1179,10 +1213,14 @@ class TernStore extends ChangeNotifier {
       default:
         break;
     }
+    if (e case RunStarted(:final runId)) {
+      _activeAgents[runId] = e.agentId ?? Agent.defaultId;
+    }
     if (e is RunFinished) {
       _activeIn.remove(e.runId);
       _live.remove(e.runId);
       _phase.remove(e.runId);
+      if (_activeAgents.remove(e.runId) != null) workVersion++;
     }
     String? session;
     switch (e) {
@@ -1234,6 +1272,9 @@ class TernStore extends ChangeNotifier {
         return;
       case PostCreated(:final post):
         _onPost(post);
+        return;
+      case PostUpdated(:final post):
+        _onPostUpdated(post);
         return;
       case ChannelsChanged():
         unawaited(_refreshChannels());

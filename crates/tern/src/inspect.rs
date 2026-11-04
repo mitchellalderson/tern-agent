@@ -185,7 +185,7 @@ fn describe_kind(step: &StepRow) -> String {
     let mut kind = step.kind.as_str();
     if kind == "py_call" {
         if input["env"] == true {
-            return format!("↳ script environment (step {})", input["in"]);
+            return format!("script environment (step {})", input["in"]);
         }
         let call = input["call"].take();
         input = json!({ "id": "", "name": call["name"], "input": call["input"] });

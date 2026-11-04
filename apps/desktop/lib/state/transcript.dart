@@ -450,6 +450,7 @@ class Transcript {
           ModelsChanged() ||
           McpChanged() ||
           PostCreated() ||
+          PostUpdated() ||
           ChannelsChanged() ||
           AgentsChanged() ||
           OutboxChanged():

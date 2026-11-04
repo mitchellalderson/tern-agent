@@ -218,6 +218,7 @@ class Post {
 
   /// How far down a chain of agents waking agents it is.
   final int wakeDepth;
+
   /// The outbox item this `needs_you` post (or pointer) stands for. It
   /// closes when the item is decided; "Done" alone is refused.
   final int? outboxId;
