@@ -1658,6 +1658,7 @@ class TernStore extends ChangeNotifier {
     ScheduleLimits limits = const ScheduleLimits(),
     String? channel,
     String? agent,
+    RoutineOptions? options,
   }) async {
     try {
       if (id == null) {
@@ -1668,6 +1669,7 @@ class TernStore extends ChangeNotifier {
           limits: limits,
           channel: channel,
           agent: agent,
+          options: options,
         );
       } else {
         await client.updateSchedule(
@@ -1678,6 +1680,7 @@ class TernStore extends ChangeNotifier {
           limits: limits,
           channel: channel,
           agent: agent,
+          options: options,
         );
       }
       await refreshSchedules();

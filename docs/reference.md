@@ -13,7 +13,7 @@ Everything tern does, command by command. For installing and a first chat, see t
 | **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
 | **Telegram** | Chat from your phone, approve tool calls with buttons, get scheduled results. |
-| **Schedules** | "Every weekday at 8am, summarize my unread GitHub notifications" becomes a cron schedule whose results are delivered to the chat that asked. Runs with nothing to say stay silent, results wait out your quiet hours, and each schedule can be capped per day. See [Schedules](#schedules). |
+| **Schedules** | "Every weekday at 8am, summarize my unread GitHub notifications" becomes a routine whose results are delivered to the chat that asked: on a cron, once at a time, or on events from a connector's watch (no model call when nothing happened). Runs with nothing to say stay silent, a gate can skip a run, each routine's initiative decides whether its result interrupts you or waits for a digest, results wait out your quiet hours, and each can be capped per day. See [Schedules](#schedules). |
 | **Durability** | Kill tern mid-run and `tern resume <run>` (or the daemon, automatically) continues it without re-running completed tools. `tern runs show <run>` prints the step journal. |
 
 
@@ -126,7 +126,7 @@ tern daemon
 
 Runs in the foreground until SIGINT or SIGTERM, and provides:
 
-- **Scheduler**: checks for due schedules every 30 seconds. A schedule missed while the daemon was down runs once on the next start, then continues from now (no backfill). It also enforces each schedule's caps and sends results held for quiet hours (see [Schedules](#schedules)).
+- **Scheduler**: checks for due schedules every 30 seconds, polls routines' watches, and starts runs for new watch events. A schedule missed while the daemon was down runs once on the next start, then continues from now (no backfill). It also enforces each schedule's caps and sends results held for quiet hours (see [Schedules](#schedules)).
 - **Gateways**: Telegram, if `[gateway.telegram]` is enabled (see [Telegram](#telegram)). The daemon refuses to start if the bot token secret isn't set.
 - **Local API** on `~/.tern/tern.sock` (mode 0600), which `tern` and the desktop app attach to.
 - **Crash recovery**: runs in progress when the daemon stops are left `running` and resume on the next start, exactly as after a crash.
@@ -323,6 +323,11 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `schedules.runs_per_day` | none | Default cap on runs per schedule per local day. |
 | `schedules.usd_per_day` | none | Default cap on a schedule's spend per local day (sub-agents included), where prices are known. |
 | `schedules.tokens_per_run` | none | Default cap on one scheduled run's tokens (input + output + cache). |
+| `schedules.initiative` | `"digest"` | How a routine's result reaches its chat unless the routine sets its own: `silent`, `digest`, `notify` or `interrupt`. See [Routines](#routines-triggers-watches-gates-initiative). |
+| `schedules.initiative_dial` | `"normal"` | Every routine one level `quieter` or `louder`, or `vacation` (nothing pushed). Also `PUT /v1/initiative`. |
+| `schedules.digest_times` | `["08:30", "17:30"]` | Local times when digest results are sent, one message per chat. |
+| `schedules.gate_model` | none | The model that decides whether a `notify` result is worth a push; unset = the cheapest configured model with a known price. |
+| `schedules.max_events_per_poll` | `20` | New watch events that each start a run; the rest of one poll share one run. |
 | `memory.user_md_tokens` | `1500` | Cap on `user.md` as injected into the prompt (tokens ≈ chars / 4). |
 | `memory.memory_md_tokens` | `1500` | Cap on `memory.md` (core facts) as injected. |
 | `memory.flush` | `true` | Before older context is summarized, give the agent one silent turn to save durable facts with `memory_save`. |
@@ -441,6 +446,42 @@ The agent creates schedules with `schedule_create` and changes them with `schedu
   - A run that uses more than `tokens_per_run` is stopped and fails with the reason ("stopped: this run used N tokens, over its cap of M"), which is delivered like any failure.
 - `tern doctor` reports schedules paused by a cap, USD caps that can't apply, and deliveries waiting for quiet hours to end.
 - **Results are posted to a channel** (its agent's DM, Home for `tern`, unless the schedule's `channel` says otherwise; `POST`/`PATCH /v1/schedules` take `channel`, a slug or id). A `NO_REPLY` run posts nothing. `deliver_to` stays the push to Telegram.
+
+### Routines: triggers, watches, gates, initiative
+
+A schedule is a **routine**: a prompt with a trigger. The tools and the API keep their `schedule_*` and `/v1/schedules` names; schedules from before routines are cron routines that push every result, as they did.
+
+- **Triggers.** `cron` (repeating), `at` (once, a local `"YYYY-MM-DD HH:MM"`: reminders; it turns itself off after running, and a new `at` turns it on again), or `watch`.
+- **Watches.** A connector can declare watches next to its tools:
+
+  ```lua
+  watches = {
+    review_requests = {
+      description = "PRs where my review is requested",
+      default_every = "5m",
+      fn = function(ctx, cursor)
+        -- poll; return what is new and where you got to
+        return { events = { { id = "123", title = "Fix login" } }, cursor = { last = "123" } }
+      end,
+    },
+  },
+  ```
+
+  A routine with `watch = "github.review_requests"` (and `every`, at least `1m`, default the watch's own) is polled by the daemon. **A poll that finds nothing costs no tokens**: no model is called. Each new event starts an ordinary run in the routine's session with the event attached as untrusted input, so the run is [tainted](#taint) (its writes ask, or wait in the outbox). Events are deduplicated by their `id` (or their content), and the cursor is saved with them, so a restart or an overlapping poll never starts an event twice. The first poll only records what is already there, unless `backfill: true`; events marked `origin = "self"` are skipped unless `include_self: true`; more than `max_events_per_poll` new events at once share one run. A watch runs in the connector's sandbox with its hosts and secrets, GET only (`read_via_post = true` allows POST), and only for an active, approved connector. Creating one tells you its interval and the hosts it reaches. No watch is on until you (or the agent, with your approval) create one.
+- **Gates.** A cron or once routine can have a `gate`: Luau run before each slot, at no token cost. False skips that run. An expression (`os.date("*t").wday ~= 1`) or statements with `return`; it gets `ctx` and `routine` (`id`, `last_run_at`, `now`), and with `gate_connector` that connector's hosts (GET only), secrets and tools as `connector` (`#connector.tools.unread.run(ctx, {}) > 0`). A gate that fails lets the run go ahead.
+- **`last_check`** in `GET /v1/schedules` (and the app's tooltip) says what the last poll or gate found.
+- **Initiative.** Every result is posted to the routine's channel; its initiative decides whether it is also sent to its chat (`deliver_to`):
+
+  | Level | Sent |
+  |---|---|
+  | `silent` | never |
+  | `digest` (the default for new routines) | with the next digest (`schedules.digest_times`, 08:30 and 17:30), all of that chat's held results in one message |
+  | `notify` | now if a quick check by the cheapest model says it's worth interrupting for (its headline goes first), else in the digest |
+  | `interrupt` | now; quiet hours still hold it unless `urgent` |
+
+  Set it per routine (`initiative`, `"default"` or `null` for the default), or for all with `schedules.initiative`. The **dial** (`schedules.initiative_dial`, or `PUT /v1/initiative {"dial": "vacation"}`) moves every routine one level `quieter` or `louder`, or makes everything silent on `vacation`; `/v1/status` reports it.
+- **API**: `POST /v1/schedules` takes one of `cron`, `at` or `watch` (+ `every`, `backfill`, `include_self`), and `gate`, `gate_connector`, `initiative`; `PATCH` changes any of them. The view adds `trigger`, `at`, `watch`, `every_secs`, `last_check`, `gate`, `gate_connector` and `initiative` (each absent when unset).
+- **In the desktop app** the routine editor has Repeating / Once / On events, an initiative menu, and a gate under "Quiet hours and limits".
 
 ## Channels
 

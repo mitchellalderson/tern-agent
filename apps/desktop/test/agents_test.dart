@@ -223,6 +223,7 @@ class _FakeClient extends TernClient {
     ScheduleLimits? limits,
     String? channel,
     String? agent,
+    RoutineOptions? options,
   }) async {
     newSchedules.add((prompt: prompt, agent: agent));
     return _schedule('s3', agent ?? 'tern', prompt);

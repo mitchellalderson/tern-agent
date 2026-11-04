@@ -19,5 +19,8 @@
   "paused_until": 1762210800000,
   "paused_reason": "runs_per_day",
   "channel_id": "home",
-  "agent_id": "tern"
+  "agent_id": "tern",
+  "last_check": "gate: passed",
+  "gate": "os.date(\"*t\").wday ~= 1",
+  "initiative": "interrupt"
 }

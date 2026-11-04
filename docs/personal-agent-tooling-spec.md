@@ -186,6 +186,12 @@ A cron routine can also have a `gate`, a Luau expression or function that runs f
 started. For example, "only brief me if there are unread emails or meetings today". This is NanoClaw's script gate.
 It costs nothing in tokens.
 
+**Status (T1b shipped, 2026-11-04).** Routines are `schedules` rows with a trigger: `cron`, `once` and `watch`
+(Luau watches with cursors, dedup in `routine_events`, a baseline first poll, `origin = self`, batching past
+`max_events_per_poll`, tainted runs with the event wrapped as untrusted, no model call for a poll), and gates on cron
+and once routines. The tools and API keep their `schedule_*` names. Not built: `message` and `event` triggers,
+`max_catchup`, host-side self-origin detection; webhooks are T1c. See DECISIONS.md, T1b.
+
 ### 3.4 Where triggers need an always-on core
 
 | Trigger | Laptop (tier 1/2) | Server core (tier 3) | tern Cloud (tier 4) |
@@ -216,6 +222,11 @@ product's clearest value**, and it never takes a feature away from the free tier
 - **Quiet hours** are a global setting (default 22:00–07:30 local), overridable per channel.
 - **A global initiative dial** (Muse) scales every routine one level up or down: "vacation mode" makes everything
   `silent`.
+
+**Status (T1b shipped).** Initiative levels, the gate model (`schedules.gate_model`, else the cheapest priced
+configured model), digests at `schedules.digest_times`, and the dial (`schedules.initiative_dial`, `PUT
+/v1/initiative`). New routines start at `digest`; schedules from before T1b are `interrupt`, which is what they did.
+Quiet hours stay per routine (T1a); per-channel overrides wait for channels to need them. See DECISIONS.md, T1b.
 
 ### 4.2 Channels
 
@@ -328,8 +339,8 @@ themselves; the prompt says "this run read untrusted content (…)". Posts writt
 
 **Status (T3 shipped, 2026-11-04).** The rest of T3: the outbox (§5.2), autonomy profiles (§5.4), and the
 `http_fetch` host limit above (a network read to a host the tainted run hasn't reached asks, with no "always";
-tools declare their host with `Tool::egress_host`). Still open: taint from watch, webhook and non-owner input waits
-for those inputs (the `NewRun.taint` hook is there), and the approval prompt names the tool that tainted the run,
+tools declare their host with `Tool::egress_host`). Still open: taint from webhook and non-owner input waits
+for those inputs (the `NewRun.taint` hook is there; T1b's watch runs use it), and the approval prompt names the tool that tainted the run,
 not the email's sender (tools don't report provenance yet). See DECISIONS.md, T3.
 
 ### 5.4 Autonomy profiles
@@ -977,7 +988,7 @@ with one **Start tern** button. Off is always visible as off.
 login, Close this icon), `SMAppService` login items from the bundle with the plain plists kept for CLI installs,
 `tern service install --tray`, the `tern Tray.app` helper and the app's first-launch "Where should tern run?" (this
 Mac with Start at login, or a paired server; tern Cloud reserved). Still open from this section: Needs you and approve-from-notification (T3), Recent posts and New
-message… (T2, `tern://` links), Initiative (T1b), `GET /v1/clients` and notification de-duplication, Restart tern to
+message… (T2, `tern://` links), Initiative (the menu item; T1b built `PUT /v1/initiative`), `GET /v1/clients` and notification de-duplication, Restart tern to
 update, the tray watching a remote profile, the first-close notification, **Remove tern from this Mac…**, and Linux (T8c).
 DECISIONS.md, T8b, has the details.
 
@@ -992,7 +1003,7 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 | Stage | Theme | Items | Complexity | Needs |
 |---|---|---|---|---|
 | **1. Quick wins** | Small changes to what exists. No new data model, no new protocols. Each item is days, not weeks. | **T0** effects on every tool, money-movement deny · **T1a** on today's schedules: `NO_REPLY`, quiet hours, per-schedule run caps and budget · **T5a** memory flush before compaction, capped `user.md`/`memory.md` · **T6a** provider fallback chains (done) · **T8a** `/v1/status`, `/v1/shutdown`, `tern start`/`stop`, `tern service install` with `SuccessfulExit = false`, "Quit tern completely" in the app (one-click stop for non-technical users, before the tray exists) · **T7a** browser via an MCP recipe (docs only; done) | S each | nothing |
-| **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles (done: T3a taint, then T3 the outbox and autonomy; the Tasks view is T6b) · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits | L / M / S–M | Stage 1 (effects, budgets) |
+| **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests (done) · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles (done: T3a taint, then T3 the outbox and autonomy; the Tasks view is T6b) · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits | L / M / S–M | Stage 1 (effects, budgets) |
 | **3. Organize and surface** | Make background work visible and tidy. Mostly UI plus straightforward store work. | **T2** channels, home, posts, reply-to-act, Telegram topics · **T6b** activity ledger with hash chain, Tasks view, `tern security audit` · **T8b** `tern tray` on macOS (helper bundle, notifications with actions, login items, quit escalation, `tern://` links) · **T5b** skill capture | M each | Stage 2 (routines, outbox) |
 | **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) · **T4b-ii** gateway connectors (ntfy, then Slack) | L | Stage 2 (taint before any external input); secret-requests spec built |
 | **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` · **T6d** `tern mcp serve` · **T4c** OpenAPI-to-connector and recorded test fixtures · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
