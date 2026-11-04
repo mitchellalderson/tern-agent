@@ -13,6 +13,7 @@ mod providers;
 mod providers_cmd;
 mod remote;
 mod report_cmd;
+mod reset_cmd;
 mod run_cmd;
 mod runtime;
 mod service;
@@ -128,6 +129,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Resume { run_id, yes }) => run_cmd::resume(&home, &run_id, yes),
         Some(Command::Daemon) => daemon::run(&home),
         Some(Command::Start) => lifecycle::start(&home),
+        Some(Command::Reset { keep_config, yes }) => reset_cmd::run(&home, keep_config, yes),
         Some(Command::Stop) => lifecycle::stop(&home),
         Some(Command::Service { command }) => match command {
             ServiceCommand::Install { no_login } => service::install(&home, !no_login),

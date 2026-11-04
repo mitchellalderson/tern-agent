@@ -110,6 +110,16 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Delete all local data (conversations, runs, memory, skills,
+    /// connectors, logs, config, secrets), stopping tern first.
+    Reset {
+        /// Keep config.toml and secrets.toml (providers and API keys).
+        #[arg(long)]
+        keep_config: bool,
+        /// Don't ask for confirmation.
+        #[arg(long, short)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
