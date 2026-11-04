@@ -167,6 +167,7 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
+          NOTARIZED: ${{ secrets.APPLE_ID != '' && secrets.MACOS_SIGN_IDENTITY != '' }}
         run: |
           cat > notes.md <<EOF
           ## Install
@@ -177,10 +178,19 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/install.sh | sh
           \`\`\`
 
-          Desktop app (macOS 11+, Apple Silicon and Intel): download **tern-desktop-macos.dmg** below and drag tern to
+          Desktop app (macOS 12+, Apple Silicon and Intel): download **tern-desktop-macos.dmg** below and drag tern to
           Applications. It includes the \`tern\` daemon, so **Start tern** works without installing the CLI.
 
           Verify any download: \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`
           EOF
+          if [ "$NOTARIZED" != true ]; then
+            cat >> notes.md <<'EOF'
+
+          > [!NOTE]
+          > This build isn't notarized by Apple. The first time you open tern, macOS will block it: open
+          > **System Settings > Privacy & Security** and click **Open Anyway**, or run
+          > `xattr -dr com.apple.quarantine /Applications/tern.app`.
+          EOF
+          fi
           gh release create "${GITHUB_REF_NAME}" out/* --verify-tag --title "tern ${GITHUB_REF_NAME}" \
             --notes-file notes.md --generate-notes

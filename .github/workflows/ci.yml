@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Run it by hand (Actions > ci > Run workflow) to get a desktop DMG from any branch.
+  workflow_dispatch:
   # release.yml runs the checks on the tagged commit before it builds.
   workflow_call:
     inputs:
@@ -130,3 +132,35 @@ jobs:
         with:
           name: tern-${{ matrix.target }}
           path: target/${{ matrix.target }}/dist/tern
+
+  # An unsigned desktop app from every main push (and manual runs), so there's
+  # always a build to try without cutting a release. PRs skip it: macOS
+  # minutes are expensive and `flutter analyze` + the tests already ran.
+  desktop-macos:
+    name: desktop app (macOS, universal)
+    if: ${{ !inputs.skip_builds && github.event_name != 'pull_request' }}
+    runs-on: macos-latest
+    needs: build-macos
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.x
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tern-*-apple-darwin
+          path: in
+      - name: Universal tern binary
+        run: |
+          lipo -create -output in/tern in/tern-aarch64-apple-darwin/tern in/tern-x86_64-apple-darwin/tern
+          chmod +x in/tern
+          lipo -archs in/tern
+      - name: Build and package (ad-hoc signed)
+        run: scripts/package-macos-app.sh in/tern out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tern-desktop-macos-${{ github.sha }}
+          path: out/tern-desktop-macos.dmg
+          retention-days: 14
