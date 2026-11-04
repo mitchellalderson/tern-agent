@@ -5,7 +5,8 @@
 //! crashed one left off. Compaction requests get a summary that records how
 //! many turns it replaced (`mock-turns=N`), so counting survives compaction.
 //! Memory flushes before compaction save each of `memory_flush` (if any)
-//! with `memory_save`, and otherwise answer NOTHING. Models named in
+//! with `memory_save`, and otherwise answer NOTHING. Skill capture drafts
+//! (T5b) answer `skill_draft` (a SKILL.md), or a fixed draft without it. Models named in
 //! `fail_models` fail every call, so fallback chains can be tested.
 //!
 //! ```json
@@ -80,6 +81,9 @@ pub struct Script {
     /// Facts every memory flush saves.
     #[serde(default)]
     pub memory_flush: Vec<String>,
+    /// The SKILL.md every skill capture draft answers with.
+    #[serde(default)]
+    pub skill_draft: Option<String>,
     /// Models (the part after `provider:`) whose every call fails with this
     /// HTTP status, for fallback chains (T6a): `{ "down": 529 }`.
     #[serde(default)]
@@ -169,6 +173,14 @@ impl Provider for MockProvider {
             let text = req.messages.iter().map(|m| m.text()).collect::<String>();
             let n = text.matches("### assistant").count() + summarized_turns(&text);
             return Ok(text_stream(format!("mock summary mock-turns={n}")));
+        }
+        if req.system == tern_core::skill_capture::DRAFT_SYSTEM_PROMPT {
+            return Ok(text_stream(self.script.skill_draft.clone().unwrap_or_else(
+                || {
+                    "---\nname: mock-skill\ndescription: Does what the captured run did\n---\n# Steps\n1. Repeat the run's steps.\n"
+                        .into()
+                },
+            )));
         }
         let n = turns_so_far(&req);
         let turn = if req.system == tern_core::memory::FLUSH_SYSTEM_PROMPT {

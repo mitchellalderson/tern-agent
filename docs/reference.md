@@ -66,6 +66,7 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
 | [`tern grants`](#new-sites-in-a-tainted-run) | The "always" grants approvals have recorded (commands, tools, sites), and removing them. |
+| [`tern skills`](#skill-capture) | Skills and drafts; save a good run as a skill, then publish it. |
 | [`tern tasks`](#tasks) | Everything running, queued, scheduled, waiting on you or failed recently. |
 | [`tern ledger`](#activity-ledger) | The hash-chained activity ledger; `tern ledger verify` checks it. |
 | [`tern security audit`](#security-audit) | How exposed this core is and what could act without asking; non-zero on a high finding. |
@@ -544,6 +545,24 @@ tern remembers in two places:
 
 **Flush before compaction.** When a long conversation is about to be summarized, the agent first gets one silent model call over the part being summarized, with only `memory_save`, to keep durable facts (preferences, decisions, people, commitments). It's journaled, so a resumed run doesn't repeat it, and its tokens count toward the run's budget. If it fails, compaction goes ahead. Sub-agents and scheduled runs don't flush, nor does a run whose token budget can't cover it. `memory.flush = false` turns it off.
 
+### Skill capture
+
+After a long, clean run tern offers, once, to save it as a skill. A run qualifies when it is yours (not a routine, an outbox run, an MCP caller or a sub-agent), finished, made at least `[skills].capture_min_tool_calls` tool calls (default 8), at most a quarter of them failed or were refused, and it never read untrusted content (a tainted run could carry someone else's instructions into a skill). A conversation with an offer waiting isn't offered again, a dismissed run never is, and an offer lapses after 7 days. Offers need the daemon (`tern start`): runs made with `tern run` or the TUI without it aren't watched.
+
+Accepting makes one model call over the run's transcript and writes `skills/<name>/SKILL.md` with `draft: true`. **A draft isn't in the system prompt and `skill_read` can't load it** until you read it and publish it, so nothing changes what the agent does without your review. The offer shows in Tasks under "needs you".
+
+```
+tern skills [list]                 skills and drafts
+tern skills offers [--all]         runs offered as skills (daemon)
+tern skills save ID [--name SLUG]  write the draft for offer ID (daemon)
+tern skills dismiss ID             decline it for good (daemon)
+tern skills show NAME              print a SKILL.md
+tern skills publish NAME           a draft becomes a skill (the next run lists it)
+tern skills discard NAME           delete a draft (never a published skill)
+```
+
+TUI: `/skills [offers|save N|dismiss N|show|publish|discard NAME]`. Config: `[skills] capture = true`, `capture_min_tool_calls = 8`. API: `GET /v1/skills`, `GET /v1/skills/{name}` (with `content`), `POST /v1/skills/{name}/publish|discard`, `GET /v1/skill-offers[?state=pending|accepted|dismissed|all]`, `POST /v1/skill-offers/{id}/accept` (`{slug?}`) and `.../dismiss`; writes are owner only; `/v1/health` lists `skill_capture`.
+
 ## Agents
 
 You can have several agents, each with its own job: a name and avatar, a **persona** (who it is, its job, its tone), a model (or a fallback chain), the **tools** it may use, its **memory**, and its own **routines**. Each has a **DM**, a main channel like Home: one continuous chat with the same cuts, carry-over, History and queued sends. See [agent-profiles-design.md](agent-profiles-design.md).
@@ -820,7 +839,7 @@ Set it globally (`autonomy = "autonomous"` in `config.toml`) or per routine: `au
 
 ### Tasks
 
-One list of everything running, queued, scheduled, waiting on you, or failed recently, across agents and channels (spec §8.2): approvals, outbox items, secret requests and sign-in cards (needs you); the runs in progress, sub-agents under their parent; queued runs, watch events waiting for a run, and results held for quiet hours or a digest; enabled routines and when they next run; runs that failed in the last 24 hours and routines paused by a cap. In the desktop app it is **Library → Tasks** (the count beside it is what waits for you); each row opens the conversation, run or routine it belongs to. `tern tasks [--json]` prints the same from the daemon. API: `GET /v1/tasks` → `{items: [{section, kind, id, title, detail?, at?, run_id?, parent_run_id?, session_id?, channel_id?, agent_id?, routine_id?, tainted?}], counts}`; `/v1/health` lists `tasks`.
+One list of everything running, queued, scheduled, waiting on you, or failed recently, across agents and channels (spec §8.2): approvals, outbox items, secret requests, sign-in cards and skill-capture offers (needs you); the runs in progress, sub-agents under their parent; queued runs, watch events waiting for a run, and results held for quiet hours or a digest; enabled routines and when they next run; runs that failed in the last 24 hours and routines paused by a cap. In the desktop app it is **Library → Tasks** (the count beside it is what waits for you); each row opens the conversation, run or routine it belongs to. `tern tasks [--json]` prints the same from the daemon. API: `GET /v1/tasks` → `{items: [{section, kind, id, title, detail?, at?, run_id?, parent_run_id?, session_id?, channel_id?, agent_id?, routine_id?, tainted?}], counts}`; `/v1/health` lists `tasks`.
 
 ### Activity ledger
 

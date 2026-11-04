@@ -557,6 +557,105 @@ impl Backend for Remote {
         self.send_json(reqwest::Method::POST, &path, body)
     }
 
+    fn skills(&self, args: &str) -> BackendResult<String> {
+        use crate::daemon::api_skills::{Accepted, Offer, SkillFull, SkillView};
+        let mut words = args.split_whitespace();
+        let (cmd, a, b) = (words.next(), words.next(), words.next());
+        let id = |s: Option<&str>| -> BackendResult<i64> {
+            s.and_then(|s| s.trim_start_matches('#').parse().ok())
+                .ok_or_else(|| "give the offer's number, from `/skills offers`".into())
+        };
+        let name = |s: Option<&str>| -> BackendResult<String> {
+            s.map(str::to_owned)
+                .ok_or_else(|| "give the skill's name, from `/skills`".into())
+        };
+        match cmd {
+            None | Some("list") => {
+                let list: Vec<SkillView> = self.get("/v1/skills")?;
+                let offers: Vec<Offer> = self.get("/v1/skill-offers")?;
+                let mut out: Vec<String> = list
+                    .iter()
+                    .map(|s| {
+                        format!(
+                            "{}{}: {}",
+                            s.name,
+                            if s.draft { " [draft]" } else { "" },
+                            s.description
+                        )
+                    })
+                    .collect();
+                if out.is_empty() {
+                    out.push("no skills yet".into());
+                }
+                if !offers.is_empty() {
+                    out.push(format!(
+                        "{} run{} offered as skills: /skills offers",
+                        offers.len(),
+                        if offers.len() == 1 { "" } else { "s" }
+                    ));
+                }
+                Ok(out.join("\n"))
+            }
+            Some("offers") => {
+                let offers: Vec<Offer> = self.get("/v1/skill-offers")?;
+                if offers.is_empty() {
+                    return Ok("no skill offers".into());
+                }
+                let lines: Vec<String> = offers.iter().map(crate::skills_cmd::offer_line).collect();
+                Ok(format!(
+                    "{}\n(/skills save <n> writes a draft to review; /skills dismiss <n>)",
+                    lines.join("\n")
+                ))
+            }
+            Some("save") => {
+                let n = id(a)?;
+                let a: Accepted = self.send_json(
+                    reqwest::Method::POST,
+                    &format!("/v1/skill-offers/{n}/accept"),
+                    json!({ "slug": b }),
+                )?;
+                Ok(format!(
+                    "wrote the draft {0}; read it with /skills show {0}, then /skills publish {0}",
+                    a.skill.name
+                ))
+            }
+            Some("dismiss") => {
+                let n = id(a)?;
+                self.send_json::<Value>(
+                    reqwest::Method::POST,
+                    &format!("/v1/skill-offers/{n}/dismiss"),
+                    json!({}),
+                )?;
+                Ok(format!("dismissed offer #{n}"))
+            }
+            Some("show") => {
+                let s: SkillFull = self.get(&format!("/v1/skills/{}", name(a)?))?;
+                Ok(s.content)
+            }
+            Some("publish") => {
+                let n = name(a)?;
+                self.send_json::<Value>(
+                    reqwest::Method::POST,
+                    &format!("/v1/skills/{n}/publish"),
+                    json!({}),
+                )?;
+                Ok(format!("published {n}; the next run lists it"))
+            }
+            Some("discard") => {
+                let n = name(a)?;
+                self.send_json::<Value>(
+                    reqwest::Method::POST,
+                    &format!("/v1/skills/{n}/discard"),
+                    json!({}),
+                )?;
+                Ok(format!("discarded the draft {n}"))
+            }
+            Some(other) => Err(format!(
+                "/skills {other}? try offers, save N, dismiss N, show NAME, publish NAME or discard NAME"
+            )),
+        }
+    }
+
     fn connections(&self) -> BackendResult<Vec<String>> {
         let v: Value = self.get("/v1/connections")?;
         Ok(v["connections"]

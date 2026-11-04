@@ -856,6 +856,11 @@ impl Manager {
             {
                 tracing::warn!(run = %run_id, error = %e, "writing the run's post failed");
             }
+            if result.is_ok()
+                && let Err(e) = me.maybe_offer_skill(&run_id)
+            {
+                tracing::warn!(run = %run_id, error = %e, "offering the run as a skill failed");
+            }
             if let Ok(mut a) = me.active.lock()
                 && a.get(&session_id).is_some_and(|x| x.run_id == run_id)
             {

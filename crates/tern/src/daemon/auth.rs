@@ -73,6 +73,8 @@ pub const FEATURES: &[&str] = &[
     "security_audit",
     // `/v1/bundles`: preview, install, remove (tooling spec §6.5).
     "bundles",
+    // `/v1/skills` and `/v1/skill-offers`: skill capture (tooling spec §7, T5b).
+    "skill_capture",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";

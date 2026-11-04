@@ -3,9 +3,9 @@
 
 pub mod api;
 pub mod api_agents;
+mod api_bundles;
 pub mod api_channels;
 mod api_config;
-mod api_bundles;
 mod api_connections;
 mod api_ledger;
 pub mod api_lifecycle;
@@ -16,6 +16,7 @@ mod api_providers;
 mod api_runs;
 mod api_schedules;
 mod api_secrets;
+pub mod api_skills;
 mod api_subagents;
 pub mod api_tasks;
 mod api_webhooks;
