@@ -70,6 +70,8 @@ pub const TAINT_CONTAINED: &[&str] = &[
     "agent_send",
     "agent_cancel",
     "agent_ask_parent",
+    // A tainted run's post is marked tainted, and taints whoever reads it.
+    "channel_post",
 ];
 
 /// Why a tainted run asks, for approval prompts.

@@ -1,6 +1,7 @@
 //! Built-in tools (spec §8.1).
 
 pub mod agents;
+pub mod channels;
 pub mod fs;
 pub mod history;
 pub mod http;

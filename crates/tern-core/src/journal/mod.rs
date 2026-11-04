@@ -33,6 +33,9 @@ pub enum StepKind {
     /// Carries a summary of the previous segment into a new one
     /// (docs/channels-design.md §2.6).
     Carry,
+    /// Shows posts other agents and routines made in the run's channel
+    /// since it last looked (docs/channels-design.md §3).
+    Channel,
 }
 
 impl StepKind {
@@ -45,6 +48,7 @@ impl StepKind {
             StepKind::Inbox => "inbox",
             StepKind::MemoryFlush => "memory_flush",
             StepKind::Carry => "carry",
+            StepKind::Channel => "channel",
         }
     }
 
@@ -57,6 +61,7 @@ impl StepKind {
             "inbox" => StepKind::Inbox,
             "memory_flush" => StepKind::MemoryFlush,
             "carry" => StepKind::Carry,
+            "channel" => StepKind::Channel,
             _ => return None,
         })
     }

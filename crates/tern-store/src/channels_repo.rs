@@ -243,6 +243,14 @@ impl Store {
                 now
             ],
         )?;
+        if let Some(prev) = t.prev_session_id {
+            // A new segment has seen what the one before it saw.
+            self.conn()?.execute(
+                "UPDATE sessions SET posts_seen = (SELECT posts_seen FROM sessions WHERE id = ?2)
+                 WHERE id = ?1",
+                params![t.id, prev],
+            )?;
+        }
         Ok(SessionRow {
             id: t.id.into(),
             source: t.source.into(),
@@ -489,6 +497,96 @@ impl Store {
             )?;
         }
         Ok(())
+    }
+
+    /// The newest post this session's agent has been shown (§3).
+    pub fn posts_seen(&self, session_id: &str) -> Result<i64> {
+        Ok(self
+            .conn()?
+            .query_row(
+                "SELECT posts_seen FROM sessions WHERE id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    /// Move the session's digest cursor forward to `post` (never back).
+    pub fn advance_posts_seen(&self, session_id: &str, post: i64) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE sessions SET posts_seen = max(posts_seen, ?2) WHERE id = ?1",
+            params![session_id, post],
+        )?;
+        Ok(())
+    }
+
+    /// Posts of `channel_id` after `after` that came from elsewhere than
+    /// `session_id`: the newest `limit`, newest first, and how many there
+    /// are in all.
+    pub fn unseen_posts(
+        &self,
+        channel_id: &str,
+        session_id: &str,
+        after: i64,
+        limit: usize,
+    ) -> Result<(Vec<PostRow>, usize)> {
+        let conn = self.conn()?;
+        let total: i64 = conn.query_row(
+            "SELECT count(*) FROM posts WHERE channel_id = ?1 AND id > ?3 AND session_id IS NOT ?2",
+            params![channel_id, session_id, after],
+            |r| r.get(0),
+        )?;
+        let sql = format!(
+            "SELECT {POST_COLS} FROM posts WHERE channel_id = ?1 AND id > ?3 AND session_id IS NOT ?2
+             ORDER BY id DESC LIMIT ?4"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            params![channel_id, session_id, after, limit as i64],
+            post_row,
+        )?;
+        Ok((rows.collect::<rusqlite::Result<_>>()?, total as usize))
+    }
+
+    /// Full-text search over a channel's posts, best first, among those
+    /// with ids below `before`.
+    pub fn search_posts(
+        &self,
+        channel_id: &str,
+        query: &str,
+        before: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<PostRow>> {
+        let Some(q) = fts_query(query) else {
+            return Ok(Vec::new());
+        };
+        let cols = POST_COLS
+            .split(", ")
+            .map(|c| format!("p.{}", c.trim()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT {cols} FROM posts_fts f JOIN posts p ON p.id = f.rowid
+             WHERE posts_fts MATCH ?1 AND p.channel_id = ?2 AND p.id < ?3
+             ORDER BY bm25(posts_fts) LIMIT ?4"
+        );
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            params![q, channel_id, before.unwrap_or(i64::MAX), limit as i64],
+            post_row,
+        )?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Posts a run wrote with `channel_post` (keys `post:<run>:…`).
+    pub fn run_post_count(&self, run_id: &str) -> Result<u32> {
+        Ok(self.conn()?.query_row(
+            "SELECT count(*) FROM posts WHERE run_id = ?1 AND dedupe_key LIKE 'post:%'",
+            [run_id],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn set_schedule_channel(&self, schedule_id: &str, channel_id: &str) -> Result<bool> {

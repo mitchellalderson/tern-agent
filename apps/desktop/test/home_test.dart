@@ -242,6 +242,28 @@ void main() {
     ]);
   });
 
+  test('a channel digest reads as a note, not as the user', () {
+    final t = Transcript.fromSession(
+      const SessionDetail(
+        id: 's',
+        messages: [
+          SessionMessage(
+            role: 'user',
+            content: [
+              TextBlock('[Posts in #finances since you last looked: 2. …]'),
+            ],
+            summary: false,
+          ),
+        ],
+      ),
+    );
+    final pill = t.items.single as PillItem;
+    expect(
+      (pill.kind, pill.text),
+      (PillKind.posts, 'Caught up on posts in #finances'),
+    );
+  });
+
   test('Home opens on the current segment and maps its sessions', () async {
     final (store, _) = await _home();
     expect(store.homeOpen, isTrue);

@@ -324,7 +324,7 @@ otherwise `#slug ·` prefixes in the one chat. A reply in a topic goes to that c
 | C0 | Migration, `home` backfill, channels and posts API, posts written for sends, answers and routines. Send into a channel's main thread (cancelling, as today). **Built** (DECISIONS.md "T2 C0"). | Yes, API only |
 | C1 | Home's stream: segment cutting, the `carry` step, `history_search`, the stream endpoint, queue-instead-of-cancel. Desktop Home view with dividers, New topic, History, side chats. Telegram `/new` as New topic. **Built** (DECISIONS.md "T2 C1"). | Yes: the direct chat changes shape |
 | C2 | Desktop topic channels: sidebar, timeline, thread pane, new-channel dialog, routines choosing a channel. Approvals and secret requests move to Home. **Built** (DECISIONS.md "T2 C2"). | Yes: the channel view |
-| C3 | The `channel` step, `channel_read`, `channel_post`, taint on posts. | Yes: agents now actually share the channel |
+| C3 | The `channel` step, `channel_read`, `channel_post`, taint on posts. **Built** (DECISIONS.md "T2 C3"). | Yes: agents now actually share the channel |
 | C4 | Sub-agents posting, `needs_you` pointers into Home, live member lines. | Yes |
 | C5 | `channel_suggest`, TUI `/channel`, Telegram topics. | Yes |
 | Later | Agent profiles (gui-spec §7.2): authors become agents, each profile gets its own Home-style stream (a DM per agent, as Grok Bot does), `@mention` wakes an agent in a channel. Precomputed carry summaries. | |

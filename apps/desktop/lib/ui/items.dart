@@ -380,6 +380,7 @@ class _Pill extends StatelessWidget {
       PillKind.memory => Icons.bookmark_border,
       PillKind.compacted => Icons.compress,
       PillKind.retrying => Icons.refresh,
+      PillKind.posts => Icons.dynamic_feed,
     };
     return Center(
       child: Row(

@@ -137,6 +137,20 @@ impl Runtime {
         });
         let (mut tools, connectors, mcp) =
             build_tools(home, &config, &store, &secrets, &slot, notify)?;
+        // Channels (docs/channels-design.md §3): a post an agent writes is
+        // announced like the daemon's own.
+        let post_changes = changes.clone();
+        tools.register(Arc::new(tern_tools::channels::ChannelRead::new(
+            store.clone(),
+        )));
+        tools.register(Arc::new(tern_tools::channels::ChannelPost::new(
+            store.clone(),
+            Some(Arc::new(move |row| {
+                let _ = post_changes.send(Change::PostCreated {
+                    post: tern_core::channels::Post::from(row),
+                });
+            })),
+        )));
         tools.register(Arc::new(tern_tools::secret_request::SecretRequest::new(
             approvals.clone(),
             secrets.clone(),

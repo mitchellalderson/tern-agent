@@ -110,7 +110,7 @@ class AgentsItem extends Item {
   final children = <AgentChild>[];
 }
 
-enum PillKind { routine, connector, memory, compacted, retrying }
+enum PillKind { routine, connector, memory, compacted, retrying, posts }
 
 /// A quiet one-line note: something the agent made, or the engine did.
 class PillItem extends Item {
@@ -663,6 +663,11 @@ class _Builder {
     }
     for (final b in m.content) {
       switch (b) {
+        // A `channel` step: the agent caught up on the channel's posts.
+        case TextBlock(:final text)
+            when m.role == 'user' && text.startsWith('[Posts in '):
+          final place = text.substring(10).split(' since ').first;
+          t.items.add(PillItem(PillKind.posts, 'Caught up on posts in $place'));
         case TextBlock(:final text) when text.trim().isNotEmpty:
           t.items.add(
             m.role == 'user'

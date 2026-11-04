@@ -28,7 +28,9 @@ use crate::types::{
 };
 
 mod carry;
+mod channel;
 pub use carry::CarryOutput;
+pub use channel::DigestOutput;
 pub mod taint;
 use taint::Taint;
 
@@ -375,6 +377,13 @@ impl Agent {
                     Err(e) => return Err(e.into()),
                 }
             }
+            if let Some(channel) = self.channel_due(run, idx)? {
+                match self.channel_step(run, idx, &channel, &mut taint).await {
+                    Ok(()) => idx += 1,
+                    Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
+                    Err(e) => return Err(e.into()),
+                }
+            }
             if self.inbox_due(run, idx, false)? {
                 match self.inbox_step(run, idx, false, &mut taint, cancel).await {
                     Ok(_) => idx += 1,
@@ -567,7 +576,9 @@ impl Agent {
                             with_progress(sink, self.tools.call_in(scope, &ctx, &call)),
                         )
                         .await;
-                        r.untrusted = untrusted;
+                        // A tool may mark its own result (channel_read of
+                        // tainted posts).
+                        r.untrusted |= untrusted;
                         let msg = tool_result(&call, &r);
                         Ok(StepOutput::new(r)
                             .with_messages(vec![msg])

@@ -178,9 +178,10 @@ pub fn consume_mail(ids: &[i64]) {
 pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
-    /// Third-party text from an [`Tool::untrusted`] tool. Set by the agent
-    /// loop, not the tool, and journaled with the step, so a replayed run
-    /// is tainted at the same step (tooling spec §5.3).
+    /// Third-party text: from an [`Tool::untrusted`] tool (set by the agent
+    /// loop), or marked by the tool itself for this result (`channel_read`
+    /// returning posts from tainted runs). Journaled with the step, so a
+    /// replayed run is tainted at the same step (tooling spec §5.3).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
 }

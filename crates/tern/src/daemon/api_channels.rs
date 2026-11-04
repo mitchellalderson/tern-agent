@@ -347,6 +347,10 @@ fn segment_items(
                 carry = Some(text.clone());
                 continue;
             }
+            // The agent's own catch-up on posts the stream already shows.
+            if text.starts_with(tern_core::channels::DIGEST_HEADER) {
+                continue;
+            }
             if let Some(rest) = text.strip_prefix(QUEUED_PREFIX) {
                 *text = rest.to_owned();
                 queued = true;
