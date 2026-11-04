@@ -222,6 +222,8 @@ product's clearest value**, and it never takes a feature away from the free tier
 Channels are **topic threads over one shared memory**, the Duet design. They are not security compartments and not
 transports.
 
+Detailed design (store, posts, how agents see each other's posts, desktop views, phases): [channels-design.md](channels-design.md).
+
 | Concept | Representation |
 |---|---|
 | channel | `channels(id, slug, title, instructions, initiative_override, quiet_hours_override, created_by)`. `home` always exists. |

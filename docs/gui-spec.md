@@ -92,7 +92,7 @@ Channels are where an agent can be reached other than this app. Today that's Tel
 - **Routing** (needs §7.2): each paired chat maps to one agent. Scheduled-run delivery picks from the same list.
 - **Setup**: if no bot token is configured, the view walks through BotFather, takes the token into a secure field and stores it with `PUT /v1/secrets/{name}` (write-only; the app never reads secrets back).
 
-Open: the follow-up notes mention "channels for organizing information streams" in the style of Claude Duet. That's a different idea (topic streams rather than transports) and isn't designed here; see §10.
+Open: the follow-up notes mention "channels for organizing information streams" in the style of Claude Duet. That's a different idea (topic streams rather than transports), designed in [channels-design.md](channels-design.md).
 
 ## 4. Library views
 
