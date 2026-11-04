@@ -31,6 +31,7 @@ use crate::types::{
 
 mod carry;
 mod channel;
+mod ledger;
 mod script;
 pub use carry::CarryOutput;
 pub use channel::DigestOutput;
@@ -698,6 +699,17 @@ impl Agent {
                     })
                     .await?;
                 idx += 1;
+                if !result.replayed && !truncated {
+                    let summary = self.tools.summarize(&call);
+                    self.ledger_effect(
+                        run,
+                        &call,
+                        policy.effect,
+                        &summary,
+                        result.value.is_error,
+                        None,
+                    )?;
+                }
                 taint.contacted(host);
                 // A script's own calls: the hosts they reached count too.
                 while self.journal.peek(&run.id, idx)? == Some(StepKind::PyCall) {
@@ -903,6 +915,7 @@ impl Agent {
             approval::Check::Allow => return Ok((ApprovalOutcome::Approved, String::new())),
             approval::Check::Forbid(flag) => {
                 tracing::warn!(run = %run.id, tool = %call.name, flag, "refused a forbidden tool");
+                self.ledger_refused(run, call, flag)?;
                 let why = approval::forbidden_message(flag);
                 return Ok((ApprovalOutcome::Denied, why));
             }
@@ -952,6 +965,11 @@ impl Agent {
             () = cancel.cancelled() => return Err(StepError::Cancelled),
         };
         let denied = |why: &str| (ApprovalOutcome::Denied, why.to_owned());
+        // A call that goes to the outbox is recorded as queued instead.
+        let queued = deferrable && matches!(decision, Ok(Decision::Unanswered) | Err(_));
+        if !queued {
+            self.ledger_decision(run, &req, decision.as_ref().ok().copied())?;
+        }
         Ok(match decision {
             Ok(Decision::AllowOnce) => (ApprovalOutcome::Approved, String::new()),
             // The host-limit choices; anywhere else they mean "once".

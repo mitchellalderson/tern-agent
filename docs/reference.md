@@ -65,6 +65,9 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
 | [`tern grants`](#new-sites-in-a-tainted-run) | The "always" grants approvals have recorded (commands, tools, sites), and removing them. |
+| [`tern tasks`](#tasks) | Everything running, queued, scheduled, waiting on you or failed recently. |
+| [`tern ledger`](#activity-ledger) | The hash-chained activity ledger; `tern ledger verify` checks it. |
+| [`tern security audit`](#security-audit) | How exposed this core is and what could act without asking; non-zero on a high finding. |
 | [`tern outbox`](#outbox) | Writes waiting for your approval: list, show, approve (optionally edited), reject. |
 | [`tern hooks`](#webhooks) | Webhook routines: create (URL and secret shown once), list, rotate, revoke, fire locally. |
 | [`tern connectors`](#tern-connectors) | List or validate Luau connectors, replay or record their test fixtures, or generate one from an OpenAPI document. |
@@ -343,7 +346,7 @@ tern config set mcp.servers.github.args '["stdio"]'
 tern doctor [--offline]
 ```
 
-Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; every model in each fallback chain (configured provider, and listed by it when online); the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway and each gateway connector (that it loads and can send, its secrets, and whether anyone has paired); the [webhook](#webhooks) listener and whether senders can reach it; each active Luau connector (a warning for one that reads secret values itself with `ctx.secret`); and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
+Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; every model in each fallback chain (configured provider, and listed by it when online); the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway and each gateway connector (that it loads and can send, its secrets, and whether anyone has paired); the [webhook](#webhooks) listener and whether senders can reach it; each active Luau connector (a warning for one that reads secret values itself with `ctx.secret`); each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`); and a Security section with the [security audit](#security-audit)'s counts, each high finding in red. Each problem comes with a hint for fixing it.
 
 It exits `1` if anything failed, `0` otherwise (warnings are things not set up yet). It is read-only and doesn't create `~/.tern`.
 
@@ -768,6 +771,43 @@ API: `GET /v1/outbox[?state=all|<state>]`, `GET /v1/outbox/{id}`, `POST /v1/outb
 | `yolo` | Nothing asks, tainted or not. Tools flagged `money_movement` or `trade` are still refused. `tern doctor` shows it in red. |
 
 Set it globally (`autonomy = "autonomous"` in `config.toml`) or per routine: `autonomy` on `POST/PATCH /v1/schedules` (`"default"` clears it). The agent's own `schedule_*` tools can't set it.
+
+### Tasks
+
+One list of everything running, queued, scheduled, waiting on you, or failed recently, across agents and channels (spec §8.2): approvals, outbox items, secret requests and sign-in cards (needs you); the runs in progress, sub-agents under their parent; queued runs, watch events waiting for a run, and results held for quiet hours or a digest; enabled routines and when they next run; runs that failed in the last 24 hours and routines paused by a cap. In the desktop app it is **Library → Tasks** (the count beside it is what waits for you); each row opens the conversation, run or routine it belongs to. `tern tasks [--json]` prints the same from the daemon. API: `GET /v1/tasks` → `{items: [{section, kind, id, title, detail?, at?, run_id?, parent_run_id?, session_id?, channel_id?, agent_id?, routine_id?, tainted?}], counts}`; `/v1/health` lists `tasks`.
+
+### Activity ledger
+
+Every security-relevant change is appended to a ledger in the database (spec §8.1): approval decisions (and calls refused as `money_movement`/`trade`), outbox items queued, approved, rejected and expired, every `write` and `destructive` call that ran, `always` grants added and removed, connector activations, connections added, removed or made the default, webhook secrets created, rotated and revoked, devices paired and revoked, autonomy changes (`config.toml`'s, noted when tern next reads it, and each routine's), `egress` and `[sandbox] network`, and agents' tool scopes. Entries name who did it (`you`, `tern`, or the agent), and the run, channel, routine and connector they concern. Secret values never appear.
+
+Each entry stores `sha256(previous hash || entry)`, so editing, deleting or reordering rows in `tern.db` shows: `tern ledger verify` recomputes the chain and exits `1` at the first entry that doesn't hold. It prints the head hash; note it somewhere else if you want to notice entries cut off the end, which a chain alone can't. The database also refuses `UPDATE` and `DELETE` on the table.
+
+```sh
+tern ledger [--kind grant|approval|effect|outbox.approve|…] [--channel ID] [--routine ID] [--connector NAME] [--run ID] [--limit N] [--json]
+tern ledger verify [--json]
+```
+
+`--kind` takes a kind (`grant.add`) or a family (`grant`). Both work with tern stopped. In the desktop app: **Library → Activity ledger**, with the chain's verdict on top. API (owner only): `GET /v1/ledger[?kind=&channel=&routine=&connector=&run=&before=&limit=]` (newest first; page back with `before=<seq>`), `GET /v1/ledger/verify` → `{ok, entries, head, broken?: {seq, reason}}`; `/v1/health` lists `ledger`.
+
+### Security audit
+
+`tern security audit [--json]` is a read-only report, most severe first, that exits `1` on a `high` finding (spec §8.4):
+
+| Area | Looks at |
+|---|---|
+| `listeners` | The API's TCP listeners (loopback or the network, TLS), `api.remote_mcp_stdio`, the host sandbox behind a network API, and the webhook listener. |
+| `secrets` | `secrets.toml` readable by others (high). |
+| `devices` | Each paired device's scope, and devices unused for 90 days. |
+| `autonomy` | `autonomy = "yolo"` (high) or `"autonomous"` (medium), globally and per routine. |
+| `routines` | Watch and webhook routines, which start tainted, and their effective autonomy (high under `yolo`). |
+| `gateways` | Gateway connectors with `strangers = "taint"`. |
+| `connectors` | Legacy connectors that read secrets with `ctx.secret`. |
+| `sandbox` | No OS sandbox for shell commands, `confine = "off"`, and `[sandbox] network = true` (high with no OS sandbox). |
+| `egress` | `[taint] egress = "allow"` and agents set to read any site without asking. |
+| `connections` | OAuth connections granted broad scopes (a whole mailbox or drive, every repository, admin rights). |
+| `grants` | `always` grants for every call of a tool (`*`). |
+
+Bundles join the list when they exist. `tern doctor` shows the counts; the desktop shows the report under **Settings › Security**. API (owner only): `GET /v1/security/audit` → `{findings: [{severity, area, title, fix?, subject?}], high, medium, low}`; `/v1/health` lists `security_audit`.
 
 ## Measurements
 

@@ -218,6 +218,13 @@ impl Store {
         }
         if let Some(v) = &ch.tools {
             set("tools", v.as_deref())?;
+            let e = crate::LedgerEntry::new(
+                "agent.tools",
+                id,
+                format!("agent {id}: tools {}", v.as_deref().unwrap_or("all")),
+            )
+            .detail(serde_json::json!({ "value": v }));
+            crate::ledger_repo::append_on(&tx, &e)?;
         }
         if let Some(v) = &ch.memory {
             set("memory", Some(v))?;
@@ -227,6 +234,20 @@ impl Store {
         }
         if let Some(v) = &ch.egress {
             set("egress", v.as_deref())?;
+            let e = crate::LedgerEntry::new(
+                "egress.agent",
+                id,
+                format!(
+                    "agent {id}: new sites in a tainted run {}",
+                    match v.as_deref() {
+                        Some("allow") => "are allowed",
+                        Some(_) => "ask",
+                        None => "follow the configured setting",
+                    }
+                ),
+            )
+            .detail(serde_json::json!({ "value": v }));
+            crate::ledger_repo::append_on(&tx, &e)?;
         }
         if let Some(a) = ch.archived {
             tx.execute(

@@ -558,6 +558,27 @@ class _Library extends StatelessWidget {
               style: Theme.of(context).textTheme.labelSmall,
             ),
           ),
+          if (store.hasTasks)
+            _LibraryRow(
+              icon: Icons.checklist,
+              label: 'Tasks',
+              selected: store.page == LibraryPage.tasks,
+              onTap: store.openTasks,
+              trailing: switch (store.needsYouCount) {
+                0 => null,
+                final n => Tooltip(
+                  message: '$n waiting for you',
+                  child: Text(
+                    '$n',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: c.accent,
+                    ),
+                  ),
+                ),
+              },
+            ),
           _LibraryRow(
             icon: Icons.schedule,
             label: 'Routines',
@@ -601,6 +622,13 @@ class _Library extends StatelessWidget {
                       child: _Dot(color: c.warn),
                     )
                   : null,
+            ),
+          if (store.hasLedger)
+            _LibraryRow(
+              icon: Icons.receipt_long_outlined,
+              label: 'Activity ledger',
+              selected: store.page == LibraryPage.ledger,
+              onTap: store.openLedger,
             ),
         ],
       ),

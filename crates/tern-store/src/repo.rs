@@ -594,10 +594,15 @@ impl Store {
 
     /// Remove a grant. Returns whether it existed.
     pub fn remove_allowlist(&self, tool: &str, pattern: &str) -> Result<bool> {
-        Ok(self.conn()?.execute(
+        let conn = self.conn()?;
+        let gone = conn.execute(
             "DELETE FROM approval_allowlist WHERE tool = ?1 AND pattern = ?2",
             params![tool, pattern],
-        )? > 0)
+        )? > 0;
+        if gone {
+            crate::ledger_repo::append_on(&conn, &grant_entry("grant.remove", tool, pattern))?;
+        }
+        Ok(gone)
     }
 
     pub fn add_allowlist(&self, tool: &str, pattern: &str) -> Result<()> {
@@ -612,6 +617,7 @@ impl Store {
                 "INSERT INTO approval_allowlist (tool, pattern, created_at) VALUES (?1, ?2, ?3)",
                 params![tool, pattern, now_ms()],
             )?;
+            crate::ledger_repo::append_on(&conn, &grant_entry("grant.add", tool, pattern))?;
         }
         Ok(())
     }
@@ -860,6 +866,24 @@ pub fn fts_query(text: &str) -> Option<String> {
         .map(|w| format!("\"{w}\""))
         .collect();
     (!terms.is_empty()).then(|| terms.join(" OR "))
+}
+
+/// A grant's ledger entry; a connector's tools (`lua__<name>__…`) name it.
+pub(crate) fn grant_entry(kind: &str, tool: &str, pattern: &str) -> crate::LedgerEntry {
+    let verb = if kind == "grant.add" {
+        "always allow"
+    } else {
+        "removed grant"
+    };
+    let mut e = crate::LedgerEntry::new(kind, tool, format!("{verb} {tool} {pattern}"))
+        .detail(serde_json::json!({ "pattern": pattern }));
+    if let Some(name) = tool
+        .strip_prefix("lua__")
+        .and_then(|t| t.split("__").next())
+    {
+        e = e.connector(name);
+    }
+    e
 }
 
 #[cfg(test)]

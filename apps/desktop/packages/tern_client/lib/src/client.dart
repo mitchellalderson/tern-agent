@@ -7,6 +7,7 @@ import 'channels.dart';
 import 'config.dart';
 import 'connections.dart';
 import 'endpoint.dart';
+import 'ledger.dart';
 import 'lifecycle.dart';
 import 'mcp.dart';
 import 'outbox.dart';
@@ -15,6 +16,8 @@ import 'providers.dart';
 import 'secret_requests.dart';
 import 'sse.dart';
 import 'subagents.dart';
+import 'security.dart';
+import 'tasks.dart';
 import 'tools.dart';
 import 'webhooks.dart';
 
@@ -845,6 +848,50 @@ class TernClient {
             as List)
       OutboxItem.fromJson(o as Json),
   ];
+
+  /// Activity ledger entries, newest first (owner only; check `features`
+  /// in [health] for `ledger`). [kind] is a kind (`grant.add`) or a family
+  /// (`grant`); page back with [before].
+  Future<List<LedgerEntry>> ledger({
+    String? kind,
+    String? channel,
+    String? routine,
+    String? connector,
+    String? run,
+    int? before,
+    int? limit,
+  }) async {
+    final q = {
+      'kind': ?kind,
+      'channel': ?channel,
+      'routine': ?routine,
+      'connector': ?connector,
+      'run': ?run,
+      'before': ?before?.toString(),
+      'limit': ?limit?.toString(),
+    };
+    final path = q.isEmpty
+        ? '/v1/ledger'
+        : '/v1/ledger?${Uri(queryParameters: q).query}';
+    return [
+      for (final e in await _json('GET', path) as List)
+        LedgerEntry.fromJson(e as Json),
+    ];
+  }
+
+  /// Everything running, queued, scheduled, waiting on you or failed
+  /// recently (check `features` in [health] for `tasks`).
+  Future<Tasks> tasks() async =>
+      Tasks.fromJson(await _json('GET', '/v1/tasks') as Json);
+
+  /// `tern security audit` on the core (owner only; check `features` in
+  /// [health] for `security_audit`).
+  Future<SecurityAudit> securityAudit() async =>
+      SecurityAudit.fromJson(await _json('GET', '/v1/security/audit') as Json);
+
+  /// Recompute the ledger's hash chain.
+  Future<LedgerCheck> verifyLedger() async =>
+      LedgerCheck.fromJson(await _json('GET', '/v1/ledger/verify') as Json);
 
   /// Run item [id] now, exactly once; [input] replaces its arguments.
   /// Throws [TernException] with 409 if it was already decided or expired.

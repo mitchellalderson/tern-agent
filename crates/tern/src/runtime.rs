@@ -138,6 +138,7 @@ impl Runtime {
         let secrets = Secrets::load(&home.secrets_path())?;
         let store = Store::open(&home.db_path())
             .with_context(|| format!("opening {}", home.db_path().display()))?;
+        crate::ledger_cmd::note_config(&store, &config);
 
         let workspace = config.workspace_dir();
         std::fs::create_dir_all(&workspace)
@@ -452,6 +453,7 @@ impl Runtime {
 
     pub(crate) fn set_live(&self, mut config: Config) {
         config.agent_chains = agent_chains(&self.store);
+        crate::ledger_cmd::note_config(&self.store, &config);
         match self.live.write() {
             Ok(mut g) => *g = config,
             Err(poisoned) => *poisoned.into_inner() = config,

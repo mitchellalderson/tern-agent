@@ -10,7 +10,7 @@ import 'transcript.dart';
 enum Link { connecting, online, offline }
 
 /// A Library page shown in the centre column instead of a conversation.
-enum LibraryPage { mcp, connections, routines }
+enum LibraryPage { mcp, connections, routines, ledger, tasks }
 
 /// Everything the app knows, fed by the daemon. Widgets listen to it.
 ///
@@ -567,6 +567,34 @@ class TernStore extends ChangeNotifier {
 
   /// Whether the core defers unanswered writes to an outbox.
   bool get hasOutbox => health?.features.contains('outbox') ?? false;
+
+  /// The Tasks view (tooling spec §8.2).
+  bool get hasTasks => health?.features.contains('tasks') ?? false;
+
+  /// What waits for you anywhere: open approval and secret cards in every
+  /// conversation this app has, and the outbox.
+  int get needsYouCount {
+    var n = outbox.where((o) => o.pending).length;
+    for (final t in transcripts.values) {
+      for (final i in t.items) {
+        if ((i is ApprovalItem && i.outcome == null) ||
+            (i is SecretRequestItem && i.open)) {
+          n++;
+        }
+      }
+    }
+    return n;
+  }
+
+  /// `tern security audit` on the core (tooling spec §8.4): owner-only.
+  bool get hasSecurityAudit =>
+      (health?.features.contains('security_audit') ?? false) &&
+      (health?.isOwner ?? false);
+
+  /// The activity ledger (tooling spec §8.1): owner-only.
+  bool get hasLedger =>
+      (health?.features.contains('ledger') ?? false) &&
+      (health?.isOwner ?? false);
 
   /// Reached as a paired device rather than the local owner socket, so the
   /// core refuses stdio MCP servers unless `api.remote_mcp_stdio` is set.
@@ -2158,6 +2186,18 @@ class TernStore extends ChangeNotifier {
       loadingModels = false;
       if (!_disposed) notifyListeners();
     }
+  }
+
+  /// Show the Tasks view.
+  void openTasks() {
+    page = LibraryPage.tasks;
+    notifyListeners();
+  }
+
+  /// Show the activity ledger.
+  void openLedger() {
+    page = LibraryPage.ledger;
+    notifyListeners();
   }
 
   /// Show the Routines page: every routine, by every agent.

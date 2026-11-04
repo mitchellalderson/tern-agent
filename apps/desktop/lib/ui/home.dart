@@ -13,6 +13,7 @@ import 'channel_view.dart';
 import 'config_editor.dart';
 import 'connections.dart';
 import 'conversation.dart';
+import 'ledger.dart';
 import 'mcp.dart';
 import 'offline.dart';
 import 'providers.dart';
@@ -22,6 +23,7 @@ import 'secrets.dart';
 import 'settings.dart';
 import 'side_panel.dart';
 import 'sidebar.dart';
+import 'tasks.dart';
 import 'thread_pane.dart';
 import 'where_to_run.dart';
 import 'widgets.dart';
@@ -141,6 +143,20 @@ class _HomeState extends State<Home> {
                               store.page == LibraryPage.connections &&
                                   store.canManageConnections
                               ? ConnectionsView(
+                                  store: store,
+                                  panelOpen: panel,
+                                  onTogglePanel: _togglePanel,
+                                )
+                              : store.page == LibraryPage.tasks &&
+                                    store.hasTasks
+                              ? TasksView(
+                                  store: store,
+                                  panelOpen: panel,
+                                  onTogglePanel: _togglePanel,
+                                )
+                              : store.page == LibraryPage.ledger &&
+                                    store.hasLedger
+                              ? LedgerView(
                                   store: store,
                                   panelOpen: panel,
                                   onTogglePanel: _togglePanel,

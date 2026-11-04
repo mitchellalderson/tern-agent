@@ -314,6 +314,33 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
 
     r.section("tern as an MCP server");
     check_mcp_serve(&mut r, &config);
+    r.section("Security");
+    let audit = crate::security_cmd::audit(
+        home,
+        &config,
+        home.db_path()
+            .exists()
+            .then(|| Store::open(&home.db_path()).ok())
+            .flatten()
+            .as_ref(),
+    );
+    let status = match (audit.high, audit.medium) {
+        (0, 0) => Status::Ok,
+        (0, _) => Status::Info,
+        _ => Status::Warn,
+    };
+    r.check(
+        status,
+        format!("audit: {}", audit.summary()),
+        (audit.high + audit.medium > 0).then_some("See `tern security audit`."),
+    );
+    for f in audit
+        .findings
+        .iter()
+        .filter(|f| f.severity == crate::security_cmd::Severity::High)
+    {
+        r.check(Status::Danger, &f.title, f.fix.as_deref());
+    }
 
     println!();
     if r.fails > 0 {

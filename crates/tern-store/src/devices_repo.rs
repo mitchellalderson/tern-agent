@@ -83,11 +83,19 @@ impl Store {
     }
 
     pub fn create_device(&self, d: &DeviceRow, token_hash: &str) -> Result<()> {
-        self.conn()?.execute(
+        let conn = self.conn()?;
+        conn.execute(
             "INSERT INTO devices (id, name, platform, scope, token_hash, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![d.id, d.name, d.platform, d.scope, token_hash, d.created_at],
         )?;
+        let e = crate::LedgerEntry::new(
+            "device.pair",
+            &d.id,
+            format!("paired device {} with scope {}", d.name, d.scope),
+        )
+        .detail(serde_json::json!({ "name": d.name, "scope": d.scope, "platform": d.platform }));
+        crate::ledger_repo::append_on(&conn, &e)?;
         Ok(())
     }
 
@@ -129,10 +137,17 @@ impl Store {
 
     /// Revoke a device: true if it existed and wasn't already revoked.
     pub fn revoke_device(&self, id: &str) -> Result<bool> {
-        let n = self.conn()?.execute(
+        let conn = self.conn()?;
+        let n = conn.execute(
             "UPDATE devices SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
             params![id, now_ms()],
         )?;
+        if n > 0 {
+            let name: String =
+                conn.query_row("SELECT name FROM devices WHERE id = ?1", [id], |r| r.get(0))?;
+            let e = crate::LedgerEntry::new("device.revoke", id, format!("revoked device {name}"));
+            crate::ledger_repo::append_on(&conn, &e)?;
+        }
         Ok(n > 0)
     }
 

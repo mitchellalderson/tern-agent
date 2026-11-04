@@ -1,12 +1,14 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:tern_client/tern_client.dart';
 
 import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
 import '../theme.dart';
 import 'config_editor.dart';
+import 'security.dart';
 import 'where_to_run.dart';
 
 Future<void> showSettingsDialog(
@@ -186,6 +188,67 @@ class _SettingsDialogState extends State<SettingsDialog> {
     }
   }
 
+  SecurityAudit? _audit;
+  var _auditAsked = false;
+
+  Future<void> _loadAudit(TernStore store) async {
+    try {
+      final a = await store.client.securityAudit();
+      if (mounted) setState(() => _audit = a);
+    } on TernException {
+      // The row still opens the full audit, which says why.
+    }
+  }
+
+  /// Settings › Security: the audit's counts, and the full report.
+  List<Widget> _security(BuildContext context, TernStore store) {
+    final c = context.colors;
+    final a = _audit;
+    if (!_auditAsked) {
+      _auditAsked = true;
+      _loadAudit(store);
+    }
+    return [
+      const SizedBox(height: 10),
+      Text(
+        'Security',
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: c.muted,
+        ),
+      ),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: Icon(
+          a == null || a.high + a.medium == 0
+              ? Icons.verified_user_outlined
+              : Icons.gpp_maybe_outlined,
+          color: a == null
+              ? c.muted
+              : a.high > 0
+              ? c.error
+              : a.medium > 0
+              ? c.warn
+              : c.ok,
+        ),
+        title: const Text('Security audit'),
+        subtitle: Text(
+          a == null
+              ? 'Listeners, devices, autonomy, routines, connectors…'
+              : a.summary == 'nothing to fix'
+              ? 'Nothing to fix'
+              : 'To review: ${a.summary}',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        trailing: OutlinedButton(
+          onPressed: () => showSecurityAudit(context, store),
+          child: const Text('Open…'),
+        ),
+      ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
@@ -259,6 +322,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   ),
                 ),
               ],
+              if (widget.store case final store? when store.hasSecurityAudit)
+                ..._security(context, store),
               if (_error case final e?) ...[
                 const SizedBox(height: 8),
                 Text(e, style: TextStyle(fontSize: 12, color: c.error)),
