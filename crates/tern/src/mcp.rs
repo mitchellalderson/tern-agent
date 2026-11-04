@@ -4,15 +4,16 @@
 //! added and changed servers and leaves the rest connected.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
 
 use anyhow::Context;
-use tern_core::Config;
 use tern_core::config::McpServerConfig;
 use tern_core::config::edit::ConfigFile;
 use tern_core::mcp::{
     ImportedServer, McpErrorKind, McpPatch, McpStatus, McpVerified, McpVerifyError, check_config,
     check_name,
 };
+use tern_core::{Config, Secrets, TernHome};
 
 use crate::runtime::Runtime;
 
@@ -36,7 +37,40 @@ impl std::fmt::Display for McpError {
 
 impl std::error::Error for McpError {}
 
-impl Runtime {
+/// What MCP writes need, shared by the runtime (API, TUI, CLI) and the
+/// agent's `mcp_*` tools.
+pub struct McpAdmin {
+    pub(crate) home: TernHome,
+    pub(crate) live: Arc<RwLock<Config>>,
+    pub(crate) secrets: Secrets,
+    pub(crate) mcp: Arc<tern_mcp::McpServers>,
+    pub(crate) connectors: Arc<tern_lua::Connectors>,
+}
+
+impl McpAdmin {
+    fn live(&self) -> Config {
+        match self.live.read() {
+            Ok(g) => g.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn set_live(&self, config: Config) {
+        match self.live.write() {
+            Ok(mut g) => *g = config,
+            Err(poisoned) => *poisoned.into_inner() = config,
+        }
+    }
+
+    fn connector_secret_uses(&self) -> Vec<(String, String)> {
+        self.connectors.secret_uses()
+    }
+
+    /// Whether paired devices may approve or add `stdio` servers.
+    pub fn remote_stdio_allowed(&self) -> bool {
+        self.live().api.remote_mcp_stdio
+    }
+
     pub fn mcp_statuses(&self) -> Vec<McpStatus> {
         self.mcp.statuses()
     }
@@ -65,13 +99,7 @@ impl Runtime {
             .map(|(k, v)| (k, v.trim().to_owned()))
             .filter(|(_, v)| !v.is_empty())
             .collect();
-        tern_mcp::verify(
-            name,
-            cfg,
-            std::sync::Arc::new(self.secrets.clone()),
-            secrets,
-        )
-        .await
+        tern_mcp::verify(name, cfg, Arc::new(self.secrets.clone()), secrets).await
     }
 
     pub fn import_mcp(&self, text: &str) -> Result<Vec<ImportedServer>, String> {
@@ -199,5 +227,55 @@ impl Runtime {
         self.mcp.apply(&config.mcp.servers);
         self.set_live(config);
         Ok(())
+    }
+}
+
+/// The runtime's view, for the API, the TUI and the CLI.
+impl Runtime {
+    pub fn mcp_statuses(&self) -> Vec<McpStatus> {
+        self.mcp_admin.mcp_statuses()
+    }
+
+    pub fn mcp_status(&self, name: &str) -> Option<McpStatus> {
+        self.mcp_admin.mcp_status(name)
+    }
+
+    pub async fn verify_mcp(
+        &self,
+        name: &str,
+        cfg: &McpServerConfig,
+        secrets: BTreeMap<String, String>,
+    ) -> Result<McpVerified, McpVerifyError> {
+        self.mcp_admin.verify_mcp(name, cfg, secrets).await
+    }
+
+    pub fn import_mcp(&self, text: &str) -> Result<Vec<ImportedServer>, String> {
+        self.mcp_admin.import_mcp(text)
+    }
+
+    pub fn save_mcp(
+        &self,
+        old: Option<&str>,
+        name: &str,
+        cfg: &McpServerConfig,
+        secrets: &BTreeMap<String, String>,
+    ) -> anyhow::Result<McpStatus> {
+        self.mcp_admin.save_mcp(old, name, cfg, secrets)
+    }
+
+    pub fn patch_mcp(&self, name: &str, patch: &McpPatch) -> anyhow::Result<McpStatus> {
+        self.mcp_admin.patch_mcp(name, patch)
+    }
+
+    pub fn remove_mcp(&self, name: &str, remove_secrets: bool) -> anyhow::Result<()> {
+        self.mcp_admin.remove_mcp(name, remove_secrets)
+    }
+
+    pub async fn restart_mcp(&self, name: &str) -> anyhow::Result<McpStatus> {
+        self.mcp_admin.restart_mcp(name).await
+    }
+
+    pub fn reload_mcp(&self) -> anyhow::Result<()> {
+        self.mcp_admin.reload_mcp()
     }
 }

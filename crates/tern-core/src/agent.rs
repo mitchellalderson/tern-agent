@@ -741,6 +741,7 @@ impl Agent {
             pattern: approval::pattern_for(call).filter(|_| always),
             parent_run_id: run.parent_run_id.clone(),
             agent_label: run.label.clone(),
+            local_only: policy.local_approval,
         };
         let asked = tokio::time::timeout(self.cfg.approval_timeout, self.approvals.ask(&req));
         let decision = tokio::select! {

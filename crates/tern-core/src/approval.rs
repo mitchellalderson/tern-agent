@@ -102,6 +102,10 @@ pub struct ApprovalRequest {
     /// say who is asking.
     pub parent_run_id: Option<String>,
     pub agent_label: Option<String>,
+    /// Only a front end on the host may answer ([`ToolPolicy::local_approval`]).
+    ///
+    /// [`ToolPolicy::local_approval`]: crate::tool::ToolPolicy::local_approval
+    pub local_only: bool,
 }
 
 impl ApprovalRequest {

@@ -692,9 +692,18 @@ pub struct ApproveBody {
 
 async fn approve(
     State(m): State<Shared>,
+    auth: Option<axum::Extension<super::auth::Auth>>,
     UrlPath(id): UrlPath<String>,
     Json(b): Json<ApproveBody>,
 ) -> ApiResult<Value> {
+    if auth.is_some() && m.routes.api.is_local_only(&id) {
+        return Err(ApiError(
+            axum::http::StatusCode::FORBIDDEN,
+            "this approval runs a command on the host outside the sandbox; answer it in the \
+             TUI or desktop app on that machine"
+                .into(),
+        ));
+    }
     let decision = match b.decision.as_str() {
         "once" => Decision::AllowOnce,
         "always" => Decision::AlwaysAllow,
