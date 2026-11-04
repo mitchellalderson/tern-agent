@@ -34,7 +34,7 @@ const FAILED_WINDOW_MS: i64 = 24 * 3_600_000;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub section: String,
-    /// `approval`, `outbox`, `secret_request`, `sign_in` (needs you); `run`
+    /// `approval`, `outbox`, `secret_request`, `sign_in`, `skill_offer` (needs you); `run`
     /// (running, queued, failed); `events`, `delivery` (queued);
     /// `routine` (scheduled); `routine_paused` (failed).
     pub kind: String,
@@ -173,6 +173,28 @@ pub fn collect(m: &Manager) -> anyhow::Result<Tasks> {
             channel_id: item.channel_id.clone(),
             agent_id: item.agent_id.clone(),
             tainted: item.taint.is_some(),
+            ..Task::default()
+        });
+    }
+    for o in m.offers(Some("pending"))? {
+        let (channel_id, agent_id) = place(&o.session_id);
+        items.push(Task {
+            section: "needs_you".into(),
+            kind: "skill_offer".into(),
+            id: o.id.to_string(),
+            title: format!(
+                "Save as a skill? {}",
+                o.title.as_deref().unwrap_or("a recent conversation")
+            ),
+            detail: Some(format!(
+                "{} tool calls; `tern skills save {}` writes a draft to review",
+                o.tool_calls, o.id
+            )),
+            at: Some(o.created_at),
+            run_id: Some(o.run_id.clone()),
+            session_id: Some(o.session_id.clone()),
+            channel_id,
+            agent_id,
             ..Task::default()
         });
     }

@@ -49,11 +49,14 @@ void main() {
       'name': 'Inbox',
       'description': 'd',
       'persona': 'p',
+      'category': 'Everyday',
       'tools': null,
       'memory': 'private',
       'routine': ['0 8 * * 1-5', 'Check my inbox.'],
       'avatar': ['■', 'amber'],
     });
+    expect(t.category, 'Everyday');
+    expect(t.searchText, contains('everyday'));
     expect(t.routine?.prompt, 'Check my inbox.');
     expect(t.avatar?.color, 'amber');
     final ev = TernEvent.fromJson({

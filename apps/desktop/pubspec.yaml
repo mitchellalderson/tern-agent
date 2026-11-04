@@ -20,3 +20,27 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  fonts:
+    # SIL OFL 1.1 fonts (Archivo, DM Sans, JetBrains Mono); see docs/brand/brand-guide.md.
+    - family: TernDisplay
+      fonts:
+        - asset: assets/fonts/ArchivoDisplay-ExtraBoldItalic.ttf
+          weight: 800
+          style: italic
+        - asset: assets/fonts/ArchivoDisplay-BlackItalic.ttf
+          weight: 900
+          style: italic
+    - family: TernSans
+      fonts:
+        - asset: assets/fonts/DMSans-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/DMSans-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/DMSans-Bold.ttf
+          weight: 700
+    - family: TernMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/JetBrainsMono-SemiBold.ttf
+          weight: 600

@@ -8,6 +8,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
+import '../theme.dart';
 import 'auth_card.dart';
 import 'bundles.dart';
 import 'channel_view.dart';
@@ -123,7 +124,14 @@ class _HomeState extends State<Home> {
       body: Stack(
         fit: StackFit.expand,
         children: [
+          const Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Stripes(thickness: 2),
+          ),
           Positioned.fill(
+            top: 6,
             child: ListenableBuilder(
               listenable: store,
               builder: (context, _) {

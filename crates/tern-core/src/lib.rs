@@ -20,6 +20,7 @@ pub mod prompt;
 pub mod quiet;
 pub mod script;
 pub mod secrets;
+pub mod skill_capture;
 pub mod skills;
 pub mod subagent;
 pub mod tool;
@@ -33,6 +34,8 @@ pub use secrets::{SecretError, SecretStatus, Secrets};
 pub mod defaults {
     pub const PERSONA_MD: &str = include_str!("../assets/persona.md");
     pub const USER_MD: &str = include_str!("../assets/user.md");
+    /// The starter agents catalog (`agents::templates`).
+    pub const STARTERS_TOML: &str = include_str!("../assets/starters.toml");
     pub const CONFIG_TOML: &str = include_str!("../assets/config.example.toml");
     /// Skills tern installs once (`TernHome::ensure_layout`): (directory,
     /// `SKILL.md`). A user who deletes or edits one keeps their choice.

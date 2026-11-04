@@ -427,7 +427,7 @@ class _SectionTile extends StatelessWidget {
                   padding: const EdgeInsets.only(left: 4),
                   child: Text(
                     '$changed',
-                    style: TextStyle(fontSize: 11, color: c.accent),
+                    style: TextStyle(fontSize: 11, color: c.link),
                   ),
                 ),
             ],
@@ -809,6 +809,6 @@ InputDecoration _box(BuildContext context, {String? hint, Widget? icon}) {
     contentPadding: const EdgeInsets.all(9),
     border: border(c.hairline),
     enabledBorder: border(c.hairline),
-    focusedBorder: border(c.accent),
+    focusedBorder: border(c.ink),
   );
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
-/// Design tokens (docs/gui-spec.md §8). Light by default; dark is its own
+/// Design tokens (docs/brand/brand-guide.md). Cream paper, ink, and the
+/// red / orange / yellow racing stripe. Light by default; dark is its own
 /// set, not an inversion.
 @immutable
 class TernColors extends ThemeExtension<TernColors> {
@@ -18,6 +19,11 @@ class TernColors extends ThemeExtension<TernColors> {
     required this.error,
     required this.userBubble,
     required this.selection,
+    required this.ink,
+    required this.link,
+    required this.stripeRed,
+    required this.stripeOrange,
+    required this.stripeYellow,
   });
 
   final Color background;
@@ -34,36 +40,53 @@ class TernColors extends ThemeExtension<TernColors> {
   final Color userBubble;
   final Color selection;
 
+  /// Interactive borders and strong text; `text` is the same colour.
+  final Color ink;
+  final Color link;
+  final Color stripeRed;
+  final Color stripeOrange;
+  final Color stripeYellow;
+
   static const light = TernColors(
-    background: Color(0xFFFFFFFF),
-    sidebar: Color(0xFFF6F6F4),
-    card: Color(0xFFF7F7F5),
-    hairline: Color(0xFFE7E7E3),
-    text: Color(0xFF1C1C1A),
-    muted: Color(0xFF6B6B66),
+    background: Color(0xFFF7EEDC),
+    sidebar: Color(0xFFEFE3CB),
+    card: Color(0xFFFCF7EB),
+    hairline: Color(0xFFE0D2B6),
+    text: Color(0xFF2B2118),
+    muted: Color(0xFF6F604F),
     accent: Color(0xFFF07A2B),
-    onAccent: Color(0xFFFFFFFF),
-    ok: Color(0xFF2F9E5B),
-    warn: Color(0xFFD9902B),
-    error: Color(0xFFD2453B),
-    userBubble: Color(0xFFF0F0ED),
-    selection: Color(0xFFEAEAE6),
+    onAccent: Color(0xFF2B2118),
+    ok: Color(0xFF4F7A3A),
+    warn: Color(0xFFB8841A),
+    error: Color(0xFFB3281D),
+    userBubble: Color(0xFFEFE3CB),
+    selection: Color(0xFFEFE3CB),
+    ink: Color(0xFF2B2118),
+    link: Color(0xFFB3281D),
+    stripeRed: Color(0xFFD93A2B),
+    stripeOrange: Color(0xFFF07A2B),
+    stripeYellow: Color(0xFFF6B92B),
   );
 
   static const dark = TernColors(
-    background: Color(0xFF161615),
-    sidebar: Color(0xFF1E1E1C),
-    card: Color(0xFF222220),
-    hairline: Color(0xFF30302D),
-    text: Color(0xFFEDEDEA),
-    muted: Color(0xFF9A9A94),
-    accent: Color(0xFFF58A42),
-    onAccent: Color(0xFF1C1C1A),
-    ok: Color(0xFF4CBB78),
-    warn: Color(0xFFE6A54A),
-    error: Color(0xFFE5685F),
-    userBubble: Color(0xFF2A2A27),
-    selection: Color(0xFF2C2C29),
+    background: Color(0xFF1F1812),
+    sidebar: Color(0xFF261E17),
+    card: Color(0xFF2A211A),
+    hairline: Color(0xFF3D3226),
+    text: Color(0xFFF3E8D2),
+    muted: Color(0xFFB3A58F),
+    accent: Color(0xFFF58A3D),
+    onAccent: Color(0xFF2B2118),
+    ok: Color(0xFF8DB56F),
+    warn: Color(0xFFE3B04B),
+    error: Color(0xFFF08A7A),
+    userBubble: Color(0xFF2F251C),
+    selection: Color(0xFF2F251C),
+    ink: Color(0xFFF3E8D2),
+    link: Color(0xFFF08A7A),
+    stripeRed: Color(0xFFE5483A),
+    stripeOrange: Color(0xFFF58A3D),
+    stripeYellow: Color(0xFFF9C846),
   );
 
   @override
@@ -93,9 +116,10 @@ ThemeData ternTheme(TernColors c, Brightness b) {
     ),
     scaffoldBackgroundColor: c.background,
     dividerColor: c.hairline,
+    fontFamily: 'TernSans',
     splashFactory: NoSplash.splashFactory,
     highlightColor: Colors.transparent,
-    hoverColor: c.selection.withValues(alpha: 0.6),
+    hoverColor: c.selection.withValues(alpha: 0.7),
     visualDensity: VisualDensity.compact,
     extensions: [c],
   );
@@ -112,14 +136,22 @@ ThemeData ternTheme(TernColors c, Brightness b) {
             fontSize: 12.5,
             color: c.muted,
           ),
+          titleLarge: base.textTheme.titleLarge?.copyWith(
+            fontFamily: 'TernDisplay',
+            fontStyle: FontStyle.italic,
+            fontWeight: FontWeight.w800,
+            fontSize: 22,
+            color: c.text,
+          ),
           titleSmall: base.textTheme.titleSmall?.copyWith(
             fontSize: 13.5,
-            fontWeight: FontWeight.w600,
+            fontWeight: FontWeight.w700,
             color: c.text,
           ),
           labelSmall: base.textTheme.labelSmall?.copyWith(
+            fontFamily: 'TernMono',
             fontSize: 11,
-            letterSpacing: 0.6,
+            letterSpacing: 1.0,
             fontWeight: FontWeight.w600,
             color: c.muted,
           ),
@@ -129,15 +161,154 @@ ThemeData ternTheme(TernColors c, Brightness b) {
       textStyle: TextStyle(fontSize: 12, color: c.background),
       decoration: BoxDecoration(
         color: c.text,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(8),
+      ),
+    ),
+    dividerTheme: DividerThemeData(color: c.hairline, thickness: 1, space: 1),
+    inputDecorationTheme: InputDecorationTheme(
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: BorderSide(color: c.hairline, width: 1.5),
+      ),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style:
+          FilledButton.styleFrom(
+            backgroundColor: c.accent,
+            foregroundColor: c.onAccent,
+            textStyle: const TextStyle(fontWeight: FontWeight.w700),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+              side: BorderSide(color: c.ink, width: 2),
+            ),
+          ).copyWith(
+            backgroundColor: WidgetStateProperty.resolveWith(
+              (s) =>
+                  s.contains(WidgetState.hovered) ? c.stripeYellow : c.accent,
+            ),
+          ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: c.ink,
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+        side: BorderSide(color: c.ink, width: 2),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        foregroundColor: c.link,
+        textStyle: const TextStyle(fontWeight: FontWeight.w600),
+      ),
+    ),
+    cardTheme: CardThemeData(
+      color: c.card,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: c.hairline),
+      ),
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: c.card,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: c.ink, width: 1.5),
       ),
     ),
   );
 }
 
 const mono = TextStyle(
-  fontFamily: 'Menlo',
-  fontFamilyFallback: ['SF Mono', 'DejaVu Sans Mono', 'monospace'],
+  fontFamily: 'TernMono',
+  fontFamilyFallback: ['Menlo', 'SF Mono', 'DejaVu Sans Mono', 'monospace'],
   fontSize: 12,
   height: 1.4,
 );
+
+/// The tern wordmark: lowercase, display italic, tight tracking.
+TextStyle wordmarkStyle(double size, Color color) => TextStyle(
+  fontFamily: 'TernDisplay',
+  fontStyle: FontStyle.italic,
+  fontWeight: FontWeight.w900,
+  fontSize: size,
+  height: 1,
+  letterSpacing: -size * 0.03,
+  color: color,
+);
+
+/// The racing stripe: three hard-edged bars, red / orange / yellow, never
+/// reordered. [slant] skews it -18° for the Baja look.
+class Stripes extends StatelessWidget {
+  const Stripes({
+    super.key,
+    this.thickness = 4,
+    this.width,
+    this.vertical = false,
+    this.slant = false,
+  });
+
+  final double thickness;
+  final double? width;
+  final bool vertical;
+  final bool slant;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final bars = [
+      c.stripeRed,
+      c.stripeOrange,
+      c.stripeYellow,
+    ].map((color) => Expanded(child: ColoredBox(color: color))).toList();
+    final box = vertical
+        ? SizedBox(
+            width: thickness * 3,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: bars,
+            ),
+          )
+        : SizedBox(
+            width: width,
+            height: thickness * 3,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: bars,
+            ),
+          );
+    return slant
+        ? Transform(
+            transform: Matrix4.skewX(-0.3249),
+            alignment: Alignment.centerLeft,
+            child: box,
+          )
+        : box;
+  }
+}
+
+/// Shape for selected rows in lists: the usual 8px rounded rect, plus the
+/// 3px orange edge on the left when [selected].
+ShapeBorder rowShape(BuildContext context, {required bool selected}) => selected
+    ? _EdgeShape(context.colors.stripeOrange)
+    : RoundedRectangleBorder(borderRadius: BorderRadius.circular(8));
+
+class _EdgeShape extends RoundedRectangleBorder {
+  _EdgeShape(this.bar) : super(borderRadius: BorderRadius.circular(8));
+
+  final Color bar;
+
+  @override
+  void paint(Canvas canvas, Rect rect, {TextDirection? textDirection}) {
+    canvas.drawRRect(
+      RRect.fromRectAndCorners(
+        Rect.fromLTWH(rect.left, rect.top + 5, 3, rect.height - 10),
+        topRight: const Radius.circular(2),
+        bottomRight: const Radius.circular(2),
+      ),
+      Paint()..color = bar,
+    );
+  }
+}

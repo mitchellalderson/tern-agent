@@ -94,10 +94,7 @@ async fn each_run_is_told_where_it_is_and_where_its_reply_goes() {
         "SELECT id FROM runs WHERE parent_run_id = '{run}'"
     ));
     let p = prompt(&env, &child);
-    assert!(
-        p.contains("You're working for tern in #scouting."),
-        "{p}"
-    );
+    assert!(p.contains("You're working for tern in #scouting."), "{p}");
     assert!(p.contains("it goes back to tern, not to the user or the channel. Don't post"));
 
     // A routine's result goes where the routine posts.

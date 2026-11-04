@@ -144,6 +144,13 @@ pub trait Backend: Send + Sync + 'static {
         Err("this backend doesn't list connections".into())
     }
 
+    /// `/skills`: skills, drafts and skill-capture offers. `args` is what
+    /// follows the command (`offers`, `save 3`, `publish name`, ...); the
+    /// answer is shown as a notice.
+    fn skills(&self, _args: &str) -> BackendResult<String> {
+        Err("skill capture needs the background agent; start it with `tern start`".into())
+    }
+
     fn secrets(&self) -> BackendResult<Vec<SecretStatus>> {
         Err("this backend can't manage secrets".into())
     }

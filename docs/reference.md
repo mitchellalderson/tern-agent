@@ -58,7 +58,7 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern daemon`](#tern-daemon) | Run the scheduler, gateways, and local API in the foreground. |
 | [`tern start` / `tern stop`](#tern-start-and-tern-stop) | Start tern in the background, or stop it. |
 | [`tern service`](#tern-service) | Start tern at login (launchd on macOS, systemd on Linux). |
-| [`tern tray`](#tern-tray) | The menu-bar icon (macOS): is tern running, Open, Start/Quit, Start at login. |
+| [`tern tray`](#tern-tray) | The menu-bar icon (macOS) or tray icon (Linux): is tern running, Open, Start/Quit, Start at login. |
 | [`tern gateway pair`](#tern-gateway-pair) | Pair a Telegram account, or a sender on a gateway connector. |
 | [`tern gateway add`](#gateway-connectors-ntfy-slack) | Install the ntfy or Slack gateway and enable it. |
 | [`tern gateway list`](#gateway-connectors-ntfy-slack) | Gateways in `config.toml` and whether each can run. |
@@ -66,6 +66,7 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
 | [`tern grants`](#new-sites-in-a-tainted-run) | The "always" grants approvals have recorded (commands, tools, sites), and removing them. |
+| [`tern skills`](#skill-capture) | Skills and drafts; save a good run as a skill, then publish it. |
 | [`tern tasks`](#tasks) | Everything running, queued, scheduled, waiting on you or failed recently. |
 | [`tern ledger`](#activity-ledger) | The hash-chained activity ledger; `tern ledger verify` checks it. |
 | [`tern security audit`](#security-audit) | How exposed this core is and what could act without asking; non-zero on a high finding. |
@@ -167,13 +168,13 @@ tern service uninstall                       # stop starting them at login
 
 - **macOS, from the app** (the `tern` inside `tern.app`): registers with macOS through `SMAppService`, so tern and its menu-bar icon show in System Settings › General › Login Items, where you can also turn them off. macOS may ask you to allow them there first.
 - **macOS, a CLI install**: writes the LaunchAgent `~/Library/LaunchAgents/ai.tern.daemon.plist` (and `ai.tern.tray.plist` with `--tray`) and loads it. Either way the daemon has `KeepAlive = { SuccessfulExit = false }`: launchd restarts tern after a crash, but not after `tern stop` or Quit. `tern doctor` says which method is in use.
-- **Linux**: writes the systemd user unit `~/.config/systemd/user/tern-daemon.service` with `Restart=on-failure`, for the same reason, and enables it.
+- **Linux**: writes the systemd user unit `~/.config/systemd/user/tern-daemon.service` with `Restart=on-failure`, for the same reason, and enables it. With `--tray` it also writes the XDG autostart entry `~/.config/autostart/tern-tray.desktop`, which starts `tern tray` at login (and starts it now when a desktop session is available); `tern service uninstall` removes both.
 
 Logs go to `~/.tern/logs/daemon.{out,err}.log`. `--no-login` installs the service without starting tern at login (`tern start` then starts it through the service). Installing or uninstalling never stops a running tern; `tern stop` does. The desktop app's **Settings › Start tern when I log in** runs these commands.
 
 ### `tern tray`
 
-A menu-bar icon for tern on macOS, in its own small process: ● running (with a ring while a task runs, and a dot when something needs you), ◐ starting, stopping or not answering, ○ stopped. Its menu shows what tern is doing and has **Open tern**, **Start at login** and **Quit tern**, which stops tern the way `tern stop` does (asking first if a task is in progress), closes the app and removes the icon. When tern is stopped it offers **Start tern** and **Close this icon**. The tray only watches and asks; launchd keeps tern itself running. `tern service install --tray` starts it at login; inside `tern.app` it's the `tern Tray.app` login item. Builds without the `tray` cargo feature (on by default; its dependencies are macOS-only) don't have it.
+A menu-bar icon for tern on macOS, in its own small process: ● running (with a ring while a task runs, and a dot when something needs you), ◐ starting, stopping or not answering, ○ stopped. Its menu shows what tern is doing and has **Open tern**, **Start at login** and **Quit tern**, which stops tern the way `tern stop` does (asking first if a task is in progress), closes the app and removes the icon. When tern is stopped it offers **Start tern** and **Close this icon**. The tray only watches and asks; launchd keeps tern itself running. `tern service install --tray` starts it at login; inside `tern.app` it's the `tern Tray.app` login item. On Linux the same menu is a StatusNotifierItem (through `ksni`, over D-Bus; no GTK): KDE and most desktops show it, and GNOME needs the AppIndicator extension. **Open tern** runs `tern_desktop` (beside `tern`, else on `PATH`), and the "Quit tern?" question and errors use `zenity` or `kdialog` when one is installed (without either, Quit just quits: runs resume on the next start). `tern tray` needs a desktop session (a display and the D-Bus session bus) and exits with an explanation over SSH. Builds without the `tray` cargo feature (on by default; its dependencies are macOS and Linux only) don't have it.
 
 ### `tern gateway pair`
 
@@ -187,7 +188,8 @@ Prints an 8-character one-time code on stdout. Send it to your Telegram bot with
 
 ```sh
 tern agents [list] [--all]                    # each agent: @name, name, memory, model, routines (--all: archived too)
-tern agents new <name> [--slug s] [--template research|inbox|marketing|blank] [--memory private|shared] [--autonomy readonly|supervised|autonomous|yolo]
+tern agents templates                    # the starter agents, by category
+tern agents new <name> [--slug s] [--template <starter id>] [--memory private|shared] [--autonomy readonly|supervised|autonomous|yolo]
 tern agents autonomy <name> <level|none>    # the most autonomy its runs may have (the lower of this and `autonomy` applies)
 tern agents telegram <name> <secret|none>   # a Telegram bot of its own; the token is that secret; restart the daemon
 tern agents edit <name>                       # open its persona.md in $VISUAL / $EDITOR
@@ -546,19 +548,37 @@ tern remembers in two places:
 
 **Flush before compaction.** When a long conversation is about to be summarized, the agent first gets one silent model call over the part being summarized, with only `memory_save`, to keep durable facts (preferences, decisions, people, commitments). It's journaled, so a resumed run doesn't repeat it, and its tokens count toward the run's budget. If it fails, compaction goes ahead. Sub-agents and scheduled runs don't flush, nor does a run whose token budget can't cover it. `memory.flush = false` turns it off.
 
+### Skill capture
+
+After a long, clean run tern offers, once, to save it as a skill. A run qualifies when it is yours (not a routine, an outbox run, an MCP caller or a sub-agent), finished, made at least `[skills].capture_min_tool_calls` tool calls (default 8), at most a quarter of them failed or were refused, and it never read untrusted content (a tainted run could carry someone else's instructions into a skill). A conversation with an offer waiting isn't offered again, a dismissed run never is, and an offer lapses after 7 days. Offers need the daemon (`tern start`): runs made with `tern run` or the TUI without it aren't watched.
+
+Accepting makes one model call over the run's transcript and writes `skills/<name>/SKILL.md` with `draft: true`. **A draft isn't in the system prompt and `skill_read` can't load it** until you read it and publish it, so nothing changes what the agent does without your review. The offer shows in Tasks under "needs you".
+
+```
+tern skills [list]                 skills and drafts
+tern skills offers [--all]         runs offered as skills (daemon)
+tern skills save ID [--name SLUG]  write the draft for offer ID (daemon)
+tern skills dismiss ID             decline it for good (daemon)
+tern skills show NAME              print a SKILL.md
+tern skills publish NAME           a draft becomes a skill (the next run lists it)
+tern skills discard NAME           delete a draft (never a published skill)
+```
+
+TUI: `/skills [offers|save N|dismiss N|show|publish|discard NAME]`. Config: `[skills] capture = true`, `capture_min_tool_calls = 8`. API: `GET /v1/skills`, `GET /v1/skills/{name}` (with `content`), `POST /v1/skills/{name}/publish|discard`, `GET /v1/skill-offers[?state=pending|accepted|dismissed|all]`, `POST /v1/skill-offers/{id}/accept` (`{slug?}`) and `.../dismiss`; writes are owner only; `/v1/health` lists `skill_capture`.
+
 ## Agents
 
 You can have several agents, each with its own job: a name and avatar, a **persona** (who it is, its job, its tone), a model (or a fallback chain), the **tools** it may use, its **memory**, and its own **routines**. Each has a **DM**, a main channel like Home: one continuous chat with the same cuts, carry-over, History and queued sends. See [agent-profiles-design.md](agent-profiles-design.md).
 
 - **The agent you already had is `tern`**, the default agent. Its persona is `~/.tern/persona.md`, its memory the shared memory, and its DM is Home. It can be renamed and given an avatar (its id stays `tern`); its model is `default_model`. It can't be archived.
-- **Persona**: `~/.tern/agents/<name at creation>/persona.md`, editable in an editor or through the API. A new agent starts from a template (Research, Inbox, Marketing, Blank), never a blank page. tern always adds its own sections under every persona (memory, time, workspace, secrets, untrusted content, sub-agents, and, with more than one agent, who the others are): a persona can change who the agent is, not those rules.
+- **Persona**: `~/.tern/agents/<name at creation>/persona.md`, editable in an editor or through the API. A new agent starts from a starter (about 25, by category: Everyday, Coding, Writing & Content, Research & Learning, Business, Data & Finance, plus Blank; `assets/starters.toml`), never a blank page. tern always adds its own sections under every persona (memory, time, workspace, secrets, untrusted content, sub-agents, and, with more than one agent, who the others are): a persona can change who the agent is, not those rules.
 - **Tools**: `{"builtins": "all" | "read_only" | [names], "connectors": "all" | [names], "mcp": "all" | [servers], "skills": "all" | [names]}`; a missing key means all. A new agent gets every built-in tool except `shell`, no connectors, no MCP servers, all skills. Tools out of scope aren't offered to the model and are refused if called. Every agent keeps `channel_read`, `channel_post`, `history_search`, `secret_request` and its memory tools. Its sub-agents get no more than it has.
 - **Memory**: `private` (the default for new agents) or `shared`. `user.md` is always shared: who you are is the same for every agent. A private agent has its own `memory.md` (next to its persona) and its own long-term memories: `memory_save` keeps them its own unless `shared: true`, and `memory_search` finds its own and the shared ones. `session_search` only ever searches the agent's own conversations, never another agent's DM.
 - **Routines belong to an agent.** A schedule an agent creates (`schedule_create` in its DM) is its own: it runs as that agent and posts to its DM. Made in a topic channel, it posts to that channel instead (and its agent joins it). `schedule_create` with `"agent": "research"` makes the routine Research's, so it runs as Research rather than as the caller asking Research each time; that is allowed only for an agent the caller may hand work to (`delegates`), checked by tern. The `schedule_*` tools see and change only the calling agent's schedules. Archiving an agent pauses its routines.
 - **Agents hand work to each other.** A run that can start sub-agents may start one *as another of your agents*: `agent_spawn` with `"agent": "research"` runs it with Research's persona, tools, model and memory, and it reports back like any sub-agent (same limits, budget and taint). Its prompt lists the agents it may hand work to, each with what it's for, and says to delegate a matching request rather than start a generic sub-agent. Who may hand work to whom is each agent's **Can hand work to** (`delegates`): tern may reach every agent unless you narrow it, other agents none until you choose. The sub-agent card shows the agent's avatar and name.
 - **Approvals land where the run is**: an agent's DM shows its own, and Home shows a pointer to it (one request, answered in either place).
 - **Edits apply to the next run.** A run freezes its agent's persona, model, tool scope and memory scope when it starts.
-- **In the desktop app**, AGENTS in the sidebar lists your agents under Home (which carries tern's avatar; right-click it to edit tern): a badge counts what waits for you, a spinner shows one working, a dot new routine posts, and **+** creates one. An agent's row opens its DM, the same view as Home (dividers, New topic, History) with its name and avatar, its model, and **Edit** (the tune icon). The sheet has a template (Research, Inbox, Marketing, Blank; a template's routine can be added with it), name, avatar (glyph and colour), persona with what tern adds to every agent shown read-only beneath, model (a comma-separated list is a fallback chain), tools (built-ins, connectors, MCP servers with their status, skills; **Read-only** in one click), memory (Private / Shared) and Archive. The side panel follows the agent: its routines (**All** shows every agent's), the tools it may use, and its memory with chips for its own and the shared memories (in Home, Shared and each private agent). An approval from an agent's DM shows there, with a pointer in Home: one request, answered in either.
+- **In the desktop app**, AGENTS in the sidebar lists your agents under Home (which carries tern's avatar; right-click it to edit tern): a badge counts what waits for you, a spinner shows one working, a dot new routine posts, and **+** creates one. An agent's row opens its DM, the same view as Home (dividers, New topic, History) with its name and avatar, its model, and **Edit** (the tune icon). The sheet has a starter picker (grouped by category, with search; a starter's routine can be added with it), name, avatar (glyph and colour), persona with what tern adds to every agent shown read-only beneath, model (a comma-separated list is a fallback chain), tools (built-ins, connectors, MCP servers with their status, skills; **Read-only** in one click), memory (Private / Shared) and Archive. The side panel follows the agent: its routines (**All** shows every agent's), the tools it may use, and its memory with chips for its own and the shared memories (in Home, Shared and each private agent). An approval from an agent's DM shows there, with a pointer in Home: one request, answered in either.
 - **TUI**: `/agent <name>` talks to that agent in its DM (`/new` starts a new topic there, `/agent tern` goes back), `/agents` lists them with what's working and waiting. A sub-agent of the current run with the same label wins.
 - **API** (`agents` in `/v1/health`): `GET/POST /v1/agents`, `PATCH /v1/agents/{id}` (any field, `archived: true`), `GET/PUT /v1/agents/{id}/persona` (GET adds `system_sections`), `GET /v1/agents/templates`, `GET /v1/memories?agent=shared|<agent>&q=`, `GET /v1/schedules?agent=` and `agent` on schedule create/update. `/v1/events` adds `{"agents_changed": {}}`; run events, approvals and secret requests carry `agent_id`, and sessions their `agent_id` when not `tern`.
 
@@ -822,7 +842,7 @@ Set it globally (`autonomy = "autonomous"` in `config.toml`) or per routine: `au
 
 ### Tasks
 
-One list of everything running, queued, scheduled, waiting on you, or failed recently, across agents and channels (spec §8.2): approvals, outbox items, secret requests and sign-in cards (needs you); the runs in progress, sub-agents under their parent; queued runs, watch events waiting for a run, and results held for quiet hours or a digest; enabled routines and when they next run; runs that failed in the last 24 hours and routines paused by a cap. In the desktop app it is **Library → Tasks** (the count beside it is what waits for you); each row opens the conversation, run or routine it belongs to. `tern tasks [--json]` prints the same from the daemon. API: `GET /v1/tasks` → `{items: [{section, kind, id, title, detail?, at?, run_id?, parent_run_id?, session_id?, channel_id?, agent_id?, routine_id?, tainted?}], counts}`; `/v1/health` lists `tasks`.
+One list of everything running, queued, scheduled, waiting on you, or failed recently, across agents and channels (spec §8.2): approvals, outbox items, secret requests, sign-in cards and skill-capture offers (needs you); the runs in progress, sub-agents under their parent; queued runs, watch events waiting for a run, and results held for quiet hours or a digest; enabled routines and when they next run; runs that failed in the last 24 hours and routines paused by a cap. In the desktop app it is **Library → Tasks** (the count beside it is what waits for you); each row opens the conversation, run or routine it belongs to. `tern tasks [--json]` prints the same from the daemon. API: `GET /v1/tasks` → `{items: [{section, kind, id, title, detail?, at?, run_id?, parent_run_id?, session_id?, channel_id?, agent_id?, routine_id?, tainted?}], counts}`; `/v1/health` lists `tasks`.
 
 ### Activity ledger
 
