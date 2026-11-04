@@ -44,6 +44,13 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
             );
         }
         AgentsCommand::Edit { agent } => edit(&rt, &agent)?,
+        AgentsCommand::Rename { agent, name, slug } => rename(&rt, &agent, name, slug)?,
+        AgentsCommand::Delete {
+            agent,
+            reassign_to,
+            delete_routines,
+            yes,
+        } => return delete(&rt, &agent, reassign_to, delete_routines, yes),
         AgentsCommand::Archive { agent, undo } => {
             let a = find(&rt, &agent)?;
             if a.is_default() {
@@ -129,4 +136,78 @@ fn edit(rt: &Runtime, agent: &str) -> anyhow::Result<()> {
         a.name
     );
     Ok(())
+}
+
+/// `tern agents rename <agent> [name] [--slug s]`.
+fn rename(
+    rt: &Runtime,
+    agent: &str,
+    name: Option<String>,
+    slug: Option<String>,
+) -> anyhow::Result<()> {
+    let a = find(rt, agent)?;
+    let name = name.map(|n| n.trim().to_owned());
+    if name.is_none() && slug.is_none() {
+        bail!("give a new name, or --slug for a new @name");
+    }
+    if name.as_deref() == Some("") {
+        bail!("name is empty");
+    }
+    let slug = slug.map(|s| s.trim().trim_start_matches('@').to_owned());
+    if let Some(s) = &slug {
+        if a.is_default() && s != tern_store::DEFAULT_AGENT {
+            bail!("the default agent's @name stays `tern`; rename its display name instead");
+        }
+        tern_core::agents::check_slug(s).map_err(anyhow::Error::msg)?;
+        if rt.store.agent(s)?.is_some_and(|o| o.id != a.id) {
+            bail!("there is already an agent @{s}");
+        }
+        if rt
+            .store
+            .channel(&tern_store::dm_slug(s))?
+            .is_some_and(|c| c.agent_id.as_deref() != Some(a.id.as_str()))
+        {
+            bail!("the channel #{} is taken", tern_store::dm_slug(s));
+        }
+    }
+    rt.store.update_agent(
+        &a.id,
+        &AgentChange {
+            name,
+            slug,
+            ..AgentChange::default()
+        },
+    )?;
+    let a = find(rt, &a.id)?;
+    println!("@{} is now {} (id {} is unchanged)", a.slug, a.name, a.id);
+    Ok(())
+}
+
+/// `tern agents delete`: show what it touches, ask, then delete.
+fn delete(
+    rt: &Runtime,
+    agent: &str,
+    reassign_to: Option<String>,
+    delete_routines: bool,
+    yes: bool,
+) -> anyhow::Result<ExitCode> {
+    let a = find(rt, agent)?;
+    let impact = rt.agent_impact(&a)?;
+    println!("{}", impact.describe());
+    if !impact.blockers.is_empty() {
+        return Ok(ExitCode::FAILURE);
+    }
+    if !yes && !crate::manage::confirm_cli(&a.slug)? {
+        println!("Nothing was deleted.");
+        return Ok(ExitCode::FAILURE);
+    }
+    rt.delete_agent(
+        &a,
+        &crate::manage::DeleteAgent {
+            reassign_to,
+            delete_routines,
+        },
+    )?;
+    println!("deleted @{}; its history stays readable", a.slug);
+    Ok(ExitCode::SUCCESS)
 }

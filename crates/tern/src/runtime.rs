@@ -346,9 +346,27 @@ impl Runtime {
         if self.store.channel(&tern_store::dm_slug(&slug))?.is_some() {
             bail!("the channel #{} is taken", tern_store::dm_slug(&slug));
         }
-        let id = agents::id_for(&slug);
-        if self.store.agent(&id)?.is_some() {
-            bail!("an archived agent already has the id {id}; unarchive it or pick another name");
+        let mut id = agents::id_for(&slug);
+        match self.store.agent_or_deleted(&id)? {
+            None => {}
+            Some(old) if old.deleted_at.is_none() => {
+                bail!(
+                    "an archived agent already has the id {id}; unarchive it or pick another name"
+                );
+            }
+            // A deleted agent keeps its id (history names it): the new
+            // agent gets the next free one.
+            Some(_) => {
+                let mut n = 2;
+                while self
+                    .store
+                    .agent_or_deleted(&agents::id_for(&format!("{slug}-{n}")))?
+                    .is_some()
+                {
+                    n += 1;
+                }
+                id = agents::id_for(&format!("{slug}-{n}"));
+            }
         }
         let memory = a
             .memory
@@ -648,10 +666,16 @@ impl Runtime {
         };
         // The session's agent, read once: persona, model, tool scope and
         // memory scope are frozen on this run (agent profiles §2).
-        let agent = self
-            .store
-            .agent(session.agent())?
-            .with_context(|| format!("agent {} not found", session.agent()))?;
+        let agent = match self.store.agent(session.agent())? {
+            Some(a) => a,
+            None => match self.store.agent_or_deleted(session.agent())? {
+                Some(gone) => bail!(
+                    "{} was deleted; its conversations stay readable but can't be continued",
+                    gone.name
+                ),
+                None => bail!("agent {} not found", session.agent()),
+            },
+        };
         if agent.archived_at.is_some() {
             bail!("{} is archived", agent.name);
         }

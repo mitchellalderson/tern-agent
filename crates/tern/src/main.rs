@@ -1,5 +1,6 @@
 mod agents_cmd;
 mod bundle_cmd;
+mod channels_cmd;
 mod cli;
 mod config_cmd;
 mod connections_cmd;
@@ -15,6 +16,7 @@ mod inspect;
 mod ledger_cmd;
 mod lifecycle;
 mod logging;
+mod manage;
 mod mcp;
 mod mcp_cmd;
 mod mcp_serve;
@@ -187,6 +189,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             cli::GatewayCommand::List => gateway_cmd::list(&home),
         },
         Some(Command::Agents { command }) => agents_cmd::run(&home, command),
+        Some(Command::Channels { command }) => channels_cmd::run(&home, command),
         Some(Command::Sessions { command }) => {
             match command.unwrap_or(SessionsCommand::List) {
                 SessionsCommand::List => inspect::sessions_list(&home)?,

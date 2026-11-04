@@ -68,6 +68,11 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<AgentsCommand>,
     },
+    /// List, create, rename, archive and delete topic channels.
+    Channels {
+        #[command(subcommand)]
+        command: Option<ChannelsCommand>,
+    },
     /// List or show conversation sessions.
     Sessions {
         #[command(subcommand)]
@@ -412,12 +417,84 @@ pub enum AgentsCommand {
     },
     /// Open an agent's persona in $EDITOR.
     Edit { agent: String },
+    /// Rename an agent: its display name, and with --slug its @name (its
+    /// DM follows; its id and history don't change).
+    Rename {
+        agent: String,
+        /// The new display name.
+        name: Option<String>,
+        /// The new @name.
+        #[arg(long)]
+        slug: Option<String>,
+    },
+    /// Delete an agent for good. Its conversations stay in History under
+    /// its name; its private memories go. Routines must be handed to
+    /// another agent or deleted too.
+    Delete {
+        agent: String,
+        /// Hand its routines (and the channels it leads) to this agent.
+        #[arg(long)]
+        reassign_to: Option<String>,
+        /// Delete its routines.
+        #[arg(long)]
+        delete_routines: bool,
+        /// Don't ask for confirmation.
+        #[arg(long, short)]
+        yes: bool,
+    },
     /// Archive an agent: hide it and pause its routines. Nothing is deleted.
     Archive {
         agent: String,
         /// Unarchive it instead.
         #[arg(long)]
         undo: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ChannelsCommand {
+    /// List channels (Home first).
+    List {
+        /// Include archived channels.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Create a topic channel.
+    New {
+        /// Its #name: lowercase letters, digits and dashes.
+        slug: String,
+        #[arg(long)]
+        title: Option<String>,
+        /// Instructions every agent in it follows.
+        #[arg(long)]
+        instructions: Option<String>,
+    },
+    /// Rename or re-describe a topic channel.
+    Edit {
+        channel: String,
+        /// The new #name.
+        #[arg(long)]
+        slug: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        /// New instructions (an empty string clears them).
+        #[arg(long)]
+        instructions: Option<String>,
+    },
+    /// Archive a channel: hide it, keep everything.
+    Archive {
+        channel: String,
+        /// Unarchive it instead.
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Delete a topic channel for good: its posts go, its conversations
+    /// stay in History.
+    Delete {
+        channel: String,
+        /// Don't ask for confirmation.
+        #[arg(long, short)]
+        yes: bool,
     },
 }
 
