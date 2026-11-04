@@ -120,10 +120,7 @@ impl AgentImpact {
             ));
         }
         if !self.member_channels.is_empty() {
-            lines.push(format!(
-                "- it leaves {}",
-                tags(&self.member_channels)
-            ));
+            lines.push(format!("- it leaves {}", tags(&self.member_channels)));
         }
         lines.push("its persona file is kept under ~/.tern/agents/.deleted/".into());
         for b in &self.blockers {
@@ -418,7 +415,13 @@ impl Runtime {
         if c.kind != "topic" {
             return refuse("Home and DMs keep their names: rename the agent instead");
         }
-        if slug != c.slug && self.store.channel(slug).map_err(anyhow::Error::from)?.is_some() {
+        if slug != c.slug
+            && self
+                .store
+                .channel(slug)
+                .map_err(anyhow::Error::from)?
+                .is_some()
+        {
             return refuse(format!("there is already a channel #{slug}"));
         }
         self.store

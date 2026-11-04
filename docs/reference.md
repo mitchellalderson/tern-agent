@@ -62,7 +62,8 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern gateway pair`](#tern-gateway-pair) | Pair a Telegram account, or a sender on a gateway connector. |
 | [`tern gateway add`](#gateway-connectors-ntfy-slack) | Install the ntfy or Slack gateway and enable it. |
 | [`tern gateway list`](#gateway-connectors-ntfy-slack) | Gateways in `config.toml` and whether each can run. |
-| [`tern agents`](#tern-agents) | List, create, edit or archive your agents. |
+| [`tern agents`](#tern-agents) | List, create, edit, rename, archive or delete your agents. |
+| [`tern channels`](#tern-channels) | List, create, rename, archive or delete topic channels. |
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
 | [`tern grants`](#new-sites-in-a-tainted-run) | The "always" grants approvals have recorded (commands, tools, sites), and removing them. |
@@ -189,10 +190,26 @@ Prints an 8-character one-time code on stdout. Send it to your Telegram bot with
 tern agents [list] [--all]                    # each agent: @name, name, memory, model, routines (--all: archived too)
 tern agents new <name> [--slug s] [--template research|inbox|marketing|blank] [--memory private|shared]
 tern agents edit <name>                       # open its persona.md in $VISUAL / $EDITOR
+tern agents rename <name> [new name] [--slug s]   # its display name and/or @name; its history and DM follow
 tern agents archive <name> [--undo]           # hide it and pause its routines; nothing is deleted
+tern agents delete <name> [--reassign-to other | --delete-routines] [--yes]
 ```
 
+`delete` shows what it touches and asks you to type the name (`--yes` skips that). The agent's conversations stay in History under its name; its private memories go; its persona file is kept under `~/.tern/agents/.deleted/`. If it owns routines you must say what becomes of them (`--reassign-to` or `--delete-routines`). It refuses while the agent has a run in progress or writes waiting in the outbox, and never deletes the default agent.
+
 Works without the daemon; a running one picks changes up at the agent's next run. See [Agents](#agents).
+
+### `tern channels`
+
+```sh
+tern channels [list] [--all]                  # Home, your topic channels and DMs (--all: archived too)
+tern channels new <slug> [--title t] [--instructions i]
+tern channels edit <channel> [--slug s] [--title t] [--instructions i]   # --instructions "" clears them
+tern channels archive <channel> [--undo]      # hide it; nothing is deleted
+tern channels delete <channel> [--yes]        # its posts go; its conversations stay in History
+```
+
+Only topic channels can be renamed or deleted: Home can't, and an agent's DM goes with its agent. Routines that posted to a deleted channel post to their agent's DM instead. Works without the daemon.
 
 ### `tern sessions`
 

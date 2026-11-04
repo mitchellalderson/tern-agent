@@ -143,10 +143,7 @@ fn deleting_an_agent_can_delete_its_routines_and_refuses_the_default_or_a_lead()
     assert!(s.delete_agent(&a.id, &RoutineFate::Delete).unwrap());
     assert!(s.schedule("r1").unwrap().is_none());
     assert!(s.delete_agent(DEFAULT_AGENT, &RoutineFate::Delete).is_err());
-    assert!(
-        !s.delete_agent("tern:nobody", &RoutineFate::Delete)
-            .unwrap()
-    );
+    assert!(!s.delete_agent("tern:nobody", &RoutineFate::Delete).unwrap());
 }
 
 #[test]

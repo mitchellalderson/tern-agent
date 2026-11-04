@@ -115,7 +115,9 @@ fn edit(
         bail!("nothing to change: pass --slug, --title or --instructions");
     }
     if c.kind != "topic" {
-        bail!("only topic channels can be edited here; a DM follows its agent (`tern agents rename`)");
+        bail!(
+            "only topic channels can be edited here; a DM follows its agent (`tern agents rename`)"
+        );
     }
     let title = title.map(|t| t.trim().to_owned());
     if title.as_deref() == Some("") {

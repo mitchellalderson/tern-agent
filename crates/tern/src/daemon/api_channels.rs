@@ -344,9 +344,9 @@ async fn delete(
     }
     let done = m.rt.delete_channel(&c).map_err(manage_err)?;
     m.channels_changed();
-    let _ = m.rt.changes.send(tern_core::models::Change::SchedulesChanged {
-        id: String::new(),
-    });
+    let _ =
+        m.rt.changes
+            .send(tern_core::models::Change::SchedulesChanged { id: String::new() });
     Ok(Json(done))
 }
 

@@ -24,6 +24,9 @@ use crate::{HistoryMessage, PendingSecret, Started, UserPrompt};
 /// (session, model, text) passed to `start_run`.
 type StartCall = (Option<String>, Option<String>, String);
 
+/// (what, id, slug, title) passed to `rename`.
+type Renamed = (crate::Managed, String, Option<String>, Option<String>);
+
 /// (id, approve, input, note) passed to `decide_outbox`.
 type Decided = (i64, bool, Option<serde_json::Value>, Option<String>);
 
@@ -54,7 +57,7 @@ struct Fake {
     suggestions: Mutex<Vec<(i64, bool)>>,
     /// (what, id, slug, title) passed to `rename`; (what, id, choice)
     /// passed to `delete`.
-    renames: Mutex<Vec<(crate::Managed, String, Option<String>, Option<String>)>>,
+    renames: Mutex<Vec<Renamed>>,
     deletes: Mutex<Vec<(crate::Managed, String, crate::DeleteChoice)>>,
 }
 
@@ -1943,11 +1946,17 @@ fn channels_and_agents_are_renamed_and_deleted_only_after_confirming() {
     submit(&mut app, "/channel delete finances");
     let n = notices(&app);
     assert!(n.contains("Delete Channel c-fin?"), "{n}");
-    assert!(n.contains("Confirm with: /channel delete finances yes"), "{n}");
+    assert!(
+        n.contains("Confirm with: /channel delete finances yes"),
+        "{n}"
+    );
     assert!(fake.deletes.lock().unwrap().is_empty());
     submit(&mut app, "/channel delete finances yes");
     assert_eq!(fake.deletes.lock().unwrap().len(), 1);
-    assert!(app.channel.is_none(), "the open channel was deleted: back in Home");
+    assert!(
+        app.channel.is_none(),
+        "the open channel was deleted: back in Home"
+    );
     // Home and DMs are refused before asking the backend.
     submit(&mut app, "/channel delete home yes");
     assert!(notices(&app).contains("isn't a topic channel"));

@@ -242,7 +242,9 @@ impl Store {
             Ok(n.max(0) as usize)
         };
         let mut stmt = conn.prepare("SELECT id, prompt FROM schedules WHERE channel_id = ?1")?;
-        let rows = stmt.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let rows = stmt.query_map([id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
         let routines = rows
             .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
@@ -269,7 +271,9 @@ impl Store {
     pub fn set_channel_slug(&self, id: &str, slug: &str) -> Result<bool> {
         let conn = self.conn()?;
         let kind: Option<String> = conn
-            .query_row("SELECT kind FROM channels WHERE id = ?1", [id], |r| r.get(0))
+            .query_row("SELECT kind FROM channels WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
             .optional()?;
         match kind.as_deref() {
             None => Ok(false),
@@ -295,11 +299,9 @@ impl Store {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let row: Option<(String, String)> = tx
-            .query_row(
-                "SELECT kind, slug FROM channels WHERE id = ?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
+            .query_row("SELECT kind, slug FROM channels WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .optional()?;
         let Some((kind, slug)) = row else {
             return Ok(false);
@@ -336,10 +338,7 @@ impl Store {
             ),
             [id],
         )?;
-        tx.execute(
-            &format!("DELETE FROM posts WHERE id IN ({doomed})"),
-            [id],
-        )?;
+        tx.execute(&format!("DELETE FROM posts WHERE id IN ({doomed})"), [id])?;
         tx.execute("DELETE FROM channel_agents WHERE channel_id = ?1", [id])?;
         tx.execute(
             "UPDATE sessions SET channel_id = 'home' WHERE channel_id = ?1",

@@ -273,7 +273,8 @@ information, but the taint flag does the actual enforcing.
 |---|---|---|
 | GET | `/v1/channels` | `[{id, slug, title, kind, instructions, last_post_id, needs_you, active_runs}]` |
 | POST | `/v1/channels` | `{slug, title, kind?, instructions?}` |
-| PATCH | `/v1/channels/{id}` | title, instructions, archive |
+| PATCH | `/v1/channels/{id}` | slug (rename a topic channel), title, instructions, archive |
+| DELETE / GET | `/v1/channels/{id}?confirm=true` / `/v1/channels/{id}/impact` | delete a topic channel: its posts go, its conversations stay in History (DECISIONS.md "Editing and deleting") |
 | GET | `/v1/channels/{id}/posts?before=&limit=` | newest page first; each post with its author and run |
 | POST | `/v1/channels/{id}/posts` | `{text, reply_to?, new_topic?}` → `{post?, run_id, session_id, queued: bool, new_segment: bool}`. On Home this is how you send. |
 | GET | `/v1/channels/home/stream?before=&limit=` | Home's segments' messages and Home's posts, interleaved, newest page first, with a marker at each cut |

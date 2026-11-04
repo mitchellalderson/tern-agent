@@ -793,10 +793,8 @@ impl Backend for Remote {
     fn delete_preview(&self, what: tern_tui::Managed, id: &str) -> BackendResult<String> {
         let (text, blockers) = match what {
             tern_tui::Managed::Agent => {
-                let i: crate::manage::AgentImpact = self.get(&format!(
-                    "/v1/agents/{}/impact",
-                    id.trim_start_matches('@')
-                ))?;
+                let i: crate::manage::AgentImpact =
+                    self.get(&format!("/v1/agents/{}/impact", id.trim_start_matches('@')))?;
                 (i.describe(), i.blockers)
             }
             tern_tui::Managed::Channel => {

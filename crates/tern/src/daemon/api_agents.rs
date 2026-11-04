@@ -201,7 +201,10 @@ struct ListQuery {
 async fn list(State(m): State<Shared>, Query(q): Query<ListQuery>) -> ApiResult<Vec<Agent>> {
     let yes = |v: &Option<String>| matches!(v.as_deref(), Some("1" | "true"));
     let deleted = yes(&q.deleted);
-    let mut rows = m.rt.store.agents(deleted || yes(&q.archived)).map_err(internal)?;
+    let mut rows =
+        m.rt.store
+            .agents(deleted || yes(&q.archived))
+            .map_err(internal)?;
     if deleted {
         rows.extend(m.rt.store.deleted_agents().map_err(internal)?);
     }
@@ -447,9 +450,8 @@ async fn delete(
             a.slug, a.slug
         )));
     }
-    let done = m
-        .rt
-        .delete_agent(
+    let done =
+        m.rt.delete_agent(
             &a,
             &crate::manage::DeleteAgent {
                 reassign_to: q.reassign_to.filter(|r| !r.is_empty()),
@@ -458,10 +460,9 @@ async fn delete(
         )
         .map_err(manage_err)?;
     changed(&m);
-    let _ = m
-        .rt
-        .changes
-        .send(Change::SchedulesChanged { id: String::new() });
+    let _ =
+        m.rt.changes
+            .send(Change::SchedulesChanged { id: String::new() });
     Ok(Json(done))
 }
 
