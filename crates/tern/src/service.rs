@@ -116,7 +116,9 @@ pub struct State {
     pub tray_at_login: Option<bool>,
 }
 
-/// Paths in and around the macOS app bundles. Pure, so tested anywhere.
+/// Paths in and around the macOS app bundles. Pure, so tested anywhere,
+/// but only the macOS tray and its login items use it.
+#[cfg_attr(not(all(feature = "tray", target_os = "macos")), allow(dead_code))]
 pub mod bundle {
     use std::path::{Path, PathBuf};
 

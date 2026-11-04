@@ -12,6 +12,8 @@
 
 #[cfg(all(feature = "tray", target_os = "macos"))]
 mod macos;
+// Pure and tested everywhere; only the macOS tray uses it.
+#[cfg_attr(not(all(feature = "tray", target_os = "macos")), allow(dead_code))]
 pub mod model;
 #[cfg(all(feature = "tray", target_os = "macos"))]
 mod worker;
