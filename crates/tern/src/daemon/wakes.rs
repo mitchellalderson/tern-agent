@@ -130,6 +130,7 @@ impl Manager {
         taint: Option<&str>,
         model: Option<&str>,
         trigger: &str,
+        deliver_to: Option<&str>,
     ) -> anyhow::Result<Woken> {
         let store = &self.rt.store;
         if let Some((run_id, _)) = self.queue_message(session, text)? {
@@ -147,6 +148,10 @@ impl Manager {
             .rt
             .start_run(Some(session), model, text, "api", trigger)?;
         store.set_run_woken(&started.run_id, post_id, taint)?;
+        // A chat that posted it gets the answer (set before the run can end).
+        if let Some(t) = deliver_to {
+            store.set_run_deliver_to(&started.run_id, t)?;
+        }
         self.spawn(&started.session_id, &started.run_id, false);
         Ok(Woken {
             agent_id: agent.into(),
@@ -167,6 +172,7 @@ impl Manager {
         text: &str,
         reply_to: Option<i64>,
         model: Option<&str>,
+        deliver_to: Option<&str>,
     ) -> anyhow::Result<Sent> {
         let store = &self.rt.store;
         let mentioned = store.mentioned_agents(text)?;
@@ -204,9 +210,12 @@ impl Manager {
             ..NewPost::default()
         })?;
         let mut woke = Vec::with_capacity(threads.len());
-        for (agent, session) in &threads {
+        // A chat's send gets the first agent's answer back; the others'
+        // reach it as posts, under their names.
+        for (i, (agent, session)) in threads.iter().enumerate() {
+            let deliver = deliver_to.filter(|_| i == 0);
             woke.push(
-                self.wake(agent, session, row.id, text, None, model, "user")
+                self.wake(agent, session, row.id, text, None, model, "user", deliver)
                     .await?,
             );
         }
@@ -371,7 +380,7 @@ impl Manager {
                 queued: true,
             });
         }
-        self.wake(agent, session, post_id, text, taint, None, "wake")
+        self.wake(agent, session, post_id, text, taint, None, "wake", None)
             .await
     }
 

@@ -342,7 +342,11 @@ impl Backend for TuiBackend {
             .collect())
     }
 
-    fn create_channel(&self, slug: &str, title: Option<&str>) -> BackendResult<tern_tui::ChannelInfo> {
+    fn create_channel(
+        &self,
+        slug: &str,
+        title: Option<&str>,
+    ) -> BackendResult<tern_tui::ChannelInfo> {
         tern_core::channels::check_slug(slug)?;
         let store = &self.rt().store;
         if store.channel(slug).map_err(err)?.is_some() {

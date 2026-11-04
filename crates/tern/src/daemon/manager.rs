@@ -1251,6 +1251,39 @@ impl ChatHost for Chats {
         .map_err(|e| e.to_string())
     }
 
+    /// A chat posting in topic channel `channel` (C5): the same send as
+    /// the app's, with the first answer delivered back to the chat.
+    async fn send_to_channel(
+        &self,
+        source: &str,
+        chat: &str,
+        channel: &str,
+        text: &str,
+    ) -> Result<(String, String), String> {
+        let store = &self.0.rt.store;
+        let c = store
+            .channel(channel)
+            .map_err(err)?
+            .filter(|c| c.kind == "topic" && c.archived_at.is_none())
+            .ok_or_else(|| format!("no channel {channel}"))?;
+        let target = format!("{source}:{chat}");
+        let sent = self
+            .0
+            .send_to_topic(&c, text, None, None, Some(&target))
+            .await
+            .map_err(err)?;
+        let agent = sent
+            .woke
+            .first()
+            .and_then(|w| store.agent(&w.agent_id).ok().flatten())
+            .map_or_else(|| tern_core::channels::author::AGENT.to_owned(), |a| a.name);
+        Ok((sent.run_id, agent))
+    }
+
+    fn changes(&self) -> Option<tokio::sync::broadcast::Receiver<tern_core::models::Change>> {
+        Some(self.0.rt.subscribe_changes())
+    }
+
     /// The chat is a stream like Home (docs/channels-design.md §2.6): a
     /// message goes to the run working there, else to the current segment
     /// or, after idle hours or a new day, to a new one.

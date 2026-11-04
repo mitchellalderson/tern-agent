@@ -279,7 +279,11 @@ impl Backend for Fake {
         let c = |id: &str, slug: &str, kind: &str, needs_you| crate::ChannelInfo {
             id: id.into(),
             slug: slug.into(),
-            title: if slug == "home" { "Home".into() } else { slug.into() },
+            title: if slug == "home" {
+                "Home".into()
+            } else {
+                slug.into()
+            },
             kind: kind.into(),
             needs_you,
             active_runs: 0,
@@ -328,7 +332,11 @@ impl Backend for Fake {
         if accept {
             self.channels_made.lock().unwrap().push("travel".into());
         }
-        Ok(if accept { "created #travel".into() } else { "declined".into() })
+        Ok(if accept {
+            "created #travel".into()
+        } else {
+            "declined".into()
+        })
     }
     fn send_to_agent(
         &self,
@@ -1809,11 +1817,22 @@ fn channel_commands_switch_post_and_show_what_needs_you() {
         fake.channel_sends.lock().unwrap().as_slice(),
         [("c-fin".to_owned(), "And Northwind?".to_owned())]
     );
-    fake.channel_posts.lock().unwrap().get_mut("c-fin").unwrap().extend([
-        post(3, "you", "message", "And Northwind?", None),
-        post(4, "tern", "answer", "310 EUR.", Some("rc1")),
-        post(5, "Research", "answer", "Northwind's terms are net 30.", Some("rk")),
-    ]);
+    fake.channel_posts
+        .lock()
+        .unwrap()
+        .get_mut("c-fin")
+        .unwrap()
+        .extend([
+            post(3, "you", "message", "And Northwind?", None),
+            post(4, "tern", "answer", "310 EUR.", Some("rc1")),
+            post(
+                5,
+                "Research",
+                "answer",
+                "Northwind's terms are net 30.",
+                Some("rk"),
+            ),
+        ]);
     app.on_run_done(outcome(RunStatus::Completed));
     let n = notices(&app);
     assert!(n.contains("Research: Northwind's terms are net 30."), "{n}");
@@ -1824,7 +1843,13 @@ fn channel_commands_switch_post_and_show_what_needs_you() {
         "home".into(),
         vec![crate::PostLine {
             suggestion: Some((9, "travel".into(), true)),
-            ..post(6, "tern", "needs_you", "Suggests a new channel, #travel: Trips.", None)
+            ..post(
+                6,
+                "tern",
+                "needs_you",
+                "Suggests a new channel, #travel: Trips.",
+                None,
+            )
         }],
     );
     submit(&mut app, "/channel accept travel");
@@ -1838,7 +1863,11 @@ fn channel_commands_switch_post_and_show_what_needs_you() {
     submit(&mut app, "/channel home");
     assert!(app.channel.is_none());
     submit(&mut app, "hi");
-    assert_eq!(fake.started.lock().unwrap().len(), 1, "Home is the TUI's own sessions");
+    assert_eq!(
+        fake.started.lock().unwrap().len(),
+        1,
+        "Home is the TUI's own sessions"
+    );
     // /agent leaves the channel.
     submit(&mut app, "/channel finances");
     submit(&mut app, "/agent inbox");

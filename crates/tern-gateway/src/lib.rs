@@ -51,6 +51,68 @@ pub mod chat_agents {
     }
 }
 
+/// Which topic channel a chat (or forum topic) posts to (channels-design
+/// C5): `/channel` sets it. A forum topic made for a channel is that
+/// channel's; a chat without topics follows one channel at a time.
+pub mod chat_channels {
+    use tern_store::Store;
+
+    const NS: &str = "chat_channel";
+    const TOPICS: &str = "chat_channel_topic";
+
+    /// The channel `chat` (on `source`) posts to, if it's an active topic
+    /// channel.
+    pub fn get(store: &Store, source: &str, chat: &str) -> Option<tern_store::ChannelRow> {
+        let id = store
+            .kv_get(NS, &format!("{source}:{chat}"))
+            .ok()
+            .flatten()?;
+        store
+            .channel(&id)
+            .ok()
+            .flatten()
+            .filter(|c| c.kind == "topic" && c.archived_at.is_none())
+    }
+
+    pub fn set(store: &Store, source: &str, chat: &str, channel: &str) -> tern_store::Result<()> {
+        store.kv_set(NS, &format!("{source}:{chat}"), channel)
+    }
+
+    pub fn clear(store: &Store, source: &str, chat: &str) -> tern_store::Result<()> {
+        store.kv_delete(NS, &format!("{source}:{chat}"))
+    }
+
+    /// Every chat (or topic) posting to `channel`, on `source`.
+    pub fn chats_of(store: &Store, source: &str, channel: &str) -> Vec<String> {
+        let prefix = format!("{source}:");
+        store
+            .kv_list(NS)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, v)| v == channel)
+            .filter_map(|(k, _)| k.strip_prefix(&prefix).map(str::to_owned))
+            .collect()
+    }
+
+    /// The forum topic of `channel` in `chat`, once made.
+    pub fn topic(store: &Store, source: &str, chat: &str, channel: &str) -> Option<String> {
+        store
+            .kv_get(TOPICS, &format!("{source}:{chat}:{channel}"))
+            .ok()
+            .flatten()
+    }
+
+    pub fn set_topic(
+        store: &Store,
+        source: &str,
+        chat: &str,
+        channel: &str,
+        topic: &str,
+    ) -> tern_store::Result<()> {
+        store.kv_set(TOPICS, &format!("{source}:{chat}:{channel}"), topic)
+    }
+}
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -98,6 +160,23 @@ pub trait ChatHost: Send + Sync {
     /// Items waiting for the user (`/outbox`), oldest first.
     async fn pending_outbox(&self) -> Vec<OutboxItem> {
         Vec::new()
+    }
+    /// Post `text` in topic channel `channel` from `chat`: the lead (or the
+    /// agents it @mentions) answers, and the first answer is delivered to
+    /// the chat. Returns that run's id and its agent's name.
+    async fn send_to_channel(
+        &self,
+        _source: &str,
+        _chat: &str,
+        _channel: &str,
+        _text: &str,
+    ) -> Result<(String, String), String> {
+        Err("this tern has no channels".into())
+    }
+    /// What changes in the store (posts written), for chats following a
+    /// channel.
+    fn changes(&self) -> Option<broadcast::Receiver<tern_core::models::Change>> {
+        None
     }
 }
 

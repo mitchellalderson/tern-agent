@@ -322,9 +322,11 @@ Sidebar, top to bottom:
 
 ### 5.3 TUI and Telegram
 
-As the spec §4.2 says. TUI: `/channel <slug>` switches the composer's target and prints new posts inline;
-`/channels` lists them with needs-you counts. Telegram: forum topics through `message_thread_id` where available,
-otherwise `#slug ·` prefixes in the one chat. A reply in a topic goes to that channel's main thread.
+As the spec §4.2 says, built in C5. TUI: `/channel <slug>` switches the composer's target and prints new posts inline;
+`/channels` lists them with needs-you counts; the status line shows `#slug` and what needs you. Telegram: one topic per
+channel through `message_thread_id` where the chat has topics (a forum group; a private chat with topics, Bot API
+9.3, made by bots since 9.4), otherwise `#slug ·` prefixes in the one chat. Writing in a topic posts in that channel's
+one conversation (§6.2).
 
 ## 6. Phases
 
@@ -335,7 +337,7 @@ otherwise `#slug ·` prefixes in the one chat. A reply in a topic goes to that c
 | C2 | Desktop topic channels: sidebar, timeline, thread pane, new-channel dialog, routines choosing a channel. Approvals and secret requests move to Home. **Built** (DECISIONS.md "T2 C2"). | Yes: the channel view |
 | C3 | The `channel` step, `channel_read`, `channel_post`, taint on posts. **Built** (DECISIONS.md "T2 C3"). | Yes: agents now actually share the channel |
 | C4 | Sub-agents posting, `needs_you` pointers into Home, live member lines. **Built** (DECISIONS.md "T2 C4"). | Yes |
-| C5 | `channel_suggest`, TUI `/channel`, Telegram topics. | Yes |
+| C5 | `channel_suggest`, TUI `/channel`, Telegram topics. **Built** (DECISIONS.md "T2 C5"). | Yes |
 | Later | Agent profiles, designed in [agent-profiles-design.md](agent-profiles-design.md): authors become agents, each profile gets its own Home-style stream (a DM per agent, as Grok Bot does), `@mention` wakes an agent in a channel. Its AP0–AP1 fit after C3, AP2 after C4 (§8 there). Precomputed carry summaries. | |
 
 C1 stands on its own even if topic channels wait. C0 to C2 together look like the channel view; C3 is what makes it

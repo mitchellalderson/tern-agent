@@ -126,7 +126,8 @@ impl Manager {
             }
             return self.send_home(channel, text, new_topic, model).await;
         }
-        self.send_to_topic(channel, text, reply_to, model).await
+        self.send_to_topic(channel, text, reply_to, model, None)
+            .await
     }
 
     /// A reply under a post in Home or an agent's DM. Conversations are

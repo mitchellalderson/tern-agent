@@ -687,19 +687,19 @@ impl App {
                 .backend
                 .send_to_channel(&c.id, &text, self.model.as_deref()),
             (None, profile) => match profile {
-            Some(p) => {
-                let new_topic = std::mem::take(&mut self.new_topic);
-                let r = self
-                    .backend
-                    .send_to_agent(&p.id, &text, self.model.as_deref(), new_topic);
-                if r.is_err() {
-                    self.new_topic = new_topic;
+                Some(p) => {
+                    let new_topic = std::mem::take(&mut self.new_topic);
+                    let r =
+                        self.backend
+                            .send_to_agent(&p.id, &text, self.model.as_deref(), new_topic);
+                    if r.is_err() {
+                        self.new_topic = new_topic;
+                    }
+                    r
                 }
-                r
-            }
-            None => self
-                .backend
-                .start_run(session.as_deref(), self.model.as_deref(), &text),
+                None => self
+                    .backend
+                    .start_run(session.as_deref(), self.model.as_deref(), &text),
             },
         };
         match started {
@@ -1043,7 +1043,10 @@ impl App {
                     self.error("usage: /channel new <slug> [title]");
                     return vec![];
                 }
-                match self.backend.create_channel(slug.trim_start_matches('#'), title) {
+                match self
+                    .backend
+                    .create_channel(slug.trim_start_matches('#'), title)
+                {
                     Ok(c) => self.switch_channel(c),
                     Err(e) => self.error(e),
                 }
@@ -1122,7 +1125,9 @@ impl App {
             self.channel_seen = last.id;
         }
         for p in fresh {
-            if !first && (p.author_kind == "user" || (driven.is_some() && p.run_id.as_deref() == driven)) {
+            if !first
+                && (p.author_kind == "user" || (driven.is_some() && p.run_id.as_deref() == driven))
+            {
                 continue;
             }
             self.notice(post_line(&p));
@@ -1151,11 +1156,15 @@ impl App {
             places.push(c.id.clone());
         }
         let found = places.iter().find_map(|place| {
-            self.backend.channel_posts(place, 50).ok()?.into_iter().find_map(|p| {
-                p.suggestion
-                    .filter(|(_, s, pending)| *pending && (slug.is_empty() || s == slug))
-                    .map(|(id, s, _)| (id, s))
-            })
+            self.backend
+                .channel_posts(place, 50)
+                .ok()?
+                .into_iter()
+                .find_map(|p| {
+                    p.suggestion
+                        .filter(|(_, s, pending)| *pending && (slug.is_empty() || s == slug))
+                        .map(|(id, s, _)| (id, s))
+                })
         });
         let Some((id, s)) = found else {
             return self.error(if slug.is_empty() {

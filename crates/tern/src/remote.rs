@@ -750,7 +750,11 @@ impl Backend for Remote {
         Ok(list.into_iter().map(channel_info).collect())
     }
 
-    fn create_channel(&self, slug: &str, title: Option<&str>) -> BackendResult<tern_tui::ChannelInfo> {
+    fn create_channel(
+        &self,
+        slug: &str,
+        title: Option<&str>,
+    ) -> BackendResult<tern_tui::ChannelInfo> {
         let c: crate::daemon::api_channels::Channel = self.send_json(
             reqwest::Method::POST,
             "/v1/channels",
@@ -893,4 +897,3 @@ pub(crate) fn post_line(p: tern_core::channels::Post) -> tern_tui::PostLine {
         run_id: p.run_id,
     }
 }
-

@@ -20,11 +20,27 @@ use crate::{ChatHost, Gateway};
 use api::{Api, Buttons, CallbackQuery, MAX_MESSAGE, Message, split_message};
 
 pub const SOURCE: &str = "telegram";
+
+/// What a reply from `author` in channel `slug` starts with: in the
+/// channel's own topic, just the author (none for tern); in a chat
+/// following it, `#slug · ` first.
+fn channel_prefix(slug: &str, in_topic: bool, author: Option<&str>) -> String {
+    let who = author
+        .filter(|a| *a != tern_store::DEFAULT_AGENT)
+        .map(|a| format!("{a} · "))
+        .unwrap_or_default();
+    if in_topic {
+        who
+    } else {
+        format!("#{slug} · {who}")
+    }
+}
 const EDIT_INTERVAL: Duration = Duration::from_secs(1);
 const OFFSET_KEY: &str = "update_offset";
 
 const HELP: &str = "Send me a message and I'll work on it.\n\
 /agents — your agents; /agent <name> — talk to one (/agent tern: back)\n\
+/channels — your channels; /channel <name> — post in one (/channel home: back)\n\
 /new — new topic (I keep a summary of this one)\n\
 /model [provider:model] — show or change the model\n\
 /stop — stop the current task\n\
@@ -207,6 +223,178 @@ impl TelegramGateway {
         self.reply_in(chat, thread, &text).await;
     }
 
+    /// `/channels`.
+    fn channels_text(&self, chat_ref: &str) -> String {
+        let current = crate::chat_channels::get(&self.store, SOURCE, chat_ref).map(|c| c.id);
+        let topics: Vec<_> = self
+            .store
+            .channels(false)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| c.kind == "topic")
+            .collect();
+        if topics.is_empty() {
+            return "No channels yet. /channel new <name> makes one.".into();
+        }
+        let lines: Vec<String> = topics
+            .iter()
+            .map(|c| {
+                let here = if current.as_deref() == Some(c.id.as_str()) {
+                    "▸"
+                } else {
+                    "·"
+                };
+                let waiting = match self.store.open_needs_you(&c.id).unwrap_or(0) {
+                    0 => String::new(),
+                    n => format!(" ({n} need you)"),
+                };
+                format!("{here} #{}{waiting} (/channel {})", c.slug, c.slug)
+            })
+            .collect();
+        format!("Your channels:\n{}", lines.join("\n"))
+    }
+
+    /// `/channel <name>` (or `new <name> [title]`, or `home`): post in that
+    /// channel from now on. Where topics are available (a forum group, or a
+    /// private chat with topics, Bot API 9.3–9.4), each channel gets one
+    /// topic; otherwise this chat follows it, its messages prefixed
+    /// `#slug ·`.
+    async fn switch_channel(&self, msg: &Message, chat_ref: &str, arg: &str) {
+        let (chat, thread) = (msg.chat.id, msg.message_thread_id);
+        let (first, rest) = match arg.split_once(char::is_whitespace) {
+            Some((f, r)) => (f, r.trim()),
+            None => (arg, ""),
+        };
+        let slug = match first {
+            "" => {
+                let text = self.channels_text(chat_ref);
+                return self.reply_in(chat, thread, &text).await;
+            }
+            "home" => {
+                let _ = crate::chat_channels::clear(&self.store, SOURCE, chat_ref);
+                let text = format!("Back to {}.", self.chat_agent_name(chat_ref));
+                return self.reply_in(chat, thread, &text).await;
+            }
+            "new" => {
+                let (slug, title) = match rest.split_once(char::is_whitespace) {
+                    Some((s, t)) => (s.trim_start_matches('#'), t.trim()),
+                    None => (rest.trim_start_matches('#'), ""),
+                };
+                if let Err(e) = tern_core::channels::check_slug(slug) {
+                    return self.reply_in(chat, thread, &format!("Error: {e}")).await;
+                }
+                if self.store.channel(slug).ok().flatten().is_none()
+                    && let Err(e) = self.store.create_channel(&tern_store::ChannelRow {
+                        id: tern_core::agent::new_id(),
+                        slug: slug.to_owned(),
+                        title: if title.is_empty() { slug } else { title }.to_owned(),
+                        kind: "topic".into(),
+                        created_by: "user".into(),
+                        ..Default::default()
+                    })
+                {
+                    return self.reply_in(chat, thread, &format!("Error: {e}")).await;
+                }
+                slug.to_owned()
+            }
+            other => other.trim_start_matches('#').to_owned(),
+        };
+        let channel = self
+            .store
+            .channel(&slug)
+            .ok()
+            .flatten()
+            .filter(|c| c.kind == "topic" && c.archived_at.is_none());
+        let Some(c) = channel else {
+            let text = format!("No channel #{slug}.\n{}", self.channels_text(chat_ref));
+            return self.reply_in(chat, thread, &text).await;
+        };
+        // One topic per channel where the chat has topics: the one made
+        // before, else a new one if the bot may make it.
+        let base = chat.to_string();
+        if let Some(topic) = crate::chat_channels::topic(&self.store, SOURCE, &base, &c.id)
+            .and_then(|t| t.parse::<i64>().ok())
+        {
+            let text = format!("#{} · This topic is #{}: write there.", c.slug, c.slug);
+            return self.reply_in(chat, Some(topic), &text).await;
+        }
+        match self
+            .api
+            .create_forum_topic(chat, &format!("#{}", c.slug))
+            .await
+        {
+            Ok(topic) => {
+                let topic_ref = format!("{chat}/{topic}");
+                let saved = crate::chat_channels::set(&self.store, SOURCE, &topic_ref, &c.id)
+                    .and_then(|()| {
+                        crate::chat_channels::set_topic(
+                            &self.store,
+                            SOURCE,
+                            &base,
+                            &c.id,
+                            &topic.to_string(),
+                        )
+                    });
+                if let Err(e) = saved {
+                    tracing::warn!(error = %e, "could not save the channel's topic");
+                }
+                let text = format!(
+                    "#{} · This topic is #{}. Everything said there shows here; write here to post in it.",
+                    c.slug, c.slug
+                );
+                self.reply_in(chat, Some(topic), &text).await;
+            }
+            Err(e) => {
+                // No topics here: this chat follows the channel.
+                tracing::info!(error = %e, "no topic for the channel; following it in this chat");
+                if let Err(e) = crate::chat_channels::set(&self.store, SOURCE, chat_ref, &c.id) {
+                    return self.reply_in(chat, thread, &format!("Error: {e}")).await;
+                }
+                let text = format!(
+                    "#{} · You're posting in #{} now; its posts show here as #{} · …. /channel home goes back.",
+                    c.slug, c.slug, c.slug
+                );
+                self.reply_in(chat, thread, &text).await;
+            }
+        }
+    }
+
+    /// A post in a channel some chats follow: send it to each, unless it's
+    /// the user's own, a quiet note, or the answer a chat asked for (it's
+    /// delivered there as the reply).
+    async fn on_post(&self, post: &tern_core::channels::Post) {
+        if matches!(post.author_kind.as_str(), "user" | "system") || post.kind == "pointer" {
+            return;
+        }
+        // An answer the chat that asked gets delivered.
+        let delivered_to = post
+            .run_id
+            .as_deref()
+            .and_then(|r| self.store.run_deliver_to(r).ok().flatten());
+        let Some(c) = self.store.channel(&post.channel_id).ok().flatten() else {
+            return;
+        };
+        if c.kind != "topic" {
+            return;
+        }
+        for chat_ref in crate::chat_channels::chats_of(&self.store, SOURCE, &c.id) {
+            if delivered_to.as_deref() == Some(format!("{SOURCE}:{chat_ref}").as_str()) {
+                continue;
+            }
+            let Some((chat, thread)) = place(&chat_ref) else {
+                continue;
+            };
+            let prefix = channel_prefix(&c.slug, thread.is_some(), Some(&post.author));
+            let waiting = if post.kind == "needs_you" && post.resolved_at.is_none() {
+                " (needs you)"
+            } else {
+                ""
+            };
+            let text = format!("{prefix}{}{waiting}", post.text.trim());
+            self.reply_in(chat, thread, &text).await;
+        }
+    }
+
     /// An agent's current name (the default agent can be renamed).
     fn agent_name(&self, id: &str) -> String {
         self.store
@@ -234,8 +422,11 @@ impl TelegramGateway {
 
     async fn on_message(&self, host: &Arc<dyn ChatHost>, msg: Message) {
         let chat = msg.chat.id;
-        // In a forum group each topic is its own chat (agent profiles §6.4).
-        let thread = msg.message_thread_id.filter(|_| msg.chat.is_forum);
+        // In a forum group, or a private chat with topics (Bot API 9.3),
+        // each topic is its own chat (agent profiles §6.4).
+        let thread = msg
+            .message_thread_id
+            .filter(|_| msg.chat.is_forum || msg.is_topic_message);
         let Some(text) = msg.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
             return;
         };
@@ -270,7 +461,33 @@ impl TelegramGateway {
                 let text = self.agents_text(&chat_ref);
                 self.reply_in(chat, thread, &text).await;
             }
-            "/agent" => self.switch_agent(&msg, &chat_ref, arg).await,
+            "/agent" => {
+                if let Some(c) = crate::chat_channels::get(&self.store, SOURCE, &chat_ref) {
+                    if thread.is_some() {
+                        let text = format!(
+                            "#{} · This topic is #{}. Use /agent in the main chat.",
+                            c.slug, c.slug
+                        );
+                        return self.reply_in(chat, thread, &text).await;
+                    }
+                    // A chat follows one channel or agent at a time.
+                    let _ = crate::chat_channels::clear(&self.store, SOURCE, &chat_ref);
+                }
+                self.switch_agent(&msg, &chat_ref, arg).await
+            }
+            "/channels" => {
+                let text = self.channels_text(&chat_ref);
+                self.reply_in(chat, thread, &text).await;
+            }
+            "/channel" => self.switch_channel(&msg, &chat_ref, arg).await,
+            "/new" if crate::chat_channels::get(&self.store, SOURCE, &chat_ref).is_some() => {
+                self.reply_in(
+                    chat,
+                    thread,
+                    "A channel is one conversation, without topics of its own. /channel home goes back.",
+                )
+                .await
+            }
             "/new" => match host.new_session(SOURCE, &chat_ref).await {
                 Ok(()) => {
                     let text = format!(
@@ -325,6 +542,25 @@ impl TelegramGateway {
                     host.status(SOURCE, &chat_ref).await
                 );
                 self.reply_in(chat, thread, &text).await
+            }
+            _ if let Some(c) = crate::chat_channels::get(&self.store, SOURCE, &chat_ref) => {
+                self.api.typing(chat).await;
+                match host.send_to_channel(SOURCE, &chat_ref, &c.id, text).await {
+                    Ok((run_id, agent)) => {
+                        let prefix = channel_prefix(&c.slug, thread.is_some(), Some(&agent));
+                        self.streams
+                            .lock()
+                            .await
+                            .entry(run_id)
+                            .or_insert_with(|| Stream {
+                                chat,
+                                thread,
+                                prefix,
+                                ..Stream::default()
+                            });
+                    }
+                    Err(e) => self.reply_in(chat, thread, &format!("Error: {e}")).await,
+                }
             }
             _ => {
                 self.api.typing(chat).await;
@@ -617,6 +853,22 @@ impl Gateway for TelegramGateway {
                 }
             })
         };
+        // Channels' posts reach the chats following them (C5).
+        let posts = host.changes().map(|mut rx| {
+            let (me, cancel) = (self.clone(), cancel.clone());
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        c = rx.recv() => match c {
+                            Ok(tern_core::models::Change::PostCreated { post }) => me.on_post(&post).await,
+                            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(broadcast::error::RecvError::Closed) => return,
+                        },
+                        () = cancel.cancelled() => return,
+                    }
+                }
+            })
+        });
         let flusher = {
             let (me, cancel) = (self.clone(), cancel.clone());
             tokio::spawn(async move {
@@ -676,6 +928,9 @@ impl Gateway for TelegramGateway {
         }
         events.abort();
         flusher.abort();
+        if let Some(p) = posts {
+            p.abort();
+        }
     }
 
     async fn deliver(&self, target: &str, run_id: Option<&str>, text: &str) -> Result<(), String> {

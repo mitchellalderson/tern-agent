@@ -5,8 +5,10 @@ Bot API (token must be TEST:TOKEN):
     getUpdates, sendMessage, editMessageText, answerCallbackQuery, sendChatAction,
     createForumTopic
 Control endpoints for tests:
-    POST /control/message   {"chat_id", "user_id", "text", "forum"?, "thread"?}  a user sends a
-                            message (in a forum group's topic with "forum": true)
+    POST /control/message   {"chat_id", "user_id", "text", "forum"?, "topics"?, "thread"?}  a user
+                            sends a message (in a forum group's topic with "forum": true; in a
+                            private chat with topics, Bot API 9.3, with "topics": true).
+                            createForumTopic works only in chats seen as one of those.
     POST /control/callback  {"chat_id", "user_id", "message_id", "data"}  a user taps a button
     GET  /control/messages  everything the bot sent, with current text and buttons
 """
@@ -23,6 +25,7 @@ messages = {}  # message_id -> {"message_id", "chat_id", "text", "buttons", "edi
 next_update = [1]
 next_message = [100]
 next_topic = [500]
+topic_chats = set()  # chats where createForumTopic works
 
 
 def add_update(u):
@@ -65,6 +68,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         b = self.body()
         if self.path == "/control/message":
+            if b.get("forum") or b.get("topics"):
+                with lock:
+                    topic_chats.add(b["chat_id"])
             msg = {
                 "message_id": 1,
                 "chat": {"id": b["chat_id"], "type": "supergroup" if b.get("forum") else "private",
@@ -72,6 +78,8 @@ class Handler(BaseHTTPRequestHandler):
                 "from": {"id": b["user_id"]}, "text": b["text"]}
             if b.get("thread"):
                 msg["message_thread_id"] = b["thread"]
+                if b.get("topics"):
+                    msg["is_topic_message"] = True
             add_update({"message": msg})
             return self.reply({"ok": True})
         if self.path == "/control/callback":
@@ -117,6 +125,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"ok": True, "result": True})
         if method == "createForumTopic":
             with lock:
+                if b["chat_id"] not in topic_chats:
+                    return self.reply({"ok": False, "error_code": 400,
+                                       "description": "Bad Request: the chat is not a forum"}, 400)
                 tid = next_topic[0]
                 next_topic[0] += 1
             return self.reply({"ok": True, "result": {"message_thread_id": tid, "name": b["name"]}})

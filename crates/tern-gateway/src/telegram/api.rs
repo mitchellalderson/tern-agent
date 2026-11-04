@@ -48,9 +48,13 @@ pub struct Message {
     pub chat: Chat,
     pub from: Option<User>,
     pub text: Option<String>,
-    /// In a forum supergroup: the topic it was posted in.
+    /// In a forum supergroup, or a private chat with topics (Bot API 9.3):
+    /// the topic it was posted in.
     #[serde(default)]
     pub message_thread_id: Option<i64>,
+    /// Posted in a topic (private chats with topics, Bot API 9.3).
+    #[serde(default)]
+    pub is_topic_message: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
