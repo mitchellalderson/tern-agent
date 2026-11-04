@@ -65,7 +65,10 @@ async fn an_agents_autonomy_ceiling_caps_its_runs_routines_and_delegates() {
         json!({ "name": "Bad", "autonomy": "reckless" }),
     )
     .await;
-    assert!(code == 400 || code == 422, "an unknown level is refused: {code} {bad}");
+    assert!(
+        code == 400 || code == 422,
+        "an unknown level is refused: {code} {bad}"
+    );
 
     let (code, careful) = post(
         &s,
@@ -123,7 +126,12 @@ async fn an_agents_autonomy_ceiling_caps_its_runs_routines_and_delegates() {
     // Editable, removable, and recorded in the ledger.
     let (_, a) = patch(&s, "/v1/agents/careful", json!({ "autonomy": null })).await;
     assert_eq!(a.get("autonomy"), None, "{a}");
-    let (_, a) = patch(&s, "/v1/agents/careful", json!({ "autonomy": "supervised" })).await;
+    let (_, a) = patch(
+        &s,
+        "/v1/agents/careful",
+        json!({ "autonomy": "supervised" }),
+    )
+    .await;
     assert_eq!(a["autonomy"], "supervised");
     let n: i64 = env.query("SELECT COUNT(*) FROM ledger WHERE kind = 'autonomy.agent'");
     assert!(n >= 2, "ledger entries: {n}");
@@ -205,13 +213,23 @@ async fn let_agents_decide_routes_a_post_to_the_right_members() {
         let (code, c) = post(&s, "/v1/channels", json!({ "slug": slug })).await;
         assert_eq!(code, 201, "{c}");
         for a in ["research", "ops"] {
-            post(&s, &format!("/v1/channels/{slug}/agents"), json!({ "agent": a })).await;
+            post(
+                &s,
+                &format!("/v1/channels/{slug}/agents"),
+                json!({ "agent": a }),
+            )
+            .await;
         }
     }
     // Off by default, and only for topic channels.
     let (_, m) = get(&s, "/v1/channels/ask/agents").await;
     assert_eq!(m["let_agents_decide"], false);
-    let (code, _) = patch(&s, "/v1/channels/home", json!({ "let_agents_decide": true })).await;
+    let (code, _) = patch(
+        &s,
+        "/v1/channels/home",
+        json!({ "let_agents_decide": true }),
+    )
+    .await;
     assert_eq!(code, 400);
     let (code, c) = patch(&s, "/v1/channels/ask", json!({ "let_agents_decide": true })).await;
     assert_eq!(code, 200, "{c}");
@@ -353,21 +371,47 @@ async fn an_agent_with_its_own_bot_is_its_own_contact_and_pairing_is_shared() {
     // The CLI sets it up without a daemon: an unknown or shared secret, and
     // the default agent's bot, are refused.
     let run = |args: &[&str]| env.cmd(args).output().unwrap();
-    assert!(run(&["agents", "new", "Research", "--template", "research"]).status.success());
+    assert!(
+        run(&["agents", "new", "Research", "--template", "research"])
+            .status
+            .success()
+    );
     assert!(run(&["agents", "new", "Other"]).status.success());
-    assert!(!run(&["agents", "telegram", "tern", "RESEARCH_TOKEN"]).status.success());
-    assert!(!run(&["agents", "telegram", "research", "MAIN_TOKEN"]).status.success());
+    assert!(
+        !run(&["agents", "telegram", "tern", "RESEARCH_TOKEN"])
+            .status
+            .success()
+    );
+    assert!(
+        !run(&["agents", "telegram", "research", "MAIN_TOKEN"])
+            .status
+            .success()
+    );
     let ok = run(&["agents", "telegram", "research", "RESEARCH_TOKEN"]);
-    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
-    assert!(!run(&["agents", "telegram", "other", "RESEARCH_TOKEN"]).status.success());
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(
+        !run(&["agents", "telegram", "other", "RESEARCH_TOKEN"])
+            .status
+            .success()
+    );
     let list = String::from_utf8_lossy(&run(&["agents"]).stdout).into_owned();
-    assert!(list.lines().any(|l| l.contains("@research") && l.contains("own bot")), "{list}");
+    assert!(
+        list.lines()
+            .any(|l| l.contains("@research") && l.contains("own bot")),
+        "{list}"
+    );
     // Tests point it at the fake: the API refuses an api_url, so write it.
     env.db()
         .execute(
             "UPDATE agents SET telegram = ?1 WHERE slug = 'research'",
-            [json!({ "bot_token_secret": "RESEARCH_TOKEN", "api_url": research_bot.url })
-                .to_string()],
+            [
+                json!({ "bot_token_secret": "RESEARCH_TOKEN", "api_url": research_bot.url })
+                    .to_string(),
+            ],
         )
         .unwrap();
 
@@ -419,7 +463,9 @@ async fn an_agent_with_its_own_bot_is_its_own_contact_and_pairing_is_shared() {
     assert_eq!(channel, dm);
     // Nothing to switch on it.
     research_bot.says(1, "/agent tern").await;
-    research_bot.wait_for("This bot is Research's own chat").await;
+    research_bot
+        .wait_for("This bot is Research's own chat")
+        .await;
     // The main bot is unchanged.
     main_bot.says(1, "Hello tern").await;
     main_bot.wait_for("tern here.").await;

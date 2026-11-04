@@ -408,9 +408,10 @@ impl Installer {
     /// its row and its DM. Returns its id.
     fn make_agent(&self, b: &Bundle, slug: &str, store: &Store) -> Result<String, BundleError> {
         let text = |part: &str| {
-            b.file_text(&format!("agents/{slug}/{part}")).ok_or_else(|| {
-                BundleError::Invalid(format!("agent {slug} needs agents/{slug}/{part}"))
-            })
+            b.file_text(&format!("agents/{slug}/{part}"))
+                .ok_or_else(|| {
+                    BundleError::Invalid(format!("agent {slug} needs agents/{slug}/{part}"))
+                })
         };
         let t = AgentTemplate::parse(slug, &text(AGENT_FILE)?)?;
         let persona = text(PERSONA_FILE)?;
@@ -445,9 +446,10 @@ impl Installer {
             id: id.clone(),
             slug: slug.to_owned(),
             name: t.name.trim().to_owned(),
-            avatar: t.avatar.as_ref().map(|a| {
-                serde_json::json!({ "glyph": a.glyph, "color": a.color }).to_string()
-            }),
+            avatar: t
+                .avatar
+                .as_ref()
+                .map(|a| serde_json::json!({ "glyph": a.glyph, "color": a.color }).to_string()),
             tools: Some(
                 serde_json::to_string(&t.scope()).map_err(|e| BundleError::Io(e.to_string()))?,
             ),

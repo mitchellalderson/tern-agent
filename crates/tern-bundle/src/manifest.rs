@@ -187,7 +187,9 @@ pub fn kind(path: &str) -> Result<Kind, BundleError> {
         ["skills", ..] => Err(bad(
             "skills are skills/<name>/SKILL.md (and files beside it)",
         )),
-        ["agents", slug, AGENT_FILE | PERSONA_FILE] if tern_core::agents::check_slug(slug).is_ok() => {
+        ["agents", slug, AGENT_FILE | PERSONA_FILE]
+            if tern_core::agents::check_slug(slug).is_ok() =>
+        {
             Ok(Kind::Agent((*slug).to_owned()))
         }
         ["agents", ..] => Err(bad(

@@ -70,8 +70,14 @@ fn header(version: &str) -> Header {
 
 fn files(agent: &str) -> BTreeMap<String, Vec<u8>> {
     BTreeMap::from([
-        ("agents/researcher/agent.toml".to_owned(), agent.as_bytes().to_vec()),
-        ("agents/researcher/persona.md".to_owned(), PERSONA.as_bytes().to_vec()),
+        (
+            "agents/researcher/agent.toml".to_owned(),
+            agent.as_bytes().to_vec(),
+        ),
+        (
+            "agents/researcher/persona.md".to_owned(),
+            PERSONA.as_bytes().to_vec(),
+        ),
         ("routines.toml".to_owned(), ROUTINES.as_bytes().to_vec()),
     ])
 }
@@ -100,9 +106,16 @@ async fn an_agent_template_installs_as_an_agent_and_removes_by_archiving() {
 
     // The plan says what the agent is and what it may reach.
     let a = &p.plan.agents[0];
-    assert_eq!((a.slug.as_str(), a.name.as_str()), ("researcher", "Researcher"));
+    assert_eq!(
+        (a.slug.as_str(), a.name.as_str()),
+        ("researcher", "Researcher")
+    );
     assert_eq!(a.autonomy.as_deref(), Some("readonly"));
-    assert!(a.tools.contains(&"builtins: read_only".to_owned()), "{:?}", a.tools);
+    assert!(
+        a.tools.contains(&"builtins: read_only".to_owned()),
+        "{:?}",
+        a.tools
+    );
     assert!(a.tools.contains(&"connectors: none".to_owned()));
     assert!(!a.existing && !a.kept);
     let text = p.plan.render();
@@ -112,10 +125,13 @@ async fn an_agent_template_installs_as_an_agent_and_removes_by_archiving() {
 
     // Nothing exists until it's installed.
     assert!(e.store.agent("researcher").unwrap().is_none());
-    let out = i
-        .install(&p, &e.store, &InstallOptions::default())
-        .unwrap();
-    assert!(out.lines.iter().any(|l| l.starts_with("agent @researcher: created")), "{out:?}");
+    let out = i.install(&p, &e.store, &InstallOptions::default()).unwrap();
+    assert!(
+        out.lines
+            .iter()
+            .any(|l| l.starts_with("agent @researcher: created")),
+        "{out:?}"
+    );
     let agent = e.store.agent("researcher").unwrap().unwrap();
     assert_eq!(agent.id, "tern:researcher");
     assert_eq!(agent.name, "Researcher");
@@ -171,12 +187,27 @@ async fn an_agent_template_installs_as_an_agent_and_removes_by_archiving() {
             .any(|l| l.contains("@researcher: already installed")),
         "{out:?}"
     );
-    assert_eq!(e.store.agent("researcher").unwrap().unwrap().name, "My researcher");
+    assert_eq!(
+        e.store.agent("researcher").unwrap().unwrap().name,
+        "My researcher"
+    );
 
     // Removing archives it (history and persona stay) and drops its routines.
     let out = i.remove("researcher-kit", &e.store).unwrap();
-    assert!(out.lines.iter().any(|l| l.contains("@researcher: archived")), "{out:?}");
-    assert!(e.store.agent("researcher").unwrap().unwrap().archived_at.is_some());
+    assert!(
+        out.lines
+            .iter()
+            .any(|l| l.contains("@researcher: archived")),
+        "{out:?}"
+    );
+    assert!(
+        e.store
+            .agent("researcher")
+            .unwrap()
+            .unwrap()
+            .archived_at
+            .is_some()
+    );
     assert!(e.store.schedules().unwrap().is_empty());
     assert!(tern_core::agents::persona_path(&e.home, "tern:researcher").exists());
 }
@@ -217,7 +248,8 @@ async fn a_growing_agent_template_must_be_approved_again_and_an_existing_agent_c
         )
         .unwrap();
     let p = prepare(&e, &i, &src).await;
-    i.install(&p, &e.store, &InstallOptions::default()).unwrap_err();
+    i.install(&p, &e.store, &InstallOptions::default())
+        .unwrap_err();
 }
 
 #[tokio::test]
@@ -242,11 +274,16 @@ async fn a_wider_update_shows_up_as_added_capabilities() {
     let ch = p2.plan.changes.as_ref().unwrap();
     assert!(ch.grows());
     assert!(
-        ch.added.iter().any(|l| l == "agent @researcher: connectors: all"),
+        ch.added
+            .iter()
+            .any(|l| l == "agent @researcher: connectors: all"),
         "{ch:?}"
     );
     assert!(
-        p2.plan.warnings.iter().any(|w| w.contains("every connector you have")),
+        p2.plan
+            .warnings
+            .iter()
+            .any(|w| w.contains("every connector you have")),
         "{:?}",
         p2.plan.warnings
     );
@@ -265,7 +302,12 @@ async fn bad_agent_templates_are_refused() {
     }
     // Unknown keys (a model, a Telegram token, the tainted-host limit) are
     // refused: nothing machine-specific or security-widening rides along.
-    for extra in ["model = \"x\"", "egress = \"allow\"", "telegram = \"t\"", "delegates = []"] {
+    for extra in [
+        "model = \"x\"",
+        "egress = \"allow\"",
+        "telegram = \"t\"",
+        "delegates = []",
+    ] {
         let src = write(
             e._tmp.path(),
             "c.tar.zst",
@@ -293,7 +335,11 @@ async fn bad_agent_templates_are_refused() {
         "routines.toml".into(),
         ROUTINES.replace("researcher", "ghost").into_bytes(),
     );
-    let src = write(e._tmp.path(), "e.tar.zst", assemble(header("1.0.0"), f, None).unwrap());
+    let src = write(
+        e._tmp.path(),
+        "e.tar.zst",
+        assemble(header("1.0.0"), f, None).unwrap(),
+    );
     let b = i.read(&src, None).await.unwrap();
     assert!(i.prepare(b, Some(&e.store)).is_err());
 }
@@ -345,7 +391,8 @@ async fn an_agent_exports_and_installs_elsewhere_without_its_private_settings() 
     let i = Installer::new(&other.home);
     let p = prepare(&other, &i, src.to_str().unwrap()).await;
     assert!(p.plan.warnings.iter().any(|w| w.contains("shared memory")));
-    i.install(&p, &other.store, &InstallOptions::default()).unwrap();
+    i.install(&p, &other.store, &InstallOptions::default())
+        .unwrap();
     let got = other.store.agent("scout").unwrap().unwrap();
     assert_eq!(got.memory, "shared");
     assert_eq!(got.autonomy.as_deref(), Some("supervised"));

@@ -178,11 +178,8 @@ pub fn export(
                     a.slug
                 ));
             }
-            let persona =
-                std::fs::read_to_string(tern_core::agents::persona_path(home, &a.id))
-                    .map_err(|e| {
-                        BundleError::Io(format!("reading @{}'s persona: {e}", a.slug))
-                    })?;
+            let persona = std::fs::read_to_string(tern_core::agents::persona_path(home, &a.id))
+                .map_err(|e| BundleError::Io(format!("reading @{}'s persona: {e}", a.slug)))?;
             let tools = a
                 .tools
                 .as_deref()
@@ -269,7 +266,9 @@ pub fn export(
                 t.agent = agent_slugs.get(r.agent()).cloned();
                 templates.push(t);
             }
-            Err(why) if req.all || agent_slugs.contains_key(r.agent()) => notes.push(format!("routine {}: left out: {why}", r.id)),
+            Err(why) if req.all || agent_slugs.contains_key(r.agent()) => {
+                notes.push(format!("routine {}: left out: {why}", r.id))
+            }
             Err(why) => return Err(BundleError::Invalid(format!("routine {}: {why}", r.id))),
         }
     }

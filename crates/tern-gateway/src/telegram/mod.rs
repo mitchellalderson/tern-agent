@@ -392,7 +392,9 @@ impl TelegramGateway {
             Err(e) => {
                 // No topics here: this chat follows the channel.
                 tracing::info!(error = %e, "no topic for the channel; following it in this chat");
-                if let Err(e) = crate::chat_channels::set(&self.store, &self.source, chat_ref, &c.id) {
+                if let Err(e) =
+                    crate::chat_channels::set(&self.store, &self.source, chat_ref, &c.id)
+                {
                     return self.reply_in(chat, thread, &format!("Error: {e}")).await;
                 }
                 let text = format!(
@@ -451,7 +453,11 @@ impl TelegramGateway {
 
     /// The name of the agent `chat_ref` talks to.
     fn chat_agent_name(&self, chat_ref: &str) -> String {
-        self.agent_name(&crate::chat_agents::get(&self.store, &self.source, chat_ref))
+        self.agent_name(&crate::chat_agents::get(
+            &self.store,
+            &self.source,
+            chat_ref,
+        ))
     }
 
     fn prefix_or_tern(&self, chat_ref: &str) -> String {
@@ -967,7 +973,10 @@ impl Gateway for TelegramGateway {
                     backoff = Duration::from_secs(1);
                     if let Some(last) = updates.iter().map(|u| u.update_id).max() {
                         offset = offset.max(last + 1);
-                        if let Err(e) = self.store.kv_set(&self.source, OFFSET_KEY, &offset.to_string()) {
+                        if let Err(e) =
+                            self.store
+                                .kv_set(&self.source, OFFSET_KEY, &offset.to_string())
+                        {
                             tracing::warn!(error = %e, "could not save telegram offset");
                         }
                     }

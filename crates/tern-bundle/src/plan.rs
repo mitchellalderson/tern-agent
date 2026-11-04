@@ -398,9 +398,7 @@ fn agent_warnings(p: &AgentPlan, bundle: &Bundle, slug: &str) -> Vec<String> {
         ));
     }
     if p.memory == "shared" {
-        out.push(format!(
-            "agent @{slug} reads and writes your shared memory"
-        ));
+        out.push(format!("agent @{slug} reads and writes your shared memory"));
     }
     out
 }

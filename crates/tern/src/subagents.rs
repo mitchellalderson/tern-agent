@@ -828,7 +828,8 @@ impl Subagents {
                     .as_deref()
                     .and_then(tern_core::approval::Autonomy::parse)
                 {
-                    let inherited = tern_core::approval::Autonomy::of_run(parent.autonomy.as_deref());
+                    let inherited =
+                        tern_core::approval::Autonomy::of_run(parent.autonomy.as_deref());
                     self.store
                         .set_run_autonomy(&run_id, inherited.min(ceiling).as_str())?;
                 }

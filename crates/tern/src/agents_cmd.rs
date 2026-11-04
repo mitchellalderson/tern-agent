@@ -92,7 +92,10 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
                     a.slug
                 );
             } else {
-                println!("@{} has no bot of its own; restart the daemon to apply", a.slug);
+                println!(
+                    "@{} has no bot of its own; restart the daemon to apply",
+                    a.slug
+                );
             }
         }
         AgentsCommand::Autonomy { agent, level } => {
@@ -143,8 +146,9 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
 }
 
 fn parse_autonomy(s: &str) -> anyhow::Result<tern_core::approval::Autonomy> {
-    tern_core::approval::Autonomy::parse(s)
-        .with_context(|| format!("autonomy must be readonly, supervised, autonomous or yolo, not {s:?}"))
+    tern_core::approval::Autonomy::parse(s).with_context(|| {
+        format!("autonomy must be readonly, supervised, autonomous or yolo, not {s:?}")
+    })
 }
 
 fn find(rt: &Runtime, agent: &str) -> anyhow::Result<tern_store::AgentRow> {
@@ -167,7 +171,11 @@ fn list(rt: &Runtime, all: bool) -> anyhow::Result<()> {
         } else {
             ""
         };
-        let bot = if a.telegram.is_some() { "  own bot" } else { "" };
+        let bot = if a.telegram.is_some() {
+            "  own bot"
+        } else {
+            ""
+        };
         let cap = a
             .autonomy
             .as_deref()

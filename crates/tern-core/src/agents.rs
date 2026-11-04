@@ -513,14 +513,20 @@ mod tests {
     fn router_answers_are_read_leniently_and_only_name_valid_agents() {
         let valid: Vec<String> = ["tern", "research", "ops"].map(String::from).to_vec();
         let pick = |t: &str| parse_router_answer(t, &valid);
-        assert_eq!(pick(r#"{"agents": ["research"]}"#), Some(vec!["research".into()]));
+        assert_eq!(
+            pick(r#"{"agents": ["research"]}"#),
+            Some(vec!["research".into()])
+        );
         // Text around it, an @, case and repeats.
         assert_eq!(
             pick("Sure! {\"agents\": [\"@Ops\", \"ops\", \"research\"]} done"),
             Some(vec!["ops".into(), "research".into()])
         );
         // Unknown agents are dropped; nothing valid means no answer.
-        assert_eq!(pick(r#"{"agents": ["ghost", "tern"]}"#), Some(vec!["tern".into()]));
+        assert_eq!(
+            pick(r#"{"agents": ["ghost", "tern"]}"#),
+            Some(vec!["tern".into()])
+        );
         assert_eq!(pick(r#"{"agents": ["ghost"]}"#), None);
         assert_eq!(pick(r#"{"agents": []}"#), None);
         assert_eq!(pick("research"), None);
@@ -528,7 +534,10 @@ mod tests {
         // At most three.
         let many: Vec<String> = (0..6).map(|i| format!("a{i}")).collect();
         let all = serde_json::json!({ "agents": many }).to_string();
-        assert_eq!(parse_router_answer(&all, &many).unwrap().len(), ROUTER_MAX_AGENTS);
+        assert_eq!(
+            parse_router_answer(&all, &many).unwrap().len(),
+            ROUTER_MAX_AGENTS
+        );
     }
 
     #[test]
