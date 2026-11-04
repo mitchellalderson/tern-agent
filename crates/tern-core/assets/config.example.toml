@@ -35,7 +35,9 @@ secret_request_timeout_secs = 900
 [sandbox]
 backend = "host"           # "host" | "docker"
 shell_timeout_secs = 120
-network = true             # false: no IP networking for shell commands
+# No IP networking for shell commands unless one asks with `network: true`,
+# which always asks you first. true gives every command the network.
+network = false
 # Host backend: shell commands run in an OS sandbox (Seatbelt on macOS,
 # Landlock on Linux): write only to the workspace and temp dirs, no reads of
 # your home directory beyond these paths. See docs/sandbox-design.md.

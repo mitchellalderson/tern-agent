@@ -315,7 +315,7 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `memory.flush` | `true` | Before older context is summarized, give the agent one silent turn to save durable facts with `memory_save`. |
 | `sandbox.backend` | `host` | `host` or `docker`. |
 | `sandbox.shell_timeout_secs` | `120` | Per shell command. |
-| `sandbox.network` | `true` | IP networking for shell commands (both backends). |
+| `sandbox.network` | `false` | IP networking for every shell command (both backends). Off: a command gets the network only when called with `network: true`, which asks every time. |
 | `sandbox.confine` | `auto` | Host backend: `auto` (sandbox when the OS can, else warn), `required` (refuse to run unconfined), `off`. |
 | `sandbox.read_paths` | `["~/.gitconfig", "~/.config/git"]` | Host backend: extra read-only paths. |
 | `sandbox.write_paths` | `[]` | Host backend: extra writable paths. |
@@ -442,13 +442,13 @@ Restart `tern daemon`, then run `tern devices pair` (default scope `chat`: conve
 
 ## Sandboxing
 
-By default `shell` runs on this machine after an approval prompt, with a scrubbed environment (no secrets), a timeout, and an OS sandbox (Seatbelt on macOS, Landlock on Linux): it can write only to the workspace and temp directories, can't read `~/.ssh`, `~/.tern` or the rest of your home directory, and loses IP networking with `network = false`. Add paths a toolchain needs:
+By default `shell` runs on this machine after an approval prompt, with a scrubbed environment (no secrets), a timeout, and an OS sandbox (Seatbelt on macOS, Landlock on Linux): it can write only to the workspace and temp directories, can't read `~/.ssh`, `~/.tern` or the rest of your home directory, and has no IP networking. A command that needs the network (`git push`, `npm install`) asks for it with `network: true`: that asks you every time (the allowlist and "always" don't cover it), and its output counts as untrusted. `network = true` gives every command the network, as before (configs from older `tern config init` say so explicitly). Add paths a toolchain needs:
 
 ```toml
 [sandbox]
 read_paths = ["~/.gitconfig", "~/.config/git", "~/.rustup"]
 write_paths = ["~/.cargo/registry"]
-network = true
+network = false
 ```
 
 To run it in a container instead:

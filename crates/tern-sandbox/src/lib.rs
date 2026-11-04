@@ -27,6 +27,10 @@ pub enum SandboxError {
     Wait(std::io::Error),
     #[error("refusing to run unconfined (sandbox.confine = \"required\"): {0}")]
     Unconfined(String),
+    #[error(
+        "this backend can't turn networking on for one command; set sandbox.network = true to give every command network"
+    )]
+    NoNetworkPerCommand,
 }
 
 /// Receives output text (stdout and stderr interleaved) while a command runs.
@@ -48,6 +52,9 @@ pub struct ExecOpts {
     /// Live output, coalesced to a few calls per second. Everything it
     /// receives is also in the final `ExecOutput` (up to `max_output`).
     pub on_output: Option<OutputSink>,
+    /// IP networking for this command even when the backend's default is
+    /// off (an approved `shell` call with `network: true`).
+    pub network: bool,
 }
 
 /// Live output is batched for this long before it is handed to the sink.
@@ -72,6 +79,11 @@ pub trait SandboxBackend: Send + Sync {
         opts: ExecOpts,
         cancel: CancellationToken,
     ) -> Result<ExecOutput, SandboxError>;
+
+    /// Whether commands get IP networking without asking for it.
+    fn network(&self) -> bool {
+        true
+    }
 }
 
 /// Environment variables passed through to commands. Everything else
@@ -156,8 +168,24 @@ impl HostBackend {
         self.confinement.get_or_init(|| detect(&self.policy))
     }
 
-    /// The program and arguments that run `cmd` in `cwd` under the sandbox.
-    fn argv(&self, cmd: &str, cwd: &Path) -> Result<Vec<std::ffi::OsString>, SandboxError> {
+    /// The program and arguments that run `cmd` in `cwd` under the sandbox,
+    /// with networking when the policy or the command (`network`) asks.
+    fn argv(
+        &self,
+        cmd: &str,
+        cwd: &Path,
+        network: bool,
+    ) -> Result<Vec<std::ffi::OsString>, SandboxError> {
+        let networked;
+        let policy = if network && !self.policy.network {
+            networked = HostPolicy {
+                network: true,
+                ..self.policy.clone()
+            };
+            &networked
+        } else {
+            &self.policy
+        };
         let shell: Vec<std::ffi::OsString> = if cfg!(windows) {
             vec!["cmd".into(), "/C".into(), cmd.into()]
         } else {
@@ -181,14 +209,14 @@ impl HostBackend {
                 let mut argv: Vec<std::ffi::OsString> = vec![
                     SANDBOX_EXEC.into(),
                     "-p".into(),
-                    policy::seatbelt_profile(&self.policy, cwd).into(),
+                    policy::seatbelt_profile(policy, cwd).into(),
                 ];
                 argv.extend(shell);
                 Ok(argv)
             }
             #[cfg(target_os = "linux")]
             Confinement::Landlock { .. } => {
-                let grants = policy::linux_grants(&self.policy, cwd);
+                let grants = policy::linux_grants(policy, cwd);
                 if !grants.dropped.is_empty()
                     && !self.warned.swap(true, std::sync::atomic::Ordering::Relaxed)
                 {
@@ -199,7 +227,7 @@ impl HostBackend {
                 }
                 let mut argv: Vec<std::ffi::OsString> =
                     vec![helper_path(&self.policy)?.into(), HELPER_ARG.into()];
-                argv.extend(policy::helper_args(&self.policy, &grants));
+                argv.extend(policy::helper_args(policy, &grants));
                 argv.push("--".into());
                 argv.extend(shell);
                 Ok(argv)
@@ -285,13 +313,17 @@ fn detect_os(_policy: &HostPolicy) -> Confinement {
 
 #[async_trait]
 impl SandboxBackend for HostBackend {
+    fn network(&self) -> bool {
+        self.policy.network
+    }
+
     async fn exec(
         &self,
         cmd: &str,
         opts: ExecOpts,
         cancel: CancellationToken,
     ) -> Result<ExecOutput, SandboxError> {
-        let argv = self.argv(cmd, &opts.cwd)?;
+        let argv = self.argv(cmd, &opts.cwd, opts.network)?;
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| SandboxError::Spawn(std::io::Error::other("empty command")))?;
@@ -498,6 +530,7 @@ mod tests {
             timeout: Duration::from_secs(10),
             max_output: 1024,
             on_output: None,
+            network: false,
         }
     }
 

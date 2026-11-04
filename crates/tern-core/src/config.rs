@@ -327,7 +327,9 @@ impl ProviderConfig {
 pub struct SandboxConfig {
     pub backend: SandboxBackendKind,
     pub shell_timeout_secs: u64,
-    /// IP networking for shell commands (both backends).
+    /// IP networking for every shell command (both backends). Off by
+    /// default: a command asks for it with `network: true`, which always
+    /// asks the user.
     pub network: bool,
     /// Host backend: what to do when the OS sandbox isn't available.
     pub confine: ConfineMode,
@@ -349,7 +351,7 @@ impl Default for SandboxConfig {
         Self {
             backend: SandboxBackendKind::Host,
             shell_timeout_secs: 120,
-            network: true,
+            network: false,
             confine: ConfineMode::Auto,
             // git refuses to run when it can't read its config.
             read_paths: vec!["~/.gitconfig".into(), "~/.config/git".into()],
@@ -700,7 +702,7 @@ env_secrets = ["GITHUB_TOKEN"]
         let c = Config::parse(
             r#"
 [sandbox]
-network = false
+network = true
 confine = "required"
 read_paths = ["~/.cargo", "/opt/sdk"]
 docker_cpus = 1.5
@@ -708,14 +710,14 @@ docker_cpus = 1.5
             Path::new("config.toml"),
         )
         .unwrap();
-        assert!(!c.sandbox.network);
+        assert!(c.sandbox.network);
         assert_eq!(c.sandbox.confine, ConfineMode::Required);
         assert_eq!(c.sandbox.docker_cpus, 1.5);
         assert_eq!(c.sandbox.docker_pids, 512);
         assert_eq!(c.sandbox.read_paths()[1], PathBuf::from("/opt/sdk"));
         assert!(!c.sandbox.read_paths()[0].starts_with("~"));
         let d = SandboxConfig::default();
-        assert!(d.network);
+        assert!(!d.network, "shell commands get no network unless asked");
         assert_eq!(d.confine, ConfineMode::Auto);
         assert_eq!(d.read_paths, ["~/.gitconfig", "~/.config/git"]);
     }

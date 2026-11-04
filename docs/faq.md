@@ -108,12 +108,13 @@ The same policy on both, enforced by each OS's own mechanism:
   never readable or writable; `~/.ssh` and the rest of your home directory are unreadable except the workspace,
   `~/.gitconfig` and whatever you add to `sandbox.read_paths`. The one difference: macOS lets commands read
   everything outside your home directory, while Linux allows only system directories (`/usr`, `/etc`, `/proc`, …).
-  `sandbox.network = false` turns off IP networking on both. Timeout or cancel kills the command's whole process
+  There is no IP networking unless a command asks for it, which you approve each time (`sandbox.network = true` gives
+  every command the network). Timeout or cancel kills the command's whole process
   group. On a Linux kernel without Landlock, commands run unconfined with a warning (`tern doctor` says so), or not
   at all with `sandbox.confine = "required"`.
 - **`sandbox.backend = "docker"`:** commands run in one long-lived container per workspace, as your uid, with only the
   workspace mounted, no capabilities, and memory, CPU and process limits (2 GB, 2 CPUs, 512 by default).
-  `sandbox.network = false` gives it no network. On macOS that container lives in your Docker runtime's Linux VM.
+  It has no network unless `sandbox.network = true`. On macOS that container lives in your Docker runtime's Linux VM.
 - **Luau connectors** are sandboxed in-process the same way on every platform (previous answer).
 - **File tools** are confined by tern itself: free inside the workspace, approval outside it, never `~/.tern`.
 

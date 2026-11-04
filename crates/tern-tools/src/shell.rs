@@ -32,6 +32,14 @@ struct ShellArgs {
     timeout_secs: Option<u64>,
 }
 
+impl Shell {
+    /// Whether this call asks for networking the sandbox doesn't give by
+    /// default.
+    fn wants_network(&self, args: &Value) -> bool {
+        args["network"] == true && !self.backend.network()
+    }
+}
+
 #[async_trait]
 impl Tool for Shell {
     fn effect(&self) -> Effect {
@@ -41,12 +49,16 @@ impl Tool for Shell {
     fn spec(&self) -> ToolSpec {
         spec(
             "shell",
-            "Run a shell command (sh -c) in the workspace directory. Returns the exit code, stdout, and stderr. The environment is minimal; no secrets are available.",
+            "Run a shell command (sh -c) in the workspace directory. Returns the exit code, stdout, and stderr. The environment is minimal; no secrets are available. Commands have no network access unless you pass network: true, which the user must approve every time; use it only for things like git push/pull or installing packages, never to call a service's API (use its tool).",
             json!({
                 "type": "object",
                 "properties": {
                     "command": { "type": "string" },
-                    "timeout_secs": { "type": "integer", "minimum": 1 }
+                    "timeout_secs": { "type": "integer", "minimum": 1 },
+                    "network": {
+                        "type": "boolean",
+                        "description": "Give this command IP networking. Always asks the user."
+                    }
                 },
                 "required": ["command"]
             }),
@@ -55,11 +67,19 @@ impl Tool for Shell {
 
     fn policy(&self, _ctx: &ToolCtx, _args: &Value) -> ToolPolicy {
         // Destructive outside the allowlist, a granted write inside it
-        // (`approval::check`).
+        // (`approval::check`). A call asking for network is never covered
+        // by the allowlist (`approval::allowed_by`).
         ToolPolicy::new(Effect::Destructive, false).forced(true)
     }
 
+    fn summary(&self, args: &Value) -> Option<String> {
+        let cmd = args["command"].as_str()?;
+        self.wants_network(args)
+            .then(|| format!("with network: {cmd}"))
+    }
+
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
+        let network = self.wants_network(&raw);
         let a: ShellArgs = match args(raw) {
             Ok(a) => a,
             Err(e) => return e,
@@ -76,6 +96,7 @@ impl Tool for Shell {
             timeout,
             max_output: 256 * 1024,
             on_output: progress_sink().map(|sink| OutputSink(Arc::new(move |s| sink(s)))),
+            network,
         };
         let out = match self
             .backend
@@ -110,7 +131,8 @@ impl Tool for Shell {
         ToolResult {
             content: text,
             is_error: out.exit_code != Some(0),
-            untrusted: false,
+            // What a command fetched is third-party text.
+            untrusted: network,
         }
     }
 }
@@ -154,5 +176,36 @@ mod tests {
         assert_eq!(chunks.len(), 2, "{chunks:?}");
         assert_eq!(chunks[0], "first\n");
         assert_eq!(chunks[1], "second\n");
+    }
+
+    #[tokio::test]
+    async fn a_command_given_network_says_so_and_its_output_is_untrusted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolCtx {
+            workspace: tmp.path().into(),
+            run_id: "r".into(),
+            session_id: "s".into(),
+            cancel: CancellationToken::new(),
+        };
+        let offline = tern_sandbox::HostPolicy {
+            network: false,
+            ..tern_sandbox::HostPolicy::confined()
+        };
+        let shell = Shell::new(Arc::new(HostBackend::new(offline)), Duration::from_secs(10));
+        let ask = json!({"command": "echo hi", "network": true});
+        assert_eq!(
+            shell.summary(&ask).as_deref(),
+            Some("with network: echo hi")
+        );
+        assert!(shell.call(&ctx, ask).await.untrusted);
+        let plain = json!({"command": "echo hi"});
+        assert_eq!(shell.summary(&plain), None);
+        assert!(!shell.call(&ctx, plain).await.untrusted);
+
+        // With network on for every command, asking changes nothing.
+        let online = Shell::new(Arc::new(HostBackend::default()), Duration::from_secs(10));
+        let ask = json!({"command": "echo hi", "network": true});
+        assert_eq!(online.summary(&ask), None);
+        assert!(!online.call(&ctx, ask).await.untrusted);
     }
 }

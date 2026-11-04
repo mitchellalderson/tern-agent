@@ -246,12 +246,20 @@ kill -KILL $all 2>/dev/null; true"#;
 
 #[async_trait]
 impl SandboxBackend for DockerBackend {
+    fn network(&self) -> bool {
+        self.settings.network
+    }
+
     async fn exec(
         &self,
         cmd: &str,
         opts: ExecOpts,
         cancel: CancellationToken,
     ) -> Result<ExecOutput, SandboxError> {
+        // The container's network is fixed when it is created.
+        if opts.network && !self.settings.network {
+            return Err(SandboxError::NoNetworkPerCommand);
+        }
         self.ensure().await?;
         let id = format!("{:016x}", fastrand_u64());
         let cwd = self.container_cwd(&opts.cwd);
@@ -375,6 +383,7 @@ esac
             timeout: Duration::from_secs(secs),
             max_output: 4096,
             on_output: None,
+            network: false,
         }
     }
 
