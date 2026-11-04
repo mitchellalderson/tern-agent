@@ -12,7 +12,7 @@ mod subagents_repo;
 
 pub use agents_repo::{AgentChange, AgentRow, DEFAULT_AGENT, dm_slug};
 pub use channels_repo::{ChannelRow, HOME, Moved, NewPost, NewThread, PostRow};
-pub use daemon_repo::{HeldDelivery, ScheduleRow, TokenCounts};
+pub use daemon_repo::{HeldDelivery, NewEvent, PollRecord, RoutineEvent, ScheduleRow, TokenCounts};
 pub use devices_repo::{DeviceGrant, DeviceRow};
 pub use members_repo::{ChannelWakes, Member, mention_slugs};
 pub use outbox_repo::{NewOutbox, OutboxRow};

@@ -1,16 +1,149 @@
 //! Validating the table a connector file returns (spec §10.2).
 
 use mlua::{Function, Lua, LuaSerdeExt, Table, Value};
+use serde::{Deserialize, Serialize};
+use tern_core::config::Rate;
 use tern_core::tool::Effect;
 
 use crate::host::LoadError;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Capabilities {
-    /// Hosts `ctx.http` may reach (`api.example.com` or `*.example.com`).
+    /// Hosts `ctx.http` may reach (`api.example.com` or `*.example.com`),
+    /// each optionally limited to paths (`api.example.com/v1/*`).
     pub http: Vec<String>,
-    /// Secret names `ctx.secret` may read.
+    /// Secret names `ctx.secret` may read: the legacy way, since the
+    /// script sees the value. New connectors use `auth`.
     pub secrets: Vec<String>,
+    /// Credentials the host adds to requests; the script never sees them.
+    pub auth: Vec<Auth>,
+    /// Requests per period, shared by every call of this connector. `None`
+    /// uses the host's default (`[connectors] rate`).
+    pub rate: Option<Rate>,
+}
+
+impl Capabilities {
+    /// Secret names the host injects through `auth`.
+    pub fn auth_secrets(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .auth
+            .iter()
+            .flat_map(Auth::secrets)
+            .map(str::to_owned)
+            .collect();
+        v.dedup();
+        v
+    }
+
+    /// Every secret this connector uses, raw or injected.
+    pub fn all_secrets(&self) -> Vec<String> {
+        let mut v = self.secrets.clone();
+        for s in self.auth_secrets() {
+            if !v.contains(&s) {
+                v.push(s);
+            }
+        }
+        v
+    }
+
+    /// Reads secret values itself (`ctx.secret`), the pre-T4b way.
+    pub fn legacy_secrets(&self) -> bool {
+        !self.secrets.is_empty()
+    }
+
+    /// One line per capability, for summaries and for the diff shown when
+    /// a connector is replaced. `default_rate` is shown when none is declared.
+    pub fn lines(&self, default_rate: Rate) -> Vec<String> {
+        let mut out: Vec<String> = self.http.iter().map(|h| format!("http {h}")).collect();
+        for a in &self.auth {
+            out.push(format!("auth {}", a.describe()));
+        }
+        for s in &self.secrets {
+            out.push(format!(
+                "raw secret {s} (legacy ctx.secret: the script sees the value)"
+            ));
+        }
+        out.push(match self.rate {
+            Some(r) => format!("rate {r}"),
+            None => format!("rate {default_rate} (default)"),
+        });
+        out
+    }
+}
+
+/// Where the host puts a credential. Secret names resolve through
+/// [`tern_core::Secrets`] today; T4a resolves them per connection
+/// (`conn/<target>/<slug>/<NAME>`) and adds OAuth tokens as another source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Inject {
+    /// `<header>: <scheme> <value>`, or the bare value when `scheme` is empty.
+    Header {
+        header: String,
+        scheme: String,
+        secret: String,
+    },
+    /// `?<param>=<value>` appended to the URL.
+    Query { param: String, secret: String },
+    /// HTTP Basic from two secrets; a missing one is empty.
+    Basic {
+        user: Option<String>,
+        password: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Auth {
+    #[serde(flatten)]
+    pub inject: Inject,
+    /// Declared hosts it is sent to; empty means every `capabilities.http` host.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
+}
+
+impl Auth {
+    pub fn secrets(&self) -> Vec<&str> {
+        match &self.inject {
+            Inject::Header { secret, .. } | Inject::Query { secret, .. } => vec![secret],
+            Inject::Basic { user, password } => user
+                .iter()
+                .chain(password.iter())
+                .map(String::as_str)
+                .collect(),
+        }
+    }
+
+    /// Whether requests to `host` (already allowed) carry it.
+    pub fn applies_to(&self, host: &str) -> bool {
+        self.hosts.is_empty() || crate::allow::host_allowed(&self.hosts, host)
+    }
+
+    /// `NOTION_TOKEN as "Authorization: Bearer …" to api.notion.com`.
+    pub fn describe(&self) -> String {
+        let what = match &self.inject {
+            Inject::Header {
+                header,
+                scheme,
+                secret,
+            } if scheme.is_empty() => format!("{secret} as \"{header}: …\""),
+            Inject::Header {
+                header,
+                scheme,
+                secret,
+            } => format!("{secret} as \"{header}: {scheme} …\""),
+            Inject::Query { param, secret } => format!("{secret} as ?{param}=…"),
+            Inject::Basic { user, password } => format!(
+                "basic auth {}:{}",
+                user.as_deref().unwrap_or("\"\""),
+                password.as_deref().unwrap_or("\"\"")
+            ),
+        };
+        if self.hosts.is_empty() {
+            format!("{what} to every http host")
+        } else {
+            format!("{what} to {}", self.hosts.join(", "))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,7 +185,9 @@ pub struct ConnectorSpec {
 
 impl ConnectorSpec {
     /// Human-readable capability summary for approval prompts.
-    pub fn capability_summary(&self) -> String {
+    /// `default_rate` is what an undeclared `rate` means.
+    pub fn capability_summary(&self, default_rate: Rate) -> String {
+        let c = &self.capabilities;
         let list = |v: &[String]| {
             if v.is_empty() {
                 "none".to_owned()
@@ -65,12 +200,30 @@ impl ConnectorSpec {
             .iter()
             .map(|t| format!("{} ({})", t.name, t.effect()))
             .collect();
-        format!(
-            "http hosts: {}; secrets: {}; tools: {}",
-            list(&self.capabilities.http),
-            list(&self.capabilities.secrets),
+        let auth: Vec<String> = c.auth.iter().map(Auth::describe).collect();
+        let rate = match c.rate {
+            Some(r) => r.to_string(),
+            None => format!("{default_rate} (default)"),
+        };
+        let mut out = format!("http hosts: {}; ", list(&c.http));
+        if !auth.is_empty() {
+            out.push_str(&format!(
+                "auth (tern sends it, the script never sees it): {}; ",
+                auth.join("; ")
+            ));
+        }
+        out.push_str(&format!(
+            "secrets: {}; rate: {rate}; tools: {}",
+            list(&c.secrets),
             tools.join(", ")
-        )
+        ));
+        if c.legacy_secrets() {
+            out.push_str(&format!(
+                ". ⚠ legacy: the script reads {} with ctx.secret and could send it anywhere it may reach; capabilities.auth keeps the value from the script",
+                c.secrets.join(", ")
+            ));
+        }
+        out
     }
 }
 
@@ -95,24 +248,191 @@ fn string_list(t: Option<Table>, what: &str) -> Result<Vec<String>, LoadError> {
         .map_err(|_| invalid(format!("{what} must be a list of strings")))
 }
 
-/// `api.example.com` or `*.example.com`; nothing broader.
-fn check_hosts(hosts: &[String]) -> Result<(), LoadError> {
-    for h in hosts {
-        let bare = h.strip_prefix("*.").unwrap_or(h);
-        let valid = !bare.is_empty()
-            && bare.contains('.')
-            && bare
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-            || bare.parse::<std::net::IpAddr>().is_ok()
-            || bare == "localhost";
-        if !valid {
+fn check_http(entries: &[String]) -> Result<(), LoadError> {
+    entries
+        .iter()
+        .try_for_each(|e| crate::allow::check_entry(e))
+        .map_err(invalid)
+}
+
+/// The most credentials one connector may inject.
+const MAX_AUTH: usize = 8;
+
+/// `capabilities.auth`: `"NAME"` (a Bearer token), one table, or a list of
+/// either.
+fn parse_auth(v: Value, http: &[String]) -> Result<Vec<Auth>, LoadError> {
+    let entries: Vec<Value> = match v {
+        Value::Nil => return Ok(Vec::new()),
+        Value::Table(t) if t.raw_len() > 0 => t
+            .sequence_values::<Value>()
+            .collect::<mlua::Result<_>>()
+            .map_err(|_| invalid("capabilities.auth must be a list of entries"))?,
+        v @ (Value::Table(_) | Value::String(_)) => vec![v],
+        _ => {
+            return Err(invalid(
+                "capabilities.auth must be a secret name or a table",
+            ));
+        }
+    };
+    if entries.len() > MAX_AUTH {
+        return Err(invalid(format!(
+            "capabilities.auth has more than {MAX_AUTH} entries"
+        )));
+    }
+    if !entries.is_empty() && http.is_empty() {
+        return Err(invalid(
+            "capabilities.auth needs capabilities.http: the hosts it is sent to",
+        ));
+    }
+    let auth = entries
+        .into_iter()
+        .map(|e| parse_auth_entry(e, http))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(auth)
+}
+
+fn secret_name(v: Option<String>, what: &str) -> Result<Option<String>, LoadError> {
+    let Some(name) = v else { return Ok(None) };
+    tern_core::secrets::check_name(&name).map_err(|_| {
+        invalid(format!(
+            "capabilities.auth {what} {name:?} isn't a valid secret name"
+        ))
+    })?;
+    Ok(Some(name))
+}
+
+fn parse_auth_entry(v: Value, http: &[String]) -> Result<Auth, LoadError> {
+    let t = match v {
+        Value::String(s) => {
+            let secret = secret_name(Some(s.to_string_lossy()), "secret")?.unwrap_or_default();
+            return Ok(Auth {
+                inject: Inject::Header {
+                    header: "Authorization".into(),
+                    scheme: "Bearer".into(),
+                    secret,
+                },
+                hosts: Vec::new(),
+            });
+        }
+        Value::Table(t) => t,
+        _ => {
+            return Err(invalid(
+                "each capabilities.auth entry must be a secret name or a table",
+            ));
+        }
+    };
+    const KEYS: &[&str] = &["secret", "header", "scheme", "query", "basic", "hosts"];
+    for pair in t.pairs::<Value, Value>() {
+        let (k, _) = pair.map_err(|_| invalid("capabilities.auth is unreadable"))?;
+        let k = k.to_string().unwrap_or_default();
+        if !KEYS.contains(&k.as_str()) {
             return Err(invalid(format!(
-                "capabilities.http entry {h:?} must be a host name like \"api.example.com\" or \"*.example.com\" (no \"*\" on its own, schemes, ports, or paths)"
+                "capabilities.auth: unknown key {k:?} (expected secret, header, scheme, query, basic or hosts)"
             )));
         }
     }
-    Ok(())
+    let text = |k: &str| -> Result<Option<String>, LoadError> {
+        t.raw_get::<Option<String>>(k)
+            .map_err(|_| invalid(format!("capabilities.auth.{k} must be a string")))
+    };
+    let secret = secret_name(text("secret")?, "secret")?;
+    let (header, scheme, query) = (text("header")?, text("scheme")?, text("query")?);
+    let basic: Option<Table> = t.raw_get("basic").map_err(|_| {
+        invalid("capabilities.auth.basic must be { user = \"SECRET\", password = \"SECRET\" }")
+    })?;
+    let inject = if let Some(b) = basic {
+        if secret.is_some() || header.is_some() || scheme.is_some() || query.is_some() {
+            return Err(invalid(
+                "capabilities.auth: `basic` can't be combined with secret, header, scheme or query",
+            ));
+        }
+        let field = |k: &str| -> Result<Option<String>, LoadError> {
+            let v = b.raw_get::<Option<String>>(k).map_err(|_| {
+                invalid(format!("capabilities.auth.basic.{k} must be a secret name"))
+            })?;
+            secret_name(v, &format!("basic.{k}"))
+        };
+        let (user, password) = (field("user")?, field("password")?);
+        if user.is_none() && password.is_none() {
+            return Err(invalid(
+                "capabilities.auth.basic needs a user or password secret",
+            ));
+        }
+        Inject::Basic { user, password }
+    } else {
+        let secret =
+            secret.ok_or_else(|| invalid("capabilities.auth needs `secret`, the secret's name"))?;
+        if let Some(param) = query {
+            if header.is_some() || scheme.is_some() {
+                return Err(invalid(
+                    "capabilities.auth: `query` can't be combined with header or scheme",
+                ));
+            }
+            let ok = !param.is_empty()
+                && param
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+            if !ok {
+                return Err(invalid(format!(
+                    "capabilities.auth.query {param:?} must be a plain parameter name"
+                )));
+            }
+            Inject::Query { param, secret }
+        } else {
+            let header = header.unwrap_or_else(|| "Authorization".into());
+            let name =
+                reqwest::header::HeaderName::from_bytes(header.as_bytes()).map_err(|_| {
+                    invalid(format!(
+                        "capabilities.auth.header {header:?} isn't a valid header name"
+                    ))
+                })?;
+            if matches!(
+                name.as_str(),
+                "host" | "content-length" | "transfer-encoding" | "connection"
+            ) {
+                return Err(invalid(format!(
+                    "capabilities.auth.header can't be {header:?}"
+                )));
+            }
+            let scheme = scheme.unwrap_or_else(|| {
+                if name == reqwest::header::AUTHORIZATION {
+                    "Bearer".into()
+                } else {
+                    String::new()
+                }
+            });
+            if !scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            {
+                return Err(invalid(format!(
+                    "capabilities.auth.scheme {scheme:?} must be one word, like \"Bearer\" or \"Token\""
+                )));
+            }
+            Inject::Header {
+                header,
+                scheme,
+                secret,
+            }
+        }
+    };
+    let hosts = string_list(
+        t.raw_get("hosts")
+            .map_err(|_| invalid("capabilities.auth.hosts must be a list"))?,
+        "capabilities.auth.hosts",
+    )?;
+    for h in &hosts {
+        let covered = http
+            .iter()
+            .any(|e| crate::allow::entry_host(e).eq_ignore_ascii_case(h))
+            || (!h.starts_with("*.") && crate::allow::host_allowed(http, h));
+        if !covered {
+            return Err(invalid(format!(
+                "capabilities.auth.hosts entry {h:?} must be one of the hosts in capabilities.http"
+            )));
+        }
+    }
+    Ok(Auth { inject, hosts })
 }
 
 pub fn parse(lua: &Lua, t: &Table) -> Result<(ConnectorSpec, Vec<(String, Function)>), LoadError> {
@@ -135,21 +455,52 @@ pub fn parse(lua: &Lua, t: &Table) -> Result<(ConnectorSpec, Vec<(String, Functi
         .map_err(|_| invalid("`capabilities` must be a table"))?;
     let capabilities = match caps {
         None => Capabilities::default(),
-        Some(c) => Capabilities {
-            http: string_list(
+        Some(c) => {
+            let http = string_list(
                 c.raw_get("http")
                     .map_err(|_| invalid("capabilities.http must be a list"))?,
                 "capabilities.http",
-            )?,
-            secrets: string_list(
-                c.raw_get("secrets")
-                    .map_err(|_| invalid("capabilities.secrets must be a list"))?,
-                "capabilities.secrets",
-            )?,
-        },
+            )?;
+            check_http(&http)?;
+            let auth = parse_auth(
+                c.raw_get("auth")
+                    .map_err(|_| invalid("capabilities.auth is unreadable"))?,
+                &http,
+            )?;
+            let rate = match c.raw_get::<Value>("rate") {
+                Ok(Value::Nil) => None,
+                Ok(Value::String(r)) => Some(
+                    r.to_string_lossy()
+                        .parse::<Rate>()
+                        .map_err(|e| invalid(format!("capabilities.{e}")))?,
+                ),
+                _ => {
+                    return Err(invalid(
+                        "capabilities.rate must be a string like \"60/min\"",
+                    ));
+                }
+            };
+            Capabilities {
+                http,
+                secrets: string_list(
+                    c.raw_get("secrets")
+                        .map_err(|_| invalid("capabilities.secrets must be a list"))?,
+                    "capabilities.secrets",
+                )?,
+                auth,
+                rate,
+            }
+        }
     };
-
-    check_hosts(&capabilities.http)?;
+    if let Some(both) = capabilities
+        .auth_secrets()
+        .into_iter()
+        .find(|s| capabilities.secrets.contains(s))
+    {
+        return Err(invalid(format!(
+            "{both} is in both capabilities.auth and capabilities.secrets; remove it from secrets so the script never sees it"
+        )));
+    }
 
     let tools: Table = t
         .raw_get::<Option<Table>>("tools")
@@ -302,22 +653,6 @@ mod tests {
                 .contains("\"a\"")
         );
         assert!(check_schema(&json!({"type": "object", "properties": {"a": 1}})).is_err());
-    }
-
-    #[test]
-    fn host_entries_must_be_hosts() {
-        let ok = |h: &str| check_hosts(&[h.to_owned()]).is_ok();
-        assert!(ok("api.linear.app") && ok("*.ghost.io") && ok("127.0.0.1") && ok("localhost"));
-        for bad in [
-            "*",
-            "*.",
-            "https://api.x.com",
-            "api.x.com/v1",
-            "x.com:443",
-            "",
-        ] {
-            assert!(!ok(bad), "{bad:?} should be rejected");
-        }
     }
 
     #[test]

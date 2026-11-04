@@ -58,6 +58,18 @@ void main() {
     expect((old as ApprovalRequested).approval.effect, 'write');
   });
 
+  test('decodes the host-limit prompt and its answers', () {
+    final e = ev(
+      '{"approval_requested":{"id":"a","run_id":"r",'
+      '"session_id":"s","tool":"http_fetch","input":{},'
+      '"summary":"http_fetch https://b.example","effect":"read","pattern":null,'
+      '"taint":"result of http_fetch","egress_host":"b.example"}}',
+    );
+    expect((e as ApprovalRequested).approval.egressHost, 'b.example');
+    expect(Decision.run.wire, 'run');
+    expect(Decision.host.wire, 'host');
+  });
+
   test('decodes taint on approvals and runs', () {
     final e = ev(
       '{"approval_requested":{"id":"a","run_id":"r",'
@@ -167,6 +179,20 @@ void main() {
     expect(t1a.pausedByBudget, isTrue);
     expect(t1a.pausedReason, 'runs_per_day');
     expect(t1a.pausedUntil, isNotNull);
+    expect(t1a.trigger, 'cron');
+    expect(t1a.initiative, 'interrupt');
+    expect(t1a.lastCheck, 'gate: passed');
+    expect(t1a.gate, contains('wday'));
+    expect(
+      const RoutineOptions(watch: 'github.reviews', every: '5m').toJson(),
+      {
+        'watch': 'github.reviews',
+        'every': '5m',
+        'initiative': 'default',
+        'gate': null,
+        'gate_connector': null,
+      },
+    );
     expect(const ScheduleLimits(runsPerDay: 3).toJson(), {
       'quiet_hours': null,
       'urgent': false,

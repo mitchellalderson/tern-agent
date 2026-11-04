@@ -12,7 +12,10 @@ workspace = true
 [dependencies]
 tern-core.workspace = true
 
+tern-sandbox.workspace = true
+
 monty.workspace = true
+monty-alloc.workspace = true
 monty-fs.workspace = true
 monty-types.workspace = true
 
@@ -21,6 +24,9 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["resource"] }
 
 [dev-dependencies]
 tempfile.workspace = true

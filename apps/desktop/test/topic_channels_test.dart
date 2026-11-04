@@ -159,6 +159,7 @@ class _FakeClient extends TernClient {
     ScheduleLimits? limits,
     String? channel,
     String? agent,
+    RoutineOptions? options,
   }) async {
     scheduleChannels.add(channel);
     return Schedule(
@@ -369,7 +370,7 @@ void main() {
   });
 
   testWidgets('a routine chooses the channel it posts to', (tester) async {
-    tester.view.physicalSize = const Size(700, 1200) * 2;
+    tester.view.physicalSize = const Size(700, 1500) * 2;
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
     final (store, client) = await _store();

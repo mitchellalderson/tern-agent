@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use crate::home::expand_tilde;
 
 pub mod edit;
+mod rate;
 pub mod settings;
+
+pub use rate::Rate;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -62,6 +65,34 @@ pub struct Config {
     /// its own; it is frozen on each run when the run starts.
     pub autonomy: crate::approval::Autonomy,
     pub outbox: OutboxConfig,
+    pub taint: TaintConfig,
+    pub connectors: ConnectorsConfig,
+}
+
+/// Taint settings (tooling spec §5.3).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TaintConfig {
+    /// In a tainted run, ask before a network read reaches a host the run
+    /// hasn't contacted (`ask`), or don't (`allow`). An agent can set its
+    /// own.
+    pub egress: crate::approval::Egress,
+}
+
+/// Luau connectors (tooling spec §6.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConnectorsConfig {
+    /// Requests per connector when its file declares no `rate`.
+    pub rate: Rate,
+}
+
+impl Default for ConnectorsConfig {
+    fn default() -> Self {
+        Self {
+            rate: Rate::per_minute(120),
+        }
+    }
 }
 
 /// Deferred approvals (tooling spec §5.2).
@@ -104,6 +135,8 @@ impl Default for Config {
             agent_chains: Vec::new(),
             autonomy: crate::approval::Autonomy::default(),
             outbox: OutboxConfig::default(),
+            taint: TaintConfig::default(),
+            connectors: ConnectorsConfig::default(),
         }
     }
 }
@@ -575,7 +608,7 @@ impl Default for SubagentsConfig {
 
 /// `[schedules]`: defaults for every schedule; each can override them
 /// (docs/personal-agent-tooling-spec.md §4.1, §8.3).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SchedulesConfig {
     /// Deliveries finishing inside this window wait for its end.
@@ -586,6 +619,36 @@ pub struct SchedulesConfig {
     pub usd_per_day: Option<f64>,
     /// Tokens (input + output + cache) one run may use before it is stopped.
     pub tokens_per_run: Option<u64>,
+    /// New events one watch poll may start a run each for; the rest share
+    /// one batched run.
+    pub max_events_per_poll: usize,
+    /// How loudly a routine's result reaches its chat, unless the routine
+    /// sets its own: `silent`, `digest`, `notify` or `interrupt` (T1b).
+    pub initiative: crate::initiative::Initiative,
+    /// Every routine one level `quieter` or `louder`, or `vacation` (all
+    /// silent); `normal` leaves them as they are.
+    pub initiative_dial: crate::initiative::Dial,
+    /// Local times when held digest results are sent, as one message.
+    pub digest_times: crate::initiative::DigestTimes,
+    /// The model that decides whether a `notify` result is worth a push;
+    /// unset = the cheapest configured model with a known price.
+    pub gate_model: Option<ModelChain>,
+}
+
+impl Default for SchedulesConfig {
+    fn default() -> Self {
+        Self {
+            quiet_hours: crate::quiet::QuietHours::default(),
+            runs_per_day: None,
+            usd_per_day: None,
+            tokens_per_run: None,
+            max_events_per_poll: 20,
+            initiative: crate::initiative::Initiative::default(),
+            initiative_dial: crate::initiative::Dial::default(),
+            digest_times: crate::initiative::DigestTimes::default(),
+            gate_model: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -764,11 +827,18 @@ env_secrets = ["GITHUB_TOKEN"]
         .unwrap();
         assert_eq!(c.autonomy, crate::approval::Autonomy::Autonomous);
         assert_eq!((c.outbox.wait_secs, c.outbox.expire_hours), (30, 72));
+        let c = Config::parse("[connectors]\nrate = \"10/sec\"\n", Path::new("x")).unwrap();
+        assert_eq!(c.connectors.rate.to_string(), "10/sec");
+        assert!(Config::parse("[connectors]\nrate = \"lots\"\n", Path::new("x")).is_err());
         assert_eq!(
             Config::default().autonomy,
             crate::approval::Autonomy::Supervised
         );
         assert!(Config::parse("autonomy = \"reckless\"", Path::new("c")).is_err());
+        let c = Config::parse("[taint]\negress = \"allow\"\n", Path::new("c")).unwrap();
+        assert_eq!(c.taint.egress, crate::approval::Egress::Allow);
+        assert_eq!(Config::default().taint.egress, crate::approval::Egress::Ask);
+        assert!(Config::parse("[taint]\negress = \"maybe\"\n", Path::new("c")).is_err());
     }
 
     #[test]

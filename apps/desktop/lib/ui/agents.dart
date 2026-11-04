@@ -7,6 +7,7 @@ import '../state/transcript.dart';
 import '../theme.dart';
 import 'inspector.dart';
 import 'items.dart';
+import 'widgets.dart';
 
 /// The sub-agents one run started: a line each with what it's doing, which
 /// opens into its own conversation.
@@ -126,6 +127,19 @@ class _AgentRow extends StatelessWidget {
           children: [
             SizedBox(width: 18, child: AgentGlyph(child.status)),
             const SizedBox(width: 6),
+            // Delegated to another of the user's agents: who it is.
+            if (store.agentNamed(child.agent) case final a?) ...[
+              AgentAvatar.of(a, size: 16),
+              const SizedBox(width: 6),
+              Text(
+                a.name,
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 6),
+            ],
             Text(
               child.label,
               style: mono.copyWith(fontSize: 12.5, fontWeight: FontWeight.w600),

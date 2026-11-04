@@ -4,6 +4,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'agent_face.dart';
 import 'conversation.dart';
 import 'widgets.dart';
 
@@ -94,23 +95,17 @@ class ChannelView extends StatelessWidget {
 
 /// "research-1 · Running http_fetch": a member working in the channel.
 class MemberLine extends StatelessWidget {
-  const MemberLine({super.key, required this.line, this.store});
+  const MemberLine({super.key, required this.line, required this.store});
 
   final ({String runId, String author, String doing}) line;
-
-  /// Names the author's agent profile, when there are profiles.
-  final TernStore? store;
+  final TernStore store;
 
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
-    final agent = store?.authorAgent(line.author);
-    final name = store?.authorName(line.author) ?? line.author;
     return Row(
       children: [
-        agent == null
-            ? AgentAvatar(name: line.author, size: 18)
-            : AgentAvatar.of(agent, size: 18),
+        authorAvatar(store, authorId: line.author, name: line.author, size: 18),
         const SizedBox(width: 8),
         SizedBox(
           width: 10,
@@ -120,7 +115,7 @@ class MemberLine extends StatelessWidget {
         const SizedBox(width: 8),
         Flexible(
           child: Text(
-            '$name · ${line.doing}',
+            '${store.authorName(line.author, line.author)} · ${line.doing}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(fontSize: 12.5, color: c.muted),
@@ -193,11 +188,13 @@ class _ChannelHeader extends StatelessWidget {
     final agents = channel.agents == null || !store.hasAgents
         ? null
         : store.membersOf(channel);
-    final members = <String>[];
+    final members = <Post>[];
     for (final p in (store.posts[channel.id] ?? const <Post>[]).reversed) {
       if (agents != null) break;
-      if (!p.mine && !p.isNote && !members.contains(p.author)) {
-        members.add(p.author);
+      if (!p.mine &&
+          !p.isNote &&
+          !members.any((m) => m.authorId == p.authorId)) {
+        members.add(p);
       }
       if (members.length == 4) break;
     }
@@ -249,8 +246,13 @@ class _ChannelHeader extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(right: 3),
                   child: Tooltip(
-                    message: m,
-                    child: AgentAvatar(name: m, size: 20),
+                    message: store.authorName(m.authorId, m.author),
+                    child: authorAvatar(
+                      store,
+                      authorId: m.authorId,
+                      name: m.author,
+                      size: 20,
+                    ),
                   ),
                 ),
             const SizedBox(width: 6),
@@ -484,7 +486,6 @@ class TimelinePost extends StatelessWidget {
     if (post.isNote) return NoteLine(post: post);
     final c = context.colors;
     final theme = Theme.of(context);
-    final agent = post.mine ? null : store.authorAgent(post.authorId);
     final slugs = [
       for (final id in post.mentions)
         if (store.agentById(id) case final a?) a.slug,
@@ -504,9 +505,12 @@ class TimelinePost extends StatelessWidget {
                 backgroundColor: c.userBubble,
                 child: Icon(Icons.person, size: 15, color: c.muted),
               )
-            : agent != null
-            ? AgentAvatar.of(agent, size: 26)
-            : AgentAvatar(name: post.author, size: 26),
+            : authorAvatar(
+                store,
+                authorId: post.authorId,
+                name: post.author,
+                size: 26,
+              ),
         const SizedBox(width: 10),
         Expanded(
           child: Column(
@@ -515,7 +519,7 @@ class TimelinePost extends StatelessWidget {
               Row(
                 children: [
                   Text(
-                    post.author,
+                    store.authorName(post.authorId, post.author),
                     style: const TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,

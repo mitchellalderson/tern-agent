@@ -7,6 +7,7 @@ mod daemon;
 mod devices_cmd;
 mod doctor;
 mod gateway_cmd;
+mod grants_cmd;
 mod inspect;
 mod lifecycle;
 mod logging;
@@ -19,6 +20,7 @@ mod providers_cmd;
 mod remote;
 mod report_cmd;
 mod reset_cmd;
+mod routines;
 mod run_cmd;
 mod runtime;
 mod service;
@@ -36,9 +38,21 @@ use cli::{
     Cli, Command, ConfigCommand, ConnectorsCommand, RunsCommand, ServiceCommand, SessionsCommand,
 };
 
+/// Counts live bytes so a `python` helper can cap its memory
+/// (docs/python-tool-spec.md §5.2). Elsewhere it only counts: the ceiling is
+/// armed by the helper alone.
+#[cfg(feature = "python")]
+#[global_allocator]
+static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
+
 fn main() -> ExitCode {
     // `tern __sandbox-exec …`: confine this process, then exec a shell command.
     if let Some(code) = tern_sandbox::run_helper_if_requested() {
+        return code;
+    }
+    // `tern __monty-exec`: interpret one `python` script for the daemon.
+    #[cfg(feature = "python")]
+    if let Some(code) = tern_python::helper::run_if_requested() {
         return code;
     }
     let cli = Cli::parse_from(tray::rewrite_args(std::env::args_os().collect()));
@@ -167,6 +181,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Some(Command::Outbox { command }) => outbox_cmd::run(&home, command),
+        Some(Command::Grants { command }) => grants_cmd::run(&home, command),
         Some(Command::Runs { command }) => {
             match command {
                 RunsCommand::List => inspect::runs_list(&home)?,

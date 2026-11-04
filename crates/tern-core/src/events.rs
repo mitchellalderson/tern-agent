@@ -30,6 +30,10 @@ pub enum AgentEvent {
         model: String,
         /// `running` or `queued`.
         status: String,
+        /// The agent profile it runs as, when the parent delegated to one
+        /// (`agent_spawn {agent}`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
     },
     /// A question, answer or steering message between runs of one tree
     /// (`agent_ask_parent`, `agent_send`).

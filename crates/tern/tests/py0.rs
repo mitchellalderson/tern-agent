@@ -1,7 +1,8 @@
-//! PY0 end-to-end (docs/python-tool-spec.md): a `python` script calls a Luau
-//! connector in a loop, each call a journaled `py_call` sub-step that a
+//! PY0–PY1 end-to-end (docs/python-tool-spec.md): a `python` script calls a
+//! Luau connector in a loop, each call a journaled `py_call` sub-step that a
 //! resumed run replays instead of repeating; untrusted results taint the
-//! run; write tools are refused inside scripts.
+//! run; write tools are refused inside scripts. Scripts run in a
+//! `tern __monty-exec` helper: its crashes and limits end it, not tern.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(feature = "python")]
 
@@ -253,4 +254,109 @@ fn a_write_tool_is_refused_inside_a_script() {
         1,
         "{show}"
     );
+}
+
+#[test]
+fn a_resumed_script_runs_with_the_clock_and_seed_recorded_before_the_crash() {
+    let code = "import random, datetime\nrows = [lua__county__lookup(a)['value'] for a in ['1 Elm St', '22 Elm St', '333 Elm St']]\n{'rows': rows, 'now': datetime.datetime.now().timestamp(), 'r': random.random()}";
+    let env = Env::new();
+    env.script(code);
+    // 0 llm, 1 python, 2 env, 3 call 1, 4 call 2 <- abort.
+    let o = env
+        .cmd(&["run", "go"])
+        .env("TERN_CRASH_AFTER_STEP", "4")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    let run = run_id(&text(&o.stderr));
+    let o = env.tern(&["resume", &run]);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+
+    let db = rusqlite::Connection::open(env.tern_home.join("tern.db")).unwrap();
+    let recorded: String = db
+        .query_row(
+            "SELECT output_json FROM steps WHERE run_id = ?1 AND idx = 2",
+            [&run],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let recorded: Value = serde_json::from_str(&recorded).unwrap();
+    let content = env.script_result(&run)["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let result: Value = serde_json::from_str(content.lines().nth(1).unwrap()).unwrap();
+    assert_eq!(result["rows"], json!([108000, 109000, 110000]), "{content}");
+    assert_eq!(
+        result["now"].as_f64().unwrap() as i64,
+        recorded["clock_secs"].as_i64().unwrap(),
+        "the re-run used the journaled clock"
+    );
+
+    // Resuming the finished run changes nothing; the result stays as it was.
+    assert!(!env.tern(&["resume", &run]).status.success());
+    assert_eq!(
+        env.script_result(&run)["content"].as_str().unwrap(),
+        content
+    );
+}
+
+#[test]
+fn a_crash_in_the_interpreter_is_a_tool_error_and_tern_carries_on() {
+    let env = Env::new();
+    env.script("lua__county__lookup('1 Elm St')");
+    let o = env
+        .cmd(&["run", "crash it"])
+        .env("TERN_TEST_PYTHON_CRASH", "1")
+        .output()
+        .unwrap();
+    let (stdout, stderr) = (text(&o.stdout), text(&o.stderr));
+    // The helper aborted; tern finished the run.
+    assert!(o.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(stdout.trim(), "Done.");
+    let result = env.script_result(&run_id(&stderr));
+    assert_eq!(result["is_error"], true, "{result}");
+    let content = result["content"].as_str().unwrap();
+    assert!(
+        content.contains("the python interpreter crashed"),
+        "{content}"
+    );
+    assert!(content.contains("tern itself is fine"), "{content}");
+}
+
+#[test]
+fn the_memory_limit_ends_the_helper_cleanly() {
+    let env = Env::new();
+    env.script("xs = []\nwhile True:\n    xs.append('x' * 100000)");
+    let o = env.tern(&["run", "eat memory"]);
+    let (stdout, stderr) = (text(&o.stdout), text(&o.stderr));
+    assert!(o.status.success(), "{stdout}\n{stderr}");
+    let content = env.script_result(&run_id(&stderr))["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(content.contains("MemoryError"), "{content}");
+    assert!(
+        content.contains("hint: the script hit its memory limit"),
+        "{content}"
+    );
+}
+
+#[test]
+fn the_helper_reads_the_workspace() {
+    let env = Env::new();
+    let ws = env.home.join("tern-workspace");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join("prices.csv"), "addr,price\na,10\nb,32\n").unwrap();
+    env.script(
+        "import csv\nsum(int(r['price']) for r in csv.DictReader(open('/workspace/prices.csv')))",
+    );
+    let o = env.tern(&["run", "add up"]);
+    let stderr = text(&o.stderr);
+    assert!(o.status.success(), "{stderr}");
+    let content = env.script_result(&run_id(&stderr))["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(content.contains("result:\n42"), "{content}");
 }

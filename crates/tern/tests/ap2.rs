@@ -234,6 +234,40 @@ async fn the_lead_answers_and_each_mention_wakes_its_agent_in_its_own_thread() {
     })
     .await;
     assert_eq!(posts.last().unwrap()["author_kind"], "system");
+
+    // A routine run that posts there (T1b's routines are schedules) brings
+    // its agent back if it was taken out.
+    let (code, _) = delete(&s, "/v1/channels/launch/agents/ops").await;
+    assert_eq!(code, 200);
+    let (_, r) = post(
+        &s,
+        &format!("/v1/schedules/{}/run", sch["id"].as_str().unwrap()),
+        json!({}),
+    )
+    .await;
+    get(
+        &s,
+        &format!("/v1/runs/{}/wait", r["run_id"].as_str().unwrap()),
+    )
+    .await;
+    let posts = posts_until(&s, "launch", |p| {
+        p.iter().any(|p| p["text"] == "All quiet.")
+    })
+    .await;
+    let quiet = posts.iter().find(|p| p["text"] == "All quiet.").unwrap();
+    assert_eq!(quiet["author_kind"], "routine");
+    assert_eq!(
+        posts.iter().filter(|p| p["text"] == "Ops joined").count(),
+        3
+    );
+    let (_, m) = get(&s, "/v1/channels/launch/agents").await;
+    assert!(
+        m["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["agent_id"] == ops.as_str())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

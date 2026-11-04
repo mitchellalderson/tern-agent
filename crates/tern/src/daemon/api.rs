@@ -803,10 +803,12 @@ async fn approve(
     let decision = match b.decision.as_str() {
         "once" => Decision::AllowOnce,
         "always" => Decision::AlwaysAllow,
+        "run" => Decision::AllowRun,
+        "host" => Decision::AlwaysAllowHost,
         "deny" => Decision::Deny,
         other => {
             return Err(bad(format!(
-                "decision {other:?} must be once, always, or deny"
+                "decision {other:?} must be once, always, run, host, or deny"
             )));
         }
     };

@@ -2,15 +2,35 @@
 
 use std::process::ExitCode;
 
-use tern_core::{Secrets, TernHome};
+use tern_core::{Config, Secrets, TernHome};
 use tern_lua::{EXTENSION, Host, load_file, load_fingerprinted};
 use tern_store::Store;
 
 /// A host for loading connectors to inspect them: real secrets (so missing
-/// ones can be reported) but a scratch store, so nothing is written.
-fn host(home: &TernHome) -> anyhow::Result<Host> {
+/// ones can be reported) and the configured default rate, but a scratch
+/// store, so nothing is written.
+pub(crate) fn host(home: &TernHome) -> anyhow::Result<Host> {
     let secrets = Secrets::load(&home.secrets_path())?;
-    Ok(Host::new(Store::open_in_memory()?, secrets)?)
+    let mut host = Host::new(Store::open_in_memory()?, secrets)?;
+    if let Ok((config, _)) = Config::load(&home.config_path()) {
+        host.default_rate = config.connectors.rate;
+    }
+    Ok(host)
+}
+
+/// The warning for a connector that reads secret values itself.
+pub(crate) fn legacy_note(spec: &tern_lua::ConnectorSpec) -> Option<String> {
+    let c = &spec.capabilities;
+    c.legacy_secrets().then(|| {
+        format!(
+            "legacy: the script reads {} itself with ctx.secret, so it could send the value to any host it may reach. Move it to capabilities.auth and tern adds it to requests without the script seeing it",
+            c.secrets.join(", ")
+        )
+    })
+}
+
+pub(crate) fn luau_files_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    luau_files(dir)
 }
 
 fn luau_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -85,7 +105,10 @@ pub fn list(home: &TernHome) -> anyhow::Result<ExitCode> {
                 Ok(l) => {
                     let s = &l.vm.spec;
                     println!("  ✓ {} — {}", s.name, s.description);
-                    println!("      {}", s.capability_summary());
+                    println!("      {}", l.vm.capability_summary());
+                    if let Some(note) = legacy_note(s) {
+                        println!("      ! {note}");
+                    }
                     for line in tool_lines(s) {
                         println!("      {line}");
                     }
@@ -98,12 +121,11 @@ pub fn list(home: &TernHome) -> anyhow::Result<ExitCode> {
                             "      grandfathered: tools without `effect` don't ask, as before T0, until it is activated again or edited"
                         );
                     }
-                    let missing: Vec<&str> = s
+                    let missing: Vec<String> = s
                         .capabilities
-                        .secrets
-                        .iter()
+                        .all_secrets()
+                        .into_iter()
                         .filter(|k| secrets.get(k).is_none())
-                        .map(String::as_str)
                         .collect();
                     if !missing.is_empty() {
                         println!("      ! secrets not set: {}", missing.join(", "));
@@ -136,7 +158,10 @@ pub fn test(home: &TernHome, name: &str) -> anyhow::Result<ExitCode> {
         }
         Ok(vm) => {
             println!("✓ {} is valid ({})", vm.spec.name, path.display());
-            println!("  {}", vm.spec.capability_summary());
+            println!("  {}", vm.capability_summary());
+            if let Some(note) = legacy_note(&vm.spec) {
+                println!("  ! {note}");
+            }
             for line in tool_lines(&vm.spec) {
                 println!("  {line}");
             }

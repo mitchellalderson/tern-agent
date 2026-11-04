@@ -214,6 +214,13 @@ impl Agent {
         &self.journal
     }
 
+    /// The provider (a fallback chain where configured) that serves
+    /// `model`, for one-off calls outside a run, such as a routine's
+    /// notification gate (T1b).
+    pub fn provider(&self, model: &ModelRef) -> Result<Arc<dyn Provider>, ProviderError> {
+        (self.providers)(model)
+    }
+
     pub fn tools(&self) -> &ToolRegistry {
         &self.tools
     }
@@ -245,11 +252,14 @@ impl Agent {
             trigger,
             None,
             None,
+            None,
         )
     }
 
     /// [`Agent::start_run`] for an agent profile: its tool scope (JSON tool
-    /// names and `*` patterns) and memory scope, frozen on the run.
+    /// names and `*` patterns) and memory scope, frozen on the run. `taint`
+    /// starts it tainted, for that reason (untrusted input, e.g. a watch
+    /// event).
     #[allow(clippy::too_many_arguments)]
     pub fn start_run_as(
         &self,
@@ -260,6 +270,7 @@ impl Agent {
         trigger: &str,
         tool_scope: Option<&str>,
         memory_scope: Option<&str>,
+        taint: Option<&str>,
     ) -> Result<RunRow, AgentError> {
         let run_id = new_id();
         let input = self
@@ -275,6 +286,7 @@ impl Agent {
                 system_prompt,
                 tool_scope,
                 memory_scope,
+                taint,
                 ..tern_store::NewRun::default()
             },
             &input,
@@ -567,23 +579,42 @@ impl Agent {
                 let in_scope = crate::tool::in_scope(scope, &call.name);
                 let runs = in_scope && !truncated;
                 let host = runs.then(|| self.tools.egress_host(&call)).flatten();
-                let policy = if runs {
-                    taint.limit_egress(self.tools.policy(&ctx, &call), host.as_deref())
-                } else {
-                    // Refused without running; nothing to approve or redo.
-                    crate::tool::ToolPolicy::new(crate::tool::Effect::Read, true)
-                };
                 let gate = Gate {
                     tainted: taint.is_set(),
                     autonomy,
                 };
+                let mut policy = if runs {
+                    self.tools.policy(&ctx, &call)
+                } else {
+                    // Refused without running; nothing to approve or redo.
+                    crate::tool::ToolPolicy::new(crate::tool::Effect::Read, true)
+                };
+                // Asks only because of the tainted host limit: the prompt
+                // then offers the host-limit choices.
+                let limited = taint.limits(host.as_deref());
+                let egress = (limited && !approval::needs_check(&call.name, &policy, gate))
+                    .then_some(host.as_deref())
+                    .flatten();
+                if limited {
+                    policy = policy.forced(true);
+                }
                 if approval::needs_check(&call.name, &policy, gate) {
                     let decision = self
-                        .approval_step(run, idx, &call, &policy, gate, taint.reason(), cancel)
+                        .approval_step(
+                            run,
+                            idx,
+                            &call,
+                            &policy,
+                            gate,
+                            taint.reason(),
+                            egress,
+                            cancel,
+                        )
                         .await;
                     idx += 1;
                     match decision {
                         Ok(ApprovalOutcome::Approved) => {}
+                        Ok(ApprovalOutcome::ApprovedForRun) => taint.allow_all_egress(),
                         Ok(_) => continue,
                         Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
                         Err(e) => return Err(e.into()),
@@ -630,7 +661,16 @@ impl Agent {
                         );
                         // A script's own tool calls are sub-steps after this one.
                         let (mut r, consumes) = self
-                            .serve_scripts(run, idx, &call, scope, &ctx, gate, call_fut)
+                            .serve_scripts(
+                                run,
+                                idx,
+                                &call,
+                                scope,
+                                &ctx,
+                                gate,
+                                &taint.egress,
+                                call_fut,
+                            )
                             .await?;
                         // A tool may mark its own result (channel_read of
                         // tainted posts).
@@ -643,7 +683,9 @@ impl Agent {
                     .await?;
                 idx += 1;
                 taint.contacted(host);
+                // A script's own calls: the hosts they reached count too.
                 while self.journal.peek(&run.id, idx)? == Some(StepKind::PyCall) {
+                    taint.contacted(self.script_host(&run.id, idx)?);
                     idx += 1;
                 }
                 if result.value.untrusted {
@@ -788,6 +830,7 @@ impl Agent {
         policy: &crate::tool::ToolPolicy,
         gate: Gate,
         taint: Option<&str>,
+        egress: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<ApprovalOutcome, StepError> {
         let out = self
@@ -799,10 +842,11 @@ impl Agent {
                 call,
                 InFlight::Retry,
                 || async {
-                    let (decision, why) =
-                        self.decide(run, call, policy, gate, taint, cancel).await?;
+                    let (decision, why) = self
+                        .decide(run, call, policy, gate, taint, egress, cancel)
+                        .await?;
                     let messages = match decision {
-                        ApprovalOutcome::Approved => vec![],
+                        ApprovalOutcome::Approved | ApprovalOutcome::ApprovedForRun => vec![],
                         _ => vec![tool_result(call, &ToolResult::error(why))],
                     };
                     Ok(StepOutput::new(decision).with_messages(messages))
@@ -823,6 +867,7 @@ impl Agent {
     /// Runs inside the approval step so the decision is journaled even when
     /// the policy or the allowlist answers it. Returns the outcome and what
     /// the model is told when the call doesn't run.
+    #[allow(clippy::too_many_arguments)]
     async fn decide(
         &self,
         run: &RunRow,
@@ -830,6 +875,7 @@ impl Agent {
         policy: &crate::tool::ToolPolicy,
         gate: Gate,
         taint: Option<&str>,
+        egress: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<(ApprovalOutcome, String), StepError> {
         let always_ok = self.tools.allow_always(call);
@@ -853,6 +899,16 @@ impl Agent {
                 always && always_ok && approval::pattern_for(call).is_some(),
             ),
         };
+        // The tainted host limit: a standing grant for this host answers it.
+        let egress = egress.filter(|_| effect == crate::tool::Effect::Read);
+        if let Some(h) = egress
+            && self
+                .store
+                .allowlist(&call.name)?
+                .contains(&approval::host_pattern(h))
+        {
+            return Ok((ApprovalOutcome::Approved, String::new()));
+        }
         let req = ApprovalRequest {
             id: new_id(),
             run_id: run.id.clone(),
@@ -865,6 +921,7 @@ impl Agent {
             agent_label: run.label.clone(),
             taint: taint.map(Into::into),
             local_only: policy.local_approval,
+            egress_host: egress.map(Into::into),
         };
         // A write may wait in the outbox instead (tooling spec §5.2).
         let deferrable = effect != crate::tool::Effect::Read && self.approvals.can_defer();
@@ -881,6 +938,18 @@ impl Agent {
         let denied = |why: &str| (ApprovalOutcome::Denied, why.to_owned());
         Ok(match decision {
             Ok(Decision::AllowOnce) => (ApprovalOutcome::Approved, String::new()),
+            // The host-limit choices; anywhere else they mean "once".
+            Ok(Decision::AllowRun) if egress.is_some() => {
+                (ApprovalOutcome::ApprovedForRun, String::new())
+            }
+            Ok(Decision::AlwaysAllowHost) => {
+                if let Some(h) = egress {
+                    self.store
+                        .add_allowlist(&call.name, &approval::host_pattern(h))?;
+                }
+                (ApprovalOutcome::Approved, String::new())
+            }
+            Ok(Decision::AllowRun) => (ApprovalOutcome::Approved, String::new()),
             Ok(Decision::AlwaysAllow) => {
                 // Without a pattern "always" can only mean "this once".
                 if let Some(p) = &req.pattern {

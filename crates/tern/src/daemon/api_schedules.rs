@@ -4,7 +4,7 @@
 //! | Method | Path | |
 //! |---|---|---|
 //! | GET | `/v1/schedules[?agent=]` | all schedules (or one agent's), with their last run's status |
-//! | POST | `/v1/schedules` | create `{cron, prompt, agent?, deliver_to?, channel?, autonomy?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
+//! | POST | `/v1/schedules` | create `{cron | at | watch (+ every, backfill, include_self), prompt, gate?, gate_connector?, initiative?, agent?, deliver_to?, channel?, autonomy?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
 //! | POST | `/v1/schedules/preview` | `{cron}` → normalized form and next 3 runs |
 //! | PATCH | `/v1/schedules/{id}` | change any of those, `enabled`, or `resume: true` (lift a budget pause); `null` returns a cap or `quiet_hours` to the default |
 //!
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tern_core::cron::Cron;
 use tern_store::ScheduleRow;
-use tern_tools::schedule::{ScheduleChange, ScheduleLimits};
+use tern_tools::schedule::{ScheduleChange, ScheduleLimits, TriggerArgs};
 
 use super::api::{ApiError, ApiResult, Shared, bad, internal, not_found};
 
@@ -41,7 +41,14 @@ pub fn routes() -> Router<Shared> {
 #[derive(Serialize, Deserialize)]
 pub struct Schedule {
     pub id: String,
+    /// What starts it (T1b): `cron`, `once` or `watch`.
+    #[serde(default = "cron")]
+    pub trigger: String,
+    /// The cron expression; empty for other triggers.
     pub cron: String,
+    /// Unix ms: when a `once` routine runs (or ran).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<i64>,
     pub prompt: String,
     pub session_id: String,
     pub deliver_to: Option<String>,
@@ -85,6 +92,35 @@ pub struct Schedule {
     /// The agent whose job it is.
     #[serde(default = "default_agent")]
     pub agent_id: String,
+    /// `<connector>.<watch>` for a watch trigger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<String>,
+    /// How often a watch is polled, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_secs: Option<i64>,
+    /// A watch's first poll starts runs instead of only recording.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backfill: bool,
+    /// Keeps events the watch marks as caused by tern.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_self: bool,
+    /// What the last poll or gate found ("2 new events", "gate: skipped").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_check: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_check_at: Option<i64>,
+    /// Luau run before each cron or once slot; false skips the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_connector: Option<String>,
+    /// `silent`, `digest`, `notify` or `interrupt`; absent = the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiative: Option<String>,
+}
+
+fn cron() -> String {
+    "cron".into()
 }
 
 fn default_agent() -> String {
@@ -102,8 +138,17 @@ fn view(m: &Shared, s: ScheduleRow) -> Schedule {
             .ok()
             .and_then(|runs| runs.into_iter().last());
     let paused_until = s.paused_until.filter(|u| *u > tern_store::now_ms());
+    let at = (s.trigger() == "once").then(|| {
+        if s.next_run_at == i64::MAX {
+            s.last_run_at.unwrap_or(s.next_run_at)
+        } else {
+            s.next_run_at
+        }
+    });
     Schedule {
         next_run_at: (s.enabled && s.next_run_at != i64::MAX).then_some(s.next_run_at),
+        trigger: s.trigger().to_owned(),
+        at,
         id: s.id,
         cron: s.cron,
         prompt: s.prompt,
@@ -124,6 +169,15 @@ fn view(m: &Shared, s: ScheduleRow) -> Schedule {
         agent_id: s.agent_id.unwrap_or_else(default_agent),
         channel_id: s.channel_id.unwrap_or_else(home),
         autonomy: s.autonomy,
+        watch: s.watch,
+        every_secs: s.every_secs,
+        backfill: s.backfill,
+        include_self: s.include_self,
+        last_check: s.last_check,
+        last_check_at: s.last_check_at,
+        gate: s.gate,
+        gate_connector: s.gate_connector,
+        initiative: s.initiative,
     }
 }
 
@@ -158,7 +212,8 @@ fn owner(m: &Shared, a: &str) -> Result<String, ApiError> {
 
 #[derive(Deserialize)]
 struct CreateBody {
-    cron: String,
+    #[serde(flatten)]
+    trigger: TriggerArgs,
     prompt: String,
     /// `none` (default) or `telegram:<chat_id>`.
     deliver_to: Option<String>,
@@ -214,10 +269,27 @@ fn target(t: Option<&str>) -> Result<Option<String>, ApiError> {
     }
 }
 
+/// Check a trigger's watch against the active connectors.
+async fn check_trigger(
+    m: &Shared,
+    t: &mut TriggerArgs,
+    limits: &ScheduleLimits,
+    old: Option<&ScheduleRow>,
+) -> Result<(), ApiError> {
+    let checks = m.rt.routine_checks().map_err(internal)?;
+    if t.watch.is_some() {
+        tern_tools::schedule::check_trigger(t, Some(&checks))
+            .await
+            .map_err(bad)?;
+    }
+    limits.check(old, Some(&checks)).await.map_err(bad)
+}
+
 async fn create(
     State(m): State<Shared>,
-    Json(b): Json<CreateBody>,
+    Json(mut b): Json<CreateBody>,
 ) -> Result<(StatusCode, Json<Schedule>), ApiError> {
+    check_trigger(&m, &mut b.trigger, &b.limits, None).await?;
     let deliver_to = target(b.deliver_to.as_deref())?;
     if let Some(a) = &b.autonomy {
         autonomy(a)?;
@@ -231,9 +303,9 @@ async fn create(
         Some(a) => owner(&m, a)?,
         None => tern_store::DEFAULT_AGENT.into(),
     };
-    let mut row = tern_tools::schedule::create_schedule(
+    let mut row = tern_tools::schedule::create_routine(
         &m.rt.store,
-        &b.cron,
+        &b.trigger,
         &b.prompt,
         deliver_to,
         &b.limits,
@@ -286,7 +358,8 @@ async fn preview(Json(b): Json<Value>) -> ApiResult<Value> {
 
 #[derive(Deserialize)]
 struct UpdateBody {
-    cron: Option<String>,
+    #[serde(flatten)]
+    trigger: TriggerArgs,
     prompt: Option<String>,
     enabled: Option<bool>,
     deliver_to: Option<String>,
@@ -304,8 +377,10 @@ struct UpdateBody {
 async fn update(
     State(m): State<Shared>,
     UrlPath(id): UrlPath<String>,
-    Json(b): Json<UpdateBody>,
+    Json(mut b): Json<UpdateBody>,
 ) -> ApiResult<Schedule> {
+    let old = m.rt.store.schedule(&id).map_err(internal)?;
+    check_trigger(&m, &mut b.trigger, &b.limits, old.as_ref()).await?;
     let deliver_to = match &b.deliver_to {
         Some(t) => Some(target(Some(t))?),
         None => None,
@@ -320,7 +395,7 @@ async fn update(
         .transpose()?;
     let agent = b.agent.as_deref().map(|a| owner(&m, a)).transpose()?;
     let ch = ScheduleChange {
-        cron: b.cron,
+        trigger: b.trigger,
         prompt: b.prompt,
         enabled: b.enabled,
         deliver_to,

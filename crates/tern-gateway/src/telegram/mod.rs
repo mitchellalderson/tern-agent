@@ -172,6 +172,20 @@ impl TelegramGateway {
         self.reply_in(chat, thread, &text).await;
     }
 
+    /// An agent's current name (the default agent can be renamed).
+    fn agent_name(&self, id: &str) -> String {
+        self.store
+            .agent(id)
+            .ok()
+            .flatten()
+            .map_or_else(|| "tern".to_owned(), |a| a.name)
+    }
+
+    /// The name of the agent `chat_ref` talks to.
+    fn chat_agent_name(&self, chat_ref: &str) -> String {
+        self.agent_name(&crate::chat_agents::get(&self.store, SOURCE, chat_ref))
+    }
+
     fn prefix_or_tern(&self, chat_ref: &str) -> String {
         let id = crate::chat_agents::get(&self.store, SOURCE, chat_ref);
         let name = self
@@ -300,11 +314,15 @@ impl TelegramGateway {
         let decision = match choice {
             "once" => Decision::AllowOnce,
             "always" => Decision::AlwaysAllow,
+            "run" => Decision::AllowRun,
+            "host" => Decision::AlwaysAllowHost,
             _ => Decision::Deny,
         };
         let label = match decision {
             Decision::AllowOnce => "Allowed",
             Decision::AlwaysAllow => "Always allowed",
+            Decision::AllowRun => "Allowed all sites for this run",
+            Decision::AlwaysAllowHost => "Site always allowed",
             Decision::Deny | Decision::Unanswered => "Denied",
         };
         // Only a tap in the chat the request was sent to counts.
@@ -492,9 +510,9 @@ impl TelegramGateway {
 }
 
 /// "1 action waiting" for the user, with what it is and why it waits.
-fn outbox_prompt(item: &OutboxItem) -> String {
+fn outbox_prompt(item: &OutboxItem, agent: &str) -> String {
     let mut text = format!(
-        "📬 Waiting for you (outbox #{}): {}\nNobody was here to approve it, so tern carried on without it.",
+        "📬 Waiting for you (outbox #{}): {}\nNobody was here to approve it, so {agent} carried on without it.",
         item.id,
         item.headline()
     );
@@ -640,6 +658,11 @@ impl Gateway for TelegramGateway {
         if let Some(pattern) = &req.pattern {
             buttons.push((format!("Always ({pattern})"), format!("ap:{id}:always")));
         }
+        // The tainted host limit's choices.
+        if let Some(host) = &req.egress_host {
+            buttons.push(("All sites this run".into(), format!("ap:{id}:run")));
+            buttons.push((format!("Always {host}"), format!("ap:{id}:host")));
+        }
         buttons.push(("Deny".into(), format!("ap:{id}:deny")));
         if let Err(e) = self
             .api
@@ -656,8 +679,12 @@ impl Gateway for TelegramGateway {
     }
 
     async fn outbox_notice(&self, target: &str, item: &OutboxItem) {
-        let Ok(chat) = target.parse::<i64>() else {
+        let Some((chat, thread)) = place(target) else {
             return;
+        };
+        let agent = match item.agent_id.as_deref() {
+            Some(id) => self.agent_name(id),
+            None => self.chat_agent_name(target),
         };
         let buttons: Buttons = vec![
             ("Approve".into(), format!("ob:{}:approve", item.id)),
@@ -666,7 +693,7 @@ impl Gateway for TelegramGateway {
         let buttons = (!item.local_only).then_some(&buttons);
         if let Err(e) = self
             .api
-            .send_message(chat, &outbox_prompt(item), buttons)
+            .send_message_in(chat, thread, &outbox_prompt(item, &agent), buttons)
             .await
         {
             tracing::warn!(error = %e, "could not send outbox notice");
@@ -677,7 +704,12 @@ impl Gateway for TelegramGateway {
         let (chat, thread) = place(target)?;
         match self
             .api
-            .send_message_in(chat, thread, &secret_notice(req), None)
+            .send_message_in(
+                chat,
+                thread,
+                &secret_notice(req, &self.chat_agent_name(target)),
+                None,
+            )
             .await
         {
             Ok(id) => Some(id.to_string()),
@@ -699,11 +731,11 @@ impl Gateway for TelegramGateway {
 }
 
 /// Points the user at an app that can take the value: never this chat.
-fn secret_notice(req: &SecretRequest) -> String {
+fn secret_notice(req: &SecretRequest, agent: &str) -> String {
     let names: Vec<&str> = req.asks.iter().map(|a| a.name.as_str()).collect();
     let who = match &req.agent_label {
         Some(l) => format!("Sub-agent {l}"),
-        None => "tern".to_owned(),
+        None => agent.to_owned(),
     };
     let mut text = format!(
         "🔑 {who} needs {} to continue.\nThe agent says: \"{}\"\n\n",

@@ -253,9 +253,9 @@ void main() {
 
   test('the store names authors and lists who @ can name', () async {
     final (store, _) = await _store();
-    expect(store.authorName('tern:research'), 'Research');
-    expect(store.authorName('tern:research/scout-1'), 'Research/scout-1');
-    expect(store.authorName('routine:x'), 'routine:x');
+    expect(store.authorName('tern:research', 'x'), 'Research');
+    expect(store.authorName('tern:research/scout-1', 'x'), 'Research/scout-1');
+    expect(store.agentOfAuthor('tern:ops')?.name, 'Ops');
     final ch = store.openChannel!;
     expect(ch.lead, 'tern:research');
     expect(store.membersOf(ch).map((a) => a.name), ['Research', 'tern']);

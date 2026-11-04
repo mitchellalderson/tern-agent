@@ -184,6 +184,16 @@ fn meta(key: &str) -> Meta {
             security: Some("Every shell command can change these."),
             ..m
         },
+        "taint.egress" => Meta {
+            choices: &["ask", "allow"],
+            live: true,
+            security: Some(
+                "Allow: once a run has read a web page or an email, it can still send what it \
+                 knows to any site without asking. Better set per agent for agents meant to browse.",
+            ),
+            risky: |v| v == "allow",
+            ..m
+        },
         "sandbox.shell_timeout_secs" => at_least(1.0),
         "sandbox.docker_cpus" | "sandbox.docker_pids" => at_least(0.0),
         "subagents.default_model" => Meta {
@@ -205,6 +215,26 @@ fn meta(key: &str) -> Meta {
         "schedules.quiet_hours" => Meta { live: true, ..m },
         "schedules.runs_per_day" | "schedules.tokens_per_run" => Meta {
             kind: Some(Kind::Int),
+            live: true,
+            ..at_least(1.0)
+        },
+        "schedules.initiative" => Meta {
+            choices: &["silent", "digest", "notify", "interrupt"],
+            live: true,
+            ..m
+        },
+        "schedules.initiative_dial" => Meta {
+            choices: &["vacation", "quieter", "normal", "louder"],
+            live: true,
+            ..m
+        },
+        "schedules.digest_times" => Meta { live: true, ..m },
+        "schedules.gate_model" => Meta {
+            kind: Some(Kind::Model),
+            live: true,
+            ..m
+        },
+        "schedules.max_events_per_poll" => Meta {
             live: true,
             ..at_least(1.0)
         },
@@ -696,6 +726,8 @@ mod tests {
                 "memory",
                 "home",
                 "outbox",
+                "taint",
+                "connectors",
                 "api"
             ]
         );

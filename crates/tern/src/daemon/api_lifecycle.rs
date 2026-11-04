@@ -3,6 +3,8 @@
 //! | Method | Path | |
 //! |---|---|---|
 //! | GET | `/v1/status` | one cheap summary: version, uptime, counts, gateway health |
+//! | GET | `/v1/initiative` | `{dial}`: the global initiative dial (T1b) |
+//! | PUT | `/v1/initiative` | set `{dial}`: `vacation`, `quieter`, `normal` or `louder`; written to `config.toml` (`schedules.initiative_dial`). Owner only |
 //! | POST | `/v1/shutdown[?dry_run=1]` | stop gracefully (exit 0); runs in progress stay `running` and resume on the next start. With `dry_run`, only list them |
 //!
 //! Shutdown is owner-only over TCP (`auth::OWNER_ONLY`); the Unix socket is
@@ -13,12 +15,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use super::api::{ApiResult, Shared, internal};
+use super::api::{ApiResult, Shared, bad, internal};
 
 pub fn routes() -> Router<Shared> {
     Router::new()
         .route("/v1/status", get(status))
         .route("/v1/shutdown", post(shutdown))
+        .route("/v1/initiative", get(initiative).put(set_initiative))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -35,6 +38,9 @@ pub struct Status {
     /// Enabled schedules that will fire again.
     pub active_schedules: usize,
     pub gateways: Vec<GatewayStatus>,
+    /// The global initiative dial: `vacation`, `quieter`, `normal` or `louder`.
+    #[serde(default)]
+    pub initiative: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -74,6 +80,40 @@ async fn status(State(m): State<Shared>) -> ApiResult<Status> {
             .filter(|s| s.enabled && s.next_run_at != i64::MAX)
             .count(),
         gateways,
+        initiative: m.rt.live().schedules.initiative_dial.as_str().to_owned(),
+    }))
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct InitiativeBody {
+    pub dial: String,
+}
+
+async fn initiative(State(m): State<Shared>) -> Json<InitiativeBody> {
+    Json(InitiativeBody {
+        dial: m.rt.live().schedules.initiative_dial.as_str().to_owned(),
+    })
+}
+
+/// Set the dial (spec §11.7): every routine louder or quieter, or silent
+/// on vacation. It is a config setting, so the config editor shows it too.
+async fn set_initiative(
+    State(m): State<Shared>,
+    Json(b): Json<InitiativeBody>,
+) -> ApiResult<InitiativeBody> {
+    let dial = tern_core::initiative::Dial::parse(&b.dial).ok_or_else(|| {
+        bad(format!(
+            "dial {:?} must be vacation, quieter, normal or louder",
+            b.dial
+        ))
+    })?;
+    m.rt.change_setting(
+        "schedules.initiative_dial",
+        Some(&serde_json::json!(dial.as_str())),
+    )
+    .map_err(internal)?;
+    Ok(Json(InitiativeBody {
+        dial: dial.as_str().to_owned(),
     }))
 }
 

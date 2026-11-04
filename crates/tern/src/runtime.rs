@@ -235,18 +235,19 @@ impl Runtime {
             let p = prompts.clone();
             let st = store.clone();
             let h = home.clone();
-            host.set_prompt(Box::new(move |label, depth, parent_session| {
-                // A helper works under its parent agent's persona and memory.
+            host.set_prompt(Box::new(move |label, depth, agent, caller| {
+                // A helper works under its agent's persona and memory: its
+                // parent's, or the profile it was delegated to.
                 let frame = st
-                    .session_agent(parent_session)
+                    .agent(agent)
                     .ok()
-                    .and_then(|a| st.agent(&a).ok().flatten())
+                    .flatten()
                     .map(|a| agent_frame(&h, &st, &a));
                 let (prompt, scope) = match &frame {
                     Some((prompt, scope)) => (prompt.as_ref(), scope.as_ref()),
                     None => (None, None),
                 };
-                p.build(AgentRole::Subagent { label }, depth, prompt, scope)
+                p.build(AgentRole::Subagent { label, caller }, depth, prompt, scope)
             }));
             slot.set(host.clone());
             host
@@ -336,6 +337,7 @@ impl Runtime {
             subagent_model: a.subagent_model,
             tools: Some(serde_json::to_string(&tools)?),
             memory,
+            egress: a.egress.map(|e| e.as_str().to_owned()),
             ..tern_store::AgentRow::default()
         })?;
         self.refresh_agent_chains();
@@ -451,6 +453,20 @@ impl Runtime {
         }
     }
 
+    /// A Luau host over this runtime's store and secrets, for watches and
+    /// gates (T1b).
+    pub fn lua_host(&self) -> anyhow::Result<tern_lua::Host> {
+        crate::routines::lua_host(&self.store, &self.secrets)
+    }
+
+    /// Checks for routines' watches against the active connectors.
+    pub fn routine_checks(&self) -> anyhow::Result<crate::routines::LuaChecks> {
+        Ok(crate::routines::LuaChecks::new(
+            self.lua_host()?,
+            self.home.connectors_dir(),
+        ))
+    }
+
     /// Check that `model` resolves to a configured provider.
     /// The "Agents in #slug" prompt section for a run of `agent_id` in a
     /// topic channel with other agents (agent profiles §5.2).
@@ -493,6 +509,20 @@ impl Runtime {
         text: &str,
         source: &str,
         trigger: &str,
+    ) -> anyhow::Result<StartedRun> {
+        self.start_run_tainted(session, model, text, source, trigger, None)
+    }
+
+    /// [`Runtime::start_run`] for untrusted input: the run starts tainted
+    /// for `taint` (tooling spec §5.3), e.g. a routine started by a watch.
+    pub fn start_run_tainted(
+        &self,
+        session: Option<&str>,
+        model: Option<&str>,
+        text: &str,
+        source: &str,
+        trigger: &str,
+        taint: Option<&str>,
     ) -> anyhow::Result<StartedRun> {
         let session = match session {
             Some(id) => self
@@ -557,12 +587,21 @@ impl Runtime {
             trigger,
             tool_scope.as_deref(),
             agent.private_memory().then_some("private"),
+            taint,
         )?;
         // Frozen on the run, like its model (tooling spec §5.4); a routine
         // overrides it in `Manager::start_scheduled`. An agent's autonomy
         // ceiling (agent profiles AP3) will cap this value here.
         self.store
             .set_run_autonomy(&run.id, self.live().autonomy.as_str())?;
+        // The tainted host limit: the agent's own setting, else the
+        // config's; frozen like autonomy.
+        let egress = agent
+            .egress
+            .as_deref()
+            .and_then(tern_core::approval::Egress::parse)
+            .unwrap_or(self.live().taint.egress);
+        self.store.set_run_egress(&run.id, egress.as_str())?;
         Ok(StartedRun {
             session_id: session.id,
             run_id: run.id,
@@ -584,6 +623,8 @@ pub struct NewAgent {
     pub subagent_model: Option<String>,
     pub tools: Option<tern_core::agents::ToolScope>,
     pub memory: Option<String>,
+    /// The tainted host limit for its runs; `None` = `[taint] egress`.
+    pub egress: Option<tern_core::approval::Egress>,
     pub template: Option<String>,
 }
 
@@ -624,12 +665,46 @@ pub(crate) fn agent_frame(
     if agent.is_default() && others.is_empty() {
         return (None, scope);
     }
+    let delegates = store
+        .agents(false)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| agent.may_delegate_to(a))
+        .map(|a| {
+            let job = use_for(home, &a);
+            format!("`{}` · {} · use for: {job}", a.slug, a.name)
+        })
+        .collect();
     let prompt = tern_core::prompt::AgentPrompt {
         persona_path: tern_core::agents::persona_path(home, &agent.id),
         memory_path: tern_core::agents::memory_path(home, &agent.id, agent.private_memory()),
         others,
+        delegates,
     };
     (Some(prompt), scope)
+}
+
+/// What an agent is for, from its persona: the "Your job: …" line the
+/// templates write, else its first line that isn't "You are …".
+fn use_for(home: &TernHome, a: &tern_store::AgentRow) -> String {
+    let text = std::fs::read_to_string(tern_core::agents::persona_path(home, &a.id))
+        .map(|t| tern_core::memory::injectable(&t))
+        .unwrap_or_default();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(|l| l.trim().trim_start_matches(['-', '*', ' ']))
+        .filter(|l| !l.is_empty())
+        .collect();
+    let line = lines
+        .iter()
+        .find_map(|l| {
+            let i = l.to_ascii_lowercase().find("job:")?;
+            Some(l[i + 4..].trim())
+        })
+        .or_else(|| lines.iter().copied().find(|l| !l.starts_with("You are")))
+        .or_else(|| lines.first().copied())
+        .unwrap_or("its own job (see its name)");
+    line.chars().take(160).collect()
 }
 
 /// One line per other active agent: `@slug · Name · first line of its persona`.
@@ -733,6 +808,28 @@ pub(crate) fn host_policy(config: &Config, home: &TernHome) -> tern_sandbox::Hos
     }
 }
 
+/// The `python` tool, its scripts run by `tern __monty-exec` under the
+/// host sandbox with no network and nothing writable outside the usual
+/// temp dirs and workspace (docs/python-tool-spec.md §5.2), whichever
+/// backend `shell` uses.
+#[cfg(feature = "python")]
+fn python_tool(config: &Config, home: &TernHome) -> tern_python::Python {
+    let limits = tern_python::Limits::default();
+    let Ok(program) = std::env::current_exe() else {
+        tracing::warn!("python: can't find tern's own binary; scripts run in-process");
+        return tern_python::Python::new(limits);
+    };
+    let mut policy = host_policy(config, home);
+    policy.network = false;
+    policy.write_paths.clear();
+    if let Some(dir) = program.parent() {
+        policy.read_paths.push(dir.to_path_buf());
+    }
+    let sandbox = (policy.confine != tern_sandbox::Confine::Off)
+        .then(|| Arc::new(tern_sandbox::HostBackend::new(policy)));
+    tern_python::Python::with_helper(limits, tern_python::Helper { program, sandbox })
+}
+
 fn docker_settings(config: &Config) -> tern_sandbox::DockerSettings {
     let sb = &config.sandbox;
     tern_sandbox::DockerSettings {
@@ -786,15 +883,28 @@ fn build_tools(
         tern_tools::agents::register(&mut registry, subagents.clone());
     }
     #[cfg(feature = "python")]
-    registry.register(Arc::new(tern_python::Python::default()));
+    registry.register(Arc::new(python_tool(config, home)));
 
-    let lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
+    let mut lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
+    lua.default_rate = config.connectors.rate;
     let dirs = tern_lua::tools::Dirs {
         active: home.connectors_dir(),
         drafts: home.drafts_dir(),
     };
     let connectors = Arc::new(tern_lua::Connectors::open(lua.clone(), dirs.active.clone()));
     registry.add_source(connectors.clone());
+    // Routines' watches are checked against the active connectors (T1b).
+    let checks: Arc<dyn tern_tools::schedule::RoutineChecks> = Arc::new(
+        crate::routines::LuaChecks::new(lua.clone(), dirs.active.clone()),
+    );
+    registry.register(Arc::new(tern_tools::schedule::ScheduleCreate {
+        store: store.clone(),
+        checks: Some(checks.clone()),
+    }));
+    registry.register(Arc::new(tern_tools::schedule::ScheduleUpdate {
+        store: store.clone(),
+        checks: Some(checks),
+    }));
     registry.register(Arc::new(tern_lua::tools::ConnectorWrite {
         host: lua.clone(),
         dirs: dirs.clone(),

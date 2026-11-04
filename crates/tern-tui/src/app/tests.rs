@@ -173,6 +173,7 @@ impl Backend for Fake {
             usage: Usage::default(),
             result_preview: None,
             pending_question: Some("Private companies too?".into()),
+            agent_id: None,
         }])
     }
     fn mcp_servers(&self) -> BackendResult<Vec<McpStatus>> {
@@ -467,6 +468,7 @@ fn approvals_are_answered_inline() {
             agent_label: None,
             taint: None,
             local_only: false,
+            egress_host: None,
         },
         reply: tx,
     });
@@ -527,6 +529,7 @@ fn ctrl_c_denies_a_pending_approval() {
             agent_label: None,
             taint: None,
             local_only: false,
+            egress_host: None,
         },
         reply: tx,
     });
@@ -834,6 +837,7 @@ fn spawned(parent: &str, child: &str, label: &str) -> AgentEvent {
         task: "SUBTASK".into(),
         model: "mock:m".into(),
         status: "running".into(),
+        agent: None,
     }
 }
 
@@ -1002,6 +1006,7 @@ fn approval(
                 agent_label: label.map(Into::into),
                 taint: None,
                 local_only: false,
+                egress_host: None,
             },
             reply: tx,
         },

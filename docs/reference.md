@@ -10,10 +10,10 @@ Everything tern does, command by command. For installing and a first chat, see t
 | **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `python` (sandboxed compute that calls your tools), `http_fetch`, long-term memory and capped profile notes (`user.md`, `memory.md`), search over past conversations, skills, schedules. |
 | **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. A run that has read untrusted content (a web page, mail, a tool marked `untrusted`) is **tainted**: its `write` and `destructive` calls ask whatever "always" says, and the prompt says why ([Taint](#taint)). A write nobody answers in time waits in the [outbox](#outbox) instead of being denied, and `autonomy` sets how much runs may do without asking ([Autonomy](#autonomy)). |
 | **MCP** | Ask the agent ("add the GitHub MCP server"; you approve the exact command each time, and only on this machine for local commands), or add, test, toggle and remove servers with `/mcp` in the chat or [`tern mcp`](#tern-mcp), or edit `[mcp.servers.<name>]` (stdio or streamable HTTP); changes apply without a restart, a server's pasted `mcpServers` JSON works too, and their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. For a browser, see [Recipe: give tern a browser](recipes/browser.md). |
-| **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
+| **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and paths they may reach, which credentials tern adds to their requests (the script never sees them), a request rate, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
 | **Telegram** | Chat from your phone, approve tool calls with buttons, get scheduled results. |
-| **Schedules** | "Every weekday at 8am, summarize my unread GitHub notifications" becomes a cron schedule whose results are delivered to the chat that asked. Runs with nothing to say stay silent, results wait out your quiet hours, and each schedule can be capped per day. See [Schedules](#schedules). |
+| **Schedules** | "Every weekday at 8am, summarize my unread GitHub notifications" becomes a routine whose results are delivered to the chat that asked: on a cron, once at a time, or on events from a connector's watch (no model call when nothing happened). Runs with nothing to say stay silent, a gate can skip a run, each routine's initiative decides whether its result interrupts you or waits for a digest, results wait out your quiet hours, and each can be capped per day. See [Schedules](#schedules). |
 | **Durability** | Kill tern mid-run and `tern resume <run>` (or the daemon, automatically) continues it without re-running completed tools. `tern runs show <run>` prints the step journal. |
 
 
@@ -62,6 +62,7 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern agents`](#tern-agents) | List, create, edit or archive your agents. |
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
+| [`tern grants`](#new-sites-in-a-tainted-run) | The "always" grants approvals have recorded (commands, tools, sites), and removing them. |
 | [`tern outbox`](#outbox) | Writes waiting for your approval: list, show, approve (optionally edited), reject. |
 | [`tern connectors`](#tern-connectors) | List or validate Luau connectors. |
 | [`tern setup`](#tern-setup) | Connect a model provider: paste a key, pick a model. |
@@ -126,7 +127,7 @@ tern daemon
 
 Runs in the foreground until SIGINT or SIGTERM, and provides:
 
-- **Scheduler**: checks for due schedules every 30 seconds. A schedule missed while the daemon was down runs once on the next start, then continues from now (no backfill). It also enforces each schedule's caps and sends results held for quiet hours (see [Schedules](#schedules)).
+- **Scheduler**: checks for due schedules every 30 seconds, polls routines' watches, and starts runs for new watch events. A schedule missed while the daemon was down runs once on the next start, then continues from now (no backfill). It also enforces each schedule's caps and sends results held for quiet hours (see [Schedules](#schedules)).
 - **Gateways**: Telegram, if `[gateway.telegram]` is enabled (see [Telegram](#telegram)). The daemon refuses to start if the bot token secret isn't set.
 - **Local API** on `~/.tern/tern.sock` (mode 0600), which `tern` and the desktop app attach to.
 - **Crash recovery**: runs in progress when the daemon stops are left `running` and resume on the next start, exactly as after a crash.
@@ -208,7 +209,7 @@ tern connectors [list]     # active connectors and drafts, with capabilities and
 tern connectors test <name>
 ```
 
-`list` loads every `.luau` file in `~/.tern/connectors/` (active) and `~/.tern/connectors/drafts/` (written by the agent, not yet activated) and prints each one's description, declared hosts and secrets, its tools with their effect (`- lua__mail__search [read]: … (untrusted)`), and any secrets that aren't set. Files that fail to load are marked `✗` with the error. Active connectors that keep the pre-effects approval default are marked `grandfathered`.
+`list` loads every `.luau` file in `~/.tern/connectors/` (active) and `~/.tern/connectors/drafts/` (written by the agent, not yet activated) and prints each one's description, declared hosts and paths, credentials, rate and secrets, its tools with their effect (`- lua__mail__search [read]: … (untrusted)`), and any secrets that aren't set. Files that fail to load are marked `✗` with the error. Active connectors that keep the pre-effects approval default are marked `grandfathered`, and those that read secret values themselves with `ctx.secret` are marked `legacy`.
 
 `test <name>` validates `<name>.luau` (active first, then drafts) and lists the tools it exposes, with their effect and flags (untrusted, read via POST, idempotent, requires approval, refused). It exits non-zero if the connector doesn't exist or doesn't load. Neither command writes anything.
 
@@ -223,6 +224,23 @@ pay    = { money_movement = true, ... },               -- refused; also `trade =
 ```
 
 A `read` tool can only send GET and HEAD unless it sets `read_via_post`; anything else fails before the request goes out. Connectors that were already active when tern gained effects keep their old behaviour (tools without an `effect` don't ask) until you activate them again or edit them.
+
+And what it may reach, with which credentials:
+
+```lua
+capabilities = {
+  http = { "api.github.com/repos/*", "api.github.com/search/*" },  -- hosts, optionally with paths
+  auth = { secret = "GITHUB_TOKEN", scheme = "token" },           -- tern adds "Authorization: token …"
+  rate = "60/min",                                                 -- requests per sec, min or hour
+}
+```
+
+- **`auth`**: tern adds the credential to each request to the connector's hosts; the script never sees the value, and it is replaced with `[REDACTED]` in anything a server sends back (body, headers) and in errors. Forms: `auth = "NAME"` (Bearer), `{ secret = "NAME", header = "X-Api-Key" }`, `{ secret = "NAME", header = "Authorization", scheme = "token" }`, `{ secret = "NAME", query = "api_key" }`, `{ basic = { user = "U", password = "P" } }` (both secret names). `hosts = { … }` sends an entry to only some of the declared hosts, and a list of entries declares several. A request can pass `auth = false` to send none, or `auth = "NAME"` for just one.
+- **Paths**: `host/path` entries allow only matching paths on that host; `*` is one path segment and a trailing `*` is the rest. A host listed without a path allows every path. Every request and every redirect is checked; a path-restricted host also refuses encoded `/`, `\` and `.` (`%2f`, `%5c`, `%2e`).
+- **Rate**: each connector has one budget, shared by every run, routine, sub-agent and `python` script that calls it; past it a request fails at once with `rate limited … try again in Ns` and nothing is sent. Without `rate`, `connectors.rate` applies. A server's `429` or `503` with `Retry-After: <seconds>` pauses the connector that long (at most an hour).
+- **Legacy `ctx.secret`**: `capabilities.secrets = { "NAME" }` with `ctx.secret("NAME")` still works for older connectors, but the script then holds the value and could send it to any host it may reach. The activation prompt, `tern connectors list`, `tern doctor` and the Secrets view (`reads the value itself (legacy ctx.secret)`) say so.
+
+Activating a connector shows all of this, and replacing an active one lists what changed (`+ http api.github.com/search/*, - rate 60/min`). Changing any of it afterwards stops the connector from loading until you approve it again.
 
 ### `tern setup`
 
@@ -284,7 +302,7 @@ tern config set mcp.servers.github.args '["stdio"]'
 tern doctor [--offline]
 ```
 
-Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; every model in each fallback chain (configured provider, and listed by it when online); the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
+Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; every model in each fallback chain (configured provider, and listed by it when online); the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; each active Luau connector (a warning for one that reads secret values itself with `ctx.secret`); and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
 
 It exits `1` if anything failed, `0` otherwise (warnings are things not set up yet). It is read-only and doesn't create `~/.tern`.
 
@@ -323,6 +341,11 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `schedules.runs_per_day` | none | Default cap on runs per schedule per local day. |
 | `schedules.usd_per_day` | none | Default cap on a schedule's spend per local day (sub-agents included), where prices are known. |
 | `schedules.tokens_per_run` | none | Default cap on one scheduled run's tokens (input + output + cache). |
+| `schedules.initiative` | `"digest"` | How a routine's result reaches its chat unless the routine sets its own: `silent`, `digest`, `notify` or `interrupt`. See [Routines](#routines-triggers-watches-gates-initiative). |
+| `schedules.initiative_dial` | `"normal"` | Every routine one level `quieter` or `louder`, or `vacation` (nothing pushed). Also `PUT /v1/initiative`. |
+| `schedules.digest_times` | `["08:30", "17:30"]` | Local times when digest results are sent, one message per chat. |
+| `schedules.gate_model` | none | The model that decides whether a `notify` result is worth a push; unset = the cheapest configured model with a known price. |
+| `schedules.max_events_per_poll` | `20` | New watch events that each start a run; the rest of one poll share one run. |
 | `memory.user_md_tokens` | `1500` | Cap on `user.md` as injected into the prompt (tokens ≈ chars / 4). |
 | `memory.memory_md_tokens` | `1500` | Cap on `memory.md` (core facts) as injected. |
 | `memory.flush` | `true` | Before older context is summarized, give the agent one silent turn to save durable facts with `memory_save`. |
@@ -355,6 +378,8 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `autonomy` | `"supervised"` | `readonly`, `supervised`, `autonomous` or `yolo` ([Autonomy](#autonomy)). Routines can set their own. |
 | `outbox.wait_secs` | `120` | How long a `write`/`destructive` approval waits for an answer before it goes to the [outbox](#outbox) (at once when no client is attached). |
 | `outbox.expire_hours` | `72` | How long an outbox item waits for you. |
+| `taint.egress` | `"ask"` | In a tainted run, a read from a site it hasn't reached asks first (`ask`) or doesn't (`allow`). An agent can set its own ([New sites in a tainted run](#new-sites-in-a-tainted-run)). |
+| `connectors.rate` | `"120/min"` | HTTP requests per Luau connector for those that declare no `rate`, shared by every caller ([`tern connectors`](#tern-connectors)). Read at start. |
 
 The desktop app shows all of this (except providers, MCP servers and the Telegram gateway, which have their own windows) under **tern › Configuration…** or **Settings › All settings (config.toml)…**: every setting by section with its description from `config.example.toml`, a mark on what you've changed, a reset to the default, search, and a note on settings that matter for safety (`sandbox.network`, `sandbox.confine`, the API listeners). Changes are saved as you make them, keeping the file's comments. `default_model`, `schedules.*`, `home.*` and `api.remote_mcp_stdio` apply from the next run; the rest when tern restarts, which the window offers to do. The same is on the API, owner scope only:
 
@@ -423,6 +448,7 @@ You can have several agents, each with its own job: a name and avatar, a **perso
 - **Tools**: `{"builtins": "all" | "read_only" | [names], "connectors": "all" | [names], "mcp": "all" | [servers], "skills": "all" | [names]}`; a missing key means all. A new agent gets every built-in tool except `shell`, no connectors, no MCP servers, all skills. Tools out of scope aren't offered to the model and are refused if called. Every agent keeps `channel_read`, `channel_post`, `history_search`, `secret_request` and its memory tools. Its sub-agents get no more than it has.
 - **Memory**: `private` (the default for new agents) or `shared`. `user.md` is always shared: who you are is the same for every agent. A private agent has its own `memory.md` (next to its persona) and its own long-term memories: `memory_save` keeps them its own unless `shared: true`, and `memory_search` finds its own and the shared ones. `session_search` only ever searches the agent's own conversations, never another agent's DM.
 - **Routines belong to an agent.** A schedule an agent creates (`schedule_create` in its DM) is its own: it runs as that agent and posts to its DM. The `schedule_*` tools see and change only the calling agent's schedules. Archiving an agent pauses its routines.
+- **Agents hand work to each other.** A run that can start sub-agents may start one *as another of your agents*: `agent_spawn` with `"agent": "research"` runs it with Research's persona, tools, model and memory, and it reports back like any sub-agent (same limits, budget and taint). Its prompt lists the agents it may hand work to, each with what it's for, and says to delegate a matching request rather than start a generic sub-agent. Who may hand work to whom is each agent's **Can hand work to** (`delegates`): tern may reach every agent unless you narrow it, other agents none until you choose. The sub-agent card shows the agent's avatar and name.
 - **Approvals still land in Home**, whichever agent asks; an agent's DM also shows its own (one request, answered in either place).
 - **Edits apply to the next run.** A run freezes its agent's persona, model, tool scope and memory scope when it starts.
 - **In the desktop app**, AGENTS in the sidebar lists your agents under Home (which carries tern's avatar; right-click it to edit tern): a badge counts what waits for you, a spinner shows one working, a dot new routine posts, and **+** creates one. An agent's row opens its DM, the same view as Home (dividers, New topic, History, side chats) with its name and avatar, its model, and **Edit** (the tune icon). The sheet has a template (Research, Inbox, Marketing, Blank; a template's routine can be added with it), name, avatar (glyph and colour), persona with what tern adds to every agent shown read-only beneath, model (a comma-separated list is a fallback chain), tools (built-ins, connectors, MCP servers with their status, skills; **Read-only** in one click), memory (Private / Shared) and Archive. The side panel follows the agent: its routines (**All** shows every agent's), the tools it may use, and its memory with chips for its own and the shared memories (in Home, Shared and each private agent). An approval from an agent's DM shows there as well as in Home: one request, answered in either.
@@ -441,6 +467,42 @@ The agent creates schedules with `schedule_create` and changes them with `schedu
   - A run that uses more than `tokens_per_run` is stopped and fails with the reason ("stopped: this run used N tokens, over its cap of M"), which is delivered like any failure.
 - `tern doctor` reports schedules paused by a cap, USD caps that can't apply, and deliveries waiting for quiet hours to end.
 - **Results are posted to a channel** (its agent's DM, Home for `tern`, unless the schedule's `channel` says otherwise; `POST`/`PATCH /v1/schedules` take `channel`, a slug or id). A `NO_REPLY` run posts nothing. `deliver_to` stays the push to Telegram.
+
+### Routines: triggers, watches, gates, initiative
+
+A schedule is a **routine**: a prompt with a trigger. The tools and the API keep their `schedule_*` and `/v1/schedules` names; schedules from before routines are cron routines that push every result, as they did.
+
+- **Triggers.** `cron` (repeating), `at` (once, a local `"YYYY-MM-DD HH:MM"`: reminders; it turns itself off after running, and a new `at` turns it on again), or `watch`.
+- **Watches.** A connector can declare watches next to its tools:
+
+  ```lua
+  watches = {
+    review_requests = {
+      description = "PRs where my review is requested",
+      default_every = "5m",
+      fn = function(ctx, cursor)
+        -- poll; return what is new and where you got to
+        return { events = { { id = "123", title = "Fix login" } }, cursor = { last = "123" } }
+      end,
+    },
+  },
+  ```
+
+  A routine with `watch = "github.review_requests"` (and `every`, at least `1m`, default the watch's own) is polled by the daemon. **A poll that finds nothing costs no tokens**: no model is called. Each new event starts an ordinary run in the routine's session with the event attached as untrusted input, so the run is [tainted](#taint) (its writes ask, or wait in the outbox). Events are deduplicated by their `id` (or their content), and the cursor is saved with them, so a restart or an overlapping poll never starts an event twice. The first poll only records what is already there, unless `backfill: true`; events marked `origin = "self"` are skipped unless `include_self: true`; more than `max_events_per_poll` new events at once share one run. A watch runs in the connector's sandbox with its hosts and secrets, GET only (`read_via_post = true` allows POST), and only for an active, approved connector. Creating one tells you its interval and the hosts it reaches. No watch is on until you (or the agent, with your approval) create one.
+- **Gates.** A cron or once routine can have a `gate`: Luau run before each slot, at no token cost. False skips that run. An expression (`os.date("*t").wday ~= 1`) or statements with `return`; it gets `ctx` and `routine` (`id`, `last_run_at`, `now`), and with `gate_connector` that connector's hosts (GET only), secrets and tools as `connector` (`#connector.tools.unread.run(ctx, {}) > 0`). A gate that fails lets the run go ahead.
+- **`last_check`** in `GET /v1/schedules` (and the app's tooltip) says what the last poll or gate found.
+- **Initiative.** Every result is posted to the routine's channel; its initiative decides whether it is also sent to its chat (`deliver_to`):
+
+  | Level | Sent |
+  |---|---|
+  | `silent` | never |
+  | `digest` (the default for new routines) | with the next digest (`schedules.digest_times`, 08:30 and 17:30), all of that chat's held results in one message |
+  | `notify` | now if a quick check by the cheapest model says it's worth interrupting for (its headline goes first), else in the digest |
+  | `interrupt` | now; quiet hours still hold it unless `urgent` |
+
+  Set it per routine (`initiative`, `"default"` or `null` for the default), or for all with `schedules.initiative`. The **dial** (`schedules.initiative_dial`, or `PUT /v1/initiative {"dial": "vacation"}`) moves every routine one level `quieter` or `louder`, or makes everything silent on `vacation`; `/v1/status` reports it.
+- **API**: `POST /v1/schedules` takes one of `cron`, `at` or `watch` (+ `every`, `backfill`, `include_self`), and `gate`, `gate_connector`, `initiative`; `PATCH` changes any of them. The view adds `trigger`, `at`, `watch`, `every_secs`, `last_check`, `gate`, `gate_connector` and `initiative` (each absent when unset).
+- **In the desktop app** the routine editor has Repeating / Once / On events, an initiative menu, and a gate under "Quiet hours and limits".
 
 ## Channels
 
@@ -517,7 +579,7 @@ The `python` tool runs a script in [Monty](https://pydantic.dev/monty), a Python
 - **What a script can call**: the run's read-only tools (`read_file`, `http_fetch`, `memory_search`, Luau and MCP tools with `effect = "read"`, …). Write and destructive tools, `shell`, sub-agents, posts, secrets and connector or schedule management raise `PermissionError` ("call it directly"), as does a read that would need your approval.
 - **Recorded like direct calls**: each call is a `py_call` step in the run's journal (`tern runs show` lists them under the `python` step). After a crash, `tern resume` re-runs the script with the same clock and random seed and answers calls already made from the journal, so a lookup isn't repeated.
 - **Taint**: a call to an untrusted tool taints the run, and the script's result reaches the model wrapped as untrusted.
-- **Sandbox**: no network, environment variables or processes. Files under the workspace are readable at `/workspace`; nothing is writable.
+- **Sandbox**: no network, environment variables or processes. Files under the workspace are readable at `/workspace`; nothing is writable. Each script runs in its own `tern __monty-exec` process under the same OS sandbox as `shell` with networking off, so a crash or a runaway script ends that process, not tern (the tool returns an error).
 - **Limits** per script: 30 s of interpreter time (10 s between tool calls), 10 minutes in all, 256 MB for large values, 1000 levels of recursion, 200 tool calls, 64 KB of code, and the usual 32 KB result (16 KB of it for `print` output).
 - **The subset**: functions, comprehensions, f-strings, `match`, dataclasses and the modules `json`, `re`, `csv`, `math`, `datetime`, `collections`, `itertools`, `functools`, `decimal`, `random`, `hashlib`, `base64`, `bisect`, `tomllib`, `pathlib`. No class inheritance, generators, `del`, `@property`, or packages. Errors come back with a hint on what to write instead. For pandas or numpy the model uses `shell` with `python3`, which asks every time.
 - Tool calls are synchronous for now (no `await` or `asyncio.gather`). Builds without the default `python` cargo feature leave the tool out.
@@ -529,7 +591,7 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 - **Secrets** come from the environment or `~/.tern/secrets.toml`, which must be mode 0600. Every secret value tern reads is scrubbed from the journal, conversation history, and connector and MCP server logs, and none reach the shell's environment.
 - **File tools** can't modify `~/.tern` and can't read `secrets.toml` or the database. Reads and writes outside the workspace need approval, and paths that escape the workspace through `..` or symlinks are refused.
 - **`http_fetch`** refuses loopback, private, link-local, and cloud-metadata addresses, checking every redirect hop and pinning DNS between the check and the connection.
-- **Luau connectors** run in sandboxed VMs (no files, processes, or `require`; 5 s and 64 MB per call) and can only reach the hosts and secrets they declare, including across redirects. An activated connector that changes, or that declares different capabilities than you approved, isn't loaded.
+- **Luau connectors** run in sandboxed VMs (no files, processes, or `require`; 5 s and 64 MB per call) and can only reach the hosts and paths they declare, including across redirects, within a request rate. Credentials declared with `auth` are added by tern and never visible to the script; only legacy connectors using `ctx.secret` see secret values, and they are flagged. An activated connector that changes, or that declares different capabilities than you approved, isn't loaded.
 - **`python`** scripts reach nothing but the run's read-only tools, each checked and journaled like a direct call, and a read-only view of the workspace; see [Compute](#compute-python).
 - **`shell`** runs in an OS sandbox (Seatbelt on macOS, Landlock on Linux) that confines writes to the workspace and keeps your home directory and `~/.tern` unreadable; see [Sandboxing](#sandboxing).
 - **Effects** are enforced by tern, not the model: `destructive` calls ask every time and `money_movement` / `trade` tools are refused outright, even with `--yes`.
@@ -542,7 +604,8 @@ A run is **tainted** once untrusted content reaches it (docs/personal-agent-tool
 
 - **What taints**: the result of a tool marked untrusted (`http_fetch`, `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`, and `shell` when the command could reach the network: it asked for it with `network: true`, `sandbox.network = true`, or no OS sandbox enforces the default `false`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
 - **It sticks** for the rest of the run, survives a crash and `tern resume` exactly (it's rebuilt from the journal), and doesn't carry to the next run in the conversation.
-- **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, memory, schedules), and "always" isn't offered. The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) and `channel_post` keep their grants, since what they reach is tainted too. With nobody to ask (a routine at night), the call goes to the [outbox](#outbox). A network read (`http_fetch`) to a host the run hasn't reached yet asks too, so a page can't have the agent send what it knows somewhere new. A tainted run also skips the memory flush before compaction. Only `autonomy = "yolo"` turns this off.
+- **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, memory, schedules), and "always" isn't offered. The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) and `channel_post` keep their grants, since what they reach is tainted too. With nobody to ask (a routine at night), the call goes to the [outbox](#outbox). A network read (`http_fetch`, also from a `python` script) to a host the run hasn't reached yet asks too, so a page can't have the agent send what it knows somewhere new; see [New sites in a tainted run](#new-sites-in-a-tainted-run) for saying yes once. A tainted run also skips the memory flush before compaction. Only `autonomy = "yolo"` turns this off.
+- <a id="new-sites-in-a-tainted-run"></a>**New sites in a tainted run.** The prompt for a site the run hasn't reached offers, besides **Allow once**: **Allow all sites for this run** (no more site prompts until the run ends; a resumed run remembers it; sub-agents and later runs ask again) and **Always allow <site>** (a standing grant for reads from that site, `host:<site>`; list and remove with `tern grants`). Neither ever covers a `write` or `destructive` call. A script can't ask, so its read from a new site is refused with a note to fetch it directly once (or after "all sites", allowed); sites a script reaches count for later calls. For agents meant to browse, turn the limit off: `[taint] egress = "allow"` in `config.toml`, or per agent (`egress` on `/v1/agents`, **Read any site without asking** in the app's agent editor), frozen on each run when it starts; sub-agents keep their parent's. API answers: `{"decision": "run" | "host"}`; requests carry `egress_host`.
 - **What the model sees**: untrusted results arrive as `<untrusted source="http_fetch">…</untrusted>`, and the system prompt says text inside is data, not instructions.
 - **Where it shows**: `tern runs list` / `runs show`, `taint` on runs in `GET /v1/sessions/{id}/runs` (absent while clean), `taint` on approval requests, `untrusted: true` on tool step outputs, the desktop's run inspector (a "tainted" badge), and approval cards in the desktop, the TUI, Telegram and `tern run`. A routine or channel answer written by a tainted run is a **tainted post** (`tainted: true`, a shield next to the author in the desktop).
 

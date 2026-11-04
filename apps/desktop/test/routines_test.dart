@@ -1,5 +1,6 @@
-// Routines (T1a): the list shows budget pauses and quiet runs, and the
-// editor sends quiet hours, urgent and caps.
+// Routines (T1a, T1b): the list shows budget pauses, quiet runs and
+// triggers, and the editor sends quiet hours, urgent, caps, the trigger,
+// initiative and gate.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tern_client/tern_client.dart';
@@ -13,6 +14,7 @@ class _FakeClient extends TernClient {
   final updates =
       <({String id, ScheduleLimits? limits, bool? enabled, bool resume})>[];
   var list = <Schedule>[];
+  final sentOptions = <RoutineOptions?>[];
 
   @override
   Future<List<Schedule>> schedules() async => list;
@@ -32,7 +34,9 @@ class _FakeClient extends TernClient {
     bool resume = false,
     String? channel,
     String? agent,
+    RoutineOptions? options,
   }) async {
+    sentOptions.add(options);
     updates.add((id: id, limits: limits, enabled: enabled, resume: resume));
     return list.firstWhere((s) => s.id == id, orElse: () => list.first);
   }
@@ -90,7 +94,7 @@ void main() {
   });
 
   testWidgets('the editor sends quiet hours, urgent and caps', (tester) async {
-    tester.view.physicalSize = const Size(700, 1100) * 2;
+    tester.view.physicalSize = const Size(700, 1500) * 2;
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
     final client = _FakeClient();
@@ -138,5 +142,84 @@ void main() {
       'usd_per_day': 0.25,
       'tokens_per_run': 50000,
     });
+  });
+
+  testWidgets('a watch routine shows its trigger and the editor sends it', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(700, 1600) * 2;
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final client = _FakeClient();
+    final store = TernStore(client);
+    const watch = Schedule(
+      id: 'w',
+      cron: '',
+      prompt: 'Summarize the PR',
+      sessionId: 's',
+      enabled: true,
+      trigger: 'watch',
+      watch: 'github.reviews',
+      everySecs: 300,
+      lastCheck: 'no new events',
+      initiative: 'notify',
+    );
+    client.list = store.schedules = [watch];
+    await tester.pumpWidget(_app(RoutinesSection(store: store)));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('On github.reviews events'), findsOneWidget);
+    expect(routineWhen(watch), 'On github.reviews events');
+    expect(
+      routineWhen(
+        Schedule(
+          id: 'o',
+          cron: '',
+          prompt: 'x',
+          sessionId: 's',
+          enabled: true,
+          trigger: 'once',
+          at: DateTime(2026, 11, 5, 9),
+        ),
+      ),
+      startsWith('Once, '),
+    );
+
+    await tester.pumpWidget(_app(RoutineSheet(store: store, editing: watch)));
+    await tester.pumpAndSettle();
+    expect(find.text('github.reviews'), findsOneWidget);
+    expect(find.text('5m'), findsOneWidget);
+    expect(
+      find.text('Notify: send now if it matters, else digest'),
+      findsOneWidget,
+    );
+    // No gate for a watch: it already decides when to run.
+    expect(find.byKey(const Key('routine-gate')), findsNothing);
+    await tester.enterText(find.byKey(const Key('routine-every')), '10m');
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    final sent = client.sentOptions.single!;
+    expect(sent.toJson(), {
+      'watch': 'github.reviews',
+      'every': '10m',
+      'initiative': 'notify',
+      'gate': null,
+      'gate_connector': null,
+    });
+
+    // Switching to "Once" needs a time before it can be saved.
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(_app(RoutineSheet(store: store, editing: watch)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Once'));
+    await tester.pump();
+    final save = find.widgetWithText(FilledButton, 'Save');
+    expect(tester.widget<FilledButton>(save).onPressed, isNull);
+    await tester.enterText(
+      find.byKey(const Key('routine-at')),
+      '2030-01-02 09:00',
+    );
+    await tester.pump();
+    expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
   });
 }

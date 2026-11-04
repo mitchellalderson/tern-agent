@@ -10,6 +10,7 @@ use std::future::Future;
 use serde_json::json;
 use tern_store::RunRow;
 
+use super::taint::EgressState;
 use super::{Agent, INTERRUPTED_TOOL_MESSAGE};
 use crate::approval::{self, Autonomy, Check, Gate};
 use crate::journal::{InFlight, StepError, StepKind, StepOutput};
@@ -33,7 +34,14 @@ struct Serving<'a> {
     tainted: bool,
     /// The run's autonomy (tooling spec §5.4), as for direct calls.
     autonomy: Autonomy,
+    /// The tainted host limit, as for direct calls; hosts the script's own
+    /// reads reach are added.
+    egress: EgressState,
 }
+
+/// Starts the result of a script's network read that the tainted host
+/// limit refused (a script can't ask the user).
+const EGRESS_REFUSED: &str = "refused: this run read untrusted content, and";
 
 impl Agent {
     /// The tools a script in a run limited to `scope` may call, and why
@@ -86,6 +94,7 @@ impl Agent {
         scope: Option<&[String]>,
         ctx: &ToolCtx,
         gate: Gate,
+        egress: &EgressState,
         fut: F,
     ) -> Result<T, StepError>
     where
@@ -105,6 +114,7 @@ impl Agent {
             seq: 0,
             tainted: gate.tainted,
             autonomy: gate.autonomy,
+            egress: egress.clone(),
         };
         let (host, mut rx) = ScriptHost::channel(callable, blocked);
         let fut = script::with_host(host, fut);
@@ -209,6 +219,11 @@ impl Agent {
         };
         let untrusted = self.tools.untrusted(&call.name);
         let (scope, ctx) = (s.scope, s.ctx);
+        // The tainted host limit: a standing grant for the host answers it;
+        // otherwise the read is refused (decided inside the step, so a
+        // replay gets the same answer).
+        let host = self.tools.egress_host(&call);
+        let limited = s.egress.limits(s.tainted, host.as_deref());
         let result = self
             .journal
             .step_with(
@@ -218,6 +233,19 @@ impl Agent {
                 &input,
                 in_flight,
                 || async {
+                    if let Some(h) = host.as_deref().filter(|_| limited)
+                        && !self
+                            .store
+                            .allowlist(&call.name)?
+                            .contains(&approval::host_pattern(h))
+                    {
+                        return Ok(StepOutput::new(ToolResult::error(format!(
+                            "{EGRESS_REFUSED} {h} is a site it hasn't reached yet, which needs the \
+                             user's approval that a script can't ask for. Call {} for it directly \
+                             once (then scripts may use it too).",
+                            call.name
+                        ))));
+                    }
                     let mut r = self.tools.call_in(scope, ctx, &call).await;
                     r.untrusted |= untrusted;
                     Ok(StepOutput::new(r))
@@ -225,6 +253,35 @@ impl Agent {
             )
             .await?;
         s.tainted |= result.value.untrusted;
+        if !result.value.content.starts_with(EGRESS_REFUSED) {
+            s.egress.hosts.extend(host);
+        }
         Ok(result.value)
+    }
+
+    /// The host a script's call at sub-step `idx` reached, if it was a
+    /// network read that ran (for the loop's host limit, live and replayed).
+    pub(super) fn script_host(&self, run: &str, idx: u32) -> Result<Option<String>, StepError> {
+        let Some(row) = self.store.step(run, idx)? else {
+            return Ok(None);
+        };
+        let input: serde_json::Value = serde_json::from_str(&row.input_json)?;
+        let Some(c) = input.get("call") else {
+            return Ok(None); // the env sub-step
+        };
+        let refused = row
+            .output_json
+            .as_deref()
+            .and_then(|o| serde_json::from_str::<ToolResult>(o).ok())
+            .is_none_or(|r| r.content.starts_with(EGRESS_REFUSED));
+        if refused {
+            return Ok(None);
+        }
+        let call = ToolCall {
+            id: String::new(),
+            name: c["name"].as_str().unwrap_or_default().to_owned(),
+            input: c["input"].clone(),
+        };
+        Ok(self.tools.egress_host(&call))
     }
 }

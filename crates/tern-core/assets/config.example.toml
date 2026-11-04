@@ -103,6 +103,17 @@ docker_pids = 512          # 0 for no limit
 # wait_secs = 120              # at once when no app, TUI or tray is attached
 # expire_hours = 72           # how long an item waits for you before it expires
 
+# Taint: once a run has read untrusted content (a web page, an email), a
+# network read to a site it hasn't reached yet asks first, so injected text
+# can't send what the agent knows somewhere new.
+# [taint]
+# egress = "ask"               # "allow" for runs meant to browse; an agent can set its own
+
+# Luau connectors (~/.tern/connectors). A connector can declare its own rate
+# (capabilities.rate = "60/min"); this is the limit for those that don't.
+# [connectors]
+# rate = "120/min"             # HTTP requests per connector, shared by every run and script
+
 # Scheduled prompts (schedule_create, the app's routines). Each schedule can
 # override these.
 # [schedules]
@@ -110,6 +121,11 @@ docker_pids = 512          # 0 for no limit
 # runs_per_day = 24             # then the schedule pauses until tomorrow (unset = no cap)
 # usd_per_day = 1.0             # needs the model's price (see `prices` below)
 # tokens_per_run = 200000       # a run that uses more is stopped and fails
+# max_events_per_poll = 20      # new watch events that each start a run; the rest share one run
+# initiative = "digest"         # how results reach the chat: silent | digest | notify | interrupt (a routine can set its own)
+# initiative_dial = "normal"    # every routine one level "quieter" or "louder", or "vacation" (nothing pushed)
+# digest_times = ["08:30", "17:30"]  # local times digest results are sent, as one message
+# gate_model = "openrouter:cheap-model"  # decides if a "notify" result is worth a push (default: the cheapest priced model)
 #
 # Home (and each Telegram chat) is one stream cut into sessions. A message
 # starts a new one, with a summary of the last carried over, after:

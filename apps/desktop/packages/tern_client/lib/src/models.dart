@@ -414,6 +414,7 @@ class Approval {
     this.taint,
     this.channelId,
     this.agentId,
+    this.egressHost,
   });
 
   factory Approval.fromJson(Json j) => Approval(
@@ -431,6 +432,7 @@ class Approval {
     taint: j['taint'] as String?,
     channelId: j['channel_id'] as String?,
     agentId: j['agent_id'] as String?,
+    egressHost: j['egress_host'] as String?,
   );
 
   /// The channel of the conversation the user started (agent profiles):
@@ -468,11 +470,22 @@ class Approval {
   /// "this run read untrusted content (…)", for the card.
   String? get taintNote =>
       taint == null ? null : 'this run read untrusted content ($taint)';
+
+  /// Set when it asks only because a tainted run wants a site it hasn't
+  /// reached yet: that site. Then [Decision.run] and [Decision.host] can
+  /// answer it too.
+  final String? egressHost;
 }
 
 enum Decision {
   once,
   always,
+
+  /// The tainted host limit: no more site prompts in this run.
+  run,
+
+  /// The tainted host limit: always allow reads from this site.
+  host,
   deny;
 
   String get wire => name;
@@ -535,6 +548,7 @@ sealed class TernEvent {
         task: j['task'] as String? ?? '',
         model: j['model'] as String? ?? '',
         status: j['status'] as String? ?? 'running',
+        agent: j['agent'] as String?,
       ),
       'subagent_message' => SubagentMessage(
         runId: run,
@@ -610,8 +624,8 @@ sealed class RunEvent extends TernEvent {
   /// The channel of the run's session, which the daemon adds.
   String? get channelId => _channels[this];
 
-  /// The agent profile the run acts as (its session's), which the daemon
-  /// adds.
+  /// The agent profile of the run's session (`tern` by default), which the
+  /// daemon adds.
   String? get agentId => _agents[this];
 }
 
@@ -648,7 +662,11 @@ class SubagentSpawned extends RunEvent {
     required this.task,
     required this.model,
     required this.status,
+    this.agent,
   }) : super(runId);
+
+  /// The agent profile it runs as, when the parent delegated to one.
+  final String? agent;
 
   /// The `agent_spawn` tool call.
   final String callId;
@@ -864,6 +882,14 @@ class Schedule {
     this.pausedReason,
     this.channelId = 'home',
     this.agentId = 'tern',
+    this.trigger = 'cron',
+    this.at,
+    this.watch,
+    this.everySecs,
+    this.lastCheck,
+    this.initiative,
+    this.gate,
+    this.gateConnector,
   });
 
   factory Schedule.fromJson(Json j) => Schedule(
@@ -883,6 +909,14 @@ class Schedule {
     pausedReason: j['paused_reason'] as String?,
     channelId: j['channel_id'] as String? ?? 'home',
     agentId: j['agent_id'] as String? ?? 'tern',
+    trigger: j['trigger'] as String? ?? 'cron',
+    at: _maybeTime(j['at']),
+    watch: j['watch'] as String?,
+    everySecs: j['every_secs'] as int?,
+    lastCheck: j['last_check'] as String?,
+    initiative: j['initiative'] as String?,
+    gate: j['gate'] as String?,
+    gateConnector: j['gate_connector'] as String?,
   );
 
   final String id;
@@ -921,6 +955,62 @@ class Schedule {
   final String agentId;
 
   bool get pausedByBudget => paused == 'budget';
+
+  /// What starts it (T1b): `cron`, `once` (at [at]) or `watch` ([watch],
+  /// polled every [everySecs]).
+  final String trigger;
+  final DateTime? at;
+
+  /// `<connector>.<watch>`.
+  final String? watch;
+  final int? everySecs;
+
+  /// What the last watch poll or gate found, e.g. "no new events".
+  final String? lastCheck;
+
+  /// `silent`, `digest`, `notify` or `interrupt`; null = the default.
+  final String? initiative;
+
+  /// Luau run before each cron or once slot; false skips the run.
+  final String? gate;
+  final String? gateConnector;
+}
+
+/// A routine's trigger beyond a cron, its initiative and its gate (T1b).
+class RoutineOptions {
+  const RoutineOptions({
+    this.at,
+    this.watch,
+    this.every,
+    this.initiative,
+    this.gate,
+    this.gateConnector,
+  });
+
+  /// Once, at a local `YYYY-MM-DD HH:MM`.
+  final String? at;
+
+  /// `<connector>.<watch>`, polled [every] (`5m`; null = the watch's own).
+  final String? watch;
+  final String? every;
+
+  /// Null = the daemon's default.
+  final String? initiative;
+  final String? gate;
+  final String? gateConnector;
+
+  /// Not a cron: the request leaves `cron` out.
+  bool get replacesCron => at != null || watch != null;
+
+  /// Every field: nulls put the default back (and remove a gate).
+  Json toJson() => {
+    'at': ?at,
+    'watch': ?watch,
+    'every': ?every,
+    'initiative': initiative ?? 'default',
+    'gate': gate,
+    'gate_connector': gateConnector,
+  };
 }
 
 /// A routine's quiet hours, urgency and caps. Null means the daemon's

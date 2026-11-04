@@ -12,12 +12,14 @@ class Agent {
     this.subagentModel = const [],
     this.tools,
     this.memory = 'private',
+    this.egress,
     this.mainChannelId,
     this.lastActivity,
     this.needsYou = 0,
     this.activeRuns = 0,
     this.archived = false,
     this.isDefault = false,
+    this.delegates,
   });
 
   factory Agent.fromJson(Json j) => Agent(
@@ -31,6 +33,7 @@ class Agent {
     subagentModel: chainFromJson(j['subagent_model']),
     tools: j['tools'] is Json ? ToolScope.fromJson(j['tools'] as Json) : null,
     memory: j['memory'] as String? ?? 'private',
+    egress: j['egress'] as String?,
     mainChannelId: j['main_channel_id'] as String?,
     lastActivity: j['last_activity'] is int
         ? DateTime.fromMillisecondsSinceEpoch(j['last_activity'] as int)
@@ -39,6 +42,10 @@ class Agent {
     activeRuns: j['active_runs'] as int? ?? 0,
     archived: j['archived'] as bool? ?? false,
     isDefault: j['is_default'] as bool? ?? j['id'] == defaultId,
+    delegates: switch (j['delegates']) {
+      final List<dynamic> l => [for (final d in l) d as String],
+      _ => null,
+    },
   );
 
   /// The default agent: today's setup, whose DM is Home.
@@ -64,6 +71,10 @@ class Agent {
   /// `shared` or `private`.
   final String memory;
 
+  /// After untrusted content, whether reading a new site asks (`ask`) or
+  /// not (`allow`); null = the configured default.
+  final String? egress;
+
   /// Its DM: `home` for the default agent.
   final String? mainChannelId;
   final DateTime? lastActivity;
@@ -74,7 +85,17 @@ class Agent {
   final bool archived;
   final bool isDefault;
 
+  /// Agent ids it may hand work to (`agent_spawn {agent}`). Null: every
+  /// agent for the default agent, none for others.
+  final List<String>? delegates;
+
   bool get privateMemory => memory == 'private';
+
+  /// Whether it may hand work to `other`.
+  bool mayDelegateTo(Agent other) =>
+      other.id != id &&
+      !other.archived &&
+      (delegates?.contains(other.id) ?? isDefault);
 }
 
 /// `"anthropic:x"`, `["a:x", "b:y"]` or null, as a list.

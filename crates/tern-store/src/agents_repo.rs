@@ -25,6 +25,9 @@ pub struct AgentRow {
     pub memory: String,
     /// JSON list of agent ids it may delegate to (AP3).
     pub delegates: Option<String>,
+    /// The tainted host limit for its runs: `ask` or `allow`; `None` = the
+    /// configured `[taint] egress`.
+    pub egress: Option<String>,
     pub archived_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -37,6 +40,27 @@ impl AgentRow {
 
     pub fn private_memory(&self) -> bool {
         self.memory == "private"
+    }
+
+    /// The agents this one lists in `delegates`; `None` when unset.
+    pub fn delegate_list(&self) -> Option<Vec<String>> {
+        self.delegates
+            .as_deref()
+            .and_then(|d| serde_json::from_str(d).ok())
+    }
+
+    /// Whether this agent may hand work to `target` with `agent_spawn
+    /// {agent}` (agent profiles §6.1): an active other agent its
+    /// `delegates` lists (by id or slug). Unset, the default agent may
+    /// delegate to every agent and others to none.
+    pub fn may_delegate_to(&self, target: &AgentRow) -> bool {
+        if target.id == self.id || target.archived_at.is_some() {
+            return false;
+        }
+        match self.delegate_list() {
+            Some(list) => list.iter().any(|x| *x == target.id || *x == target.slug),
+            None => self.is_default(),
+        }
     }
 }
 
@@ -51,11 +75,12 @@ pub struct AgentChange {
     pub tools: Option<Option<String>>,
     pub memory: Option<String>,
     pub delegates: Option<Option<String>>,
+    pub egress: Option<Option<String>>,
     pub archived: Option<bool>,
 }
 
 const AGENT_COLS: &str = "id, slug, name, avatar, model, subagent_model, tools, memory, delegates, \
-    archived_at, created_at, updated_at";
+    archived_at, created_at, updated_at, egress";
 
 fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
     Ok(AgentRow {
@@ -71,6 +96,7 @@ fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
         archived_at: r.get(9)?,
         created_at: r.get(10)?,
         updated_at: r.get(11)?,
+        egress: r.get(12)?,
     })
 }
 
@@ -90,7 +116,7 @@ impl Store {
         tx.execute(
             &format!(
                 "INSERT INTO agents ({AGENT_COLS})
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10, ?11)"
             ),
             params![
                 a.id,
@@ -102,7 +128,8 @@ impl Store {
                 a.tools,
                 a.memory,
                 a.delegates,
-                now
+                now,
+                a.egress
             ],
         )?;
         tx.execute(
@@ -197,6 +224,9 @@ impl Store {
         }
         if let Some(v) = &ch.delegates {
             set("delegates", v.as_deref())?;
+        }
+        if let Some(v) = &ch.egress {
+            set("egress", v.as_deref())?;
         }
         if let Some(a) = ch.archived {
             tx.execute(
@@ -446,6 +476,31 @@ mod tests {
             ..AgentRow::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn tern_may_delegate_to_all_others_only_to_their_list() {
+        let s = Store::open_in_memory().unwrap();
+        let (research, _) = research(&s);
+        let tern = s.agent(DEFAULT_AGENT).unwrap().unwrap();
+        assert!(tern.may_delegate_to(&research));
+        assert!(!tern.may_delegate_to(&tern), "not to itself");
+        assert!(!research.may_delegate_to(&tern), "others: none by default");
+        let listed = AgentRow {
+            delegates: Some(r#"["tern"]"#.into()),
+            ..research.clone()
+        };
+        assert!(listed.may_delegate_to(&tern));
+        let restricted = AgentRow {
+            delegates: Some("[]".into()),
+            ..tern.clone()
+        };
+        assert!(!restricted.may_delegate_to(&research));
+        let archived = AgentRow {
+            archived_at: Some(1),
+            ..research
+        };
+        assert!(!tern.may_delegate_to(&archived));
     }
 
     #[test]

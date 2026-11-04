@@ -133,9 +133,10 @@ pub struct Subagents {
     gate: Mutex<()>,
 }
 
-/// A sub-agent's system prompt, from its label, depth and its parent's
-/// session (whose agent's persona it works under).
-pub type PromptFn = Box<dyn Fn(&str, u32, &str) -> String + Send + Sync>;
+/// A sub-agent's system prompt, from its label, depth, the agent it works
+/// as (its parent's, or a delegate's) and, for a delegate, the caller's
+/// name.
+pub type PromptFn = Box<dyn Fn(&str, u32, &str, Option<&str>) -> String + Send + Sync>;
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -378,7 +379,15 @@ impl Subagents {
         }
     }
 
-    fn pick_model(&self, requested: Option<&str>, parent: &RunRow) -> Result<String, String> {
+    /// The child's model: `requested`, else a delegate's own model (it runs
+    /// as that agent), else the parent agent's `subagent_model`, the
+    /// configured default, the parent's.
+    fn pick_model(
+        &self,
+        requested: Option<&str>,
+        parent: &RunRow,
+        delegate: Option<&tern_store::AgentRow>,
+    ) -> Result<String, String> {
         let name = requested
             .map(|m| {
                 self.config
@@ -386,8 +395,15 @@ impl Subagents {
                     .get(m)
                     .map_or_else(|| m.to_owned(), |c| c.primary().to_owned())
             })
+            .or_else(|| {
+                let m = delegate?.model.as_deref()?;
+                tern_core::config::ModelChain::from_stored(m).map(|c| c.primary().to_owned())
+            })
             // The parent agent's `subagent_model` (agent profiles §6.3).
             .or_else(|| {
+                if delegate.is_some() {
+                    return None;
+                }
                 let agent = self.store.session_agent(&parent.session_id).ok()?;
                 let m = self.store.agent(&agent).ok()??.subagent_model?;
                 tern_core::config::ModelChain::from_stored(&m).map(|c| c.primary().to_owned())
@@ -425,19 +441,74 @@ impl Subagents {
         Ok(m.to_string())
     }
 
-    /// The tool names a child at `depth` may use: never more than its
-    /// parent's scope (an agent profile's, or a sub-agent's).
+    /// The agent `caller` hands work to as `name` (id, @name or name), if
+    /// it may (agent profiles §6.1); the inner error is for the model.
+    fn delegate(
+        &self,
+        caller: &str,
+        name: &str,
+    ) -> anyhow::Result<Result<tern_store::AgentRow, String>> {
+        let Some(me) = self.store.agent(caller)? else {
+            return Ok(Err(format!("agent {caller} not found")));
+        };
+        let wanted = name.trim().trim_start_matches('@');
+        let agents = self.store.agents(false)?;
+        let Some(target) = agents
+            .iter()
+            .find(|a| a.id == wanted || a.slug == wanted || a.name.eq_ignore_ascii_case(wanted))
+        else {
+            let names: Vec<String> = agents
+                .iter()
+                .filter(|a| me.may_delegate_to(a))
+                .map(|a| a.slug.clone())
+                .collect();
+            return Ok(Err(format!(
+                "no agent {wanted:?}; you may delegate to: {}",
+                if names.is_empty() {
+                    "none".into()
+                } else {
+                    names.join(", ")
+                }
+            )));
+        };
+        if target.id == me.id {
+            return Ok(Err(
+                "that's you: leave out `agent` to start a sub-agent of your own".into(),
+            ));
+        }
+        if !me.may_delegate_to(target) {
+            return Ok(Err(format!(
+                "{} can't hand work to {}: it isn't in {}'s delegates",
+                me.name, target.name, me.name
+            )));
+        }
+        Ok(Ok(target.clone()))
+    }
+
+    /// `a`'s tool scope as a run freezes it; `None` = every tool.
+    fn frozen_scope(&self, a: &tern_store::AgentRow) -> Option<Vec<String>> {
+        let scope = tern_core::agents::ToolScope::parse(a.tools.as_deref()?).unwrap_or_else(|_| {
+            tern_core::agents::ToolScope {
+                builtins: tern_core::agents::Pick::ReadOnly,
+                connectors: tern_core::agents::Pick::Names(Vec::new()),
+                mcp: tern_core::agents::Pick::Names(Vec::new()),
+                skills: tern_core::agents::Pick::Names(Vec::new()),
+            }
+        });
+        let registry = self.tools.upgrade()?;
+        Some(scope.freeze(&registry.builtin_names()))
+    }
+
+    /// The tool names a child at `depth` may use: never more than `limit`
+    /// (its parent's scope, or the delegate's own; `None` = every tool).
     fn scope_for(
         &self,
         tools: Option<&ToolsArg>,
         depth: u32,
-        parent: &RunRow,
+        limit: Option<Vec<String>>,
     ) -> Result<Vec<String>, String> {
         let registry = self.tools.upgrade().ok_or("tools are gone")?;
-        let parent_scope: Option<Vec<String>> = parent
-            .tool_scope
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok());
+        let parent_scope = limit;
         let all: Vec<String> = registry
             .names()
             .into_iter()
@@ -620,11 +691,28 @@ impl Subagents {
                 self.limits.max_children
             ));
         }
+        // Delegating to another profile (agent profiles §6.1): the child
+        // runs as that agent, still as this run's sub-agent.
+        let caller = self.store.session_agent(&parent.session_id)?;
+        let delegate = match req.agent.as_deref() {
+            Some(name) => match self.delegate(&caller, name)? {
+                Ok(a) => Some(a),
+                Err(e) => return fail(e),
+            },
+            None => None,
+        };
         let model = self
-            .pick_model(req.model.as_deref(), &parent)
+            .pick_model(req.model.as_deref(), &parent, delegate.as_ref())
             .map_err(anyhow::Error::msg)?;
+        let limit = match &delegate {
+            Some(a) => self.frozen_scope(a),
+            None => parent
+                .tool_scope
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok()),
+        };
         let mut scope = self
-            .scope_for(req.tools.as_ref(), depth, &parent)
+            .scope_for(req.tools.as_ref(), depth, limit)
             .map_err(anyhow::Error::msg)?;
         // A posting child gets the tool to post with, whatever its preset.
         if req.post && !scope.iter().any(|t| t == "channel_post") {
@@ -635,9 +723,11 @@ impl Subagents {
 
         let session_id = new_id();
         let run_id = new_id();
-        let system = match self.prompt.get() {
-            Some(build) => build(&req.label, depth, &parent.session_id),
-            None => parent.system_prompt.clone().unwrap_or_default(),
+        let caller_name = self.store.agent(&caller)?.map(|a| a.name);
+        let system = match (self.prompt.get(), &delegate) {
+            (Some(build), Some(a)) => build(&req.label, depth, &a.id, caller_name.as_deref()),
+            (Some(build), None) => build(&req.label, depth, &caller, None),
+            (None, _) => parent.system_prompt.clone().unwrap_or_default(),
         };
         let system = format!("{system}\n\n{}", limits_section(max_iterations, budget));
         let queued = {
@@ -671,19 +761,29 @@ impl Subagents {
                     max_iterations: Some(max_iterations),
                     queued,
                     // Inherited from a tainted parent by the store, as are
-                    // its agent and memory scope.
+                    // its agent and memory scope; a delegate has its own.
                     taint: None,
-                    memory_scope: None,
+                    memory_scope: delegate.as_ref().map(|a| {
+                        if a.private_memory() {
+                            "private"
+                        } else {
+                            "shared"
+                        }
+                    }),
                 },
                 &input,
             )?;
+            if let Some(a) = &delegate {
+                // Its session is the delegate's, in the caller's channel.
+                self.store.set_session_agent(&session_id, &a.id)?;
+            }
             if req.post {
                 self.store.set_run_can_post(&run_id)?;
             }
             queued
         };
         let status = if queued { "queued" } else { "running" };
-        tracing::info!(run = %run_id, parent = %parent.id, label = %req.label, status, "sub-agent spawned");
+        tracing::info!(run = %run_id, parent = %parent.id, label = %req.label, agent = ?delegate.as_ref().map(|a| &a.id), status, "sub-agent spawned");
         // Announced before it starts, so its run_started comes after.
         let _ = self.events.send(AgentEvent::SubagentSpawned {
             run_id: parent.id.clone(),
@@ -694,6 +794,7 @@ impl Subagents {
             task: req.task.chars().take(subagent::TASK_PREVIEW).collect(),
             model: model.clone(),
             status: status.into(),
+            agent: delegate.as_ref().map(|a| a.id.clone()),
         });
         if !queued {
             self.start(&run_id, false);
@@ -1107,7 +1208,16 @@ pub fn child_run(store: &Store, child: &RunRow) -> anyhow::Result<ChildRun> {
             .filter(|r| !r.trim().is_empty())
             .map(|r| r.chars().take(subagent::RESULT_PREVIEW).collect()),
         pending_question: question.map(|(_, q)| q.question),
+        agent_id: delegated_agent(store, child),
     })
+}
+
+/// The profile `child` runs as when its parent delegated to one: its
+/// session's agent, when that isn't its parent's.
+fn delegated_agent(store: &Store, child: &RunRow) -> Option<String> {
+    let parent = store.run(child.parent_run_id.as_deref()?).ok()??;
+    let mine = store.session_agent(&child.session_id).ok()?;
+    (mine != store.session_agent(&parent.session_id).ok()?).then_some(mine)
 }
 
 /// The children of `run_id`, oldest first; with `recursive`, their children
@@ -1386,6 +1496,7 @@ mod tests {
             max_iterations: iters,
             budget_tokens: budget,
             post: false,
+            agent: None,
         };
         let got = child_limits(&limits, &req(None, None));
         assert_eq!((got.max_iterations, got.budget_tokens), (30, Some(400_000)));

@@ -9,6 +9,7 @@ import 'history.dart';
 import 'items.dart';
 import 'move_dialog.dart';
 import 'model_picker.dart';
+import 'agent_face.dart';
 import 'agent_sheet.dart';
 import 'outbox.dart';
 import 'providers.dart';
@@ -73,7 +74,7 @@ class _ConversationViewState extends State<ConversationView> {
           child: items.isEmpty && store.setupNeeded
               ? _Welcome(store: store)
               : items.isEmpty
-              ? const _Empty()
+              ? _Empty(store: store)
               // Reversed, so the newest content stays pinned to the bottom
               // while it streams.
               : ListView.builder(
@@ -161,7 +162,7 @@ class _Header extends StatelessWidget {
           children: [
             switch (store.streamAgent) {
               final a? => AgentAvatar.of(a, size: 24),
-              null => const AgentAvatar(name: 'tern', size: 24),
+              null => currentAgentAvatar(store),
             },
             const SizedBox(width: 10),
             Expanded(
@@ -317,29 +318,40 @@ class _Welcome extends StatelessWidget {
   }
 }
 
+/// An empty conversation: the agent it belongs to, as it is named now
+/// (an agent's DM, or Home's default agent).
 class _Empty extends StatelessWidget {
-  const _Empty();
+  const _Empty({required this.store});
+
+  final TernStore store;
 
   @override
-  Widget build(BuildContext context) => Center(
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const AgentAvatar(name: 'tern', size: 48),
-        const SizedBox(height: 16),
-        Text(
-          'What should tern do?',
-          style: Theme.of(context).textTheme.titleMedium
-              ?.copyWith(fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          'Runs keep going in the background if you close this window.',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    final agent = store.streamAgent ?? store.defaultAgent;
+    final dm = agent != null && !agent.isDefault;
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          currentAgentAvatar(store, size: 48),
+          const SizedBox(height: 16),
+          Text(
+            'What should ${agent?.name ?? 'tern'} do?',
+            style: Theme.of(context).textTheme.titleMedium
+                ?.copyWith(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            dm
+                ? 'Its own chat, tools and memory. Runs keep going in the '
+                      'background if you close this window.'
+                : 'Runs keep going in the background if you close this window.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _ErrorBanner extends StatelessWidget {
@@ -465,7 +477,7 @@ class _ComposerState extends State<Composer> {
     if (store.openChannel case final ch? when store.topicOpen) {
       return 'Message #${ch.slug}';
     }
-    return 'Message ${store.streamAgent?.name ?? 'tern'}';
+    return 'Message ${(store.streamAgent ?? store.defaultAgent)?.name ?? 'tern'}';
   }
 
   @override
@@ -500,7 +512,7 @@ class _ComposerState extends State<Composer> {
                 padding: const EdgeInsets.only(left: 14, bottom: 6),
                 child: Text(
                   store.streamOpen || store.topicOpen
-                      ? '${store.streamAgent?.name ?? 'tern'} will read this at its next step. Stop ends the run.'
+                      ? '${(store.streamAgent ?? store.defaultAgent)?.name ?? 'tern'} will read this at its next step. Stop ends the run.'
                       : 'Sending will stop the current run.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),

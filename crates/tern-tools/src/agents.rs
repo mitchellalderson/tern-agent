@@ -62,7 +62,7 @@ impl Tool for AgentSpawn {
     fn spec(&self) -> ToolSpec {
         spec(
             "agent_spawn",
-            "Start a sub-agent on a task; returns immediately with its handle. The sub-agent is a separate instance of you with a fresh context: it sees only `task`. Collect its report with agent_wait.",
+            "Start a sub-agent on a task; returns immediately with its handle. The sub-agent is a separate instance of you with a fresh context: it sees only `task`. Collect its report with agent_wait. With `agent`, it runs as one of the user's other agents instead (the ones your prompt lists under \"You can hand work to\"), with that agent's persona, tools, model and memory: use it whenever the task is that agent's job.",
             json!({
                 "type": "object",
                 "required": ["label", "task"],
@@ -78,6 +78,8 @@ impl Tool for AgentSpawn {
                         "description": "Steps for this sub-agent. Default and ceiling are configured; ask for more when it must read or try a lot." },
                     "budget_tokens": { "type": "integer", "minimum": 10000,
                         "description": "Tokens for this sub-agent (input + output + cache, counted on every step). Ask for more when it must read a lot, or when retrying one that ran out." },
+                    "agent": { "type": "string",
+                        "description": "Run it as this agent of the user's (its name, e.g. 'research'), when the task matches that agent's job. Leave out for a generic sub-agent." },
                     "post": { "type": "boolean",
                         "description": "Let it post progress to this conversation's channel with channel_post, and post its report there when it finishes. For long background work the user should see as it goes. Default false: it reports only to you." }
                 }

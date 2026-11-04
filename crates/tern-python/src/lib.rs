@@ -4,11 +4,13 @@
 //! writable files; everything it learns comes through a tool call the agent
 //! loop checks and journals ([`tern_core::script`]).
 //!
-//! PY0 runs the interpreter in-process, on its own thread, with Monty's
-//! limits plus tern's host-call cap (DECISIONS.md, PY0).
+//! The daemon runs each script in a `tern __monty-exec` child process
+//! ([`helper`], PY1), so a crash in the interpreter ends that process, not
+//! tern. In-process mode remains for tests and embedders without a helper.
 
 mod convert;
 mod errors;
+pub mod helper;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -23,18 +25,20 @@ use monty_types::{
     NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, RandomSeed, RandomStart,
     ResourceLimits, ResourceTracker, SleepMode,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tern_core::script::{self, HostReply, ScriptEnv, ScriptHost};
 use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult, truncate_middle};
 use tern_core::types::ToolSpec;
 use tokio::sync::{mpsc, oneshot};
 
+pub use helper::{HELPER_ARG, Helper};
+
 /// Where the workspace appears inside scripts, read-only.
 pub const WORKSPACE_MOUNT: &str = "/workspace";
 
 /// What one script may use (docs/python-tool-spec.md §5.1).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Limits {
     /// Interpreter time for the whole script, excluding time suspended on
     /// tool calls.
@@ -67,11 +71,26 @@ impl Default for Limits {
 
 pub struct Python {
     limits: Limits,
+    /// Where scripts run: `None` is in this process.
+    helper: Option<helper::Helper>,
 }
 
 impl Python {
+    /// Scripts run in this process (tests, embedders). The daemon uses
+    /// [`Python::with_helper`].
     pub fn new(limits: Limits) -> Self {
-        Self { limits }
+        Self {
+            limits,
+            helper: None,
+        }
+    }
+
+    /// Scripts run in a child process started by `helper`.
+    pub fn with_helper(limits: Limits, helper: helper::Helper) -> Self {
+        Self {
+            limits,
+            helper: Some(helper),
+        }
     }
 }
 
@@ -181,7 +200,7 @@ impl Tool for Python {
             limits: self.limits.clone(),
         };
         let outcome = tokio::select! {
-            o = run(job, host) => o,
+            o = run(job, host, self.helper.as_ref()) => o,
             _ = ctx.cancel.cancelled() => return ToolResult::error("cancelled"),
             _ = tokio::time::sleep(self.limits.wall) => {
                 return ToolResult::error(format!(
@@ -201,8 +220,9 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// Everything the interpreter thread needs.
-struct Job {
+/// Everything the interpreter needs: the first message to a helper.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct Job {
     code: String,
     inputs: serde_json::Map<String, Value>,
     env: ScriptEnv,
@@ -217,11 +237,39 @@ struct Job {
 struct Request {
     name: String,
     input: Value,
-    reply: oneshot::Sender<HostReply>,
+    reply: oneshot::Sender<Reply>,
+}
+
+/// The host's answer to one tool call, as the interpreter sees it.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) enum Reply {
+    Done { content: String, is_error: bool },
+    Refused(String),
+}
+
+impl From<&HostReply> for Reply {
+    fn from(r: &HostReply) -> Self {
+        match r {
+            HostReply::Done(r) => Reply::Done {
+                content: r.content.clone(),
+                is_error: r.is_error,
+            },
+            HostReply::Refused(why) => Reply::Refused(why.clone()),
+        }
+    }
+}
+
+/// Ask the agent loop (through `host`) to run one call.
+pub(crate) async fn ask_host(host: Option<&ScriptHost>, name: &str, input: Value) -> HostReply {
+    match host {
+        Some(h) => h.call(name, input).await,
+        None => HostReply::Refused("tools can't be called here".into()),
+    }
 }
 
 /// How a script ended.
-struct Outcome {
+#[derive(Serialize, Deserialize)]
+pub(crate) struct Outcome {
     /// The last expression, as JSON; `None` for no value.
     result: Result<Option<Value>, String>,
     printed: String,
@@ -280,8 +328,27 @@ impl Outcome {
     }
 }
 
+impl Outcome {
+    pub(crate) fn failed(why: impl Into<String>) -> Self {
+        Self {
+            result: Err(why.into()),
+            printed: String::new(),
+            calls: BTreeMap::new(),
+            untrusted: false,
+        }
+    }
+}
+
+/// Run `job` in a helper process when there is one, else on a thread here.
+async fn run(job: Job, host: Option<Arc<ScriptHost>>, helper: Option<&helper::Helper>) -> Outcome {
+    match helper {
+        Some(h) => h.run(job, host.as_deref()).await,
+        None => run_in_thread(job, host).await,
+    }
+}
+
 /// Run `job` on its own thread, answering its tool calls through `host`.
-async fn run(job: Job, host: Option<Arc<ScriptHost>>) -> Outcome {
+async fn run_in_thread(job: Job, host: Option<Arc<ScriptHost>>) -> Outcome {
     let (tx, mut rx) = mpsc::channel::<Request>(1);
     let (done_tx, mut done) = oneshot::channel();
     // Monty recurses on the native stack (its frame limit is 1000, and
@@ -290,48 +357,54 @@ async fn run(job: Job, host: Option<Arc<ScriptHost>>) -> Outcome {
         .name("tern-python".into())
         .stack_size(64 * 1024 * 1024)
         .spawn(move || {
-            let _ = done_tx.send(interpret(job, tx));
+            let mut bridge = |name: &str, input: Value| {
+                let (reply, rx) = oneshot::channel();
+                let req = Request {
+                    name: name.to_owned(),
+                    input,
+                    reply,
+                };
+                match tx.blocking_send(req) {
+                    Ok(()) => rx
+                        .blocking_recv()
+                        .unwrap_or_else(|_| Reply::Refused("the run stopped".into())),
+                    Err(_) => Reply::Refused("the run stopped".into()),
+                }
+            };
+            let _ = done_tx.send(interpret(&job, &mut bridge));
         });
     if let Err(e) = spawned {
-        return Outcome {
-            result: Err(format!("could not start the interpreter: {e}")),
-            printed: String::new(),
-            calls: BTreeMap::new(),
-            untrusted: false,
-        };
+        return Outcome::failed(format!("could not start the interpreter: {e}"));
     }
     let mut untrusted = false;
     loop {
         tokio::select! {
             o = &mut done => {
-                let mut o = o.unwrap_or_else(|_| Outcome {
-                    result: Err("the interpreter stopped unexpectedly".into()),
-                    printed: String::new(),
-                    calls: BTreeMap::new(),
-                    untrusted: false,
-                });
+                let mut o = o
+                    .unwrap_or_else(|_| Outcome::failed("the interpreter stopped unexpectedly"));
                 o.untrusted |= untrusted;
                 return o;
             }
             Some(req) = rx.recv() => {
-                let reply = match &host {
-                    Some(h) => h.call(&req.name, req.input).await,
-                    None => HostReply::Refused("tools can't be called here".into()),
-                };
+                let reply = ask_host(host.as_deref(), &req.name, req.input).await;
                 if let HostReply::Done(r) = &reply {
                     untrusted |= r.untrusted;
                 }
-                let _ = req.reply.send(reply);
+                let _ = req.reply.send(Reply::from(&reply));
             }
         }
     }
 }
 
+/// Answers one tool call for the interpreter: a channel to the async side
+/// in this process, or the helper's pipe to the daemon.
+pub(crate) type Bridge<'a> = dyn FnMut(&str, Value) -> Reply + 'a;
+
 /// The interpreter loop, on the script's thread.
-fn interpret(job: Job, tx: mpsc::Sender<Request>) -> Outcome {
+pub(crate) fn interpret(job: &Job, bridge: &mut Bridge<'_>) -> Outcome {
     let mut printed = String::new();
     let mut calls = BTreeMap::new();
-    let result = drive(&job, &tx, &mut printed, &mut calls);
+    let result = drive(job, bridge, &mut printed, &mut calls);
     Outcome {
         result: result.map_err(|e| errors::explain(&e, &job.callable)),
         printed,
@@ -343,7 +416,7 @@ fn interpret(job: Job, tx: mpsc::Sender<Request>) -> Outcome {
 
 fn drive(
     job: &Job,
-    tx: &mpsc::Sender<Request>,
+    bridge: &mut Bridge<'_>,
     printed: &mut String,
     calls: &mut BTreeMap<String, (usize, usize)>,
 ) -> Result<Option<Value>, MontyException> {
@@ -420,7 +493,7 @@ fn drive(
                             ExcType::TypeError,
                             Some(msg),
                         )),
-                        Ok(input) => host_call(tx, &name, input, calls),
+                        Ok(input) => host_call(bridge, &name, input, calls),
                     };
                     call.resume(result, PrintWriter::collect_string(printed))?
                 }
@@ -443,38 +516,27 @@ fn drive(
 
 /// Ask the agent loop to run one call, and turn its answer into Python.
 fn host_call(
-    tx: &mpsc::Sender<Request>,
+    bridge: &mut Bridge<'_>,
     name: &str,
     input: Value,
     calls: &mut BTreeMap<String, (usize, usize)>,
 ) -> ExtFunctionResult {
-    let (reply, rx) = oneshot::channel();
-    let sent = tx.blocking_send(Request {
-        name: name.to_owned(),
-        input,
-        reply,
-    });
-    let answer = match sent {
-        Ok(()) => rx
-            .blocking_recv()
-            .unwrap_or_else(|_| HostReply::Refused("the run stopped".into())),
-        Err(_) => HostReply::Refused("the run stopped".into()),
-    };
+    let answer = bridge(name, input);
     let tally = calls.entry(name.to_owned()).or_default();
     match answer {
-        HostReply::Done(r) if !r.is_error => {
+        Reply::Done { content, is_error } if !is_error => {
             tally.0 += 1;
-            ExtFunctionResult::Return(convert::tool_output(&r.content))
+            ExtFunctionResult::Return(convert::tool_output(&content))
         }
-        HostReply::Done(r) => {
+        Reply::Done { content, .. } => {
             tally.1 += 1;
-            let first = r.content.lines().next().unwrap_or("").trim();
+            let first = content.lines().next().unwrap_or("").trim();
             ExtFunctionResult::Error(MontyException::new(
                 ExcType::RuntimeError,
                 Some(format!("{name}: {first}")),
             ))
         }
-        HostReply::Refused(why) => {
+        Reply::Refused(why) => {
             tally.1 += 1;
             ExtFunctionResult::Error(MontyException::new(
                 ExcType::PermissionError,

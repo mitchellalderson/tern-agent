@@ -19,6 +19,7 @@ class ChildRun {
     required this.usage,
     this.resultPreview,
     this.pendingQuestion,
+    this.agentId,
   });
 
   factory ChildRun.fromJson(Json j) => ChildRun(
@@ -42,6 +43,7 @@ class ChildRun {
         : const Usage(),
     resultPreview: j['result_preview'] as String?,
     pendingQuestion: j['pending_question'] as String?,
+    agentId: j['agent_id'] as String?,
   );
 
   final String runId;
@@ -63,6 +65,9 @@ class ChildRun {
   final Usage usage;
   final String? resultPreview;
   final String? pendingQuestion;
+
+  /// The agent profile it runs as, when its parent delegated to one.
+  final String? agentId;
 }
 
 DateTime _time(int t) =>
