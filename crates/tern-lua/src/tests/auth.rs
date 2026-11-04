@@ -317,6 +317,69 @@ async fn path_allowlists_cover_requests_and_redirects() {
 }
 
 #[tokio::test]
+async fn redirects_cannot_carry_a_credential_to_another_host() {
+    let server = MockServer::start().await;
+    let port = server.address().port();
+    let to = |path: &str| ResponseTemplate::new(302).insert_header("location", path);
+    for (from, location) in [
+        // The server copies the query key into Location.
+        (
+            "/query",
+            format!("http://localhost:{port}/land?api_key={TOKEN}"),
+        ),
+        // Or the bearer token, percent-encoded, into the path.
+        (
+            "/path",
+            format!("http://localhost:{port}/land/ntn%5Fsecret%5Fvalue%5F123"),
+        ),
+        // Back to the same host is fine: that host gets the key anyway.
+        (
+            "/same",
+            format!("http://127.0.0.1:{port}/ok?api_key={TOKEN}"),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(from))
+            .respond_with(to(&location))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/ok"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+        .mount(&server)
+        .await;
+    let (host, _tmp) = host_with(&[("K", TOKEN), ("B", TOKEN)]);
+    for auth in [
+        r#"{ secret = "K", query = "api_key", hosts = { "127.0.0.1" } }"#,
+        r#"{ secret = "B", hosts = { "127.0.0.1" } }"#,
+    ] {
+        let src = connector(
+            "hops",
+            &format!(r#"http = {{ "127.0.0.1", "localhost" }}, auth = {auth}"#),
+            &format!(
+                r#"go = {{ description = "d", run = function(ctx, a) return ctx.http.get("{}" .. a.p).body end }}"#,
+                server.uri()
+            ),
+        );
+        let vm = load(&host, &src);
+        for from in ["/query", "/path"] {
+            let err = run_clean(&vm, json!({"p": from})).await;
+            assert!(
+                err.contains("redirect to \"localhost\" refused: its url carries a credential"),
+                "{auth} {from}: {err}"
+            );
+        }
+        assert_eq!(run_clean(&vm, json!({"p": "/same"})).await, "ok", "{auth}");
+    }
+    let got = server.received_requests().await.unwrap();
+    assert!(
+        got.iter().all(|r| !r.url.path().starts_with("/land")),
+        "nothing reached the other host"
+    );
+}
+
+#[tokio::test]
 async fn rate_limits_give_a_clean_error_and_respect_retry_after() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

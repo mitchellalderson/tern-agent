@@ -679,6 +679,39 @@ async fn inject(
     Ok(None)
 }
 
+/// Whether `url` contains any of `values`, as written or percent-decoded.
+fn carries(url: &reqwest::Url, values: &[String]) -> bool {
+    let raw = url.as_str();
+    let decoded = percent_decode(raw);
+    let plus = percent_decode(&raw.replace('+', " "));
+    values.iter().any(|v| {
+        !v.is_empty()
+            && (raw.contains(v.as_str())
+                || decoded.contains(v.as_str())
+                || plus.contains(v.as_str()))
+    })
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| char::from(c).to_digit(16);
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2]))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Replace each injected value (longest first) with `[REDACTED]`.
 fn scrub(values: &[String], text: &str) -> String {
     tern_core::secrets::redact_with(values, text)
@@ -796,11 +829,24 @@ async fn http_request(lua: &Lua, net: &Net, opts: Table) -> mlua::Result<Table> 
     // for the hop's own host (or not at all).
     let first_host = url.host_str().unwrap_or_default().to_owned();
     let mut redact: Vec<String> = Vec::new();
+    // Each value sent, by the index of the `auth` entry that sent it.
+    let mut sent_by: Vec<(usize, Vec<String>)> = Vec::new();
     let mut hops = 0;
     let (resp, host) = loop {
         let host = url.host_str().unwrap_or_default().to_owned();
         if hops > 0 {
             check_target(&net.caps, &url, true)?;
+            // A server can copy a credential into `Location` (a query key
+            // most easily); only a host its entry is sent to may get it.
+            let leaks = sent_by.iter().any(|(i, values)| {
+                let a = &net.caps.auth[*i];
+                !(a.applies_to(&host) && pick.wants(a)) && carries(&url, values)
+            });
+            if leaks {
+                return Err(mlua::Error::runtime(format!(
+                    "http: redirect to {host:?} refused: its url carries a credential from capabilities.auth that isn't sent to that host"
+                )));
+            }
         }
         let pinned = pinned_client(&net.caps, &url, &host)
             .await
@@ -823,22 +869,27 @@ async fn http_request(lua: &Lua, net: &Net, opts: Table) -> mlua::Result<Table> 
             let mut hop_headers = hop_headers.clone();
             let mut hop_url = url.clone();
             let mut sent_token = None;
-            for auth in net
+            for (i, auth) in net
                 .caps
                 .auth
                 .iter()
-                .filter(|a| a.applies_to(&host) && pick.wants(a))
+                .enumerate()
+                .filter(|(_, a)| a.applies_to(&host) && pick.wants(a))
             {
+                let mut values = Vec::new();
                 let sent = inject(
                     net,
                     auth,
                     &mut hop_headers,
                     &mut hop_url,
-                    &mut redact,
+                    &mut values,
                     rejected.as_deref(),
                 )
                 .await?;
                 sent_token = sent_token.or(sent);
+                values.retain(|v| v.len() >= 4);
+                redact.extend(values.iter().cloned());
+                sent_by.push((i, values));
             }
             redact.retain(|v| v.len() >= 4);
             redact.sort_by_key(|v| std::cmp::Reverse(v.len()));
