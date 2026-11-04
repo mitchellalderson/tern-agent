@@ -31,10 +31,10 @@ cargo build --profile dist -p tern    # → target/dist/tern
 
 ### Desktop app
 
-macOS 11+ (Apple Silicon and Intel): download [tern-desktop-macos.dmg](https://github.com/mitchellalderson/tern-agent/releases/latest/download/tern-desktop-macos.dmg) and drag tern to Applications. The app carries its own `tern`, so on first launch press **Start tern** and add a model; you don't need the CLI. To also use that binary from a terminal:
+macOS 11+ (Apple Silicon and Intel): download [tern-desktop-macos.dmg](https://github.com/mitchellalderson/tern-agent/releases/latest/download/tern-desktop-macos.dmg) and drag tern to Applications. The app carries its own `tern`, so on first launch press **Start tern** and add a model; you don't need the CLI. It also asks once whether to keep tern running in the background: **Start at login** starts tern and its menu-bar icon when you log in (both appear in System Settings › General › Login Items). To also use that binary from a terminal:
 
 ```sh
-ln -s /Applications/tern.app/Contents/Helpers/tern ~/.local/bin/tern
+ln -s "/Applications/tern.app/Contents/Library/LoginItems/tern Tray.app/Contents/MacOS/tern-tray" ~/.local/bin/tern
 ```
 
 Until the app is notarized, macOS blocks the first open: open it once, then allow it under **System Settings → Privacy & Security → Open Anyway**.
@@ -82,6 +82,7 @@ tern           # chat
 | [`tern daemon`](#tern-daemon) | Run the scheduler, gateways, and local API in the foreground. |
 | [`tern start` / `tern stop`](#tern-start-and-tern-stop) | Start tern in the background, or stop it. |
 | [`tern service`](#tern-service) | Start tern at login (launchd on macOS, systemd on Linux). |
+| [`tern tray`](#tern-tray) | The menu-bar icon (macOS): is tern running, Open, Start/Quit, Start at login. |
 | [`tern gateway pair`](#tern-gateway-pair) | Pair a Telegram account with the bot. |
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
@@ -168,15 +169,20 @@ The desktop app does the same from **tern › Quit tern completely** (⌥⌘Q), 
 ### `tern service`
 
 ```sh
-tern service install [--no-login]   # start tern at login
-tern service status                 # installed? loaded? running?
-tern service uninstall              # stop starting it at login
+tern service install [--no-login] [--tray]   # start tern (and the menu-bar icon) at login
+tern service status [--json]                 # installed? how? loaded? running?
+tern service uninstall                       # stop starting them at login
 ```
 
-- **macOS**: writes the LaunchAgent `~/Library/LaunchAgents/ai.tern.daemon.plist` and loads it. It has `KeepAlive = { SuccessfulExit = false }`: launchd restarts tern after a crash, but not after `tern stop` or Quit.
+- **macOS, from the app** (the `tern` inside `tern.app`): registers with macOS through `SMAppService`, so tern and its menu-bar icon show in System Settings › General › Login Items, where you can also turn them off. macOS may ask you to allow them there first.
+- **macOS, a CLI install**: writes the LaunchAgent `~/Library/LaunchAgents/ai.tern.daemon.plist` (and `ai.tern.tray.plist` with `--tray`) and loads it. Either way the daemon has `KeepAlive = { SuccessfulExit = false }`: launchd restarts tern after a crash, but not after `tern stop` or Quit. `tern doctor` says which method is in use.
 - **Linux**: writes the systemd user unit `~/.config/systemd/user/tern-daemon.service` with `Restart=on-failure`, for the same reason, and enables it.
 
 Logs go to `~/.tern/logs/daemon.{out,err}.log`. `--no-login` installs the service without starting tern at login (`tern start` then starts it through the service). Installing or uninstalling never stops a running tern; `tern stop` does. The desktop app's **Settings › Start tern when I log in** runs these commands.
+
+### `tern tray`
+
+A menu-bar icon for tern on macOS, in its own small process: ● running (with a ring while a task runs, and a dot when something needs you), ◐ starting, stopping or not answering, ○ stopped. Its menu shows what tern is doing and has **Open tern**, **Start at login** and **Quit tern**, which stops tern the way `tern stop` does (asking first if a task is in progress), closes the app and removes the icon. When tern is stopped it offers **Start tern** and **Close this icon**. The tray only watches and asks; launchd keeps tern itself running. `tern service install --tray` starts it at login; inside `tern.app` it's the `tern Tray.app` login item. Builds without the `tray` cargo feature (on by default; its dependencies are macOS-only) don't have it.
 
 ### `tern gateway pair`
 

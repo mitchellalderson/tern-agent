@@ -743,7 +743,7 @@ desktop bundle, and off for musl server builds, so server binaries don't grow.
 
 | Platform | Icon and menu | Notifications | Notes |
 |---|---|---|---|
-| macOS | `tray-icon` + `muda` (pure Rust over objc2/AppKit; the crates Tauri uses) | `UNUserNotificationCenter` through objc2, with actions | Needs an **app bundle identity** for notifications and login items. Ships as `tern.app/Contents/Library/LoginItems/tern Tray.app`, a minimal bundle (`LSUIElement = true`) whose executable is a symlink or copy of `tern` started with `tray`. |
+| macOS | `tray-icon` + `muda` (pure Rust over objc2/AppKit; the crates Tauri uses) | `UNUserNotificationCenter` through objc2, with actions | Needs an **app bundle identity** for notifications and login items. Ships as `tern.app/Contents/Library/LoginItems/tern Tray.app`, a minimal bundle (`LSUIElement = true`) whose executable `tern-tray` is the app's only copy of `tern`: with no arguments it runs `tern tray`, otherwise it's the CLI. It also carries the daemon's `SMAppService` plist (T8b). |
 | Linux | `ksni` (StatusNotifierItem over D-Bus, pure Rust via zbus; no GTK, so it works in static builds) | `notify-rust` (D-Bus, zbus backend) with actions where the server supports them | KDE and most desktops show SNI icons. GNOME needs the AppIndicator extension; `doctor` says so. |
 | Windows | out of scope (as everywhere else) | | |
 
@@ -916,6 +916,17 @@ with one **Start tern** button. Off is always visible as off.
 - **No terminal anywhere** in the start, stop, login-item or uninstall flows (a checklist item for the T8 UI review).
 - Killing the tray doesn't affect a run in progress. Killing the daemon under launchd/systemd restarts it, the tray
   shows `◐` and then `●`, and the run resumes.
+
+### 11.9 Status
+
+**T8a** shipped `/v1/status`, `/v1/shutdown`, `tern start`/`stop`, `tern service` and the app's Quit and Settings.
+**T8b** shipped `tern tray` on macOS (status line, Open tern, Start/Quit tern with the §11.5a escalation, Start at
+login, Close this icon), `SMAppService` login items from the bundle with the plain plists kept for CLI installs,
+`tern service install --tray`, the `tern Tray.app` helper and the app's first-launch "Keep tern running in the
+background?". Still open from this section: Needs you and approve-from-notification (T3), Recent posts and New
+message… (T2, `tern://` links), Initiative (T1b), `GET /v1/clients` and notification de-duplication, Restart tern to
+update, remote profiles in the tray, the first-close notification, **Remove tern from this Mac…**, and Linux (T8c).
+DECISIONS.md, T8b, has the details.
 
 ## 12. Phases
 

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../state/daemon.dart';
@@ -26,8 +28,26 @@ class SettingsDialog extends StatefulWidget {
 
 class _SettingsDialogState extends State<SettingsDialog> {
   late bool _atLogin = widget.control.startsAtLogin;
+  var _needsApproval = false;
   var _busy = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  /// Ask tern, which also knows about login items registered through
+  /// macOS (and switched off in System Settings).
+  Future<void> _refresh() async {
+    final s = await widget.control.loginState();
+    if (s == null || !mounted) return;
+    setState(() {
+      _atLogin = s.atLogin || s.needsApproval;
+      _needsApproval = s.needsApproval;
+    });
+  }
 
   Future<void> _setAtLogin(bool on) async {
     setState(() {
@@ -41,6 +61,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       _error = e.message;
     }
     if (mounted) setState(() => _busy = false);
+    await _refresh();
   }
 
   Future<void> _setOnClose(OnClose? v) async {
@@ -85,10 +106,17 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 contentPadding: EdgeInsets.zero,
                 title: const Text('Start tern when I log in'),
                 subtitle: Text(
-                  canInstall
-                      ? 'tern runs in the background, so routines and '
-                            'Telegram keep working with this window closed.'
-                      : "Couldn't find tern on this computer.",
+                  !canInstall
+                      ? "Couldn't find tern on this computer."
+                      : _needsApproval
+                      ? 'macOS needs your OK: turn tern on in System '
+                            'Settings › General › Login Items.'
+                      : Platform.isMacOS
+                      ? 'tern runs in the background with an icon in the '
+                            'menu bar, so routines and Telegram keep working '
+                            'with this window closed.'
+                      : 'tern runs in the background, so routines and '
+                            'Telegram keep working with this window closed.',
                   style: small,
                 ),
                 value: _atLogin,

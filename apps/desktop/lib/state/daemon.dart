@@ -5,10 +5,11 @@ import 'package:tern_client/tern_client.dart';
 
 /// Finding and starting `tern daemon` when it isn't running.
 ///
-/// The release build of the macOS app carries its own `tern` in
-/// `tern.app/Contents/Helpers`, matched to the app's client, so it comes
-/// right after `$TERN_BIN`. Apps started from Finder get a minimal PATH, so
-/// common install locations are checked too.
+/// The release build of the macOS app carries its own `tern`, matched to the
+/// app's client, inside the menu-bar helper
+/// (`tern.app/Contents/Library/LoginItems/tern Tray.app`), so it comes right
+/// after `$TERN_BIN`. Apps started from Finder get a minimal PATH, so common
+/// install locations are checked too.
 String? findTern([Map<String, String>? env, String? executable]) {
   env ??= Platform.environment;
   final home = env['HOME'] ?? '';
@@ -29,11 +30,14 @@ String? findTern([Map<String, String>? env, String? executable]) {
 }
 
 /// Where a bundled `tern` would be for the app at [executable]
-/// (`<app>.app/Contents/MacOS/<name>`), or null outside an app bundle.
+/// (`<app>.app/Contents/MacOS/<name>`), or null outside an app bundle. It's
+/// the tray helper's executable: run with arguments it's the ordinary CLI,
+/// and `service install` from there registers login items with
+/// `SMAppService`.
 String? bundledTern(String executable) {
   final macos = File(executable).parent;
   if (macos.path.split('/').last != 'MacOS') return null;
-  return '${macos.parent.path}/Helpers/tern';
+  return '${macos.parent.path}/Library/LoginItems/tern Tray.app/Contents/MacOS/tern-tray';
 }
 
 /// Start tern with `tern start`: through the login service when it's
@@ -72,10 +76,31 @@ class TernControl {
   /// within 10 s, so the service manager doesn't bring it back.
   Future<void> stop() => _tern(['stop']);
 
-  Future<void> setStartAtLogin(bool on) =>
-      _tern(['service', if (on) 'install' else 'uninstall']);
+  /// Start tern (and, on macOS, the menu-bar icon) at login, or stop
+  /// doing so. Either way tern keeps running.
+  Future<void> setStartAtLogin(bool on) => _tern([
+    'service',
+    if (on) ...['install', if (Platform.isMacOS) '--tray'] else 'uninstall',
+  ]);
 
-  /// Whether the login service is installed and starts tern at login.
+  /// What `tern service status --json` says, or null if it can't be asked
+  /// (no tern, or one too old to answer).
+  Future<LoginState?> loginState() async {
+    final b = bin;
+    if (b == null) return null;
+    try {
+      final r = await run(b, ['service', 'status', '--json']);
+      if (r.exitCode != 0) return null;
+      return LoginState.fromJson(
+        jsonDecode('${r.stdout}'.trim()) as Map<String, dynamic>,
+      );
+    } on Object {
+      return null;
+    }
+  }
+
+  /// Whether a plain login service file starts tern at login; the quick
+  /// guess until [loginState] answers.
   bool get startsAtLogin {
     final home = env['HOME'] ?? '';
     if (Platform.isMacOS) {
@@ -101,6 +126,22 @@ class TernControl {
       );
     }
   }
+}
+
+/// How tern starts at login, from `tern service status --json`.
+class LoginState {
+  const LoginState({required this.atLogin, this.needsApproval = false});
+
+  factory LoginState.fromJson(Map<String, dynamic> j) => LoginState(
+    atLogin: j['at_login'] == true,
+    needsApproval: j['needs_approval'] == true,
+  );
+
+  final bool atLogin;
+
+  /// Registered, but macOS waits for the user to allow it in System
+  /// Settings › General › Login Items.
+  final bool needsApproval;
 }
 
 /// Stop tern: ask it to stop (it exits cleanly, so the login service
@@ -135,7 +176,11 @@ enum OnClose { keepRunning, quitTern }
 /// The app's own settings, in a small JSON file outside tern's data
 /// directory.
 class AppPrefs {
-  AppPrefs(this.file, {this.onClose = OnClose.keepRunning});
+  AppPrefs(
+    this.file, {
+    this.onClose = OnClose.keepRunning,
+    this.askedBackground = false,
+  });
 
   /// `~/Library/Application Support/tern/desktop.json` on macOS,
   /// `$XDG_CONFIG_HOME/tern/desktop.json` elsewhere.
@@ -150,23 +195,29 @@ class AppPrefs {
 
   factory AppPrefs.fromFile(File file) {
     var onClose = OnClose.keepRunning;
+    var asked = false;
     try {
       final j = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
       if (j['on_close'] == 'quit_tern') onClose = OnClose.quitTern;
+      asked = j['asked_background'] == true;
     } on Object {
       // Missing or unreadable: defaults.
     }
-    return AppPrefs(file, onClose: onClose);
+    return AppPrefs(file, onClose: onClose, askedBackground: asked);
   }
 
   final File file;
   OnClose onClose;
+
+  /// The first-launch "Keep tern running in the background?" was answered.
+  bool askedBackground;
 
   Future<void> save() async {
     await file.parent.create(recursive: true);
     await file.writeAsString(
       jsonEncode({
         'on_close': onClose == OnClose.quitTern ? 'quit_tern' : 'keep_running',
+        'asked_background': askedBackground,
       }),
     );
   }

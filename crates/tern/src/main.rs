@@ -19,6 +19,7 @@ mod run_cmd;
 mod runtime;
 mod service;
 mod subagents;
+mod tray;
 mod tui_backend;
 
 use std::process::ExitCode;
@@ -35,7 +36,7 @@ fn main() -> ExitCode {
     if let Some(code) = tern_sandbox::run_helper_if_requested() {
         return code;
     }
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(tray::rewrite_args(std::env::args_os().collect()));
     match run(cli) {
         Ok(code) => code,
         Err(e) => {
@@ -133,10 +134,15 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Reset { keep_config, yes }) => reset_cmd::run(&home, keep_config, yes),
         Some(Command::Stop) => lifecycle::stop(&home),
         Some(Command::Service { command }) => match command {
-            ServiceCommand::Install { no_login } => service::install(&home, !no_login),
-            ServiceCommand::Uninstall => service::uninstall(),
-            ServiceCommand::Status => service::status(&home),
+            ServiceCommand::Install { no_login, tray } => service::install(&home, !no_login, tray),
+            ServiceCommand::Uninstall => service::uninstall(&home),
+            ServiceCommand::Status { json } => service::status(&home, json),
+            ServiceCommand::BundlePlist => {
+                print!("{}", service::bundled_plist());
+                Ok(ExitCode::SUCCESS)
+            }
         },
+        Some(Command::Tray) => tray::run(&home),
         Some(Command::Report { output, run }) => {
             report_cmd::run(&home, output.as_deref(), run.as_deref())
         }

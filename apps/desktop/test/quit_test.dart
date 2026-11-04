@@ -1,5 +1,6 @@
 // "Quit tern completely" and Settings › General (personal-agent-tooling-spec
 // §11.5a) against a fake client and a fake `tern` command.
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import 'package:tern_client/tern_client.dart';
 import 'package:tern_desktop/state/daemon.dart';
 import 'package:tern_desktop/state/store.dart';
 import 'package:tern_desktop/theme.dart';
+import 'package:tern_desktop/ui/background_prompt.dart';
 import 'package:tern_desktop/ui/quit.dart';
 import 'package:tern_desktop/ui/settings.dart';
 
@@ -198,13 +200,15 @@ void main() {
     expect(tester.widget<Switch>(toggle).value, isFalse);
     await tester.tap(toggle);
     await tester.pumpAndSettle();
-    expect(runs, [
-      ['service', 'install'],
+    // The dialog asks tern how it starts, before and after each change.
+    expect(runs.where((r) => r[1] != 'status'), [
+      ['service', 'install', if (Platform.isMacOS) '--tray'],
     ]);
+    expect(runs.first, ['service', 'status', '--json']);
     expect(tester.widget<Switch>(toggle).value, isTrue);
     await tester.tap(toggle);
     await tester.pumpAndSettle();
-    expect(runs.last, ['service', 'uninstall']);
+    expect(runs.where((r) => r[1] != 'status').last, ['service', 'uninstall']);
     expect(tester.widget<Switch>(toggle).value, isFalse);
 
     await tester.runAsync(() async {
@@ -239,5 +243,96 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('error: writing the plist: denied'), findsOneWidget);
     expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+  });
+
+  testWidgets('the settings switch follows what tern reports', (tester) async {
+    final control = TernControl(
+      bin: '/fake/tern',
+      env: const {'HOME': '/nonexistent'},
+      run: (bin, args) async => ProcessResult(
+        0,
+        0,
+        '{"method":"app_service","at_login":false,"needs_approval":true}',
+        '',
+      ),
+    );
+    await tester.pumpWidget(
+      _app(
+        (_) => SettingsDialog(
+          control: control,
+          prefs: AppPrefs(File('/nonexistent/desktop.json')),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+    expect(find.textContaining('macOS needs your OK'), findsOneWidget);
+  });
+
+  testWidgets('first launch asks once to keep tern running', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('tern_ask');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final runs = <List<String>>[];
+    final control = _control(runs, env: {'HOME': dir.path});
+    final file = File('${dir.path}/desktop.json');
+    final prefs = AppPrefs.fromFile(file);
+    expect(prefs.askedBackground, isFalse);
+
+    late BuildContext ctx;
+    await tester.pumpWidget(
+      _app((c) {
+        ctx = c;
+        return const SizedBox();
+      }),
+    );
+    unawaited(maybeAskKeepRunning(ctx, control, prefs));
+    await tester.pumpAndSettle();
+    expect(find.text('Keep tern running in the background?'), findsOneWidget);
+    expect(find.textContaining('daemon'), findsNothing);
+    await tester.tap(find.text('Start at login'));
+    await tester.pumpAndSettle();
+    expect(runs.last, ['service', 'install', if (Platform.isMacOS) '--tray']);
+    expect(find.text('Keep tern running in the background?'), findsNothing);
+    expect(prefs.askedBackground, isTrue);
+
+    // Answered: never asked again, and that's saved.
+    runs.clear();
+    await maybeAskKeepRunning(ctx, control, prefs);
+    await tester.pumpAndSettle();
+    expect(find.text('Keep tern running in the background?'), findsNothing);
+    expect(runs, isEmpty);
+  });
+
+  testWidgets('first launch doesn\'t ask when tern already starts at login', (
+    tester,
+  ) async {
+    final control = TernControl(
+      bin: '/fake/tern',
+      env: const {'HOME': '/nonexistent'},
+      run: (bin, args) async => ProcessResult(0, 0, '{"at_login":true}', ''),
+    );
+    final prefs = AppPrefs(File('/nonexistent/x/desktop.json'));
+    late BuildContext ctx;
+    await tester.pumpWidget(
+      _app((c) {
+        ctx = c;
+        return const SizedBox();
+      }),
+    );
+    await tester.runAsync(() => maybeAskKeepRunning(ctx, control, prefs));
+    await tester.pumpAndSettle();
+    expect(find.text('Keep tern running in the background?'), findsNothing);
+    expect(prefs.askedBackground, isTrue);
+  });
+
+  test('asked_background survives a save', () async {
+    final dir = Directory.systemTemp.createTempSync('tern_prefs');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final file = File('${dir.path}/desktop.json');
+    final prefs = AppPrefs.fromFile(file)..askedBackground = true;
+    await prefs.save();
+    final back = AppPrefs.fromFile(file);
+    expect(back.askedBackground, isTrue);
+    expect(back.onClose, OnClose.keepRunning);
   });
 }

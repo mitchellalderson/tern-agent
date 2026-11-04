@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../state/daemon.dart';
 import '../state/store.dart';
+import 'background_prompt.dart';
 import 'conversation.dart';
 import 'offline.dart';
 import 'providers.dart';
@@ -40,6 +41,9 @@ class _HomeState extends State<Home> {
           widget.store.appActive = s == AppLifecycleState.resumed,
       onExitRequested: _onExit,
     );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) maybeAskKeepRunning(context, _control, _prefs);
+    });
   }
 
   /// Closing the window quits the app; Settings decides whether tern
