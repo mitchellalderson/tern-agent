@@ -30,11 +30,13 @@ pub struct ScheduleRow {
     pub budget_since: Option<i64>,
     /// The channel its results are posted to; `None` = Home.
     pub channel_id: Option<String>,
+    /// Its autonomy profile; `None` = the configured `autonomy`.
+    pub autonomy: Option<String>,
 }
 
 const SCHEDULE_COLS: &str = "id, cron, prompt, session_id, deliver_to, enabled, next_run_at, last_run_at, \
     quiet_hours, urgent, runs_per_day, usd_per_day, tokens_per_run, paused_until, paused_reason, budget_since, \
-    channel_id";
+    channel_id, autonomy";
 
 fn schedule_row(r: &Row<'_>) -> rusqlite::Result<ScheduleRow> {
     Ok(ScheduleRow {
@@ -55,6 +57,7 @@ fn schedule_row(r: &Row<'_>) -> rusqlite::Result<ScheduleRow> {
         paused_reason: r.get(14)?,
         budget_since: r.get(15)?,
         channel_id: r.get(16)?,
+        autonomy: r.get(17)?,
     })
 }
 
@@ -85,7 +88,7 @@ impl Store {
             &format!(
                 "INSERT INTO schedules ({SCHEDULE_COLS})
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                   COALESCE(?17, 'home'))"
+                   COALESCE(?17, 'home'), ?18)"
             ),
             params![
                 s.id,
@@ -104,7 +107,8 @@ impl Store {
                 s.paused_until,
                 s.paused_reason,
                 s.budget_since,
-                s.channel_id
+                s.channel_id,
+                s.autonomy
             ],
         )?;
         Ok(())
@@ -195,7 +199,8 @@ impl Store {
     pub fn update_schedule(&self, s: &ScheduleRow) -> Result<bool> {
         Ok(self.conn()?.execute(
             "UPDATE schedules SET cron = ?2, prompt = ?3, deliver_to = ?4, enabled = ?5, next_run_at = ?6,
-               quiet_hours = ?7, urgent = ?8, runs_per_day = ?9, usd_per_day = ?10, tokens_per_run = ?11
+               quiet_hours = ?7, urgent = ?8, runs_per_day = ?9, usd_per_day = ?10, tokens_per_run = ?11,
+               autonomy = ?12
              WHERE id = ?1",
             params![
                 s.id,
@@ -208,7 +213,8 @@ impl Store {
                 s.urgent as i64,
                 s.runs_per_day,
                 s.usd_per_day,
-                tokens(s.tokens_per_run)
+                tokens(s.tokens_per_run),
+                s.autonomy
             ],
         )? > 0)
     }
@@ -260,6 +266,24 @@ impl Store {
         self.conn()?.execute(
             "UPDATE runs SET budget_tokens = ?2 WHERE id = ?1",
             params![run_id, tokens(Some(budget))],
+        )?;
+        Ok(())
+    }
+
+    /// A routine's own autonomy profile; `None` = the configured one. Only
+    /// the user sets it (the API), never the agent's schedule tools.
+    pub fn set_schedule_autonomy(&self, id: &str, autonomy: Option<&str>) -> Result<bool> {
+        Ok(self.conn()?.execute(
+            "UPDATE schedules SET autonomy = ?2 WHERE id = ?1",
+            params![id, autonomy],
+        )? > 0)
+    }
+
+    /// Freeze the run's autonomy profile (before it is driven).
+    pub fn set_run_autonomy(&self, run_id: &str, autonomy: &str) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE runs SET autonomy = ?2 WHERE id = ?1",
+            params![run_id, autonomy],
         )?;
         Ok(())
     }

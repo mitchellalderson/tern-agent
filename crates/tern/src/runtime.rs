@@ -194,6 +194,10 @@ impl Runtime {
                     .filter_map(|(name, p)| p.context_window.map(|w| (name.clone(), w)))
                     .collect(),
                 memory_flush: config.memory.flush,
+                approval_wait: std::time::Duration::from_secs(config.outbox.wait_secs),
+                outbox_expiry: std::time::Duration::from_secs(
+                    config.outbox.expire_hours.saturating_mul(3600),
+                ),
                 ..AgentConfig::default()
             },
         )
@@ -340,6 +344,10 @@ impl Runtime {
         let run = self
             .agent
             .start_run(&session.id, text, &model, &system, trigger)?;
+        // Frozen on the run, like its model (tooling spec §5.4); a routine
+        // overrides it in `Manager::start_scheduled`.
+        self.store
+            .set_run_autonomy(&run.id, self.live().autonomy.as_str())?;
         Ok(StartedRun {
             session_id: session.id,
             run_id: run.id,

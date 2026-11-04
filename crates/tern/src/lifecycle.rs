@@ -39,7 +39,7 @@ fn waits() -> (Duration, Duration) {
     }
 }
 
-fn socket_client(home: &TernHome) -> Option<reqwest::Client> {
+pub(crate) fn socket_client(home: &TernHome) -> Option<reqwest::Client> {
     let socket = home.socket_connect_path().ok()?;
     if !socket.exists() {
         return None;
@@ -51,7 +51,7 @@ fn socket_client(home: &TernHome) -> Option<reqwest::Client> {
         .ok()
 }
 
-fn block_on<T>(fut: impl std::future::Future<Output = T>) -> anyhow::Result<T> {
+pub(crate) fn block_on<T>(fut: impl std::future::Future<Output = T>) -> anyhow::Result<T> {
     Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?

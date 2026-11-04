@@ -24,6 +24,7 @@
 //! | GET | `/v1/events` | Server-Sent Events: agent events and approval requests |
 //! | GET | `/v1/approvals` | approvals waiting for an API client |
 //! | POST | `/v1/approvals/{id}` | answer `{decision: "once" \| "always" \| "deny"}` |
+//! | GET / POST | `/v1/outbox[/{id}[/approve\|/reject]]` | deferred approvals (`api_outbox.rs`) |
 //! | GET / POST | `/v1/secret-requests[/{id}]` | the agent's prompts for secrets (`api_secrets.rs`) |
 //! | GET | `/v1/status` | version, uptime, counts, gateway health (`api_lifecycle.rs`) |
 //! | POST | `/v1/shutdown[?dry_run=1]` | stop with exit code 0 (`api_lifecycle.rs`) |
@@ -174,6 +175,7 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/approvals/{id}", post(approve))
         .merge(super::api_channels::routes())
         .merge(super::api_schedules::routes())
+        .merge(super::api_outbox::routes())
         .merge(super::api_runs::routes())
         .merge(super::api_subagents::routes())
         .merge(super::api_secrets::routes())

@@ -349,6 +349,7 @@ mod tests {
             quiet: false,
             input_taint: None,
             taint: None,
+            autonomy: None,
         }
     }
 

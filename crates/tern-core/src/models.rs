@@ -94,6 +94,11 @@ pub enum Change {
     },
     /// A channel was created, renamed, archived, or got a new main thread.
     ChannelsChanged {},
+    /// An outbox item was queued or changed state; re-read `/v1/outbox`.
+    OutboxChanged {
+        id: i64,
+        state: String,
+    },
 }
 
 /// What a client fills in to add or change a provider.

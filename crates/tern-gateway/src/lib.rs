@@ -8,6 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tern_core::approval::{ApprovalRequest, Decision, SecretRequest};
 use tern_core::events::AgentEvent;
+use tern_core::outbox::OutboxItem;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -28,6 +29,11 @@ pub trait ChatHost: Send + Sync {
     async fn stop(&self, source: &str, chat: &str) -> bool;
     async fn status(&self, source: &str, chat: &str) -> String;
     fn events(&self) -> broadcast::Receiver<AgentEvent>;
+    /// Approve (run it, exactly once) or reject a pending outbox item from
+    /// a chat button. Returns how it ended, in a few words.
+    async fn decide_outbox(&self, _id: i64, _approve: bool) -> Result<String, String> {
+        Err("this tern can't decide outbox items".into())
+    }
 }
 
 #[async_trait]
@@ -49,4 +55,7 @@ pub trait Gateway: Send + Sync {
     }
     /// Replace the notice with how the request ended.
     async fn secret_request_done(&self, _target: &str, _handle: &str, _text: &str) {}
+    /// Show a new outbox item (a call nobody approved in time) in `target`,
+    /// with Approve and Reject buttons unless only this host may decide it.
+    async fn outbox_notice(&self, _target: &str, _item: &OutboxItem) {}
 }

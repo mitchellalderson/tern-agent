@@ -22,6 +22,8 @@ enum Status {
     Info,
     Warn,
     Fail,
+    /// A warning shown in red: a setting that turns safety off (`yolo`).
+    Danger,
 }
 
 struct Report {
@@ -45,6 +47,19 @@ impl Report {
             Status::Fail => {
                 self.fails += 1;
                 "FAIL"
+            }
+            Status::Danger => {
+                self.warns += 1;
+                use std::io::IsTerminal;
+                if std::io::stdout().is_terminal() {
+                    println!("  \x1b[1;31m[warn] {}\x1b[0m", msg.as_ref());
+                } else {
+                    println!("  [warn] {}", msg.as_ref());
+                }
+                for line in hint.unwrap_or_default().lines() {
+                    println!("         {line}");
+                }
+                return;
             }
         };
         println!("  [{mark}] {}", msg.as_ref());
@@ -232,6 +247,9 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
             ),
         },
     }
+
+    r.section("Autonomy");
+    check_autonomy(&mut r, home, &config);
 
     r.section("Remote access");
     check_listeners(&mut r, &config);
@@ -504,6 +522,57 @@ fn check_database(r: &mut Report, path: &Path) {
             ),
             (Err(e), _) | (_, Err(e)) => r.check(Status::Fail, e.to_string(), None),
         },
+    }
+}
+
+const YOLO_HINT: &str = "Nothing asks before acting, even after reading a web page or an email that could \
+     carry injected instructions. Set autonomy = \"supervised\" unless you mean it.";
+
+/// The autonomy profile (tooling spec §5.4): `yolo` anywhere is shown in
+/// red, globally or on a routine.
+fn check_autonomy(r: &mut Report, home: &TernHome, config: &Config) {
+    use tern_core::approval::Autonomy;
+    match config.autonomy {
+        Autonomy::Yolo => r.check(
+            Status::Danger,
+            "autonomy = \"yolo\": nothing asks",
+            Some(YOLO_HINT),
+        ),
+        a => r.check(Status::Ok, format!("autonomy = \"{a}\""), None),
+    }
+    let path = home.db_path();
+    if !path.exists() {
+        return;
+    }
+    let Ok(store) = Store::open(&path) else {
+        return;
+    };
+    for s in store.schedules().unwrap_or_default() {
+        let Some(a) = s.autonomy.as_deref().and_then(Autonomy::parse) else {
+            continue;
+        };
+        let title = crate::daemon::scheduler::title(&s);
+        match a {
+            Autonomy::Yolo => r.check(
+                Status::Danger,
+                format!("routine {title:?} runs with autonomy = \"yolo\""),
+                Some(YOLO_HINT),
+            ),
+            a => r.check(
+                Status::Info,
+                format!("routine {title:?}: autonomy = \"{a}\""),
+                None,
+            ),
+        }
+    }
+    if let Ok(pending) = store.outbox(Some("pending"), 200)
+        && !pending.is_empty()
+    {
+        r.check(
+            Status::Info,
+            format!("{} outbox item(s) waiting for you", pending.len()),
+            Some("See them with `tern outbox`."),
+        );
     }
 }
 

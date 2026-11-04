@@ -190,7 +190,7 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                         let decision = match rx.await.unwrap_or(Decision::Deny) {
                             Decision::AllowOnce => "once",
                             Decision::AlwaysAllow => "always",
-                            Decision::Deny => "deny",
+                            Decision::Deny | Decision::Unanswered => "deny",
                         };
                         let _ = http
                             .post(url)

@@ -87,6 +87,17 @@ docker_pids = 512          # 0 for no limit
 # memory_md_tokens = 1500
 # flush = true                 # before compacting, let the agent save durable facts (memory_save)
 
+# How much runs may do without asking: "readonly", "supervised" (the
+# default), "autonomous" (untainted writes don't ask) or "yolo" (nothing
+# asks; doctor shows it in red). Routines can set their own.
+# autonomy = "supervised"
+
+# A write nobody approves in time waits in the outbox (`tern outbox`) instead
+# of being denied.
+# [outbox]
+# wait_secs = 120              # at once when no app, TUI or tray is attached
+# expire_hours = 72
+
 # Scheduled prompts (schedule_create, the app's routines). Each schedule can
 # override these.
 # [schedules]

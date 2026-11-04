@@ -10,6 +10,7 @@ export 'src/endpoint.dart';
 export 'src/lifecycle.dart';
 export 'src/mcp.dart';
 export 'src/models.dart';
+export 'src/outbox.dart';
 export 'src/providers.dart';
 export 'src/secret_requests.dart';
 export 'src/sse.dart';
