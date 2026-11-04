@@ -178,7 +178,12 @@ enum OnClose { keepRunning, quitTern }
 /// The app's own settings, in a small JSON file outside tern's data
 /// directory.
 class AppPrefs {
-  AppPrefs(this.file, {this.onClose = OnClose.keepRunning, this.connection});
+  AppPrefs(
+    this.file, {
+    this.onClose = OnClose.keepRunning,
+    this.connection,
+    Map<String, int>? read,
+  }) : read = read ?? {};
 
   /// `~/Library/Application Support/tern/desktop.json` on macOS,
   /// `$XDG_CONFIG_HOME/tern/desktop.json` elsewhere.
@@ -197,14 +202,20 @@ class AppPrefs {
   factory AppPrefs.fromFile(File file) {
     var onClose = OnClose.keepRunning;
     Profile? connection;
+    final read = <String, int>{};
     try {
       final j = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
       if (j['on_close'] == 'quit_tern') onClose = OnClose.quitTern;
       connection = Profile.fromJson(j['connection']);
+      if (j['read'] case final Map m) {
+        for (final e in m.entries) {
+          if (e.value case final int v) read['${e.key}'] = v;
+        }
+      }
     } on Object {
       // Missing or unreadable: defaults.
     }
-    return AppPrefs(file, onClose: onClose, connection: connection);
+    return AppPrefs(file, onClose: onClose, connection: connection, read: read);
   }
 
   final File file;
@@ -213,12 +224,16 @@ class AppPrefs {
   /// Where tern runs; null until the first-launch chooser is answered.
   Profile? connection;
 
+  /// Channel → the newest post seen here (unread dots; not synced).
+  final Map<String, int> read;
+
   Future<void> save() async {
     await file.parent.create(recursive: true);
     await file.writeAsString(
       jsonEncode({
         'on_close': onClose == OnClose.quitTern ? 'quit_tern' : 'keep_running',
         'connection': ?connection?.toJson(),
+        if (read.isNotEmpty) 'read': read,
       }),
     );
   }

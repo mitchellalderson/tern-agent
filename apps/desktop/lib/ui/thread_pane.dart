@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'channel_view.dart';
 import 'items.dart';
 import 'widgets.dart';
 
@@ -20,10 +21,16 @@ class ThreadPane extends StatelessWidget {
     final t = store.threadTranscript;
     final items = t?.items ?? const [];
     final branch = store.branch;
+    final replying = store.replying;
+    // What a new thread starts from: a message's text, or a post.
+    final quote = branch?.quote ?? replying?.text;
     final title = branch != null
         ? 'New side chat'
+        : replying != null
+        ? 'Reply to ${replying.author}'
         : store.sessions.where((s) => s.id == session).firstOrNull?.title ??
               'Thread';
+    final waiting = store.waitingInThread();
     return Container(
       color: c.background,
       child: Column(
@@ -36,7 +43,7 @@ class ThreadPane extends StatelessWidget {
               child: Row(
                 children: [
                   Icon(
-                    branch != null ? Icons.call_split : Icons.forum_outlined,
+                    quote != null ? Icons.call_split : Icons.forum_outlined,
                     size: 15,
                     color: c.muted,
                   ),
@@ -62,8 +69,9 @@ class ThreadPane extends StatelessWidget {
             ),
           ),
           const Hairline(),
+          if (waiting > 0) WaitingInHome(store: store, count: waiting),
           Expanded(
-            child: branch != null
+            child: quote != null
                 ? Padding(
                     padding: const EdgeInsets.all(16),
                     child: Align(
@@ -76,7 +84,7 @@ class ThreadPane extends StatelessWidget {
                           ),
                         ),
                         child: Text(
-                          branch.quote,
+                          quote,
                           maxLines: 8,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(color: c.muted, fontSize: 13),
@@ -168,12 +176,14 @@ class _ThreadComposerState extends State<_ThreadComposer> {
                 },
                 child: TextField(
                   controller: _text,
-                  autofocus: store.branch != null,
+                  autofocus: store.branch != null || store.replying != null,
                   minLines: 1,
                   maxLines: 6,
                   decoration: InputDecoration(
                     hintText: store.branch != null
                         ? 'Ask about this'
+                        : store.replying != null
+                        ? 'Reply in a thread'
                         : 'Reply in this thread',
                     hintStyle: TextStyle(color: c.muted, fontSize: 13),
                     border: InputBorder.none,

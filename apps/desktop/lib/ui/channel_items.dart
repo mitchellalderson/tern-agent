@@ -138,30 +138,35 @@ class PostCard extends StatelessWidget {
             children: [
               AgentAvatar(name: post.author, size: 20),
               const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  post.author,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        post.author,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    if (tag case (final icon, final words)) ...[
+                      const SizedBox(width: 6),
+                      Tooltip(
+                        message: words,
+                        child: Icon(icon, size: 13, color: c.muted),
+                      ),
+                    ],
+                    const SizedBox(width: 8),
+                    Text(
+                      relativeTime(post.createdAt),
+                      style: TextStyle(fontSize: 11.5, color: c.muted),
+                    ),
+                  ],
                 ),
               ),
-              if (tag case (final icon, final words)) ...[
-                const SizedBox(width: 6),
-                Tooltip(
-                  message: words,
-                  child: Icon(icon, size: 13, color: c.muted),
-                ),
-              ],
-              const SizedBox(width: 8),
-              Text(
-                relativeTime(post.createdAt),
-                style: TextStyle(fontSize: 11.5, color: c.muted),
-              ),
-              const Spacer(),
               if (session != null)
                 TextButton(
                   onPressed: () => store.openThread(session),

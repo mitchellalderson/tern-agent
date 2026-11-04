@@ -8,6 +8,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
+import 'channel_view.dart';
 import 'conversation.dart';
 import 'mcp.dart';
 import 'offline.dart';
@@ -125,6 +126,12 @@ class _HomeState extends State<Home> {
                             panelOpen: panel,
                             onTogglePanel: _togglePanel,
                           )
+                        : store.topicOpen
+                        ? ChannelView(
+                            store: store,
+                            panelOpen: panel,
+                            onTogglePanel: _togglePanel,
+                          )
                         : ConversationView(
                             store: store,
                             panelOpen: panel,
@@ -133,7 +140,9 @@ class _HomeState extends State<Home> {
                   ),
                   // A thread (History, a side chat, a post's) takes the
                   // panel's place while it's open.
-                  if (store.thread != null || store.branch != null) ...[
+                  if (store.thread != null ||
+                      store.branch != null ||
+                      store.replying != null) ...[
                     const Hairline(vertical: true),
                     SizedBox(width: 380, child: ThreadPane(store: store)),
                   ] else if (panel) ...[

@@ -121,7 +121,7 @@ class _ConversationViewState extends State<ConversationView> {
               setState(() {});
             },
           ),
-        _Composer(store: store),
+        Composer(store: store),
       ],
     );
   }
@@ -356,16 +356,17 @@ class _ErrorBanner extends StatelessWidget {
   }
 }
 
-class _Composer extends StatefulWidget {
-  const _Composer({required this.store});
+/// Where the user writes: to the open conversation, Home, or a channel.
+class Composer extends StatefulWidget {
+  const Composer({super.key, required this.store});
 
   final TernStore store;
 
   @override
-  State<_Composer> createState() => _ComposerState();
+  State<Composer> createState() => _ComposerState();
 }
 
-class _ComposerState extends State<_Composer> {
+class _ComposerState extends State<Composer> {
   final _text = TextEditingController();
   final _focus = FocusNode();
 
@@ -387,6 +388,14 @@ class _ComposerState extends State<_Composer> {
     if (text.isEmpty || widget.store.link != Link.online) return;
     _text.clear();
     widget.store.send(text);
+  }
+
+  static String _hint(TernStore store) {
+    if (store.homeOpen && store.newTopic) return 'Start a new topic';
+    if (store.openChannel case final ch? when store.topicOpen) {
+      return 'Message #${ch.slug}';
+    }
+    return 'Message tern';
   }
 
   @override
@@ -420,7 +429,7 @@ class _ComposerState extends State<_Composer> {
               Padding(
                 padding: const EdgeInsets.only(left: 14, bottom: 6),
                 child: Text(
-                  store.homeOpen
+                  store.homeOpen || store.topicOpen
                       ? 'tern will read this at its next step. Stop ends the run.'
                       : 'Sending will stop the current run.',
                   style: Theme.of(context).textTheme.bodySmall,
@@ -477,9 +486,7 @@ class _ComposerState extends State<_Composer> {
                         maxLines: 8,
                         keyboardType: TextInputType.multiline,
                         decoration: InputDecoration(
-                          hintText: store.homeOpen && store.newTopic
-                              ? 'Start a new topic'
-                              : 'Message tern',
+                          hintText: _hint(store),
                           hintStyle: TextStyle(color: c.muted),
                           border: InputBorder.none,
                           contentPadding: const EdgeInsets.symmetric(

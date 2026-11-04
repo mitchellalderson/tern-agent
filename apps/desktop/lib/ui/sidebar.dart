@@ -4,6 +4,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
+import 'channel_view.dart';
 import 'providers.dart';
 import 'widgets.dart';
 
@@ -207,8 +208,93 @@ class _HomeRow extends StatelessWidget {
   }
 }
 
-/// The CHANNELS section: topic channels, added in C2.
-List<Widget> channelsSection(BuildContext context, TernStore store) => const [];
+/// CHANNELS: the topic channels, with an unread dot or a spinner, and +
+/// to make one.
+List<Widget> channelsSection(BuildContext context, TernStore store) {
+  final c = context.colors;
+  return [
+    Padding(
+      padding: const EdgeInsets.fromLTRB(18, 12, 10, 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'CHANNELS',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+          ),
+          SizedBox(
+            height: 24,
+            child: QuietIconButton(
+              icon: Icons.add,
+              size: 15,
+              tooltip: 'New channel',
+              onPressed: () => showNewChannel(context, store),
+            ),
+          ),
+        ],
+      ),
+    ),
+    for (final ch in store.topics)
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+        child: Material(
+          color: store.channel == ch.id && store.page == null
+              ? c.selection
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => store.openChannelView(ch.id),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: Row(
+                children: [
+                  Text('#', style: TextStyle(fontSize: 14, color: c.muted)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      ch.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: store.unread(ch)
+                            ? FontWeight.w600
+                            : FontWeight.w400,
+                      ),
+                    ),
+                  ),
+                  if (store.busy(ch))
+                    SizedBox(
+                      width: 10,
+                      height: 10,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: c.muted,
+                      ),
+                    )
+                  else if (store.unread(ch))
+                    Tooltip(
+                      message: 'New posts',
+                      child: _Dot(color: c.accent),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    if (store.topics.isEmpty)
+      Padding(
+        padding: const EdgeInsets.fromLTRB(18, 2, 18, 4),
+        child: Text(
+          'Topics get their own timeline.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ),
+  ];
+}
 
 class _SearchField extends StatelessWidget {
   const _SearchField({required this.controller, required this.onChanged});

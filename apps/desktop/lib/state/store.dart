@@ -17,8 +17,13 @@ enum LibraryPage { mcp }
 /// The daemon owns all state: this is a cache rebuilt on every (re)connect,
 /// since the event stream has no replay.
 class TernStore extends ChangeNotifier {
-  TernStore(this.client, {Notifier? notifier})
-    : notifier = notifier ?? const SilentNotifier() {
+  TernStore(
+    this.client, {
+    Notifier? notifier,
+    Map<String, int>? lastSeen,
+    this.onReadChanged,
+  }) : notifier = notifier ?? const SilentNotifier(),
+       lastSeen = lastSeen ?? {} {
     this.notifier.onAction = _onNotification;
   }
 
@@ -91,9 +96,27 @@ class TernStore extends ChangeNotifier {
   /// The next send in Home starts a new topic.
   bool newTopic = false;
 
+  /// Each opened topic channel's posts, oldest first.
+  final posts = <String, List<Post>>{};
+
+  /// Read state, kept on this device: channel → the newest post seen.
+  final Map<String, int> lastSeen;
+
+  /// Called when [lastSeen] changes, to save it.
+  final void Function()? onReadChanged;
+
+  /// Run → the channel of its session, from run events.
+  final _runChannel = <String, String>{};
+
+  /// Top-level runs in progress → their channel, for the sidebar.
+  final _activeIn = <String, String>{};
+
   /// The conversation open in the right pane: a History entry, a side
   /// chat, a post's thread.
   String? thread;
+
+  /// A post about to get a reply in its side thread (the right pane).
+  Post? replying;
 
   /// A side chat about to start from a message: what it quotes, and the
   /// message it branched from.
@@ -120,10 +143,64 @@ class TernStore extends ChangeNotifier {
 
   bool get homeOpen => channel == homeId;
 
+  /// A topic channel's timeline is open.
+  bool get topicOpen => channel != null && !homeOpen;
+
+  Channel? get openChannel =>
+      channels.where((c) => c.id == channel).firstOrNull;
+
+  List<Channel> get topics => [
+    for (final c in channels)
+      if (!c.isHome && !c.archived) c,
+  ];
+
+  /// New posts since this device last looked.
+  bool unread(Channel c) =>
+      c.id != channel && (c.lastPostId ?? 0) > (lastSeen[c.id] ?? 0);
+
+  /// Someone is working in the channel.
+  bool busy(Channel c) => _activeIn.containsValue(c.id);
+
+  /// Approvals and secret requests (all shown in Home) from runs in
+  /// `channelId`.
+  int waitingFrom(String channelId) {
+    final home = transcripts[homeKey];
+    if (home == null) return 0;
+    return home.items.where((i) {
+      final run = switch (i) {
+        ApprovalItem(:final approval, :final outcome) when outcome == null =>
+          approval.runId,
+        SecretRequestItem(:final request) when i.open => request.runId,
+        _ => null,
+      };
+      return run != null && _runChannel[run] == channelId;
+    }).length;
+  }
+
+  /// Approvals and secret requests from runs in the right pane's thread.
+  int waitingInThread() {
+    final t = threadTranscript;
+    final home = transcripts[homeKey];
+    if (t == null || home == null) return 0;
+    final runs = {?t.activeRun, for (final c in t.children) ?c.runId};
+    return home.items
+        .where(
+          (i) => switch (i) {
+            ApprovalItem(:final approval, :final outcome) =>
+              outcome == null && runs.contains(approval.runId),
+            SecretRequestItem(:final request) =>
+              i.open && runs.contains(request.runId),
+            _ => false,
+          },
+        )
+        .length;
+  }
+
   Channel? get home => channels.where((c) => c.isHome).firstOrNull;
 
   /// The transcript showing `session`: Home's for its segments.
-  Transcript? transcriptOf(String session) => _homeSessions.contains(session)
+  Transcript? transcriptOf(String session) =>
+      _homeSessions.contains(session) || session == homeKey
       ? transcripts[homeKey]
       : transcripts[session];
 
@@ -240,19 +317,27 @@ class TernStore extends ChangeNotifier {
       await _load(id);
     }
     if (thread case final id?) await _load(id);
+    if (topicOpen) await _loadChannel(channel!);
+    _activeIn.clear();
     for (final r in active) {
-      if (r.parentRunId == null) transcriptOf(r.sessionId)?.activeRun = r.runId;
+      if (r.parentRunId != null) continue;
+      transcriptOf(r.sessionId)?.activeRun = r.runId;
+      final c = sessions.where((s) => s.id == r.sessionId).firstOrNull;
+      if (c?.channelId case final ch?) {
+        _activeIn[r.runId] = ch;
+        _runChannel[r.runId] = ch;
+      }
     }
     for (final a in await client.pendingApprovals()) {
-      _transcriptFor(a.sessionId)?.apply(ApprovalRequested(a));
+      _transcriptFor(hasChannels ? homeKey : a.sessionId)
+          ?.apply(ApprovalRequested(a));
+      if (hasChannels) _approvalSession[a.runId] = homeKey;
     }
     if (hasMcp) await loadMcp(notify: false);
     if (hasSecretRequests) {
       try {
         for (final r in await client.secretRequests()) {
-          _routeSecret(r);
-          _transcriptFor(r.rootSessionId ?? r.sessionId)
-              ?.apply(SecretRequested(r));
+          _transcriptFor(_routeSecret(r))?.apply(SecretRequested(r));
         }
       } on TernException {
         // Not available to this device: the event stream still delivers.
@@ -397,10 +482,23 @@ class TernStore extends ChangeNotifier {
     }
   }
 
-  /// A post came in: Home shows it where it happened.
+  /// A post came in: Home shows it where it happened; an open topic
+  /// channel adds it to its timeline.
   void _onPost(Post post) {
     unawaited(_refreshChannels());
-    if (post.channelId != homeId) return;
+    if (post.channelId != homeId) {
+      final list = posts[post.channelId];
+      if (list != null && !list.any((p) => p.id == post.id)) {
+        list.add(post);
+        // A reply in a side thread changes its root's count.
+        if (post.replyTo != null && post.kind == 'message') {
+          unawaited(_loadChannel(post.channelId));
+        }
+      }
+      if (post.channelId == channel) _markRead(post.channelId, post.id);
+      notifyListeners();
+      return;
+    }
     final t = transcripts[homeKey];
     if (t == null) return;
     // Mid-run, appending would split the reply streaming in.
@@ -412,10 +510,138 @@ class TernStore extends ChangeNotifier {
     }
   }
 
+  /// Open a topic channel's timeline in the centre column.
+  Future<void> openChannelView(String id) async {
+    page = null;
+    channel = id;
+    error = null;
+    selected = openChannel?.mainSessionId;
+    draft = false;
+    notifyListeners();
+    try {
+      await _loadChannel(id);
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  Future<void> _loadChannel(String id) async {
+    final page = await client.posts(id, limit: 100);
+    posts[id] = page.reversed.toList();
+    if (page.isNotEmpty) _markRead(id, page.first.id);
+    final main = channels.where((c) => c.id == id).firstOrNull?.mainSessionId;
+    if (main != null && channel == id) {
+      selected = main;
+      transcripts.putIfAbsent(main, Transcript.new);
+      usage[main] = await client.usage(main);
+    }
+  }
+
+  void _markRead(String id, int post) {
+    if ((lastSeen[id] ?? 0) >= post) return;
+    lastSeen[id] = post;
+    onReadChanged?.call();
+  }
+
+  /// Create a topic channel and open it. Returns the daemon's reason on
+  /// failure.
+  Future<String?> createChannel({
+    required String slug,
+    String? title,
+    String? instructions,
+  }) async {
+    try {
+      final c = await client.createChannel(
+        slug: slug,
+        title: title,
+        instructions: instructions,
+      );
+      channels = await client.channels();
+      await openChannelView(c.id);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  /// Rename a channel or change its instructions (empty clears them).
+  Future<String?> updateChannel(
+    String id, {
+    String? title,
+    String? instructions,
+  }) async {
+    try {
+      await client.updateChannel(
+        id,
+        title: title,
+        instructions: instructions?.trim().isEmpty ?? false
+            ? null
+            : instructions,
+        clearInstructions: instructions?.trim().isEmpty ?? false,
+      );
+      channels = await client.channels();
+      notifyListeners();
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  Future<void> archiveChannel(String id) async {
+    try {
+      await client.updateChannel(id, archived: true);
+      channels = await client.channels();
+      if (channel == id) {
+        await openHome();
+        return;
+      }
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  /// Answer `post` in its side thread, from the right pane.
+  void replyTo(Post post) {
+    thread = null;
+    branch = null;
+    replying = post;
+    notifyListeners();
+  }
+
+  /// Send into the open topic channel: a post and a run in its main
+  /// thread, or queued for the run already working there.
+  Future<void> _sendChannel(String text) async {
+    error = null;
+    final id = channel!;
+    try {
+      final sent = await client.sendToChannel(id, text);
+      _runSession[sent.runId] = sent.sessionId;
+      _runChannel[sent.runId] = id;
+      if (sent.post case final p?) {
+        final list = posts.putIfAbsent(id, () => []);
+        if (!list.any((x) => x.id == p.id)) list.add(p);
+        _markRead(id, p.id);
+      }
+      if (selected != sent.sessionId) {
+        // The main thread was just created.
+        channels = await client.channels();
+        selected = sent.sessionId;
+      }
+      transcripts.putIfAbsent(sent.sessionId, Transcript.new).activeRun ??=
+          sent.runId;
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
   /// Open a conversation in the right pane (History, a side chat).
   Future<void> openThread(String session) async {
     thread = session;
     branch = null;
+    replying = null;
     notifyListeners();
     try {
       await _load(session);
@@ -428,6 +654,7 @@ class TernStore extends ChangeNotifier {
   void closeThread() {
     thread = null;
     branch = null;
+    replying = null;
     notifyListeners();
   }
 
@@ -435,6 +662,7 @@ class TernStore extends ChangeNotifier {
   /// first message).
   void branchFrom(String text, {int? messageId}) {
     thread = null;
+    replying = null;
     branch = (
       quote: text,
       from: messageId == null ? null : 'message:$messageId',
@@ -447,7 +675,19 @@ class TernStore extends ChangeNotifier {
   Future<void> sendThread(String text) async {
     error = null;
     try {
-      if (branch case final b?) {
+      if (replying case final post?) {
+        final sent = await client.sendToChannel(
+          post.channelId,
+          text,
+          replyTo: post.id,
+        );
+        _runSession[sent.runId] = sent.sessionId;
+        _runChannel[sent.runId] = post.channelId;
+        replying = null;
+        thread = sent.sessionId;
+        await _load(sent.sessionId);
+        transcripts[sent.sessionId]?.activeRun ??= sent.runId;
+      } else if (branch case final b?) {
         final quoted = '${_quote(b.quote)}\n\n$text';
         final started = await client.send(
           quoted,
@@ -550,10 +790,20 @@ class TernStore extends ChangeNotifier {
   void onEventForTest(TernEvent e) => _onEvent(e);
 
   void _onEvent(TernEvent e) {
+    if (e case RunEvent(:final runId, :final channelId?)) {
+      _runChannel[runId] = channelId;
+      if (e is RunStarted && e.parentRunId == null) {
+        _activeIn[runId] = channelId;
+      }
+    }
+    if (e is RunFinished) _activeIn.remove(e.runId);
     String? session;
     switch (e) {
       case ApprovalRequested(:final approval):
-        session = approval.rootSessionId ?? approval.sessionId;
+        // With channels, every approval is answered in Home.
+        session = hasChannels
+            ? homeKey
+            : approval.rootSessionId ?? approval.sessionId;
         _runSession[approval.runId] ??= approval.sessionId;
         _approvalSession[approval.runId] = session;
       case SecretRequested(:final request):
@@ -610,6 +860,13 @@ class TernStore extends ChangeNotifier {
       return;
     }
     var changed = _transcriptFor(session)!.apply(e);
+    // Home holds every approval and secret request; a run ending closes
+    // its own there too.
+    if (e is RunFinished && hasChannels && session != homeKey) {
+      transcripts[homeKey]
+        ?..expireApprovals(e.runId)
+        ..expireSecretRequests(e.runId);
+    }
     if (e is ToolFinished) changed = _closeSecrets(e) || changed;
     if (e is RunEvent && _parentOf.containsKey(e.runId)) {
       changed = _onChildEvent(e, session) || changed;
@@ -677,9 +934,10 @@ class TernStore extends ChangeNotifier {
     );
   }
 
-  /// Where a request's card belongs: the conversation the user started.
+  /// Where a request's card belongs: Home, or without channels the
+  /// conversation the user started.
   String _routeSecret(SecretRequest r) {
-    final session = r.rootSessionId ?? r.sessionId;
+    final session = hasChannels ? homeKey : r.rootSessionId ?? r.sessionId;
     _runSession[r.runId] ??= r.sessionId;
     _secretSession[r.runId] = session;
     return session;
@@ -848,6 +1106,7 @@ class TernStore extends ChangeNotifier {
 
   Future<void> send(String text) async {
     if (homeOpen) return _sendHome(text);
+    if (topicOpen) return _sendChannel(text);
     error = null;
     final session = selected;
     if (session != null) {
@@ -988,6 +1247,7 @@ class TernStore extends ChangeNotifier {
     required String prompt,
     String? deliverTo,
     ScheduleLimits limits = const ScheduleLimits(),
+    String? channel,
   }) async {
     try {
       if (id == null) {
@@ -996,6 +1256,7 @@ class TernStore extends ChangeNotifier {
           prompt: prompt,
           deliverTo: deliverTo,
           limits: limits,
+          channel: channel,
         );
       } else {
         await client.updateSchedule(
@@ -1004,6 +1265,7 @@ class TernStore extends ChangeNotifier {
           prompt: prompt,
           deliverTo: deliverTo ?? 'none',
           limits: limits,
+          channel: channel,
         );
       }
       await refreshSchedules();
