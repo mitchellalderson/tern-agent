@@ -127,6 +127,7 @@ fn plan(s: &MockServer) -> AuthPlan {
         client: Some(ClientKind::DynamicRegistration),
         client_ready: true,
         scopes_supported: vec!["read".into()],
+        api_hosts: vec!["127.0.0.1".into()],
         verified: true,
         ..AuthPlan::default()
     }
@@ -160,12 +161,21 @@ fn env(s: &MockServer) -> Env {
                 name: "acme".into(),
                 key_names: vec![],
                 oauth: None,
+                hosts: vec!["127.0.0.1".into()],
             },
             Target {
                 kind: Kind::Connector,
                 name: "keyed".into(),
                 key_names: vec!["API_KEY".into()],
                 oauth: None,
+                hosts: vec!["api.keyed.example".into()],
+            },
+            Target {
+                kind: Kind::Connector,
+                name: "notion".into(),
+                key_names: vec![],
+                oauth: None,
+                hosts: vec!["api.notion.com".into()],
             },
         ]
     });
@@ -191,6 +201,7 @@ async fn the_user_chooses_then_signs_in_twice_and_again() {
     let propose = AuthPropose {
         host: e.host.clone(),
         asker: u.clone(),
+        targets: e.targets.clone(),
     };
     let v = parse(&propose.call(&ctx(), json!({"plan_id": id})).await);
     assert_eq!(v["choice"], "oauth");
@@ -339,6 +350,7 @@ async fn nobody_there_skips_and_researched_lookalikes_are_refused() {
     let propose = AuthPropose {
         host: e.host.clone(),
         asker: nobody.clone(),
+        targets: e.targets.clone(),
     };
     let v = parse(&propose.call(&ctx(), json!({"plan_id": id})).await);
     assert_eq!(v["choice"], "none");
@@ -412,6 +424,7 @@ async fn researched_plans_are_egress_and_capped() {
     let propose = AuthPropose {
         host: e.host.clone(),
         asker: u.clone(),
+        targets: e.targets.clone(),
     };
     let exfil = json!({"plan": {
         "service": "Acme",
@@ -554,4 +567,88 @@ async fn a_configured_app_is_bound_to_its_issuer() {
     .unwrap();
     assert_eq!(plan.provider, "slack_pages_dev");
     assert!(!plan.client_ready);
+}
+
+/// Security fix 3: a researched plan's endpoints are checked against API
+/// hosts, so those must be the ones the connector or MCP server declares,
+/// not hosts the agent picked to match its own endpoints.
+#[tokio::test]
+async fn plans_are_checked_against_the_targets_declared_hosts() {
+    let s = idp().await;
+    let e = env(&s);
+    let u = user(Some("oauth"));
+    let propose = AuthPropose {
+        host: e.host.clone(),
+        asker: u.clone(),
+        targets: e.targets.clone(),
+    };
+    // Endpoints and api_hosts all on the attacker's domain: consistent
+    // with each other, so domain checks alone would pass it.
+    let attacker = json!({
+        "service": "Notion",
+        "authorize_url": "https://login.attacker.invalid/authorize",
+        "token_url": "https://login.attacker.invalid/token",
+        "api_hosts": ["api.attacker.invalid"]
+    });
+    // For a connector that declares api.notion.com: refused before any fetch.
+    let out = propose
+        .call(&ctx(), json!({"plan": attacker, "target": "notion"}))
+        .await;
+    assert!(
+        out.is_error && out.content.contains("doesn't declare"),
+        "{}",
+        out.content
+    );
+    // With no target to check against, an unconfirmed plan is refused.
+    let out = propose.call(&ctx(), json!({"plan": attacker})).await;
+    assert!(
+        out.is_error && out.content.contains("pass `target`"),
+        "{}",
+        out.content
+    );
+    assert!(u.cards.lock().unwrap().is_empty(), "no card was shown");
+
+    // connection_add checks a kept plan the same way: an attacker plan
+    // that slipped in (or an MCP server's plan) can't sign in a connector
+    // that declares other hosts.
+    let add = ConnectionAdd::new(
+        e.host.clone(),
+        e.conns.clone(),
+        u.clone(),
+        e.targets.clone(),
+    );
+    let mut foreign = plan(&s);
+    foreign.api_hosts = vec!["api.attacker.invalid".into()];
+    let id = e.host.plans.keep(foreign);
+    let out = add
+        .call(
+            &ctx(),
+            json!({"target": "acme", "plan_id": id, "method": "oauth"}),
+        )
+        .await;
+    assert!(
+        out.is_error && out.content.contains("doesn't declare"),
+        "{}",
+        out.content
+    );
+    // A built-in profile isn't an MCP server's sign-in.
+    let google = tern_auth::discover::from_profile(
+        tern_auth::profiles::by_id("google").unwrap(),
+        &e.host.clients,
+        vec![],
+    );
+    let id = e.host.plans.keep(google);
+    let out = add
+        .call(
+            &ctx(),
+            json!({"target": "acme", "plan_id": id, "method": "oauth"}),
+        )
+        .await;
+    assert!(
+        out.is_error && out.content.contains("MCP server"),
+        "{}",
+        out.content
+    );
+    assert!(e.conns.list(Kind::Mcp, "acme").is_empty());
+    assert!(u.cards.lock().unwrap().is_empty());
 }

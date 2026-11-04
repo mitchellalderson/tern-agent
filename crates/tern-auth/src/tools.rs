@@ -87,6 +87,63 @@ pub struct Target {
     pub key_names: Vec<String>,
     /// `capabilities.oauth`: provider and scopes.
     pub oauth: Option<(String, Vec<String>)>,
+    /// The hosts it declares, which its tokens are sent to: a connector's
+    /// `capabilities.http` (`*.` covers subdomains), an MCP server's URL
+    /// host. What a plan's `api_hosts` are checked against (§6.7.2, W10).
+    pub hosts: Vec<String>,
+}
+
+/// Whether `host` (itself possibly `*.x`) is one `declared` names.
+fn covered(declared: &[String], host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    declared.iter().any(|d| {
+        let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
+        d == host
+            || d.strip_prefix("*.").is_some_and(|base| {
+                let h = host.strip_prefix("*.").unwrap_or(&host);
+                h.len() > base.len() && h.ends_with(&format!(".{base}"))
+            })
+    })
+}
+
+/// A plan may be used for `target` only when the API hosts it was checked
+/// against are ones the target declares: research validation compares
+/// endpoints with `api_hosts`, so those must not be the agent's own pick.
+/// Built-in profiles sign connectors in (checked by provider); an MCP
+/// server signs in on its own terms.
+pub fn check_plan_hosts(target: &Target, plan: &AuthPlan) -> Result<(), String> {
+    if plan.source == Some(Source::Builtin) {
+        return match target.kind {
+            Kind::Connector => Ok(()),
+            Kind::Mcp => Err(format!(
+                "{} is an MCP server: it signs in on its own terms, not with tern's built-in {} profile; call auth_discover with its URL and mcp: true",
+                target.name, plan.service
+            )),
+        };
+    }
+    if plan.api_hosts.is_empty() {
+        return Err("the plan names no API hosts".into());
+    }
+    let missing: Vec<&str> = plan
+        .api_hosts
+        .iter()
+        .filter(|h| !covered(&target.hosts, h))
+        .map(String::as_str)
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the plan is for {}, which {} {} doesn't declare (it declares {}); its sign-in addresses were checked against those hosts, so they can't be used for it",
+        missing.join(", "),
+        target.kind.as_str(),
+        target.name,
+        if target.hosts.is_empty() {
+            "none".to_owned()
+        } else {
+            target.hosts.join(", ")
+        }
+    ))
 }
 
 /// Every target, computed when asked (connectors written moments ago count).
@@ -314,6 +371,7 @@ pub const PROPOSE: &str = "auth_propose";
 pub struct AuthPropose {
     pub host: Arc<AuthHost>,
     pub asker: Arc<dyn ApprovalHandler>,
+    pub targets: Targets,
 }
 
 /// Where a plan came from, in plain words, for the card.
@@ -416,11 +474,13 @@ impl Tool for AuthPropose {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: PROPOSE.into(),
-            description: "Ask the user how to connect a service: shows a card with signing in (OAuth) and an API key as options, the host's recommendation, and where the sign-in addresses came from. The user chooses; you never pick for them. Pass plan_id from auth_discover; or, when discovery said \"unknown\" and you found OAuth in the service's docs, pass `plan` with authorize_url, token_url, api_hosts (the API hosts the connector will call) and evidence (the doc URLs), which tern checks against the API's domain and the issuer's metadata. Returns {\"choice\": \"oauth\" | \"key\" | \"cancel\", \"plan_id\"}.".into(),
+            description: "Ask the user how to connect a service: shows a card with signing in (OAuth) and an API key as options, the host's recommendation, and where the sign-in addresses came from. The user chooses; you never pick for them. Pass plan_id from auth_discover; or, when discovery said \"unknown\" and you found OAuth in the service's docs, pass `plan` with authorize_url, token_url, api_hosts (the API hosts the connector will call) and evidence (the doc URLs), which tern checks against the API's domain and the issuer's metadata. With a researched plan, pass `target` (the connector, a draft is fine, or MCP server it is for): its declared hosts must cover api_hosts, and a plan the issuer's metadata can't confirm is refused without one. Returns {\"choice\": \"oauth\" | \"key\" | \"cancel\", \"plan_id\"}.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "plan_id": {"type": "string", "description": "From auth_discover"},
+                    "target": {"type": "string", "description": "With a researched plan: the connector or MCP server it is for"},
+                    "kind": {"type": "string", "enum": ["connector", "mcp"], "description": "Only when a connector and an MCP server share the name"},
                     "plan": {
                         "type": "object",
                         "description": "A researched plan, when auth_discover found nothing",
@@ -502,10 +562,26 @@ impl Tool for AuthPropose {
             plan.notes.clear();
             plan.provider.clear();
             plan.service = short(&plan.service, 40);
-            if let Err(e) = discover::validate_research(&self.host.guard, &mut plan).await {
-                return ToolResult::error(format!(
+            let refuse = |e: &str| {
+                ToolResult::error(format!(
                     "auth_propose: this plan can't be used: {e}. Offer the key flow instead (secret_request), or ask the user for the service's official docs."
-                ));
+                ))
+            };
+            let target = str_arg(&args, "target")
+                .and_then(|t| find_target(&self.targets, t, str_arg(&args, "kind")).ok());
+            if let Some(t) = &target {
+                plan.source = Some(Source::Research);
+                if let Err(e) = check_plan_hosts(t, &plan) {
+                    return refuse(&e);
+                }
+            }
+            if let Err(e) = discover::validate_research(&self.host.guard, &mut plan).await {
+                return refuse(&e);
+            }
+            if !plan.verified && target.is_none() {
+                return refuse(
+                    "the service publishes no metadata to confirm these addresses, so they can only be checked against the hosts a connector declares: write the connector (a draft) with capabilities.http first, then pass `target`",
+                );
             }
             plan.client = Some(ClientKind::UserSupplied);
             plan.client_ready = plan.client_bound(&self.host.clients);
@@ -813,6 +889,7 @@ pub async fn connect_oauth(
     } = req;
     let (mut cfg, kind) = match kept {
         Some(k) => {
+            check_plan_hosts(target, &k.plan).map_err(ConnectError::Failed)?;
             let scopes = match &target.oauth {
                 Some((_, s)) => merge_scopes(&k.plan.scopes_supported_base(), s),
                 None => k.plan.scopes_supported.clone(),

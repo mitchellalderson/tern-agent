@@ -189,11 +189,12 @@ impl Runtime {
         tools.register(Arc::new(tern_auth::tools::AuthDiscover {
             host: auth_host.clone(),
         }));
+        let targets = auth_targets(home, live.clone(), &secrets, &store)?;
         tools.register(Arc::new(tern_auth::tools::AuthPropose {
             host: auth_host.clone(),
             asker: approvals.clone(),
+            targets: targets.clone(),
         }));
-        let targets = auth_targets(home, live.clone(), &secrets, &store)?;
         tools.register(Arc::new(tern_auth::tools::ConnectionAdd::new(
             auth_host.clone(),
             connections.clone(),
@@ -898,6 +899,7 @@ pub(crate) fn auth_targets(
                         .oauth
                         .as_ref()
                         .map(|o| (o.provider.clone(), o.scopes.clone())),
+                    hosts: c.http.clone(),
                 });
             }
         }
@@ -908,6 +910,13 @@ pub(crate) fn auth_targets(
                     name: name.clone(),
                     key_names: s.secret_names().map(str::to_owned).collect(),
                     oauth: None,
+                    hosts: s
+                        .url
+                        .as_deref()
+                        .and_then(|u| reqwest::Url::parse(u).ok())
+                        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+                        .into_iter()
+                        .collect(),
                 });
             }
         }
