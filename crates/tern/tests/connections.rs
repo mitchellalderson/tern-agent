@@ -259,15 +259,23 @@ async fn the_agents_sign_in_card_reaches_clients_and_cancelling_skips() {
         .await
         .unwrap();
     assert!(ok.status().is_success());
-    let closed = wait_for(&http, &mut events, &mut buf, &mut rest, |e| {
-        e.get("auth_prompt_closed").is_some()
-    })
-    .await;
-    assert_eq!(closed["auth_prompt_closed"], id.as_str());
-    let done = wait_for(&http, &mut events, &mut buf, &mut rest, |e| {
-        e["type"] == "tool_finished" && e["id"] == call_id.as_str()
-    })
-    .await;
+    // The card closes and the tool finishes; the two come from different
+    // streams, so in either order.
+    let (mut closed, mut done) = (None, None);
+    while closed.is_none() || done.is_none() {
+        let ev = wait_for(&http, &mut events, &mut buf, &mut rest, |e| {
+            e.get("auth_prompt_closed").is_some()
+                || (e["type"] == "tool_finished" && e["id"] == call_id.as_str())
+        })
+        .await;
+        if ev.get("auth_prompt_closed").is_some() {
+            closed = Some(ev);
+        } else {
+            done = Some(ev);
+        }
+    }
+    assert_eq!(closed.unwrap()["auth_prompt_closed"], id.as_str());
+    let done = done.unwrap();
     assert!(
         done["output"]
             .as_str()

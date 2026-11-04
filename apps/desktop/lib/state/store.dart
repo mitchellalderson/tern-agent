@@ -10,7 +10,7 @@ import 'transcript.dart';
 enum Link { connecting, online, offline }
 
 /// A Library page shown in the centre column instead of a conversation.
-enum LibraryPage { mcp }
+enum LibraryPage { mcp, connections }
 
 /// Everything the app knows, fed by the daemon. Widgets listen to it.
 ///
@@ -63,6 +63,13 @@ class TernStore extends ChangeNotifier {
 
   /// MCP servers, when the core has them ([hasMcp]).
   List<McpStatus> mcpServers = [];
+
+  /// Sign-in and connect cards waiting for the user, oldest first
+  /// ([hasConnections]). Shown over the whole window, not in a transcript.
+  List<AuthPrompt> authPrompts = [];
+
+  /// The accounts per connector or MCP server, once loaded.
+  ConnectionList? connectionList;
 
   /// The Library page in the centre column, and the MCP server open in it.
   LibraryPage? page;
@@ -438,6 +445,12 @@ class TernStore extends ChangeNotifier {
   /// Whether the core manages MCP servers over the API (older ones can't).
   bool get hasMcp => health?.features.contains('mcp') ?? false;
 
+  /// Whether the core manages accounts per connector or MCP server.
+  bool get hasConnections => health?.features.contains('connections') ?? false;
+
+  /// The Connections page is owner-only.
+  bool get canManageConnections => hasConnections && (health?.isOwner ?? false);
+
   /// Whether the core defers unanswered writes to an outbox.
   bool get hasOutbox => health?.features.contains('outbox') ?? false;
 
@@ -564,6 +577,14 @@ class TernStore extends ChangeNotifier {
     }
     if (hasMcp) await loadMcp(notify: false);
     if (hasOutbox) await refreshOutbox(notify: false);
+    if (hasConnections) {
+      try {
+        authPrompts = await client.authPrompts();
+      } on TernException {
+        // Not available to this device: the event stream still delivers.
+      }
+      if (canManageConnections) await loadConnections(notify: false);
+    }
     if (hasSecretRequests) {
       try {
         for (final r in await client.secretRequests()) {
@@ -1185,8 +1206,18 @@ class TernStore extends ChangeNotifier {
       _live.remove(e.runId);
       _phase.remove(e.runId);
     }
+    if (e is ToolFinished) _closeAuthCalls(e.id);
     String? session;
     switch (e) {
+      case AuthPromptOpened(:final prompt):
+        _openAuthPrompt(prompt);
+        return;
+      case AuthPromptClosed(:final id):
+        if (_dropAuthPrompts((p) => p.id == id)) notifyListeners();
+        return;
+      case ConnectionsChanged():
+        if (canManageConnections) unawaited(loadConnections());
+        return;
       case ApprovalRequested(:final approval):
         // With channels, every approval is answered in Home.
         session = hasChannels
@@ -1373,6 +1404,40 @@ class TernStore extends ChangeNotifier {
         body: names,
       ),
     );
+  }
+
+  /// A card arrived (a new one for the same call replaces the old: the
+  /// browser page, then a device code).
+  void _openAuthPrompt(AuthPrompt p) {
+    _dropAuthPrompts(
+      (o) => o.id == p.id || (p.callId != null && o.callId == p.callId),
+    );
+    authPrompts = [...authPrompts, p];
+    notifyListeners();
+    if (appActive) return;
+    unawaited(
+      notifier.show(
+        id: p.id,
+        title: p.card.title,
+        body: p.card.choose
+            ? 'Choose how to connect'
+            : 'Finish signing in to continue',
+      ),
+    );
+  }
+
+  bool _dropAuthPrompts(bool Function(AuthPrompt) test) {
+    final n = authPrompts.length;
+    authPrompts = [
+      for (final p in authPrompts)
+        if (!test(p)) p,
+    ];
+    return authPrompts.length != n;
+  }
+
+  /// The tool call that asked ended: its card closes, whoever answered.
+  void _closeAuthCalls(String callId) {
+    if (_dropAuthPrompts((p) => p.callId == callId)) notifyListeners();
   }
 
   void _notifyFinished(String session, RunFinished e) {
@@ -1697,6 +1762,56 @@ class TernStore extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  /// Answer card [p] with an option id, `device` or `cancel`; it closes
+  /// here at once (the daemon's close event would too). Returns the
+  /// daemon's reason on failure.
+  Future<String?> answerAuthPrompt(AuthPrompt p, String answer) async {
+    try {
+      await client.answerAuthPrompt(p.id, answer);
+    } on TernException catch (e) {
+      // Gone already: answered elsewhere.
+      if (e.status != 404) return e.message;
+    }
+    // A device answer swaps the card for a code card on the same call; a
+    // choice, or a cancel, ends this one.
+    if (answer != 'device' && _dropAuthPrompts((o) => o.id == p.id)) {
+      notifyListeners();
+    }
+    return null;
+  }
+
+  Future<void> loadConnections({bool notify = true}) async {
+    try {
+      connectionList = await client.connections();
+    } on TernException catch (e) {
+      if (notify) error = e.message;
+    }
+    if (notify && !_disposed) notifyListeners();
+  }
+
+  /// Run an account change and re-read the listing. Returns the daemon's
+  /// reason on failure. Adding with OAuth takes minutes: the sign-in card
+  /// is what the user answers meanwhile.
+  Future<String?> connectionsWrite(
+    Future<Object?> Function(TernClient c) write,
+  ) async {
+    try {
+      await write(client);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    } finally {
+      await loadConnections();
+    }
+  }
+
+  /// Show the Connections page.
+  void openConnections() {
+    page = LibraryPage.connections;
+    notifyListeners();
+    unawaited(loadConnections());
   }
 
   Future<void> refreshSchedules() async {

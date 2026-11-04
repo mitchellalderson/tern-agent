@@ -53,6 +53,7 @@ impl Kind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum ConnAuth {
+    #[serde(rename = "oauth")]
     OAuth(Box<OAuthConfig>),
     /// Keys under the connection's names (`conn/<target>/<slug>/<NAME>`,
     /// plain names for `default`).
@@ -557,6 +558,16 @@ mod tests {
         let store = Store::open_in_memory().unwrap_or_else(|_| unreachable!());
         let tokens = Arc::new(Tokens::new(secrets, crate::Guard::offline()));
         (dir, Connections::new(store, tokens, 3))
+    }
+
+    #[test]
+    fn auth_is_stored_as_tagged_json() {
+        let a = ConnAuth::OAuth(Box::default());
+        let j = serde_json::to_value(&a).unwrap_or_default();
+        assert_eq!(j["method"], "oauth");
+        assert_eq!(serde_json::from_value::<ConnAuth>(j).ok(), Some(a));
+        let k = serde_json::to_value(ConnAuth::Key { names: vec!["K".into()] }).unwrap_or_default();
+        assert_eq!(k, json!({"method": "key", "names": ["K"]}));
     }
 
     #[test]
