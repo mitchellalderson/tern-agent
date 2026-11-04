@@ -25,7 +25,7 @@ pub struct Manifest {
     pub files: Vec<FileEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Header {
     /// `[a-z0-9][a-z0-9-]*`, at most 48: also the directory it is kept in.

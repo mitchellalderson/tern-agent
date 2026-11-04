@@ -532,6 +532,42 @@ pub enum BundleCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Package your own connectors, skills and routines as a bundle to
+    /// share, signed with your key when you have one. Secrets never go in.
+    Export {
+        /// The bundle's name ([a-z0-9-]).
+        name: String,
+        #[arg(long, default_value = "0.1.0")]
+        version: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long, default_value = "")]
+        author: String,
+        /// A connector to include (repeat for more).
+        #[arg(long = "connector")]
+        connectors: Vec<String>,
+        /// A skill (its directory under skills/) to include.
+        #[arg(long = "skill")]
+        skills: Vec<String>,
+        /// A routine id (sch_…) to include as a template.
+        #[arg(long = "routine")]
+        routines: Vec<String>,
+        /// Everything of yours: active connectors, skills, and the routines
+        /// of --agent, except what came from installed bundles.
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        agent: Option<String>,
+        /// Where to write it: a .tar.zst (default <name>-<version>.tar.zst)
+        /// or, with --dir, a directory.
+        #[arg(long, short)]
+        output: Option<std::path::PathBuf>,
+        #[arg(long)]
+        dir: bool,
+        /// Don't sign it, even with a key.
+        #[arg(long)]
+        unsigned: bool,
+    },
     /// Make your signing key (bundles/signing.key) for `tern bundle export`.
     Keygen,
     /// Trust a signing key (minisign format, `RW…`, or a .pub file), or

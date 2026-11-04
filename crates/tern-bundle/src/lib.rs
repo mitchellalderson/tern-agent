@@ -12,6 +12,7 @@
 //! - [`state`] is the lockfile and the trust store; [`installed`] is the
 //!   read-only view for other parts of tern (`tern security audit`).
 
+pub mod export;
 pub mod install;
 pub mod lookalike;
 pub mod manifest;

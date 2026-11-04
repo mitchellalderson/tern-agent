@@ -64,6 +64,36 @@ pub fn run(home: &TernHome, command: Option<BundleCommand>) -> anyhow::Result<Ex
             )
         }
         BundleCommand::Remove { name, yes } => remove(home, &name, yes),
+        BundleCommand::Export {
+            name,
+            version,
+            description,
+            author,
+            connectors,
+            skills,
+            routines,
+            all,
+            agent,
+            output,
+            dir,
+            unsigned,
+        } => {
+            let req = tern_bundle::export::Request {
+                header: tern_bundle::manifest::Header {
+                    name: name.clone(),
+                    version: version.clone(),
+                    description,
+                    author,
+                    key: None,
+                },
+                connectors,
+                skills,
+                routines,
+                all,
+                agent,
+            };
+            export(home, &paths, &req, output, dir, unsigned)
+        }
         BundleCommand::Keygen => keygen(&paths),
         BundleCommand::Trust { key: None, .. } => trusted(&paths),
         BundleCommand::Trust {
@@ -329,5 +359,70 @@ fn remove(home: &TernHome, name: &str, yes: bool) -> anyhow::Result<ExitCode> {
         println!("  {l}");
     }
     println!("Removed {name}.");
+    Ok(ExitCode::SUCCESS)
+}
+
+fn export(
+    home: &TernHome,
+    paths: &Paths,
+    req: &tern_bundle::export::Request,
+    output: Option<std::path::PathBuf>,
+    dir: bool,
+    unsigned: bool,
+) -> anyhow::Result<ExitCode> {
+    let key = if unsigned || !paths.signing_key().exists() {
+        None
+    } else {
+        Some(SecretKey::load(&paths.signing_key())?)
+    };
+    let store = home
+        .db_path()
+        .exists()
+        .then(|| Store::open(&home.db_path()))
+        .transpose()?;
+    let out = tern_bundle::export::export(home, store.as_ref(), req, key.as_ref())?;
+    let h = &req.header;
+    let target = output.unwrap_or_else(|| {
+        if dir {
+            format!("{}-{}", h.name, h.version).into()
+        } else {
+            format!("{}-{}.tar.zst", h.name, h.version).into()
+        }
+    });
+    let sha = if dir {
+        out.write_dir(&target)?
+    } else {
+        out.write_archive(&target)?
+    };
+    for n in &out.notes {
+        println!("  note: {n}");
+    }
+    let listed: Vec<&str> = out
+        .files
+        .keys()
+        .map(String::as_str)
+        .filter(|p| !p.starts_with("bundle.toml"))
+        .collect();
+    println!(
+        "Wrote {} ({} file{}): {}",
+        target.display(),
+        listed.len(),
+        if listed.len() == 1 { "" } else { "s" },
+        listed.join(", ")
+    );
+    match &out.signed_by {
+        Some(id) => println!("Signed by {id}."),
+        None if unsigned => println!("Unsigned (--unsigned)."),
+        None => println!("Unsigned: make a key with `tern bundle keygen` to sign what you share."),
+    }
+    println!("sha256 {sha}");
+    println!(
+        "Others install it with: tern bundle install <url>#sha256={sha}{}",
+        if dir {
+            " (the hash of its bundle.toml)"
+        } else {
+            ""
+        }
+    );
     Ok(ExitCode::SUCCESS)
 }
