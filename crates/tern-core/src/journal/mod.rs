@@ -36,6 +36,11 @@ pub enum StepKind {
     /// Shows posts other agents and routines made in the run's channel
     /// since it last looked (docs/channels-design.md §3).
     Channel,
+    /// Executes an approved outbox item, exactly once (tooling spec §5.2).
+    OutboxExec,
+    /// A tool call made by a script (the `python` tool), journaled after
+    /// the script's own `tool` step (docs/python-tool-spec.md §3.3).
+    PyCall,
 }
 
 impl StepKind {
@@ -49,6 +54,8 @@ impl StepKind {
             StepKind::MemoryFlush => "memory_flush",
             StepKind::Carry => "carry",
             StepKind::Channel => "channel",
+            StepKind::OutboxExec => "outbox_exec",
+            StepKind::PyCall => "py_call",
         }
     }
 
@@ -62,6 +69,8 @@ impl StepKind {
             "memory_flush" => StepKind::MemoryFlush,
             "carry" => StepKind::Carry,
             "channel" => StepKind::Channel,
+            "outbox_exec" => StepKind::OutboxExec,
+            "py_call" => StepKind::PyCall,
             _ => return None,
         })
     }

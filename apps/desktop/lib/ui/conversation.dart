@@ -7,8 +7,10 @@ import '../state/transcript.dart';
 import '../theme.dart';
 import 'history.dart';
 import 'items.dart';
+import 'move_dialog.dart';
 import 'model_picker.dart';
 import 'agent_sheet.dart';
+import 'outbox.dart';
 import 'providers.dart';
 import 'widgets.dart';
 
@@ -118,6 +120,7 @@ class _ConversationViewState extends State<ConversationView> {
                   },
                 ),
         ),
+        if (store.streamOpen && store.hasOutbox) OutboxStrip(store: store),
         if (store.error case final e?)
           _ErrorBanner(
             message: e,
@@ -194,6 +197,14 @@ class _Header extends StatelessWidget {
                 icon: Icons.tune,
                 tooltip: 'Edit ${a.name}',
                 onPressed: () => showAgentSheet(context, store, agent: a),
+              ),
+            if (store.streamOpen && store.selected != null)
+              QuietIconButton(
+                icon: Icons.drive_file_move_outline,
+                tooltip: 'Move this topic to a channel',
+                onPressed: () => showMoveDialog(context, store, [
+                  store.selected!,
+                ], what: 'this topic'),
               ),
             if (store.streamOpen)
               TextButton.icon(

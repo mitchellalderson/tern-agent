@@ -1,0 +1,673 @@
+{
+ "path": "/Users/you/.tern/config.toml",
+ "sections": [
+  {
+   "id": "general",
+   "title": "General",
+   "settings": [
+    {
+     "key": "workspace",
+     "kind": "text",
+     "optional": false,
+     "value": "~/tern-workspace",
+     "default": "~/tern-workspace",
+     "set": false,
+     "description": "where the agent works; shell commands start here",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "max_iterations",
+     "kind": "int",
+     "min": 1.0,
+     "optional": false,
+     "value": 40,
+     "default": 40,
+     "set": false,
+     "description": "model calls per run before it stops",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "secret_request_timeout_secs",
+     "kind": "int",
+     "min": 1.0,
+     "optional": false,
+     "value": 900,
+     "default": 900,
+     "set": false,
+     "description": "Secrets (API keys, tokens) are read from environment variables first, then from secrets.toml next to this file (which must be mode 0600). The agent can ask you for one with a private prompt; it waits this long.",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    }
+   ]
+  },
+  {
+   "id": "models",
+   "title": "Models",
+   "settings": [
+    {
+     "key": "default_model",
+     "kind": "model",
+     "optional": true,
+     "value": null,
+     "default": null,
+     "set": false,
+     "description": "Model used when none is given, as \"provider:model\". A list is a fallback chain: when a call to the first fails with an overload, a server error, a rate limit, a network error or an auth/billing error (after its retries), the same call goes to the next. Bad requests never fall back. Any run on the first model gets the chain, whatever picked it.",
+     "applies": "live",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "context_window",
+     "kind": "int",
+     "min": 1000.0,
+     "optional": false,
+     "value": 128000,
+     "default": 128000,
+     "set": false,
+     "description": "Model context window in tokens; old messages are summarized past 75%. Override per provider with `context_window` in its [providers.*] table.",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    }
+   ]
+  },
+  {
+   "id": "sandbox",
+   "title": "Shell & sandbox",
+   "settings": [
+    {
+     "key": "sandbox.backend",
+     "kind": "choice",
+     "choices": [
+      "host",
+      "docker"
+     ],
+     "optional": false,
+     "value": "host",
+     "default": "host",
+     "set": false,
+     "description": "Where shell commands run: \"host\" (this computer, in an OS sandbox) or \"docker\" (a container per command).",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "sandbox.shell_timeout_secs",
+     "kind": "int",
+     "min": 1.0,
+     "optional": false,
+     "value": 120,
+     "default": 120,
+     "set": false,
+     "description": "a command running longer is stopped",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "sandbox.network",
+     "kind": "bool",
+     "optional": false,
+     "value": true,
+     "default": true,
+     "set": true,
+     "description": "IP networking for shell commands; false: none",
+     "applies": "restart",
+     "restart_pending": false,
+     "security": "On: shell commands can reach the internet, which also gets around the hosts a connector is allowed to reach.",
+     "risky": true,
+     "editable": true
+    },
+    {
+     "key": "sandbox.confine",
+     "kind": "choice",
+     "choices": [
+      "auto",
+      "required",
+      "off"
+     ],
+     "optional": false,
+     "value": "auto",
+     "default": "auto",
+     "set": true,
+     "description": "Host backend: shell commands run in an OS sandbox (Seatbelt on macOS, Landlock on Linux): write only to the workspace and temp dirs, no reads of your home directory beyond these paths. See docs/sandbox-design.md.",
+     "applies": "restart",
+     "restart_pending": false,
+     "security": "Off (or auto where the OS sandbox is missing): shell commands can read and write anywhere you can.",
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "sandbox.read_paths",
+     "kind": "list",
+     "optional": false,
+     "value": [
+      "~/.gitconfig",
+      "~/.config/git"
+     ],
+     "default": [
+      "~/.gitconfig",
+      "~/.config/git"
+     ],
+     "set": false,
+     "description": "also readable, outside the workspace",
+     "applies": "restart",
+     "restart_pending": false,
+     "security": "Every shell command can read these.",
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "sandbox.write_paths",
+     "kind": "list",
+     "optional": false,
+     "value": [
+      "~/.cache"
+     ],
+     "default": [],
+     "set": true,
+     "description": "also writable, e.g. [\"~/.cache\", \"~/.npm\"]",
+     "applies": "restart",
+     "restart_pending": false,
+     "security": "Every shell command can change these.",
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "sandbox.docker_image",
+     "kind": "text",
+     "optional": false,
+     "value": "debian:stable-slim",
+     "default": "debian:stable-slim",
+     "set": false,
+     "description": "docker backend: the image commands run in",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "sandbox.docker_memory",
+     "kind": "text",
+     "optional": false,
+     "value": "2g",
+     "default": "2g",
+     "set": false,
+     "description": "\"\" for no limit",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "sandbox.docker_cpus",
+     "kind": "float",
+     "min": 0.0,
+     "optional": false,
+     "value": 2.0,
+     "default": 2.0,
+     "set": false,
+     "description": "0 for no limit",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "sandbox.docker_pids",
+     "kind": "int",
+     "min": 0.0,
+     "optional": false,
+     "value": 512,
+     "default": 512,
+     "set": false,
+     "description": "0 for no limit",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    }
+   ]
+  },
+  {
+   "id": "subagents",
+   "title": "Sub-agents",
+   "description": "Sub-agents: the agent_spawn / agent_wait / agent_cancel / agent_status tools.",
+   "settings": [
+    {
+     "key": "subagents.enabled",
+     "kind": "bool",
+     "optional": false,
+     "value": true,
+     "default": true,
+     "set": false,
+     "description": "false: no agent_* tools, and the prompt doesn't mention them",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "subagents.default_model",
+     "kind": "model",
+     "optional": true,
+     "value": null,
+     "default": null,
+     "set": false,
+     "description": "unset = the parent's model; may be a chain",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "subagents.models",
+     "kind": "other",
+     "optional": false,
+     "value": {},
+     "default": {},
+     "set": false,
+     "description": "aliases for agent_spawn's `model`; each may be a chain",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": false
+    },
+    {
+     "key": "subagents.max_depth",
+     "kind": "int",
+     "min": 1.0,
+     "max": 3.0,
+     "optional": false,
+     "value": 2,
+     "default": 1,
+     "set": true,
+     "description": "1 = sub-agents can't start their own",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "subagents.max_concurrent",
+     "kind": "int",
+     "min": 1.0,
+     "optional": false,
+     "value": 4,
+     "default": 4,
+     "set": false,
+     "description": "running per parent; more are queued",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "subagents.max_children",
+     "kind": "int",
+     "min": 1.0,
+     "optional": false,
+     "value": 12,
+     "default": 12,
+     "set": false,
+     "description": "per parent run, in total",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "subagents.max_concurrent_global",
+     "kind": "int",
+     "min": 1.0,
+     "optional": false,
+     "value": 8,
+     "default": 8,
+     "set": false,
+     "description": "running across tern; more are queued",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "subagents.max_iterations",
+     "kind": "int",
+     "min": 1.0,
+     "optional": false,
+     "value": 30,
+     "default": 30,
+     "set": false,
+     "description": "per sub-agent, unless agent_spawn asks for more or fewer",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "subagents.max_iterations_ceiling",
+     "kind": "int",
+     "min": 1.0,
+     "optional": false,
+     "value": 100,
+     "default": 100,
+     "set": false,
+     "description": "the most agent_spawn may ask for",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "subagents.budget_tokens",
+     "kind": "int",
+     "min": 0.0,
+     "optional": false,
+     "value": 400000,
+     "default": 400000,
+     "set": false,
+     "description": "per sub-agent: input + output + cache tokens, on every model call",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "subagents.budget_tokens_ceiling",
+     "kind": "int",
+     "min": 0.0,
+     "optional": false,
+     "value": 2000000,
+     "default": 2000000,
+     "set": false,
+     "description": "the most agent_spawn may ask for (0 = no ceiling)",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "subagents.ask_parent_timeout_secs",
+     "kind": "int",
+     "min": 1.0,
+     "optional": false,
+     "value": 900,
+     "default": 900,
+     "set": false,
+     "description": "how long agent_ask_parent waits for an answer",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    }
+   ]
+  },
+  {
+   "id": "schedules",
+   "title": "Schedules",
+   "description": "Scheduled prompts (schedule_create, the app's routines). Each schedule can override these.",
+   "settings": [
+    {
+     "key": "schedules.quiet_hours",
+     "kind": "text",
+     "optional": false,
+     "value": "22:00-07:30",
+     "default": "22:00-07:30",
+     "set": false,
+     "description": "local; results finishing inside wait until the end. \"none\" = off",
+     "applies": "live",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "schedules.runs_per_day",
+     "kind": "int",
+     "min": 1.0,
+     "optional": true,
+     "value": null,
+     "default": null,
+     "set": false,
+     "description": "then the schedule pauses until tomorrow (unset = no cap)",
+     "applies": "live",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "schedules.usd_per_day",
+     "kind": "float",
+     "min": 0.0,
+     "optional": true,
+     "value": null,
+     "default": null,
+     "set": false,
+     "description": "needs the model's price (see `prices` below)",
+     "applies": "live",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "schedules.tokens_per_run",
+     "kind": "int",
+     "min": 1.0,
+     "optional": true,
+     "value": null,
+     "default": null,
+     "set": false,
+     "description": "a run that uses more is stopped and fails",
+     "applies": "live",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    }
+   ]
+  },
+  {
+   "id": "memory",
+   "title": "Memory",
+   "description": "Memory: user.md and memory.md are in every system prompt, each within a token cap (chars / 4). Writes past a cap are refused with a request to consolidate; a file edited by hand past its cap is cut, with a note.",
+   "settings": [
+    {
+     "key": "memory.user_md_tokens",
+     "kind": "int",
+     "min": 0.0,
+     "optional": false,
+     "value": 1500,
+     "default": 1500,
+     "set": false,
+     "description": "cap for user.md, what tern knows about you",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "memory.memory_md_tokens",
+     "kind": "int",
+     "min": 0.0,
+     "optional": false,
+     "value": 1500,
+     "default": 1500,
+     "set": false,
+     "description": "cap for memory.md, the agent's own notes",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "memory.flush",
+     "kind": "bool",
+     "optional": false,
+     "value": true,
+     "default": true,
+     "set": false,
+     "description": "before compacting, let the agent save durable facts (memory_save)",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    }
+   ]
+  },
+  {
+   "id": "home",
+   "title": "Home",
+   "description": "Home (and each Telegram chat) is one stream cut into sessions. A message starts a new one, with a summary of the last carried over, after:",
+   "settings": [
+    {
+     "key": "home.idle_hours",
+     "kind": "float",
+     "min": 0.0,
+     "optional": false,
+     "value": 6.0,
+     "default": 6.0,
+     "set": false,
+     "description": "this long without a message",
+     "applies": "live",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "home.day_starts",
+     "kind": "text",
+     "optional": false,
+     "value": "04:00",
+     "default": "04:00",
+     "set": false,
+     "description": "a new day (local), once idle for an hour",
+     "applies": "live",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    }
+   ]
+  },
+  {
+   "id": "api",
+   "title": "API & devices",
+   "description": "Where the API listens, for the desktop app on other devices and the phone (docs/deployment-spec.md). The Unix socket is always on.",
+   "settings": [
+    {
+     "key": "api.listen",
+     "kind": "list",
+     "optional": false,
+     "value": [
+      "unix"
+     ],
+     "default": [
+      "unix"
+     ],
+     "set": false,
+     "description": "add tcp:// listeners for paired devices",
+     "applies": "restart",
+     "restart_pending": false,
+     "security": "A tcp:// listener lets paired devices reach tern over the network.",
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "api.tls",
+     "kind": "choice",
+     "choices": [
+      "auto",
+      "files",
+      "off"
+     ],
+     "optional": false,
+     "value": "auto",
+     "default": "auto",
+     "set": false,
+     "description": "\"auto\": a self-signed certificate devices pin; \"files\": tls_cert and tls_key; \"off\": plain HTTP",
+     "applies": "restart",
+     "restart_pending": false,
+     "security": "Off sends device tokens and messages unencrypted: only behind a TLS proxy on this machine.",
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "api.tls_cert",
+     "kind": "text",
+     "optional": true,
+     "value": null,
+     "default": null,
+     "set": false,
+     "description": "certificate chain (PEM), for tls = \"files\"",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "api.tls_key",
+     "kind": "text",
+     "optional": true,
+     "value": null,
+     "default": null,
+     "set": false,
+     "description": "its private key (PEM), for tls = \"files\"",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "api.trust_proxy",
+     "kind": "bool",
+     "optional": false,
+     "value": false,
+     "default": false,
+     "set": false,
+     "description": "trust X-Forwarded-For from a reverse proxy on loopback",
+     "applies": "restart",
+     "restart_pending": false,
+     "security": "On: tern believes the client address a local proxy reports. Only with a reverse proxy in front.",
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "api.public_url",
+     "kind": "text",
+     "optional": true,
+     "value": null,
+     "default": null,
+     "set": false,
+     "description": "put in pairing links; default: the first tcp listener",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true
+    },
+    {
+     "key": "api.remote_mcp_stdio",
+     "kind": "bool",
+     "optional": false,
+     "value": false,
+     "default": false,
+     "set": false,
+     "description": "let paired devices add stdio MCP servers (they run on this host)",
+     "applies": "live",
+     "restart_pending": false,
+     "security": "On: paired devices can add MCP servers that run commands on this computer, outside the sandbox.",
+     "risky": false,
+     "editable": true
+    }
+   ]
+  }
+ ]
+}

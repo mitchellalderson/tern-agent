@@ -34,6 +34,10 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 - **MCP management** from the TUI (`/mcp`), the CLI (`tern mcp`) and the desktop app, with no restart and no
   `config.toml` editing ([mcp-management-spec.md](docs/mcp-management-spec.md) M0–M2).
 - `tern reset` clears all local data.
+- **Sandboxed compute**: a `python` tool on Monty, a Python subset in Rust, whose scripts call tern's read-only tools
+  as functions, each call checked and journaled, so loops over a connector don't go through `shell`
+  ([python-tool-spec.md](docs/python-tool-spec.md) PY0; isolation in a helper process, approvals and writes from
+  scripts are PY1–PY2).
 
 ## Next: the rest of Stage 1
 

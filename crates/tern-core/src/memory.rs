@@ -355,6 +355,7 @@ mod tests {
             input_taint: None,
             taint: None,
             memory_scope: None,
+            autonomy: None,
         }
     }
 

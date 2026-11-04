@@ -71,6 +71,10 @@ class TernStore extends ChangeNotifier {
   /// Channels, Home first, when the core has them ([hasChannels]).
   List<Channel> channels = [];
 
+  /// Writes waiting for the user's approval (tooling spec §5.2), newest
+  /// first. Shown in Home, and an agent's own in its DM too.
+  List<OutboxItem> outbox = [];
+
   /// The channel open in the centre column: [homeId], an agent's DM, or a
   /// topic channel. Null when a plain conversation ([selected]) is open.
   String? channel;
@@ -124,6 +128,14 @@ class TernStore extends ChangeNotifier {
 
   /// Top-level runs in progress → their channel, for the sidebar.
   final _activeIn = <String, String>{};
+
+  /// Runs in progress in a channel, sub-agents too: who and where, and
+  /// what each is doing, for its member lines (channels-design §5.2).
+  final _live = <String, ({String channel, String author})>{};
+  final _phase = <String, String>{};
+
+  /// Sub-agent run → its label, from `subagent_spawned`.
+  final _labels = <String, String>{};
 
   /// The conversation open in the right pane: a History entry, a side
   /// chat, a post's thread.
@@ -200,18 +212,22 @@ class TernStore extends ChangeNotifier {
   bool agentBusy(Agent a) =>
       a.mainChannelId != null && _activeIn.containsValue(a.mainChannelId);
 
-  /// Approvals and secret requests waiting from `a`'s runs.
-  int waitingFor(Agent a) => {
-    for (final t in transcripts.values)
-      for (final i in t.items)
-        if ((i is ApprovalItem &&
-                i.outcome == null &&
-                (i.approval.agentId ?? Agent.defaultId) == a.id) ||
-            (i is SecretRequestItem &&
-                i.open &&
-                (i.request.agentId ?? Agent.defaultId) == a.id))
-          i,
-  }.length;
+  /// Approvals, secret requests and outbox items waiting from `a`'s runs.
+  int waitingFor(Agent a) =>
+      {
+        for (final t in transcripts.values)
+          for (final i in t.items)
+            if ((i is ApprovalItem &&
+                    i.outcome == null &&
+                    (i.approval.agentId ?? Agent.defaultId) == a.id) ||
+                (i is SecretRequestItem &&
+                    i.open &&
+                    (i.request.agentId ?? Agent.defaultId) == a.id))
+              i,
+      }.length +
+      outbox
+          .where((o) => o.pending && (o.agentId ?? Agent.defaultId) == a.id)
+          .length;
 
   Channel? get openChannel =>
       channels.where((c) => c.id == channel).firstOrNull;
@@ -220,6 +236,81 @@ class TernStore extends ChangeNotifier {
     for (final c in channels)
       if (!c.isMain && !c.archived) c,
   ];
+
+  /// One line per member working in `channelId`: who, and what they are
+  /// doing. The main thread's own phase is richer (waiting on agents).
+  List<({String runId, String author, String doing})> liveIn(String channelId) {
+    final main = channels
+        .where((c) => c.id == channelId)
+        .firstOrNull
+        ?.mainSessionId;
+    final mainRun = main == null ? null : transcripts[main]?.activeRun;
+    return [
+      for (final MapEntry(key: run, value: w) in _live.entries)
+        if (w.channel == channelId)
+          (
+            runId: run,
+            author: w.author,
+            doing:
+                (run == mainRun ? transcripts[main]?.phase?.label : null) ??
+                _phase[run] ??
+                'Working',
+          ),
+    ];
+  }
+
+  /// Move conversations into a topic channel, or a new one titled
+  /// `newTitle`, and open it. Returns the daemon's reason on failure.
+  Future<String?> moveToChannel(
+    List<String> sessions, {
+    String? channelId,
+    String? newTitle,
+  }) async {
+    try {
+      final r = await client.moveToChannel(
+        sessions,
+        channel: channelId,
+        newChannelTitle: newTitle,
+      );
+      for (final s in sessions) {
+        _streamSessions.remove(s);
+      }
+      channels = await client.channels();
+      this.sessions = await client.sessions();
+      posts.remove(r.channel.id);
+      await openChannelView(r.channel.id);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  /// Mark a needs-you post (or its pointer in Home) done.
+  Future<void> resolvePost(Post post) async {
+    try {
+      await client.resolvePost(post.id);
+    } on TernException catch (e) {
+      // Already done elsewhere: show it closed anyway.
+      if (e.status != 404) {
+        error = e.message;
+        notifyListeners();
+        return;
+      }
+    }
+    bool pair(Post p) =>
+        p.id == post.id || p.id == post.pointsTo || p.pointsTo == post.id;
+    for (final list in posts.values) {
+      for (var i = 0; i < list.length; i++) {
+        if (pair(list[i])) list[i] = list[i].resolved();
+      }
+    }
+    for (final item
+        in transcripts[homeKey]?.items.whereType<PostItem>() ??
+            const <PostItem>[]) {
+      if (pair(item.post)) item.post = item.post.resolved();
+    }
+    await _refreshChannels();
+  }
 
   /// New posts since this device last looked.
   bool unread(Channel c) =>
@@ -280,14 +371,16 @@ class TernStore extends ChangeNotifier {
 
   bool get running => current?.activeRun != null;
 
-  /// Approvals waiting anywhere, for badges. A card mirrored into an
-  /// agent's DM is the same item as Home's, counted once.
-  int get pendingApprovals => transcripts.values
-      .expand((t) => t.items)
-      .whereType<ApprovalItem>()
-      .where((a) => a.outcome == null)
-      .toSet()
-      .length;
+  /// Approvals and outbox items waiting anywhere, for badges. A card
+  /// mirrored into an agent's DM is the same item as Home's, counted once.
+  int get pendingApprovals =>
+      transcripts.values
+          .expand((t) => t.items)
+          .whereType<ApprovalItem>()
+          .where((a) => a.outcome == null)
+          .toSet()
+          .length +
+      outbox.where((o) => o.pending).length;
 
   /// Secret requests waiting anywhere.
   int get pendingSecrets => transcripts.values
@@ -303,6 +396,9 @@ class TernStore extends ChangeNotifier {
 
   /// Whether the core manages MCP servers over the API (older ones can't).
   bool get hasMcp => health?.features.contains('mcp') ?? false;
+
+  /// Whether the core defers unanswered writes to an outbox.
+  bool get hasOutbox => health?.features.contains('outbox') ?? false;
 
   /// Reached as a paired device rather than the local owner socket, so the
   /// core refuses stdio MCP servers unless `api.remote_mcp_stdio` is set.
@@ -403,7 +499,12 @@ class TernStore extends ChangeNotifier {
     if (thread case final id?) await _load(id);
     if (topicOpen) await _loadChannel(channel!);
     _activeIn.clear();
+    _live.clear();
     for (final r in active) {
+      if (r.channelId case final ch?) {
+        _live[r.runId] = (channel: ch, author: r.authorId ?? 'tern');
+        if (r.label case final l?) _labels[r.runId] = l;
+      }
       if (r.parentRunId != null) continue;
       transcriptOf(r.sessionId)?.activeRun = r.runId;
       final c = sessions.where((s) => s.id == r.sessionId).firstOrNull;
@@ -421,6 +522,7 @@ class TernStore extends ChangeNotifier {
       }
     }
     if (hasMcp) await loadMcp(notify: false);
+    if (hasOutbox) await refreshOutbox(notify: false);
     if (hasSecretRequests) {
       try {
         for (final r in await client.secretRequests()) {
@@ -1013,7 +1115,30 @@ class TernStore extends ChangeNotifier {
         _activeIn[runId] = channelId;
       }
     }
-    if (e is RunFinished) _activeIn.remove(e.runId);
+    if (e case RunStarted(:final runId, :final channelId?)) {
+      final label = _labels[runId];
+      _live[runId] = (
+        channel: channelId,
+        author: e.parentRunId != null && label != null ? 'tern/$label' : 'tern',
+      );
+    }
+    switch (e) {
+      case SubagentSpawned(:final childRunId, :final label):
+        _labels[childRunId] = label;
+      case ToolStarted(:final runId, :final name):
+        _phase[runId] = 'Running $name';
+      case TextDelta(:final runId):
+        _phase[runId] = 'Writing';
+      case ToolFinished(:final runId) || AssistantMessage(:final runId):
+        _phase[runId] = 'Thinking';
+      default:
+        break;
+    }
+    if (e is RunFinished) {
+      _activeIn.remove(e.runId);
+      _live.remove(e.runId);
+      _phase.remove(e.runId);
+    }
     String? session;
     switch (e) {
       case ApprovalRequested(:final approval):
@@ -1070,6 +1195,8 @@ class TernStore extends ChangeNotifier {
         return;
       case AgentsChanged():
         unawaited(_refreshAgents());
+      case OutboxChanged():
+        unawaited(refreshOutbox());
         return;
       case UnknownEvent():
         return;
@@ -1445,6 +1572,47 @@ class TernStore extends ChangeNotifier {
       error = e.message;
     }
     notifyListeners();
+  }
+
+  /// Pending outbox items for the open stream: every one in Home (they
+  /// all land there), an agent's own in its DM (agent profiles §3).
+  List<OutboxItem> outboxHere() {
+    final dm = streamOpen && !homeOpen;
+    return [
+      for (final o in outbox)
+        if (o.pending && (!dm || o.channelId == channel)) o,
+    ];
+  }
+
+  /// Re-read the items waiting in the outbox.
+  Future<void> refreshOutbox({bool notify = true}) async {
+    try {
+      outbox = await client.outbox();
+    } on TernException {
+      // A device without read access, or an older core.
+      return;
+    }
+    if (notify) notifyListeners();
+  }
+
+  /// Approve outbox item [item] (run it once), with [input] replacing its
+  /// arguments, or reject it with an optional [note].
+  Future<void> decideOutbox(
+    OutboxItem item, {
+    required bool approve,
+    Object? input,
+    String? note,
+  }) async {
+    try {
+      if (approve) {
+        await client.approveOutbox(item.id, input: input);
+      } else {
+        await client.rejectOutbox(item.id, note: note);
+      }
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    await refreshOutbox();
   }
 
   /// Send what the user entered (only non-empty values; an empty map

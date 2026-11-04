@@ -205,6 +205,17 @@ impl ToolScope {
         out
     }
 
+    /// Whether the built-in tool `name` is in scope (the system layer's
+    /// always are).
+    pub fn allows_builtin(&self, name: &str) -> bool {
+        SYSTEM_TOOLS.contains(&name)
+            || match &self.builtins {
+                Pick::All => true,
+                Pick::ReadOnly => crate::subagent::READ_ONLY_TOOLS.contains(&name),
+                Pick::Names(n) => n.iter().any(|x| x == name),
+            }
+    }
+
     /// Whether the skill `name` is in scope.
     pub fn allows_skill(&self, name: &str) -> bool {
         match &self.skills {

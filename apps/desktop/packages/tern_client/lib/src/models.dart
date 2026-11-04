@@ -173,6 +173,8 @@ class ActiveRun {
     required this.sessionId,
     this.parentRunId,
     this.label,
+    this.channelId,
+    this.authorId,
   });
 
   factory ActiveRun.fromJson(Json j) => ActiveRun(
@@ -180,6 +182,8 @@ class ActiveRun {
     sessionId: j['session_id'] as String,
     parentRunId: j['parent_run_id'] as String?,
     label: j['label'] as String?,
+    channelId: j['channel_id'] as String?,
+    authorId: j['author_id'] as String?,
   );
 
   final String runId;
@@ -188,6 +192,12 @@ class ActiveRun {
   /// Set for sub-agents.
   final String? parentRunId;
   final String? label;
+
+  /// The channel of its session.
+  final String? channelId;
+
+  /// Who is working, as posts name them: `tern`, `tern/<label>`.
+  final String? authorId;
 }
 
 class SessionItem {
@@ -203,6 +213,7 @@ class SessionItem {
     this.prevSessionId,
     this.segmentReason,
     this.branchedFrom,
+    this.movedFrom,
   });
 
   factory SessionItem.fromJson(Json j) => SessionItem(
@@ -217,6 +228,7 @@ class SessionItem {
     prevSessionId: j['prev_session_id'] as String?,
     segmentReason: j['segment_reason'] as String?,
     branchedFrom: j['branched_from'] as String?,
+    movedFrom: j['moved_from'] as String?,
   );
 
   final String id;
@@ -239,6 +251,9 @@ class SessionItem {
 
   /// A side chat: `message:<id>` or `post:<id>`.
   final String? branchedFrom;
+
+  /// Moved here from this channel.
+  final String? movedFrom;
 }
 
 /// Store timestamps are Unix seconds; accept milliseconds too.
@@ -489,6 +504,9 @@ sealed class TernEvent {
     }
     if (j.containsKey('channels_changed')) return const ChannelsChanged();
     if (j.containsKey('agents_changed')) return const AgentsChanged();
+    if (j['outbox_changed'] case final Json o) {
+      return OutboxChanged(o['id'] as int, o['state'] as String? ?? '');
+    }
     final run = j['run_id'] as String? ?? '';
     final event = _agentEvent(j, run);
     if (event is RunEvent) {
@@ -807,6 +825,13 @@ class ChannelsChanged extends TernEvent {
 /// An agent profile was created, edited or archived.
 class AgentsChanged extends TernEvent {
   const AgentsChanged();
+}
+
+/// An outbox item was queued or changed state; re-read the outbox.
+class OutboxChanged extends TernEvent {
+  const OutboxChanged(this.id, this.state);
+  final int id;
+  final String state;
 }
 
 class UnknownEvent extends TernEvent {

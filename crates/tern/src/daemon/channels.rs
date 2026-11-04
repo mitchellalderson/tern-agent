@@ -52,15 +52,22 @@ pub fn view(store: &Store, row: tern_store::PostRow) -> Post {
         .ok()
         .and_then(|c| c.first().map(|(_, n)| *n))
         .unwrap_or(0);
+    let points_to_channel = row
+        .points_to
+        .and_then(|id| store.post(id).ok().flatten())
+        .map(|p| p.channel_id);
     Post {
         replies,
+        points_to_channel,
         ..Post::from(row)
     }
 }
 
 impl Manager {
     pub(super) fn publish(&self, post: Post) {
-        let _ = self.rt.changes.send(Change::PostCreated { post });
+        let _ = self.rt.changes.send(Change::PostCreated {
+            post: Box::new(post),
+        });
     }
 
     pub(super) fn channels_changed(&self) {
@@ -320,11 +327,18 @@ impl Manager {
         let Some(run) = store.run(run_id)? else {
             return Ok(None);
         };
-        if run.parent_run_id.is_some() || run.quiet {
+        // Outbox runs post their own result (`daemon::outbox`).
+        if run.quiet || run.trigger == tern_core::outbox::TRIGGER {
+            return Ok(None);
+        }
+        // A sub-agent reports to its parent; one spawned with `"post": true`
+        // also posts its report (§2.4).
+        let posting_child = run.parent_run_id.is_some() && store.run_can_post(&run.id)?;
+        if run.parent_run_id.is_some() && !posting_child {
             return Ok(None);
         }
         let text = match run.status.as_str() {
-            "completed" => final_text(store, &run)?,
+            "completed" => final_text(store, &run)? + &super::outbox::pending_note(store, &run.id),
             "failed" => format!(
                 "Failed: {}",
                 run.error.as_deref().unwrap_or("unknown error")
@@ -336,6 +350,31 @@ impl Manager {
         }
         // A tainted run's answer may carry what it read (tooling spec §5.3).
         let tainted = run.taint.is_some();
+        if posting_child {
+            let Some(channel) = store.session_channel(&run.session_id)? else {
+                return Ok(None);
+            };
+            let who = author::subagent(run.label.as_deref().unwrap_or("agent"));
+            let key = format!("answer:{}", run.id);
+            let (row, created) = store.add_post(&NewPost {
+                channel_id: &channel.id,
+                session_id: Some(&run.session_id),
+                run_id: Some(&run.id),
+                author_kind: "subagent",
+                author_id: &who,
+                author: &who,
+                kind: "update",
+                text: &text,
+                dedupe_key: Some(&key),
+                tainted,
+                ..NewPost::default()
+            })?;
+            let post = view(store, row);
+            if created {
+                self.publish(post.clone());
+            }
+            return Ok(Some(post));
+        }
         let key = format!("answer:{}", run.id);
         let schedule = (run.trigger == "cron")
             .then(|| store.schedule_for_session(&run.session_id))
@@ -409,5 +448,222 @@ impl Manager {
                 tracing::warn!(run = %run.id, error = %e, "writing a run's post failed");
             }
         }
+    }
+}
+
+/// One conversation moved by [`Manager::move_threads`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MovedThread {
+    pub session_id: String,
+    /// The channel it left.
+    pub from: String,
+    /// "Moved to #slug" where it was.
+    pub marker: Post,
+    /// "Moved here from …" in the target channel's timeline.
+    pub arrival: Post,
+    /// The empty segment that took its place in a stream (Home's current
+    /// one, a chat's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fresh_session_id: Option<String>,
+}
+
+/// How a channel is named in move notes.
+fn place(c: &ChannelRow) -> String {
+    if c.kind == "main" {
+        c.title.clone()
+    } else {
+        format!("#{}", c.slug)
+    }
+}
+
+impl Manager {
+    /// Whether a run is working in `session`, or a sub-agent of one of
+    /// its runs.
+    fn busy_in(&self, session: &str) -> bool {
+        self.active_runs().into_iter().any(|(s, run)| {
+            s == session
+                || self
+                    .rt
+                    .store
+                    .root_run(&run)
+                    .ok()
+                    .and_then(|root| self.rt.store.run(&root).ok().flatten())
+                    .is_some_and(|r| r.session_id == session)
+        })
+    }
+
+    /// Move conversations into topic channel `target` (DECISIONS.md "T2
+    /// moves"). All are checked first: each must exist, be a conversation
+    /// (not a routine's or a sub-agent's), have messages, not be in
+    /// `target` already, and have nothing running. Then each becomes a
+    /// thread there, its old place gets a marker and the channel an arrival
+    /// post, both tainted if any of its runs is.
+    /// The conversations `sessions` names, if every one may move (into
+    /// `target`, when it exists yet).
+    pub fn check_move(
+        &self,
+        sessions: &[String],
+        target: Option<&str>,
+    ) -> Result<Vec<tern_store::SessionRow>, MoveError> {
+        use MoveError::{Bad, Busy};
+        let store = &self.rt.store;
+        if sessions.is_empty() {
+            return Err(Bad("no conversations to move".into()));
+        }
+        let mut rows: Vec<tern_store::SessionRow> = Vec::new();
+        for id in sessions {
+            let s = store
+                .session(id)
+                .map_err(MoveError::internal)?
+                .ok_or_else(|| Bad(format!("conversation {id} not found")))?;
+            if matches!(s.source.as_str(), "subagent" | "cron") {
+                return Err(Bad(format!(
+                    "{id} is a {} conversation; it stays with its {}",
+                    if s.source == "cron" {
+                        "routine's"
+                    } else {
+                        "sub-agent's"
+                    },
+                    if s.source == "cron" {
+                        "routine"
+                    } else {
+                        "parent"
+                    }
+                )));
+            }
+            if target.is_some() && s.channel_id.as_deref() == target {
+                return Err(Bad(format!("{id} is in that channel already")));
+            }
+            if store.session_counts(id).map_err(MoveError::internal)?.0 == 0 {
+                return Err(Bad(format!("{id} has nothing in it yet")));
+            }
+            if self.busy_in(id) {
+                return Err(Busy(format!(
+                    "tern is still working in {}; wait for it or stop it, then move it",
+                    s.title.as_deref().unwrap_or(id)
+                )));
+            }
+            if !rows.iter().any(|r| r.id == s.id) {
+                rows.push(s);
+            }
+        }
+        Ok(rows)
+    }
+
+    pub fn move_threads(
+        &self,
+        sessions: &[String],
+        target: &ChannelRow,
+    ) -> Result<Vec<MovedThread>, MoveError> {
+        if target.kind != "topic" || target.archived_at.is_some() {
+            return Err(MoveError::Bad(format!(
+                "#{} can't take conversations",
+                target.slug
+            )));
+        }
+        let rows = self.check_move(sessions, Some(&target.id))?;
+        let store = &self.rt.store;
+        let mut out = Vec::new();
+        for s in rows {
+            let title: String = s
+                .title
+                .clone()
+                .unwrap_or_else(|| "a conversation".into())
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(80)
+                .collect();
+            let tainted = store
+                .session_taint(&s.id)
+                .map_err(MoveError::internal)?
+                .is_some();
+            let last = store
+                .session_last_activity(&s.id)
+                .map_err(MoveError::internal)?;
+            let reply = store
+                .runs_for_session(&s.id)
+                .map_err(MoveError::internal)?
+                .into_iter()
+                .rev()
+                .find(|r| r.parent_run_id.is_none() && r.status == "completed")
+                .and_then(|r| final_text(store, &r).ok())
+                .and_then(|t| t.lines().find(|l| !l.trim().is_empty()).map(str::to_owned));
+            let moved = store
+                .move_thread(&s.id, &target.id, &tern_core::agent::new_id())
+                .map_err(MoveError::internal)?;
+            let from = store
+                .channel(&moved.from)
+                .map_err(MoveError::internal)?
+                .ok_or_else(|| MoveError::internal("source channel gone"))?;
+            let mut text = format!("Moved here from {}: {title}", place(&from));
+            if let Some(r) = reply {
+                let r: String = r.chars().take(200).collect();
+                text.push_str(&format!("\nLast reply: {r}"));
+            }
+            let arrival_key = format!("arrived:{}:{}", s.id, target.id);
+            let (arrival, _) = store
+                .add_post(&NewPost {
+                    channel_id: &target.id,
+                    session_id: Some(&s.id),
+                    author_kind: "user",
+                    author_id: author::OWNER,
+                    author: "you",
+                    kind: "moved",
+                    text: &text,
+                    tainted,
+                    dedupe_key: Some(&arrival_key),
+                    ..NewPost::default()
+                })
+                .map_err(MoveError::internal)?;
+            let marker_key = format!("moved:{}:{}", s.id, target.id);
+            let marker_text = format!("Moved to {}: {title}", place(target));
+            let (marker, _) = store
+                .add_post(&NewPost {
+                    channel_id: &from.id,
+                    session_id: Some(&s.id),
+                    author_kind: "user",
+                    author_id: author::OWNER,
+                    author: "you",
+                    kind: "moved",
+                    text: &marker_text,
+                    points_to: Some(arrival.id),
+                    tainted,
+                    dedupe_key: Some(&marker_key),
+                    // Where the conversation was in the stream.
+                    created_at: Some(last),
+                    ..NewPost::default()
+                })
+                .map_err(MoveError::internal)?;
+            let (marker, arrival) = (view(store, marker), view(store, arrival));
+            self.publish(marker.clone());
+            self.publish(arrival.clone());
+            tracing::info!(session = %s.id, from = %from.id, to = %target.id, "moved a conversation");
+            out.push(MovedThread {
+                session_id: s.id,
+                from: from.id,
+                marker,
+                arrival,
+                fresh_session_id: moved.fresh,
+            });
+        }
+        self.channels_changed();
+        Ok(out)
+    }
+}
+
+/// Why a move was refused.
+#[derive(Debug)]
+pub enum MoveError {
+    Bad(String),
+    /// Something is running in a conversation.
+    Busy(String),
+    Internal(String),
+}
+
+impl MoveError {
+    fn internal(e: impl std::fmt::Display) -> Self {
+        Self::Internal(format!("{e:#}"))
     }
 }

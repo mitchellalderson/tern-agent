@@ -77,7 +77,9 @@ impl ApiApprovals {
         self.tx().subscribe()
     }
 
-    /// Ask attached clients; deny at once if none is listening.
+    /// Ask attached clients; `Unanswered` at once if none is listening (the
+    /// agent then queues a write in the outbox). The request leaves the
+    /// pending list when the agent stops waiting.
     /// `root_session_id` is the session at the top of a sub-agent's tree.
     async fn ask(
         &self,
@@ -106,13 +108,11 @@ impl ApiApprovals {
         if let Ok(mut p) = self.pending.lock() {
             p.insert(req.id.clone(), (msg.clone(), tx));
         }
+        let _unlist = UnlistApproval(self, req.id.clone());
         if self.tx().send(msg).is_err() {
-            if let Ok(mut p) = self.pending.lock() {
-                p.remove(&req.id);
-            }
-            return Decision::Deny;
+            return Decision::Unanswered;
         }
-        rx.await.unwrap_or(Decision::Deny)
+        rx.await.unwrap_or(Decision::Unanswered)
     }
 
     pub fn answer(&self, id: &str, decision: Decision) -> bool {
@@ -135,6 +135,18 @@ impl ApiApprovals {
             .lock()
             .map(|p| p.values().map(|(a, _)| a.clone()).collect())
             .unwrap_or_default()
+    }
+}
+
+/// Drops an approval from the pending list when its asker stops waiting
+/// (answered, timed out into the outbox, or cancelled).
+struct UnlistApproval<'a>(&'a ApiApprovals, String);
+
+impl Drop for UnlistApproval<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut p) = self.0.pending.lock() {
+            p.remove(&self.1);
+        }
     }
 }
 
@@ -268,6 +280,8 @@ pub struct Routes {
     pub api: ApiApprovals,
     pub secrets: ApiSecretRequests,
     pub lifecycle: Lifecycle,
+    /// Set once the daemon's manager exists, to announce outbox items.
+    pub manager: OnceLock<Weak<Manager>>,
 }
 
 /// What `/v1/status` and `/v1/shutdown` need from the daemon (T8a).
@@ -370,6 +384,17 @@ impl ApprovalHandler for Router {
         }
     }
 
+    /// The daemon executes approved outbox items.
+    fn can_defer(&self) -> bool {
+        true
+    }
+
+    async fn deferred(&self, _req: &ApprovalRequest, id: i64) {
+        if let Some(m) = self.0.manager.get().and_then(Weak::upgrade) {
+            m.announce_outbox(id).await;
+        }
+    }
+
     /// API clients always get the prompt. A chat only gets a pointer to
     /// them, since a value typed there would stay in its history.
     async fn ask_secrets(&self, req: &SecretRequest) -> Option<SecretValues> {
@@ -433,7 +458,7 @@ impl Manager {
         })
     }
 
-    fn gateway(&self, name: &str) -> Option<Arc<dyn Gateway>> {
+    pub(super) fn gateway(&self, name: &str) -> Option<Arc<dyn Gateway>> {
         self.routes
             .gateways
             .get()
@@ -509,6 +534,9 @@ impl Manager {
             .start_run(Some(&s.session_id), None, &s.prompt, "cron", "cron")?;
         if let Some(t) = &s.deliver_to {
             self.rt.store.set_run_deliver_to(&started.run_id, t)?;
+        }
+        if let Some(a) = s.autonomy.as_deref() {
+            self.rt.store.set_run_autonomy(&started.run_id, a)?;
         }
         let cap = s.tokens_per_run.or(self.rt.live().schedules.tokens_per_run);
         if let Some(cap) = cap {
@@ -803,6 +831,20 @@ pub struct Chats(pub Arc<Manager>);
 
 #[async_trait]
 impl ChatHost for Chats {
+    /// A chat button: the chat is remote, so local-only items are refused.
+    async fn decide_outbox(&self, id: i64, approve: bool) -> Result<String, String> {
+        if approve {
+            self.0
+                .approve_outbox(id, None, true)
+                .map(|_| "Approved; running it".to_owned())
+        } else {
+            self.0
+                .reject_outbox(id, None, true)
+                .map(|_| "Rejected".to_owned())
+        }
+        .map_err(|e| e.to_string())
+    }
+
     /// The chat is a stream like Home (docs/channels-design.md §2.6): a
     /// message goes to the run working there, else to the current segment
     /// or, after idle hours or a new day, to a new one.

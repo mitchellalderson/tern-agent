@@ -39,7 +39,7 @@ class CutItem extends Item {
 /// Something posted from elsewhere: a routine's result, a card.
 class PostItem extends Item {
   PostItem(this.post);
-  final Post post;
+  Post post;
 }
 
 /// A side chat branched off the stream; it opens beside it.
@@ -434,7 +434,8 @@ class Transcript {
           McpChanged() ||
           PostCreated() ||
           ChannelsChanged() ||
-          AgentsChanged():
+          AgentsChanged() ||
+          OutboxChanged():
         return false;
     }
     return true;

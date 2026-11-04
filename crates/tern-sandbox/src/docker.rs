@@ -246,6 +246,11 @@ kill -KILL $all 2>/dev/null; true"#;
 
 #[async_trait]
 impl SandboxBackend for DockerBackend {
+    /// `network = false` runs the container with `--network none`.
+    fn network_reachable(&self) -> bool {
+        self.settings.network
+    }
+
     async fn exec(
         &self,
         cmd: &str,

@@ -4,9 +4,11 @@ import 'dart:io';
 
 import 'agents.dart';
 import 'channels.dart';
+import 'config.dart';
 import 'endpoint.dart';
 import 'lifecycle.dart';
 import 'mcp.dart';
+import 'outbox.dart';
 import 'models.dart';
 import 'providers.dart';
 import 'secret_requests.dart';
@@ -437,6 +439,24 @@ class TernClient {
     }),
   );
 
+  /// Move conversations into a topic channel (`channel`, an id or slug)
+  /// or a new one (`newChannelTitle`). Owner scope. Throws with 409 when
+  /// something is still running in one of them.
+  Future<MoveResult> moveToChannel(
+    List<String> sessions, {
+    String? channel,
+    String? newChannelTitle,
+  }) async => MoveResult.fromJson(
+    await _json('POST', '/v1/channels/move', {
+      'sessions': sessions,
+      'channel': ?channel,
+      if (newChannelTitle != null) 'new_channel': {'title': newChannelTitle},
+    }),
+  );
+
+  /// Mark a `needs_you` post or its pointer in Home done (both close).
+  Future<void> resolvePost(int id) => _json('POST', '/v1/posts/$id/resolve');
+
   /// A page of a main channel's stream, newest first.
   Future<StreamPage> stream(
     String channel, {
@@ -613,6 +633,25 @@ class TernClient {
         await _json('PUT', '/v1/secrets/$name', {'value': value}),
       );
 
+  /// `config.toml` as settings, by section. Owner scope only.
+  Future<ConfigView> configSettings() async =>
+      ConfigView.fromJson(await _json('GET', '/v1/config/settings'));
+
+  /// Set one setting to a JSON `value` (`null` unsets an optional one).
+  /// The daemon checks it and keeps the file's comments.
+  Future<ConfigSetting> setSetting(String key, Object? value) async =>
+      ConfigSetting.fromJson(
+        await _json('PUT', '/v1/config/settings/${_seg(key)}', {
+          'value': value,
+        }),
+      );
+
+  /// Back to the default: removed from `config.toml`.
+  Future<ConfigSetting> resetSetting(String key) async =>
+      ConfigSetting.fromJson(
+        await _json('DELETE', '/v1/config/settings/${_seg(key)}'),
+      );
+
   /// Remove `name` from `secrets.toml`. Returns false if it wasn't there.
   Future<bool> removeSecret(String name) async {
     try {
@@ -626,6 +665,29 @@ class TernClient {
 
   Future<void> answer(String approval, Decision decision) =>
       _json('POST', '/v1/approvals/$approval', {'decision': decision.wire});
+
+  /// Outbox items waiting for the user (`all`: decided ones too). Check
+  /// `features` in [health] for `outbox` first.
+  Future<List<OutboxItem>> outbox({bool all = false}) async => [
+    for (final o
+        in await _json('GET', all ? '/v1/outbox?state=all' : '/v1/outbox')
+            as List)
+      OutboxItem.fromJson(o as Json),
+  ];
+
+  /// Run item [id] now, exactly once; [input] replaces its arguments.
+  /// Throws [TernException] with 409 if it was already decided or expired.
+  Future<OutboxItem> approveOutbox(int id, {Object? input}) async =>
+      OutboxItem.fromJson(
+        await _json('POST', '/v1/outbox/$id/approve', {'input': ?input})
+            as Json,
+      );
+
+  /// Don't run item [id]; [note] goes to the run that queued it.
+  Future<OutboxItem> rejectOutbox(int id, {String? note}) async =>
+      OutboxItem.fromJson(
+        await _json('POST', '/v1/outbox/$id/reject', {'note': ?note}) as Json,
+      );
 
   /// Put a file in the core's workspace (remote cores can't take a path).
   /// Returns its workspace-relative path, to mention in a message. Check

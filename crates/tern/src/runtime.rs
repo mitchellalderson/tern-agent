@@ -59,25 +59,26 @@ impl PromptMaker {
 
     /// The prompt for a run at `depth` (0 = the user's), frozen on its row.
     /// `agent` is the run's profile (`None`: the default agent's files);
-    /// `skills` limits which skills it lists.
+    /// `scope` its tool scope, which limits the skills it lists and whether
+    /// it hears about `python`.
     pub fn build(
         &self,
         role: AgentRole<'_>,
         depth: u32,
         agent: Option<&tern_core::prompt::AgentPrompt>,
-        skills: Option<&tern_core::agents::ToolScope>,
+        scope: Option<&tern_core::agents::ToolScope>,
     ) -> String {
         let skills: Vec<(String, String)> = tern_core::skills::discover(&self.home.skills_dir())
             .into_iter()
-            .filter(|s| skills.is_none_or(|scope| scope.allows_skill(&s.name)))
+            .filter(|s| scope.is_none_or(|scope| scope.allows_skill(&s.name)))
             .map(|s| (s.name, s.description))
             .collect();
-        let integrations = self
-            .tools
-            .upgrade()
+        let tools = self.tools.upgrade();
+        let integrations = tools
+            .as_ref()
             .map(|t| t.describe_sources())
             .unwrap_or_default();
-        tern_core::prompt::system_prompt(&tern_core::prompt::PromptInputs {
+        let mut prompt = tern_core::prompt::system_prompt(&tern_core::prompt::PromptInputs {
             home: &self.home,
             role,
             // Only runs that get the agent_* tools hear about them.
@@ -88,7 +89,13 @@ impl PromptMaker {
             integrations: &integrations,
             memory: &self.memory,
             agent,
-        })
+        });
+        if tools.is_some_and(|t| t.get(tern_core::script::PYTHON).is_some())
+            && scope.is_none_or(|s| s.allows_builtin(tern_core::script::PYTHON))
+        {
+            prompt.push_str(tern_core::prompt::COMPUTE_NOTE);
+        }
+        prompt
     }
 }
 
@@ -157,7 +164,7 @@ impl Runtime {
             store.clone(),
             Some(Arc::new(move |row| {
                 let _ = post_changes.send(Change::PostCreated {
-                    post: tern_core::channels::Post::from(row),
+                    post: Box::new(tern_core::channels::Post::from(row)),
                 });
             })),
         )));
@@ -204,6 +211,10 @@ impl Runtime {
                     .filter_map(|(name, p)| p.context_window.map(|w| (name.clone(), w)))
                     .collect(),
                 memory_flush: config.memory.flush,
+                approval_wait: std::time::Duration::from_secs(config.outbox.wait_secs),
+                outbox_expiry: std::time::Duration::from_secs(
+                    config.outbox.expire_hours.saturating_mul(3600),
+                ),
                 ..AgentConfig::default()
             },
         )
@@ -516,6 +527,11 @@ impl Runtime {
             tool_scope.as_deref(),
             agent.private_memory().then_some("private"),
         )?;
+        // Frozen on the run, like its model (tooling spec §5.4); a routine
+        // overrides it in `Manager::start_scheduled`. An agent's autonomy
+        // ceiling (agent profiles AP3) will cap this value here.
+        self.store
+            .set_run_autonomy(&run.id, self.live().autonomy.as_str())?;
         Ok(StartedRun {
             session_id: session.id,
             run_id: run.id,
@@ -738,6 +754,8 @@ fn build_tools(
     if config.subagents.enabled && config.subagents.max_depth >= 1 {
         tern_tools::agents::register(&mut registry, subagents.clone());
     }
+    #[cfg(feature = "python")]
+    registry.register(Arc::new(tern_python::Python::default()));
 
     let lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
     let dirs = tern_lua::tools::Dirs {

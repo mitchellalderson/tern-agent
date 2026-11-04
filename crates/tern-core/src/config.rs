@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::home::expand_tilde;
 
 pub mod edit;
+pub mod settings;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -56,6 +57,31 @@ pub struct Config {
     /// own, so a config chain with the same head wins.
     #[serde(skip)]
     pub agent_chains: Vec<(String, ModelChain)>,
+    /// How much runs may do without asking (tooling spec §5.4): `readonly`,
+    /// `supervised` (the default), `autonomous` or `yolo`. A routine can set
+    /// its own; it is frozen on each run when the run starts.
+    pub autonomy: crate::approval::Autonomy,
+    pub outbox: OutboxConfig,
+}
+
+/// Deferred approvals (tooling spec §5.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutboxConfig {
+    /// How long a `write` or `destructive` approval waits for an answer
+    /// before it goes to the outbox (at once when no client is attached).
+    pub wait_secs: u64,
+    /// How long an outbox item waits for the user before it expires.
+    pub expire_hours: u64,
+}
+
+impl Default for OutboxConfig {
+    fn default() -> Self {
+        Self {
+            wait_secs: 120,
+            expire_hours: 72,
+        }
+    }
 }
 
 impl Default for Config {
@@ -76,6 +102,8 @@ impl Default for Config {
             memory: crate::memory::MemoryConfig::default(),
             home: crate::channels::HomeConfig::default(),
             agent_chains: Vec::new(),
+            autonomy: crate::approval::Autonomy::default(),
+            outbox: OutboxConfig::default(),
         }
     }
 }
@@ -723,6 +751,22 @@ env_secrets = ["GITHUB_TOKEN"]
         let m = c.default_model_ref().unwrap().unwrap();
         assert_eq!(m.provider, "anthropic");
         assert_eq!(m.to_string(), "anthropic:claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn autonomy_and_outbox_settings() {
+        let c = Config::parse(
+            "autonomy = \"autonomous\"\n[outbox]\nwait_secs = 30\n",
+            Path::new("c"),
+        )
+        .unwrap();
+        assert_eq!(c.autonomy, crate::approval::Autonomy::Autonomous);
+        assert_eq!((c.outbox.wait_secs, c.outbox.expire_hours), (30, 72));
+        assert_eq!(
+            Config::default().autonomy,
+            crate::approval::Autonomy::Supervised
+        );
+        assert!(Config::parse("autonomy = \"reckless\"", Path::new("c")).is_err());
     }
 
     #[test]

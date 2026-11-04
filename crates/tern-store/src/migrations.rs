@@ -17,7 +17,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0007_schedule_limits.sql"),
     include_str!("../migrations/0008_channels.sql"),
     include_str!("../migrations/0009_taint.sql"),
-    include_str!("../migrations/0010_agents.sql"),
+    include_str!("../migrations/0010_channel_c4.sql"),
+    include_str!("../migrations/0011_channel_moves.sql"),
+    include_str!("../migrations/0012_outbox.sql"),
+    include_str!("../migrations/0013_agents.sql"),
 ];
 
 pub const LATEST_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -123,7 +126,7 @@ mod tests {
     fn agents_backfill_makes_the_existing_setup_the_tern_agent() {
         let mut c = Connection::open_in_memory().unwrap();
         c.pragma_update(None, "foreign_keys", "ON").unwrap();
-        migrate_to(&mut c, 9);
+        migrate_to(&mut c, 12);
         c.execute_batch(
             "INSERT INTO sessions (id, source, created_at, updated_at, channel_id)
                VALUES ('a', 'api', 0, 10, 'home'), ('cron', 'cron', 0, 20, 'home');

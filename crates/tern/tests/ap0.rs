@@ -509,3 +509,194 @@ async fn an_agents_model_chain_falls_back_like_default_models() {
     let run = say(&s, a["main_channel_id"].as_str().unwrap(), "hi again").await;
     assert_eq!(run_col(&env, &run, "model").as_deref(), Some("mock:up"));
 }
+
+// ---- merged with C4, T3 and PY0 ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_prompt_keeps_the_system_layer_and_its_runs_get_the_autonomy() {
+    let env = Env::with_config(
+        &json!({ "conversations": [{ "matches": "hi", "turns": [{ "text": "hello" }] }] }),
+        "autonomy = \"autonomous\"\n",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let (_, wide) = post(
+        &s,
+        "/v1/agents",
+        json!({ "name": "Wide", "persona": "You are Wide." }),
+    )
+    .await;
+    let (_, narrow) = post(
+        &s,
+        "/v1/agents",
+        json!({ "name": "Narrow", "persona": "You are Narrow.",
+                "tools": { "builtins": ["read_file"], "connectors": [], "mcp": [] } }),
+    )
+    .await;
+    let run = say(&s, wide["main_channel_id"].as_str().unwrap(), "hi").await;
+    let sys = run_col(&env, &run, "system_prompt").unwrap();
+    assert!(sys.starts_with("You are Wide."), "{sys}");
+    // T3's rules, under the persona like every engine-owned section.
+    assert!(sys.contains("## Untrusted content") && sys.contains("## Integrations"));
+    assert!(sys.contains("When you're about to fetch data from an outside service"));
+    // Frozen like the model: the configured autonomy.
+    assert_eq!(
+        run_col(&env, &run, "autonomy").as_deref(),
+        Some("autonomous")
+    );
+    let scope: Vec<String> =
+        serde_json::from_str(&run_col(&env, &run, "tool_scope").unwrap()).unwrap();
+    if cfg!(feature = "python") {
+        // The narrow default includes `python`, so it hears about it.
+        assert!(scope.contains(&"python".to_owned()), "{scope:?}");
+        assert!(sys.contains("## Compute"), "{sys}");
+    }
+    // An agent without `python` in scope isn't told about it.
+    let run = say(&s, narrow["main_channel_id"].as_str().unwrap(), "hi").await;
+    let sys = run_col(&env, &run, "system_prompt").unwrap();
+    assert!(!sys.contains("## Compute"), "{sys}");
+    let scope = run_col(&env, &run, "tool_scope").unwrap();
+    assert!(!scope.contains("\"python\""), "{scope}");
+}
+
+#[cfg(feature = "python")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_can_only_call_tools_in_its_agents_scope() {
+    let code = "names = list_dir(path=\".\")\ntry:\n    read_file(path=\"notes.md\")\n    r = \"read\"\nexcept Exception as e:\n    r = str(e)\nr";
+    let env = Env::with_config(
+        &json!({ "turns": [
+            { "tool_calls": [{ "name": "python", "input": { "code": code } }] },
+            { "text": "Done." }
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let (_, a) = post(
+        &s,
+        "/v1/agents",
+        json!({ "name": "Scripter",
+                "tools": { "builtins": ["python", "list_dir"], "connectors": [], "mcp": [] } }),
+    )
+    .await;
+    let run = say(&s, a["main_channel_id"].as_str().unwrap(), "count my files").await;
+    let out: String = env
+        .db()
+        .query_row(
+            "SELECT output_json FROM steps WHERE run_id = ?1 AND kind = 'tool' ORDER BY idx LIMIT 1",
+            [&run],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        out.contains("read_file") && out.contains("not available to this agent"),
+        "{out}"
+    );
+    let calls: i64 = env.query(&format!(
+        "SELECT count(*) FROM steps WHERE run_id = '{run}' AND kind = 'py_call' AND input_json LIKE '%list_dir%'"
+    ));
+    assert_eq!(calls, 1, "list_dir is in scope and was called");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dm_runs_write_waits_in_the_outbox_marked_with_its_agent() {
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "matches": "Sweep", "turns": [
+                { "text": "Reading.", "tool_calls": [{ "name": "mcp_list", "input": {} }] },
+                { "text": "Replying.", "tool_calls": [{ "name": "write_file",
+                    "input": { "path": "reply.txt", "content": "hi" } }] },
+                { "text": "Waiting for you." }
+            ]}
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let (_, a) = post(&s, "/v1/agents", json!({ "name": "Inbox" })).await;
+    let dm = a["main_channel_id"].as_str().unwrap().to_owned();
+    say(&s, &dm, "Sweep the inbox").await;
+    let (_, items) = get(&s, "/v1/outbox").await;
+    let item = &items.as_array().unwrap()[0];
+    assert_eq!(
+        (item["channel_id"].as_str(), item["agent_id"].as_str()),
+        (Some(dm.as_str()), Some("tern:inbox")),
+        "{item}"
+    );
+    // Counted in its DM's needs-you, like its approvals.
+    let (_, list) = get(&s, "/v1/agents").await;
+    let inbox = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["slug"] == "inbox")
+        .unwrap();
+    assert_eq!(inbox["needs_you"], 1, "{inbox}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_topic_moves_out_of_an_agents_dm_and_needs_you_points_to_home() {
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "matches": "Plan the launch", "turns": [
+                { "text": "", "tool_calls": [{ "name": "channel_post",
+                    "input": { "text": "Approve the venue?", "needs_you": true } }] },
+                { "text": "Asked you." }
+            ]}
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let (_, a) = post(&s, "/v1/agents", json!({ "name": "Ops" })).await;
+    let dm = a["main_channel_id"].as_str().unwrap().to_owned();
+    let run = say(&s, &dm, "Plan the launch").await;
+    // The needs-you post is the agent's, in its DM, with a pointer in Home.
+    let (_, posts) = get(&s, &format!("/v1/channels/{dm}/posts")).await;
+    let ask = posts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["kind"] == "needs_you")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (ask["author_id"].as_str(), ask["author"].as_str()),
+        (Some("tern:ops"), Some("Ops"))
+    );
+    let (_, home) = get(&s, "/v1/channels/home/posts").await;
+    assert!(
+        home.as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["kind"] == "pointer" && p["points_to"] == ask["id"]),
+        "{home:#}"
+    );
+    // Moving the DM's topic into a channel works as from Home.
+    let session: String = env.query(&format!("SELECT session_id FROM runs WHERE id = '{run}'"));
+    let (code, moved) = post(
+        &s,
+        "/v1/channels/move",
+        json!({ "sessions": [session], "new_channel": { "title": "Launch" } }),
+    )
+    .await;
+    assert_eq!(code, 200, "{moved}");
+    let (from, agent): (String, String) = env
+        .db()
+        .query_row(
+            &format!("SELECT moved_from, agent_id FROM sessions WHERE id = '{session}'"),
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((from.as_str(), agent.as_str()), (dm.as_str(), "tern:ops"));
+    // The DM gets a fresh segment, as Home would.
+    let (_, chans) = get(&s, "/v1/channels").await;
+    let c = chans
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == dm.as_str())
+        .unwrap();
+    assert_ne!(c["main_session_id"], session.as_str());
+}

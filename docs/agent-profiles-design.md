@@ -115,7 +115,7 @@ on without the user wiring it up.
 
 ## 2. Data model
 
-One migration, the next free number (0010 at the time of writing; T2 C3 needs none). It's all additive, and every new
+One migration, the next free number (built as 0013, after C4's and T3's). It's all additive, and every new
 column defaults to the default agent.
 
 ```sql

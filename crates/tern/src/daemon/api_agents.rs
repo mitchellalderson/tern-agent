@@ -66,7 +66,8 @@ pub struct Agent {
     pub main_channel_id: Option<String>,
     #[serde(default)]
     pub last_activity: Option<i64>,
-    /// Approvals and secret requests from its runs, waiting for an answer.
+    /// Approvals, secret requests and outbox items from its runs, waiting
+    /// for an answer.
     #[serde(default)]
     pub needs_you: usize,
     /// Its top-level runs in progress.
@@ -104,6 +105,12 @@ pub(super) fn agent_view(m: &Shared, a: AgentRow) -> Agent {
             .pending()
             .iter()
             .filter(|p| p.agent_id.as_deref().unwrap_or(DEFAULT_AGENT) == a.id)
+            .count()
+        + store
+            .outbox(Some("pending"), 200)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|o| m.outbox_view(o.clone()).agent_id.as_deref() == Some(a.id.as_str()))
             .count();
     let model = if a.is_default() {
         m.rt.live().default_model

@@ -135,6 +135,11 @@ impl Tool for HttpFetch {
         )
     }
 
+    fn egress_host(&self, args: &Value) -> Option<String> {
+        let url = reqwest::Url::parse(args.get("url")?.as_str()?).ok()?;
+        url.host_str().map(str::to_ascii_lowercase)
+    }
+
     fn policy(&self, _ctx: &ToolCtx, _args: &Value) -> ToolPolicy {
         ToolPolicy::new(Effect::Read, true)
     }

@@ -601,7 +601,12 @@ fn check_of(connectors: &Connectors, name: &str) -> Check {
         .into_iter()
         .find(|t| t.spec().name == name)
         .unwrap_or_else(|| panic!("no tool {name}"));
-    approval::check(name, &tool.policy(&ctx(), &json!({})), false, false)
+    approval::check(
+        name,
+        &tool.policy(&ctx(), &json!({})),
+        false,
+        approval::Gate::CLEAN,
+    )
 }
 
 const ASK_WRITE: Check = Check::Ask {
@@ -852,7 +857,7 @@ fn testing_a_draft_has_the_effect_of_the_tool_tested() {
     };
     let check = |tool: &str| {
         let p = test.policy(&ctx(), &json!({"name": "bank", "tool": tool}));
-        approval::check("connector_test", &p, false, false)
+        approval::check("connector_test", &p, false, approval::Gate::CLEAN)
     };
     assert!(matches!(
         check("wipe"),

@@ -8,6 +8,8 @@
 //! | PATCH | `/v1/channels/{id}` | `{title?, instructions?, archived?}` (`instructions: null` clears them) |
 //! | GET | `/v1/channels/{id}/posts?before=&limit=` | `[Post]`, newest first |
 //! | GET | `/v1/channels/{id}/stream?before=&limit=` | a main channel's stream: its segments' messages, its posts and its side chats, interleaved, newest first, with a `cut` item where each segment starts (`next`: the cursor for older items) |
+//! | POST | `/v1/channels/move` | move conversations into a topic channel: `{sessions: [id], channel? \| new_channel?: {slug?, title, instructions?}}` → `{channel, moved: [MovedThread]}` (owner scope) |
+//! | POST | `/v1/posts/{id}/resolve` | mark a `needs_you` post or its Home `pointer` done (both close) |
 //! | POST | `/v1/channels/{id}/posts` | send `{text, reply_to?, new_topic?, model?}` → `{post?, run_id, session_id, queued, new_segment}` |
 
 use axum::extract::{Path as UrlPath, Query, State};
@@ -27,6 +29,8 @@ pub fn routes() -> Router<Shared> {
         .route("/v1/channels/{id}", axum::routing::patch(update))
         .route("/v1/channels/{id}/posts", get(posts).post(send))
         .route("/v1/channels/{id}/stream", get(stream))
+        .route("/v1/channels/move", axum::routing::post(move_in))
+        .route("/v1/posts/{id}/resolve", axum::routing::post(resolve))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +47,8 @@ pub struct Channel {
     pub main_session_id: Option<String>,
     #[serde(default)]
     pub last_post_id: Option<i64>,
-    /// Home: approvals and secret requests waiting for an answer.
+    /// Open `needs_you` posts (Home: pointers to them), and in Home the
+    /// approvals and secret requests waiting for an answer.
     #[serde(default)]
     pub needs_you: usize,
     /// Runs in progress in the channel's threads.
@@ -68,13 +73,17 @@ pub(super) fn channel_view(m: &Shared, c: ChannelRow) -> Channel {
             })
         })
         .count();
-    // Home counts every approval and secret request (they all land there);
-    // an agent's DM the ones from its own runs, which it mirrors.
+    // Open needs-you posts (Home: their pointers), plus the approvals and
+    // secret requests waiting for an answer: Home counts every one (they
+    // all land there), an agent's DM the ones from its own runs, which it
+    // mirrors.
+    let open = m.rt.store.open_needs_you(&c.id).unwrap_or(0);
     let needs_you = if c.id == tern_store::HOME {
-        m.routes.api.pending().len() + m.routes.secrets.pending().len()
+        open + m.routes.api.pending().len() + m.routes.secrets.pending().len()
     } else if c.kind == "main" {
         let mine = |a: Option<&str>| a.is_some() && a == c.agent_id.as_deref();
-        m.routes
+        open + m
+            .routes
             .api
             .pending()
             .iter()
@@ -87,7 +96,7 @@ pub(super) fn channel_view(m: &Shared, c: ChannelRow) -> Channel {
                 .filter(|p| mine(p.agent_id.as_deref()))
                 .count()
     } else {
-        0
+        open
     };
     Channel {
         last_post_id: m.rt.store.last_post_id(&c.id).ok().flatten(),
@@ -231,6 +240,111 @@ async fn posts(
     Ok(Json(
         rows.into_iter().map(|p| view(&m.rt.store, p)).collect(),
     ))
+}
+
+#[derive(Deserialize)]
+struct NewChannelBody {
+    slug: Option<String>,
+    title: String,
+    instructions: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MoveBody {
+    sessions: Vec<String>,
+    channel: Option<String>,
+    new_channel: Option<NewChannelBody>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MoveResult {
+    pub channel: Channel,
+    pub moved: Vec<super::channels::MovedThread>,
+}
+
+/// Move conversations (Home segments, side chats, threads elsewhere,
+/// History entries) into a topic channel, or into a new one.
+async fn move_in(State(m): State<Shared>, Json(b): Json<MoveBody>) -> ApiResult<MoveResult> {
+    let target = match (&b.channel, &b.new_channel) {
+        (Some(c), None) => find(&m, c)?,
+        (None, Some(n)) => {
+            let title = n.title.trim();
+            if title.is_empty() {
+                return Err(bad("new_channel.title is empty"));
+            }
+            let slug = n
+                .slug
+                .clone()
+                .unwrap_or_else(|| slug_for(title))
+                .trim()
+                .trim_start_matches('#')
+                .to_owned();
+            check_slug(&slug).map_err(bad)?;
+            if m.rt.store.channel(&slug).map_err(internal)?.is_some() {
+                return Err(ApiError(
+                    StatusCode::CONFLICT,
+                    format!("there is already a channel #{slug}"),
+                ));
+            }
+            // Checked before the channel exists, so a refused move leaves
+            // no empty channel behind.
+            m.check_move(&b.sessions, None).map_err(move_error)?;
+            let row =
+                m.rt.store
+                    .create_channel(&ChannelRow {
+                        id: tern_core::agent::new_id(),
+                        slug,
+                        title: title.to_owned(),
+                        kind: "topic".into(),
+                        instructions: n.instructions.clone().filter(|i| !i.trim().is_empty()),
+                        created_by: "user".into(),
+                        ..ChannelRow::default()
+                    })
+                    .map_err(internal)?;
+            m.channels_changed();
+            row
+        }
+        _ => return Err(bad("give either channel or new_channel")),
+    };
+    let moved = m.move_threads(&b.sessions, &target).map_err(move_error)?;
+    Ok(Json(MoveResult {
+        channel: channel_view(&m, find(&m, &target.id)?),
+        moved,
+    }))
+}
+
+fn move_error(e: super::channels::MoveError) -> ApiError {
+    use super::channels::MoveError;
+    match e {
+        MoveError::Bad(s) => bad(s),
+        MoveError::Busy(s) => ApiError(StatusCode::CONFLICT, s),
+        MoveError::Internal(s) => internal(s),
+    }
+}
+
+/// `[a-z0-9][a-z0-9-]{0,31}` from a title.
+fn slug_for(title: &str) -> String {
+    let mut out = String::new();
+    for c in title.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    let out: String = out.trim_end_matches('-').chars().take(32).collect();
+    out.trim_end_matches('-').to_owned()
+}
+
+async fn resolve(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<i64>,
+) -> ApiResult<serde_json::Value> {
+    if !m.rt.store.resolve_post(id).map_err(internal)? {
+        return Err(not_found("open needs-you post"));
+    }
+    m.channels_changed();
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]

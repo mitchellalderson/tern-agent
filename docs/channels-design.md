@@ -325,12 +325,19 @@ otherwise `#slug ·` prefixes in the one chat. A reply in a topic goes to that c
 | C1 | Home's stream: segment cutting, the `carry` step, `history_search`, the stream endpoint, queue-instead-of-cancel. Desktop Home view with dividers, New topic, History, side chats. Telegram `/new` as New topic. **Built** (DECISIONS.md "T2 C1"). | Yes: the direct chat changes shape |
 | C2 | Desktop topic channels: sidebar, timeline, thread pane, new-channel dialog, routines choosing a channel. Approvals and secret requests move to Home. **Built** (DECISIONS.md "T2 C2"). | Yes: the channel view |
 | C3 | The `channel` step, `channel_read`, `channel_post`, taint on posts. **Built** (DECISIONS.md "T2 C3"). | Yes: agents now actually share the channel |
-| C4 | Sub-agents posting, `needs_you` pointers into Home, live member lines. | Yes |
+| C4 | Sub-agents posting, `needs_you` pointers into Home, live member lines. **Built** (DECISIONS.md "T2 C4"). | Yes |
 | C5 | `channel_suggest`, TUI `/channel`, Telegram topics. | Yes |
 | Later | Agent profiles, designed in [agent-profiles-design.md](agent-profiles-design.md): authors become agents, each profile gets its own Home-style stream (a DM per agent, as Grok Bot does), `@mention` wakes an agent in a channel. Its AP0–AP1 fit after C3, AP2 after C4 (§8 there). Precomputed carry summaries. | |
 
 C1 stands on its own even if topic channels wait. C0 to C2 together look like the channel view; C3 is what makes it
 more than a grouping.
+
+### 6.1 Moving conversations into channels (built after C4)
+
+A topic that started in Home (a segment of the stream or a side chat), a thread in another channel, or anything in
+History can be moved into a topic channel, new or existing, one at a time or several together. It becomes a thread
+there with its history intact; where it was, a "Moved to #slug" note takes its place, and the channel gets a
+"Moved here from …" post, which its agents see in their next digest. Details in DECISIONS.md "T2 moves".
 
 ## 7. Open questions
 
@@ -342,8 +349,8 @@ more than a grouping.
    more than N agent-started runs per hour).
 3. **Side threads and the digest.** Should a side thread get every channel post, or only replies to its own root?
    Starting with all of them is simpler; it may be noisy in busy channels.
-4. **Sub-agent reports as posts.** Default off (the parent's answer is posted). A spawn option
-   `"post": true` may be wanted for long-running background research.
+4. ~~**Sub-agent reports as posts.**~~ Decided in C4: default off (the parent's answer is posted); `agent_spawn`
+   `"post": true` lets the child `channel_post` and posts its report.
 5. **Read state across devices.** Local for v1. Moving it into the store is one table if the phone app needs it.
 6. **Editing and deleting posts.** Not in v1. If added, the digest has to note edits, and taint has to survive them.
 7. **Grok Bot details.** Identified in §8, but its docs don't say whether a bot's DM is one thread or several chats,

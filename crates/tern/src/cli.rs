@@ -78,6 +78,11 @@ pub enum Command {
         #[command(subcommand)]
         command: RunsCommand,
     },
+    /// Writes waiting for your approval (deferred because nobody answered).
+    Outbox {
+        #[command(subcommand)]
+        command: Option<OutboxCommand>,
+    },
     /// Manage Luau connectors.
     Connectors {
         #[command(subcommand)]
@@ -353,6 +358,30 @@ pub enum RunsCommand {
     List,
     /// Print a run's step journal.
     Show { run_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OutboxCommand {
+    /// What is waiting (`--all`: decided items too).
+    List {
+        #[arg(long)]
+        all: bool,
+    },
+    /// One item, with its arguments and result.
+    Show { id: i64 },
+    /// Run it now, exactly once.
+    Approve {
+        id: i64,
+        /// JSON arguments to run it with instead of the agent's.
+        #[arg(long)]
+        input: Option<String>,
+    },
+    /// Don't run it; the run that queued it is told if still working.
+    Reject {
+        id: i64,
+        #[arg(long)]
+        note: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

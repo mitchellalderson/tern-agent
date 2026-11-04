@@ -353,6 +353,32 @@ void main() {
     },
   );
 
+  test('an agent\'s DM shows its own outbox items; Home shows all', () async {
+    final (store, _) = await _store();
+    OutboxItem item(int id, String channel, String agent) => OutboxItem(
+      id: id,
+      runId: 'r$id',
+      sessionId: 's$id',
+      tool: 'write_file',
+      input: const {},
+      summary: 'write_file reply.txt',
+      state: 'pending',
+      createdAt: _t0,
+      expiresAt: _t0,
+      channelId: channel,
+      agentId: agent,
+    );
+    store.outbox = [
+      item(1, 'dm:research', 'tern:research'),
+      item(2, 'home', 'tern'),
+    ];
+    expect(store.outboxHere().map((o) => o.id), [1, 2]);
+    expect(store.waitingFor(_research), 1);
+    await store.openAgent(_research);
+    expect(store.outboxHere().map((o) => o.id), [1]);
+    expect(store.pendingApprovals, 2);
+  });
+
   testWidgets('the sidebar lists agents and a row opens its DM', (
     tester,
   ) async {

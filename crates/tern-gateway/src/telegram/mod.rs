@@ -11,6 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tern_core::approval::{ApprovalRequest, Decision, SecretRequest};
 use tern_core::events::AgentEvent;
+use tern_core::outbox::OutboxItem;
 use tern_store::Store;
 use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -281,15 +282,18 @@ impl TelegramGateway {
         }
     }
 
-    async fn on_callback(&self, cb: CallbackQuery) {
+    async fn on_callback(&self, host: &Arc<dyn ChatHost>, cb: CallbackQuery) {
         if !self.paired(cb.from.id) {
             let _ = self.api.answer_callback(&cb.id, "Not paired").await;
             return;
         }
-        let data = cb.data.unwrap_or_default();
+        let data = cb.data.clone().unwrap_or_default();
         let mut parts = data.splitn(3, ':');
-        let (Some("ap"), Some(id), Some(choice)) = (parts.next(), parts.next(), parts.next())
-        else {
+        let (kind, id, choice) = (parts.next(), parts.next(), parts.next());
+        if let (Some("ob"), Some(id), Some(choice)) = (kind, id, choice) {
+            return self.on_outbox_callback(host, cb, id, choice).await;
+        }
+        let (Some("ap"), Some(id), Some(choice)) = (kind, id, choice) else {
             let _ = self.api.answer_callback(&cb.id, "").await;
             return;
         };
@@ -301,7 +305,7 @@ impl TelegramGateway {
         let label = match decision {
             Decision::AllowOnce => "Allowed",
             Decision::AlwaysAllow => "Always allowed",
-            Decision::Deny => "Denied",
+            Decision::Deny | Decision::Unanswered => "Denied",
         };
         // Only a tap in the chat the request was sent to counts.
         let chat = cb.message.as_ref().map(|m| m.chat.id);
@@ -455,6 +459,54 @@ fn approval_prompt(req: &ApprovalRequest) -> String {
     }
 }
 
+impl TelegramGateway {
+    async fn on_outbox_callback(
+        &self,
+        host: &Arc<dyn ChatHost>,
+        cb: CallbackQuery,
+        id: &str,
+        choice: &str,
+    ) {
+        let outcome = match id.parse::<i64>() {
+            Ok(id) => host.decide_outbox(id, choice == "approve").await,
+            Err(_) => Err("unknown item".into()),
+        };
+        let status = match &outcome {
+            Ok(s) => s.clone(),
+            Err(e) => e.clone(),
+        };
+        let _ = self.api.answer_callback(&cb.id, &status).await;
+        if let Some(m) = cb.message {
+            let original = m.text.unwrap_or_default();
+            let _ = self
+                .api
+                .edit_message(
+                    m.chat.id,
+                    m.message_id,
+                    &format!("{original}\n→ {status}"),
+                    None,
+                )
+                .await;
+        }
+    }
+}
+
+/// "1 action waiting" for the user, with what it is and why it waits.
+fn outbox_prompt(item: &OutboxItem) -> String {
+    let mut text = format!(
+        "📬 Waiting for you (outbox #{}): {}\nNobody was here to approve it, so tern carried on without it.",
+        item.id,
+        item.headline()
+    );
+    if let Some(taint) = &item.taint {
+        text.push_str(&format!("\n⚠ {}", tern_core::approval::taint_note(taint)));
+    }
+    if item.local_only {
+        text.push_str("\nApprove it in the tern app or TUI on the computer running tern.");
+    }
+    text
+}
+
 fn live_view(text: &str) -> String {
     let n = text.chars().count();
     if n <= MAX_MESSAGE - 2 {
@@ -529,7 +581,7 @@ impl Gateway for TelegramGateway {
                             let (me, host) = (self.clone(), host.clone());
                             tokio::spawn(async move { me.on_message(&host, m).await });
                         } else if let Some(cb) = u.callback_query {
-                            self.on_callback(cb).await;
+                            self.on_callback(&host, cb).await;
                         }
                     }
                 }
@@ -596,11 +648,29 @@ impl Gateway for TelegramGateway {
         {
             tracing::warn!(error = %e, "could not send approval request");
             self.approvals.lock().await.remove(&id);
-            return Decision::Deny;
+            return Decision::Unanswered;
         }
         // If the agent stops waiting (timeout, cancel), this future is
         // dropped; the stale entry then answers "Expired".
         rx.await.unwrap_or(Decision::Deny)
+    }
+
+    async fn outbox_notice(&self, target: &str, item: &OutboxItem) {
+        let Ok(chat) = target.parse::<i64>() else {
+            return;
+        };
+        let buttons: Buttons = vec![
+            ("Approve".into(), format!("ob:{}:approve", item.id)),
+            ("Reject".into(), format!("ob:{}:reject", item.id)),
+        ];
+        let buttons = (!item.local_only).then_some(&buttons);
+        if let Err(e) = self
+            .api
+            .send_message(chat, &outbox_prompt(item), buttons)
+            .await
+        {
+            tracing::warn!(error = %e, "could not send outbox notice");
+        }
     }
 
     async fn secret_request_notice(&self, target: &str, req: &SecretRequest) -> Option<String> {
