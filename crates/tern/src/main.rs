@@ -26,6 +26,7 @@ mod reset_cmd;
 mod routines;
 mod run_cmd;
 mod runtime;
+mod security_cmd;
 mod service;
 mod settings;
 mod subagents;
@@ -196,6 +197,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Grants { command }) => grants_cmd::run(&home, command),
         Some(Command::Ledger { command }) => ledger_cmd::run(&home, command),
         Some(Command::Tasks { json }) => tasks_cmd::run(&home, json),
+        Some(Command::Security { command }) => match command {
+            cli::SecurityCommand::Audit { json } => security_cmd::run(&home, json),
+        },
         Some(Command::Runs { command }) => {
             match command {
                 RunsCommand::List => inspect::runs_list(&home)?,

@@ -17,6 +17,7 @@ export 'src/models.dart';
 export 'src/outbox.dart';
 export 'src/providers.dart';
 export 'src/secret_requests.dart';
+export 'src/security.dart';
 export 'src/sse.dart';
 export 'src/subagents.dart';
 export 'src/tasks.dart';

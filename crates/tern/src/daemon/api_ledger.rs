@@ -5,6 +5,7 @@
 //! |---|---|---|
 //! | GET | `/v1/ledger[?kind=&channel=&routine=&connector=&run=&before=&limit=]` | entries, newest first; `kind` is a kind (`grant.add`) or a family (`grant`); page back with `before=<seq>` |
 //! | GET | `/v1/ledger/verify` | `{ok, entries, head, broken?: {seq, reason}}`: the hash chain recomputed |
+//! | GET | `/v1/security/audit` | `tern security audit --json`: `{findings: [{severity, area, title, fix?, subject?}], high, medium, low}` |
 
 use axum::extract::{Query, State};
 use axum::routing::get;
@@ -20,6 +21,19 @@ pub fn routes() -> Router<Shared> {
     Router::new()
         .route("/v1/ledger", get(list))
         .route("/v1/ledger/verify", get(verify))
+        .route("/v1/security/audit", get(audit))
+}
+
+/// `tern security audit` against the live config (tooling spec §8.4).
+async fn audit(State(m): State<Shared>) -> ApiResult<crate::security_cmd::Audit> {
+    let home = m.rt.home.clone();
+    let config = m.rt.live();
+    let store = m.rt.store.clone();
+    // Loading connectors and gateways blocks; keep it off the runtime.
+    tokio::task::spawn_blocking(move || crate::security_cmd::audit(&home, &config, Some(&store)))
+        .await
+        .map(Json)
+        .map_err(internal)
 }
 
 #[derive(Deserialize)]

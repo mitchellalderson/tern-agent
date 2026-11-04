@@ -198,3 +198,179 @@ async fn the_tasks_view_collects_every_source() {
         assert!(text.contains(heading), "{heading}: {text}");
     }
 }
+
+const LEGACY: &str = r#"return {
+  name = "weather",
+  description = "Forecasts",
+  capabilities = { http = { "api.weather.example" }, secrets = { "WEATHER_API_KEY" } },
+  tools = {
+    forecast = {
+      description = "Forecast",
+      params = { type = "object", properties = {} },
+      run = function(ctx, args) return ctx.secret("WEATHER_API_KEY") ~= nil end,
+    },
+  },
+}"#;
+
+/// Every condition `tern security audit` looks for, set up at once.
+#[test]
+fn the_security_audit_reports_each_condition() {
+    let env = Env::with_config(
+        &json!({}),
+        r#"autonomy = "yolo"
+
+[api]
+listen = ["unix", "tcp://0.0.0.0:7420"]
+remote_mcp_stdio = true
+
+[webhooks]
+listen = ["tcp://127.0.0.1:8712"]
+
+[sandbox]
+network = true
+confine = "off"
+
+[taint]
+egress = "allow"
+
+[gateway.connectors.ntfy]
+enabled = true
+strangers = "taint"
+"#,
+    );
+    let t = &env.tern_home;
+    std::fs::create_dir_all(t.join("connectors")).unwrap();
+    std::fs::write(t.join("connectors/weather.luau"), LEGACY).unwrap();
+    let secrets = t.join("secrets.toml");
+    std::fs::write(&secrets, "").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let store = tern_store::Store::open(&t.join("tern.db")).unwrap();
+    store
+        .create_device(
+            &tern_store::DeviceRow {
+                id: "d1".into(),
+                name: "old phone".into(),
+                platform: None,
+                scope: "owner".into(),
+                created_at: 0,
+                last_seen_at: None,
+                last_ip: None,
+                revoked_at: None,
+            },
+            "h",
+        )
+        .unwrap();
+    store
+        .add_connection(&tern_store::NewConnection {
+            kind: "connector".into(),
+            target: "gmail".into(),
+            slug: "work".into(),
+            auth_method: "oauth".into(),
+            auth: Some(json!({ "scopes": ["openid", "https://mail.google.com/"] }).to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+    store.add_allowlist("write_file", "*").unwrap();
+    store
+        .conn()
+        .unwrap()
+        .execute_batch(
+            "UPDATE agents SET egress = 'allow' WHERE id = 'tern';
+             INSERT INTO sessions (id, source, created_at, updated_at) VALUES ('s', 'cron', 0, 0);
+             INSERT INTO schedules (id, cron, prompt, session_id, next_run_at, trigger_kind, autonomy)
+               VALUES ('inbox', '', 'Inbox sweep', 's', 0, 'watch', 'yolo'),
+                      ('hook', '', 'Deploy notes', 's', 0, 'webhook', NULL);",
+        )
+        .unwrap();
+    drop(store);
+
+    let out = env.cmd(&["security", "audit", "--json"]).output().unwrap();
+    assert!(!out.status.success(), "high findings exit non-zero");
+    let report: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stderr)));
+    let findings = report["findings"].as_array().unwrap();
+    let find = |area: &str, needle: &str| -> &Value {
+        findings
+            .iter()
+            .find(|f| f["area"] == area && f["title"].as_str().unwrap().contains(needle))
+            .unwrap_or_else(|| panic!("no {area} finding with {needle:?} in {report:#}"))
+    };
+    assert_eq!(find("listeners", "tcp://0.0.0.0:7420")["severity"], "low");
+    assert_eq!(find("listeners", "remote_mcp_stdio")["severity"], "high");
+    assert_eq!(
+        find("listeners", "webhooks on tcp://127.0.0.1:8712")["severity"],
+        "info"
+    );
+    assert_eq!(
+        find("devices", "old phone (owner scope)")["severity"],
+        "low"
+    );
+    assert_eq!(
+        find("autonomy", "autonomy = \"yolo\": nothing asks")["severity"],
+        "high"
+    );
+    assert_eq!(
+        find("autonomy", "routine \"Inbox sweep\"")["subject"],
+        "inbox"
+    );
+    assert_eq!(
+        find(
+            "routines",
+            "\"Inbox sweep\" starts tainted from what its watch finds"
+        )["severity"],
+        "high"
+    );
+    assert_eq!(
+        find("routines", "\"Deploy notes\" starts tainted from a webhook")["severity"],
+        "high"
+    );
+    assert_eq!(
+        find("gateways", "ntfy: messages from anyone")["severity"],
+        "low"
+    );
+    assert_eq!(
+        find("connectors", "weather reads WEATHER_API_KEY")["severity"],
+        "medium"
+    );
+    assert_eq!(find("sandbox", "network = true")["severity"], "high");
+    assert_eq!(find("sandbox", "confine = \"off\"")["severity"], "medium");
+    assert_eq!(
+        find("connections", "https://mail.google.com/")["severity"],
+        "medium"
+    );
+    assert_eq!(find("egress", "[taint] egress")["severity"], "medium");
+    assert_eq!(find("egress", "agent tern")["severity"], "medium");
+    assert_eq!(find("secrets", "readable by others")["severity"], "high");
+    assert_eq!(find("grants", "write_file")["severity"], "low");
+    // Most severe first.
+    assert_eq!(findings[0]["severity"], "high");
+
+    let human = env.cmd(&["security", "audit"]).output().unwrap();
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(text.contains("[high  ] autonomy"), "{text}");
+
+    let doctor = env.cmd(&["doctor", "--offline"]).output().unwrap();
+    let text = String::from_utf8_lossy(&doctor.stdout);
+    assert!(text.contains("\nSecurity\n  [warn] audit: "), "{text}");
+    assert!(text.contains("See `tern security audit`."), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_security_audit_over_the_api() {
+    let env = Env::with_config(&json!({}), "");
+    let _d = env.daemon_with(None);
+    let (code, report) = get(&env.socket(), "/v1/security/audit").await;
+    assert_eq!(code, 200, "{report}");
+    assert_eq!(report["high"], 0, "{report:#}");
+    assert!(
+        report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["title"] == "API: the local socket only (no TCP listener)"),
+        "{report:#}"
+    );
+}

@@ -16,6 +16,7 @@ import 'providers.dart';
 import 'secret_requests.dart';
 import 'sse.dart';
 import 'subagents.dart';
+import 'security.dart';
 import 'tasks.dart';
 import 'tools.dart';
 import 'webhooks.dart';
@@ -864,6 +865,11 @@ class TernClient {
   /// recently (check `features` in [health] for `tasks`).
   Future<Tasks> tasks() async =>
       Tasks.fromJson(await _json('GET', '/v1/tasks') as Json);
+
+  /// `tern security audit` on the core (owner only; check `features` in
+  /// [health] for `security_audit`).
+  Future<SecurityAudit> securityAudit() async =>
+      SecurityAudit.fromJson(await _json('GET', '/v1/security/audit') as Json);
 
   /// Recompute the ledger's hash chain.
   Future<LedgerCheck> verifyLedger() async =>

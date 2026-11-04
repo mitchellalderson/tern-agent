@@ -547,6 +547,11 @@ class TernStore extends ChangeNotifier {
     return n;
   }
 
+  /// `tern security audit` on the core (tooling spec §8.4): owner-only.
+  bool get hasSecurityAudit =>
+      (health?.features.contains('security_audit') ?? false) &&
+      (health?.isOwner ?? false);
+
   /// The activity ledger (tooling spec §8.1): owner-only.
   bool get hasLedger =>
       (health?.features.contains('ledger') ?? false) &&

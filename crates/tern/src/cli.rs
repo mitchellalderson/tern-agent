@@ -83,6 +83,11 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<GrantsCommand>,
     },
+    /// Security checks.
+    Security {
+        #[command(subcommand)]
+        command: SecurityCommand,
+    },
     /// Everything running, queued, scheduled, waiting on you (approvals,
     /// the outbox, secret requests) or failed recently, across agents.
     Tasks {
@@ -414,6 +419,18 @@ pub enum GrantsCommand {
     List,
     /// Remove one, e.g. `tern grants remove http_fetch host:example.com`.
     Remove { tool: String, pattern: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SecurityCommand {
+    /// A read-only report: listeners and their exposure, device scopes,
+    /// autonomy, routines that start tainted, legacy `ctx.secret`
+    /// connectors, the shell's network and sandbox, broad OAuth scopes,
+    /// egress. Exits non-zero on a high finding.
+    Audit {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
