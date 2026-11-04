@@ -121,21 +121,35 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
         }
     }
 
+    // Always there: suggesting a connector matters most when none exists.
+    out.push_str("\n\n## Integrations\n");
     if !inp.integrations.is_empty() {
-        out.push_str("\n\n## Integrations\n");
         for line in inp.integrations {
             out.push_str(&format!("\n- {line}"));
         }
         out.push_str("\n\n");
         out.push_str(INTEGRATIONS_RULE);
     }
+    out.push_str("\n\n");
+    out.push_str(SUGGEST_CONNECTOR);
     out
 }
 
 /// Under the integrations list: a script calling the API directly would
 /// skip the connector's host allowlist, its effect, taint and the journal.
-const INTEGRATIONS_RULE: &str = "Fetch data an integration provides through its tools, never with \
-     `shell`, `curl` or scripts; for many lookups, call the tool repeatedly.";
+const INTEGRATIONS_RULE: &str = "Always get data an integration provides through its tools, even when \
+     `shell`, `curl`, `http_fetch` or a script would be quicker: those skip its allowlist, approvals and \
+     record. For many lookups, call the tool once per item. Compute tools (such as `python`) may process \
+     what its tools returned, never fetch it themselves.";
+
+/// Suggest a connector for a service worth one, without building it unasked.
+const SUGGEST_CONNECTOR: &str = "When you're about to fetch data from an outside service with \
+     `http_fetch`, scraping or `shell`, and the user will likely want it again (a public or REST API, \
+     many lookups, a recurring task), first check whether the service has an API: a quick search or its \
+     docs, if you have tools for that. If it does, suggest making a connector for it in one sentence: \
+     what it would do, and why (repeatable, safer, every change approved). Build it with \
+     `connector_write` only if the user agrees. Skip this for one-off fetches, suggest it at most once \
+     per service in a conversation, and drop it if the user says no.";
 
 /// For a run with the `agent_*` tools: delegate proactively, and how.
 fn subagents_section(sub: &SubagentPrompt) -> String {
@@ -316,7 +330,8 @@ mod tests {
         assert!(p.contains("/ws"));
         assert!(p.contains("## Skills") && p.contains("- pdf: Work with PDFs"));
         assert!(p.contains("## Integrations\n\n- MCP server github"));
-        assert!(p.contains(INTEGRATIONS_RULE));
+        assert!(p.contains(INTEGRATIONS_RULE) && p.contains(SUGGEST_CONNECTOR));
+        assert!(p.find(INTEGRATIONS_RULE) < p.find(SUGGEST_CONNECTOR));
 
         std::fs::write(home.user_path(), "<!-- note -->\nName: Sam").unwrap();
         assert!(system_prompt(&inp).contains("## About the user\n\nName: Sam"));
@@ -338,7 +353,9 @@ mod tests {
         });
         assert!(p.starts_with("You are tern"));
         assert!(!p.contains("## Skills"));
-        assert!(!p.contains("## Integrations") && !p.contains(INTEGRATIONS_RULE));
+        // No integrations: no use-them-first rule, but still the suggestion.
+        assert!(!p.contains(INTEGRATIONS_RULE));
+        assert!(p.contains("## Integrations\n\n") && p.contains(SUGGEST_CONNECTOR));
         assert!(!p.contains("## Sub-agents") && !p.contains("agent_spawn"));
     }
 
