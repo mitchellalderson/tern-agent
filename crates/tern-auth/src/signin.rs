@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::connections::{Conn, ConnAuth, Connections, Kind};
 use crate::error::AuthError;
 use crate::flow::{self, OAuthConfig, TokenSet};
-use crate::tokens::ConnKey;
+use crate::tokens::{ClientSecret, ConnKey};
 
 /// What the user has to do, for a card or the terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,19 +230,24 @@ pub fn record_oauth(
             .and_then(|a| conns.with_account(kind, target, a))
     });
     let auth = ConnAuth::OAuth(Box::new(signed.cfg.clone()));
+    // A registered client secret is kept only for the same client at the
+    // same token endpoint; anything else is dropped with the old tokens.
+    let keeps_client = existing
+        .as_ref()
+        .and_then(|c| c.auth.oauth())
+        .is_some_and(|o| {
+            o.client_id == signed.cfg.client_id && o.token_url == signed.cfg.token_url
+        });
+    let client_secret = match (&signed.client_secret, keeps_client) {
+        (Some(s), _) => ClientSecret::New(s.as_str()),
+        (None, true) => ClientSecret::Keep,
+        (None, false) => ClientSecret::Drop,
+    };
     let save = |key: &ConnKey| -> Result<(), String> {
         conns
             .tokens
-            .save(key, &signed.tokens)
-            .map_err(|e| e.to_string())?;
-        if let Some(s) = &signed.client_secret {
-            conns
-                .tokens
-                .secrets()
-                .set(&key.client_secret_name(), s)
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+            .save_grant(key, &signed.tokens, client_secret)
+            .map_err(|e| e.to_string())
     };
     if let Some(c) = existing {
         save(&c.key())?;
@@ -257,7 +262,7 @@ pub fn record_oauth(
     conns.check_new(kind, target, &slug)?;
     // Tokens first: a row without them would be a connection that can't
     // sign in.
-    save(&ConnKey::new(target, &slug))?;
+    save(&ConnKey::new(kind, target, &slug))?;
     let c = conns.add(kind, target, &slug, label, signed.account.as_deref(), &auth)?;
     Ok(Recorded::Connected(c))
 }

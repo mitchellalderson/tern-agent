@@ -55,7 +55,7 @@ impl Kind {
 pub enum ConnAuth {
     #[serde(rename = "oauth")]
     OAuth(Box<OAuthConfig>),
-    /// Keys under the connection's names (`conn/<target>/<slug>/<NAME>`,
+    /// Keys under the connection's names (`conn/<kind>:<target>/<slug>/<NAME>`,
     /// plain names for `default`).
     Key {
         #[serde(default)]
@@ -127,7 +127,7 @@ impl Conn {
     }
 
     pub fn key(&self) -> ConnKey {
-        ConnKey::new(&self.target, &self.slug)
+        ConnKey::new(self.kind, &self.target, &self.slug)
     }
 
     /// `work (mitch@inngest.com)`.
@@ -247,7 +247,85 @@ impl Connections {
             on_change: std::sync::OnceLock::new(),
         };
         c.reload();
+        c.migrate_secret_names();
         c
+    }
+
+    /// Move secrets from the first layout, `conn/<target>/<slug>/…`, which
+    /// a connector and an MCP server of the same name shared, to
+    /// `conn/<kind>:<target>/<slug>/…`. Each goes to the one connection it
+    /// can belong to (OAuth fields to an OAuth connection, a key to the
+    /// key connection naming it); one that two connections could own is
+    /// deleted and those connections are asked to sign in again, since
+    /// there is no telling whose it was. Runs at every open; finds nothing
+    /// once done.
+    fn migrate_secret_names(&self) {
+        let secrets = self.tokens.secrets();
+        let old: Vec<String> = secrets
+            .file_names()
+            .into_iter()
+            .filter(|n| {
+                n.strip_prefix(tern_core::secrets::SCOPED_PREFIX)
+                    .and_then(|r| r.split('/').next())
+                    .is_some_and(|t| !t.contains(':'))
+            })
+            .collect();
+        if old.is_empty() {
+            return;
+        }
+        let mut set: Vec<(String, String)> = Vec::new();
+        let mut reauth: Vec<Conn> = Vec::new();
+        for name in &old {
+            let mut parts = name["conn/".len()..].splitn(3, '/');
+            let (Some(target), Some(slug), Some(tail)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let owners: Vec<Conn> = [Kind::Connector, Kind::Mcp]
+                .into_iter()
+                .filter_map(|k| self.get(k, target, slug))
+                .filter(|c| match (&c.auth, tail.strip_prefix("oauth/")) {
+                    (ConnAuth::OAuth(_), Some(_)) => true,
+                    (ConnAuth::Key { names }, None) => {
+                        names.is_empty() || names.iter().any(|n| n == tail)
+                    }
+                    _ => false,
+                })
+                .collect();
+            match (owners.as_slice(), secrets.get(name)) {
+                ([one], Some(value)) => {
+                    set.push((format!("{}{tail}", one.key().prefix()), value));
+                }
+                _ => {
+                    for c in owners {
+                        if !reauth.iter().any(|r| r.id == c.id) {
+                            reauth.push(c);
+                        }
+                    }
+                }
+            }
+        }
+        let pairs: Vec<(&str, &str)> = set.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let remove: Vec<&str> = old.iter().map(String::as_str).collect();
+        if let Err(e) = secrets.update(&pairs, &remove) {
+            tracing::warn!(error = %e, "moving connection secrets to the kind-scoped layout failed");
+            return;
+        }
+        for c in &reauth {
+            let _ = self.store.set_connection_status(
+                &c.id,
+                "needs_reauth",
+                Some("its sign-in was shared with a same-named connector or MCP server; sign in again"),
+            );
+        }
+        tracing::info!(
+            moved = set.len(),
+            dropped = old.len() - set.len(),
+            "connection secrets now scoped by kind"
+        );
+        if !reauth.is_empty() {
+            self.reload();
+        }
     }
 
     pub fn store(&self) -> &Store {

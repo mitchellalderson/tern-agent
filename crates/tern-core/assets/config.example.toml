@@ -140,6 +140,9 @@ docker_pids = 512          # 0 for no limit
 # app" client, whose client secret goes in secrets.toml under the name given.
 # [auth.clients]
 # google = { client_id = "1234-abc.apps.googleusercontent.com", client_secret_secret = "GOOGLE_CLIENT_SECRET" }
+# An app for a provider without a built-in profile names the issuer it
+# belongs to; tern only sends it (and its secret) to endpoints on that origin.
+# acme_com = { client_id = "…", issuer = "https://login.acme.com" }
 
 # Scheduled prompts (schedule_create, the app's routines). Each schedule can
 # override these.

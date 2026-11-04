@@ -87,6 +87,63 @@ pub struct Target {
     pub key_names: Vec<String>,
     /// `capabilities.oauth`: provider and scopes.
     pub oauth: Option<(String, Vec<String>)>,
+    /// The hosts it declares, which its tokens are sent to: a connector's
+    /// `capabilities.http` (`*.` covers subdomains), an MCP server's URL
+    /// host. What a plan's `api_hosts` are checked against (§6.7.2, W10).
+    pub hosts: Vec<String>,
+}
+
+/// Whether `host` (itself possibly `*.x`) is one `declared` names.
+fn covered(declared: &[String], host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    declared.iter().any(|d| {
+        let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
+        d == host
+            || d.strip_prefix("*.").is_some_and(|base| {
+                let h = host.strip_prefix("*.").unwrap_or(&host);
+                h.len() > base.len() && h.ends_with(&format!(".{base}"))
+            })
+    })
+}
+
+/// A plan may be used for `target` only when the API hosts it was checked
+/// against are ones the target declares: research validation compares
+/// endpoints with `api_hosts`, so those must not be the agent's own pick.
+/// Built-in profiles sign connectors in (checked by provider); an MCP
+/// server signs in on its own terms.
+pub fn check_plan_hosts(target: &Target, plan: &AuthPlan) -> Result<(), String> {
+    if plan.source == Some(Source::Builtin) {
+        return match target.kind {
+            Kind::Connector => Ok(()),
+            Kind::Mcp => Err(format!(
+                "{} is an MCP server: it signs in on its own terms, not with tern's built-in {} profile; call auth_discover with its URL and mcp: true",
+                target.name, plan.service
+            )),
+        };
+    }
+    if plan.api_hosts.is_empty() {
+        return Err("the plan names no API hosts".into());
+    }
+    let missing: Vec<&str> = plan
+        .api_hosts
+        .iter()
+        .filter(|h| !covered(&target.hosts, h))
+        .map(String::as_str)
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the plan is for {}, which {} {} doesn't declare (it declares {}); its sign-in addresses were checked against those hosts, so they can't be used for it",
+        missing.join(", "),
+        target.kind.as_str(),
+        target.name,
+        if target.hosts.is_empty() {
+            "none".to_owned()
+        } else {
+            target.hosts.join(", ")
+        }
+    ))
 }
 
 /// Every target, computed when asked (connectors written moments ago count).
@@ -98,18 +155,33 @@ pub struct AuthHost {
     pub clients: Clients,
     pub plans: Plans,
     pub config: AuthConfig,
+    /// `auth_propose` calls per run, against [`MAX_PROPOSALS_PER_RUN`].
+    proposals: Mutex<HashMap<String, u32>>,
+}
+
+/// `auth_propose` calls one run may make: each can fetch a researched
+/// issuer's metadata and show a card.
+pub const MAX_PROPOSALS_PER_RUN: u32 = 4;
+
+/// Count a call for `run` against `max`; `true` once it is over.
+fn over_limit(runs: &Mutex<HashMap<String, u32>>, run: &str, max: u32) -> bool {
+    let mut runs = runs.lock().unwrap_or_else(|e| e.into_inner());
+    if runs.len() > 1000 {
+        runs.clear();
+    }
+    let n = runs.entry(run.to_owned()).or_default();
+    *n += 1;
+    *n > max
 }
 
 impl AuthHost {
     pub fn new(cfg: &AuthConfig) -> Self {
         Self {
             guard: Guard::new(&cfg.local_issuers),
-            clients: Clients {
-                configured: cfg.clients.keys().cloned().collect(),
-                cimd: !cfg.client_metadata_url.is_empty(),
-            },
+            clients: Clients::new(cfg),
             plans: Plans::default(),
             config: cfg.clone(),
+            proposals: Mutex::default(),
         }
     }
 
@@ -123,7 +195,11 @@ impl AuthHost {
         if !cfg.client_id.is_empty() {
             return Ok(ClientSource::Ready);
         }
-        if let Some(c) = self.config.clients.get(&cfg.provider) {
+        let configured = self.config.clients.get(&cfg.provider);
+        let bound = self
+            .clients
+            .bound(&cfg.provider, discover::client_endpoints(cfg));
+        if let Some(c) = configured.filter(|_| bound) {
             cfg.client_id = c.client_id.clone();
             cfg.client_secret_secret = c.client_secret_secret.clone();
             if cfg.client_secret_secret.is_some() && cfg.token_auth == crate::TokenAuth::None {
@@ -137,6 +213,19 @@ impl AuthHost {
         }
         if let Some(r) = &cfg.registration_url {
             return Ok(ClientSource::Register(r.clone()));
+        }
+        if configured.is_some() {
+            return Err(format!(
+                "[auth.clients] {p} is bound to {}, and this sign-in's endpoints ({}) aren't all there; tern won't send that app's ID or secret elsewhere. If the service really moved, set issuer = \"…\" on the entry",
+                self.clients
+                    .configured
+                    .get(&cfg.provider)
+                    .filter(|o| !o.is_empty())
+                    .map(|o| o.join(", "))
+                    .unwrap_or_else(|| "no issuer (add issuer = \"https://…\")".into()),
+                discover::client_endpoints(cfg).join(", "),
+                p = cfg.provider
+            ));
         }
         let setup = crate::profiles::by_id(&cfg.provider)
             .map(|p| format!(" (register one at {})", p.setup_url))
@@ -282,6 +371,7 @@ pub const PROPOSE: &str = "auth_propose";
 pub struct AuthPropose {
     pub host: Arc<AuthHost>,
     pub asker: Arc<dyn ApprovalHandler>,
+    pub targets: Targets,
 }
 
 /// Where a plan came from, in plain words, for the card.
@@ -384,11 +474,13 @@ impl Tool for AuthPropose {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: PROPOSE.into(),
-            description: "Ask the user how to connect a service: shows a card with signing in (OAuth) and an API key as options, the host's recommendation, and where the sign-in addresses came from. The user chooses; you never pick for them. Pass plan_id from auth_discover; or, when discovery said \"unknown\" and you found OAuth in the service's docs, pass `plan` with authorize_url, token_url, api_hosts (the API hosts the connector will call) and evidence (the doc URLs), which tern checks against the API's domain and the issuer's metadata. Returns {\"choice\": \"oauth\" | \"key\" | \"cancel\", \"plan_id\"}.".into(),
+            description: "Ask the user how to connect a service: shows a card with signing in (OAuth) and an API key as options, the host's recommendation, and where the sign-in addresses came from. The user chooses; you never pick for them. Pass plan_id from auth_discover; or, when discovery said \"unknown\" and you found OAuth in the service's docs, pass `plan` with authorize_url, token_url, api_hosts (the API hosts the connector will call) and evidence (the doc URLs), which tern checks against the API's domain and the issuer's metadata. With a researched plan, pass `target` (the connector, a draft is fine, or MCP server it is for): its declared hosts must cover api_hosts, and a plan the issuer's metadata can't confirm is refused without one. Returns {\"choice\": \"oauth\" | \"key\" | \"cancel\", \"plan_id\"}.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "plan_id": {"type": "string", "description": "From auth_discover"},
+                    "target": {"type": "string", "description": "With a researched plan: the connector or MCP server it is for"},
+                    "kind": {"type": "string", "enum": ["connector", "mcp"], "description": "Only when a connector and an MCP server share the name"},
                     "plan": {
                         "type": "object",
                         "description": "A researched plan, when auth_discover found nothing",
@@ -415,12 +507,34 @@ impl Tool for AuthPropose {
         Effect::Read
     }
 
+    /// A researched plan is checked against its issuer's metadata, fetched
+    /// from a host the agent chose: in a tainted run that host is new
+    /// egress like any other (§5.3), so the user is asked first.
+    fn egress_host(&self, args: &Value) -> Option<String> {
+        if str_arg(args, "plan_id").is_some() {
+            return None;
+        }
+        let plan = args.get("plan")?;
+        let url = ["issuer", "authorize_url"]
+            .iter()
+            .find_map(|k| str_arg(plan, k))?;
+        reqwest::Url::parse(url)
+            .ok()?
+            .host_str()
+            .map(str::to_ascii_lowercase)
+    }
+
     /// The card is the user's own decision.
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
         ToolPolicy::new(Effect::Read, true)
     }
 
     async fn call(&self, ctx: &ToolCtx, args: Value) -> ToolResult {
+        if over_limit(&self.host.proposals, &ctx.run_id, MAX_PROPOSALS_PER_RUN) {
+            return ToolResult::error(
+                "this run has proposed enough sign-ins; tell the user what is left to connect",
+            );
+        }
         let (id, plan) = if let Some(id) = str_arg(&args, "plan_id") {
             match self.host.plans.get(id) {
                 Some(k) => (id.to_owned(), k.plan),
@@ -448,13 +562,29 @@ impl Tool for AuthPropose {
             plan.notes.clear();
             plan.provider.clear();
             plan.service = short(&plan.service, 40);
-            if let Err(e) = discover::validate_research(&self.host.guard, &mut plan).await {
-                return ToolResult::error(format!(
+            let refuse = |e: &str| {
+                ToolResult::error(format!(
                     "auth_propose: this plan can't be used: {e}. Offer the key flow instead (secret_request), or ask the user for the service's official docs."
-                ));
+                ))
+            };
+            let target = str_arg(&args, "target")
+                .and_then(|t| find_target(&self.targets, t, str_arg(&args, "kind")).ok());
+            if let Some(t) = &target {
+                plan.source = Some(Source::Research);
+                if let Err(e) = check_plan_hosts(t, &plan) {
+                    return refuse(&e);
+                }
+            }
+            if let Err(e) = discover::validate_research(&self.host.guard, &mut plan).await {
+                return refuse(&e);
+            }
+            if !plan.verified && target.is_none() {
+                return refuse(
+                    "the service publishes no metadata to confirm these addresses, so they can only be checked against the hosts a connector declares: write the connector (a draft) with capabilities.http first, then pass `target`",
+                );
             }
             plan.client = Some(ClientKind::UserSupplied);
-            plan.client_ready = self.host.clients.configured.contains(&plan.provider);
+            plan.client_ready = plan.client_bound(&self.host.clients);
             (self.host.plans.keep(plan.clone()), plan)
         } else {
             return ToolResult::error("pass plan_id (from auth_discover) or a researched plan");
@@ -638,16 +768,7 @@ impl Tool for ConnectionAdd {
                     .unwrap_or_default()
             ));
         }
-        let over = {
-            let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
-            if runs.len() > 1000 {
-                runs.clear();
-            }
-            let n = runs.entry(ctx.run_id.clone()).or_default();
-            *n += 1;
-            *n > MAX_SIGN_INS_PER_RUN
-        };
-        if over {
+        if over_limit(&self.runs, &ctx.run_id, MAX_SIGN_INS_PER_RUN) {
             return ToolResult::error(
                 "this run has opened enough sign-in cards; tell the user what is left to connect",
             );
@@ -768,6 +889,7 @@ pub async fn connect_oauth(
     } = req;
     let (mut cfg, kind) = match kept {
         Some(k) => {
+            check_plan_hosts(target, &k.plan).map_err(ConnectError::Failed)?;
             let scopes = match &target.oauth {
                 Some((_, s)) => merge_scopes(&k.plan.scopes_supported_base(), s),
                 None => k.plan.scopes_supported.clone(),
@@ -800,15 +922,21 @@ pub async fn connect_oauth(
         .iter()
         .filter(|c| Some(c.slug.as_str()) != slug)
         .any(|c| c.auth.oauth().is_some_and(|o| o.client_id == cfg.client_id));
-    if reusing && cfg.registration_url.is_some() && !host.config.clients.contains_key(&cfg.provider)
+    if reusing
+        && cfg.registration_url.is_some()
+        && !host
+            .clients
+            .bound(&cfg.provider, discover::client_endpoints(&cfg))
     {
         cfg.client_id.clear();
         cfg.redirect_uri = None;
     }
-    // Signing in again keeps that account's own registered client.
+    // Signing in again keeps that account's own registered client, when
+    // it is for the same token endpoint (its secret goes nowhere else).
     if let Some(own) = slug
         .and_then(|s| conns.get(target.kind, &target.name, s))
         .and_then(|c| c.auth.oauth().cloned())
+        .filter(|own| own.token_url == cfg.token_url)
     {
         cfg.client_id = own.client_id;
         cfg.redirect_uri = own.redirect_uri;
@@ -894,7 +1022,7 @@ impl ConnectionAdd {
         let slug = slug
             .map(str::to_owned)
             .unwrap_or_else(|| signin::new_slug(&self.conns, target.kind, &target.name, None));
-        let key = crate::ConnKey::new(&target.name, &slug);
+        let key = crate::ConnKey::new(target.kind, &target.name, &slug);
         let secrets = self.conns.tokens.secrets();
         let asks: Vec<SecretAsk> = target
             .key_names
@@ -965,7 +1093,7 @@ pub fn connect_key(
     label: Option<&str>,
     values: &std::collections::BTreeMap<String, String>,
 ) -> Result<Recorded, ConnectError> {
-    let key = crate::ConnKey::new(&target.name, slug);
+    let key = crate::ConnKey::new(target.kind, &target.name, slug);
     let mut clean = Vec::new();
     for name in &target.key_names {
         let Some(raw) = values.get(name) else {

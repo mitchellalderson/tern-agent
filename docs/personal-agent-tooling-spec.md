@@ -402,7 +402,7 @@ capabilities = { oauth = { google = { scopes = { "gmail.readonly", "gmail.send" 
   user.
 - The flow runs **from a front end**, never from the agent: `tern auth google`, or a button in the desktop app. It
   opens the browser to the provider and catches the code on a one-shot `127.0.0.1` port, then stores refresh and
-  access tokens as secrets of that **connection** (`conn/gmail/work/oauth/...`, §6.8). The host refreshes on 401 or expiry.
+  access tokens as secrets of that **connection** (`conn/connector:gmail/work/oauth/...`, §6.8). The host refreshes on 401 or expiry.
 - **Client IDs**: the user supplies their own (documented per provider; Google needs a "Desktop app" OAuth client),
   or, on tern Cloud, ours. This is a real onboarding cost. A bundle can ship a setup guide (a skill) that walks
   through it.
@@ -604,7 +604,7 @@ using it: *Gmail · work (mitch@inngest.com)* and *Gmail · personal (mitch@gmai
 | | Belongs to the connector or server | Belongs to each connection |
 |---|---|---|
 | code, tools, declared hosts, scopes requested | ✓ | |
-| credentials (OAuth tokens, keys) | | ✓, as secrets `conn/<target>/<slug>/<NAME>` |
+| credentials (OAuth tokens, keys) | | ✓, as secrets `conn/<kind>:<target>/<slug>/<NAME>` |
 | account label, status, last error | | ✓ |
 | `ctx.kv` namespace | | ✓ `lua:<connector>:<slug>` (cache, cursors) |
 | watch cursors, routines' triggers | | ✓ (`watch = "gmail@work.new_mail"`) |
@@ -622,7 +622,7 @@ references:
 transport = "http"
 url = "https://mcp.linear.app/mcp"
 
-[mcp.servers.linear.connections.work]      # OAuth: tokens live in secrets under conn/linear/work/
+[mcp.servers.linear.connections.work]      # OAuth: tokens live in secrets under conn/mcp:linear/work/
 auth = "oauth"
 
 [mcp.servers.linear.connections.side]

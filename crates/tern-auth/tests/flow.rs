@@ -99,7 +99,7 @@ async fn pkce_sign_in_with_a_loopback_redirect() {
     let redirect = query(&url, "redirect_uri");
     assert_eq!(redirect, pending.redirect_uri());
 
-    let key = ConnKey::new("mock", "work");
+    let key = ConnKey::new(tern_auth::Kind::Connector, "mock", "work");
     let client = tokens.client(&key, &cfg);
     let finish = tokio::spawn({
         let cfg = cfg.clone();
@@ -234,7 +234,7 @@ async fn refresh_rotates_and_a_dead_grant_needs_sign_in() {
         .await;
     let cfg = cfg(&server);
     let (_dir, tokens) = tokens(&server);
-    let key = ConnKey::new("mock", "work");
+    let key = ConnKey::new(tern_auth::Kind::Connector, "mock", "work");
     tokens
         .save(
             &key,
@@ -281,7 +281,7 @@ async fn refresh_rotates_and_a_dead_grant_needs_sign_in() {
         "{msg}"
     );
     // No tokens at all: sign in.
-    let other = ConnKey::new("mock", "home");
+    let other = ConnKey::new(tern_auth::Kind::Connector, "mock", "home");
     assert!(matches!(
         tokens.access_token(&other, &cfg, None).await,
         Err(AuthError::NeedsReauth(_))
@@ -319,7 +319,10 @@ async fn device_flow_polls_until_the_user_finishes() {
         .await;
     let cfg = cfg(&server);
     let (_dir, tokens) = tokens(&server);
-    let client = tokens.client(&ConnKey::new("mock", "default"), &cfg);
+    let client = tokens.client(
+        &ConnKey::new(tern_auth::Kind::Connector, "mock", "default"),
+        &cfg,
+    );
     let code = client.device_start().await.unwrap();
     assert_eq!(code.user_code, "WDJB-MJHT");
     assert_eq!(code.verification_uri, "https://example.com/device");
@@ -364,7 +367,7 @@ async fn forgetting_revokes_and_deletes() {
         .await;
     let cfg = cfg(&server);
     let (_dir, tokens) = tokens(&server);
-    let key = ConnKey::new("mock", "work");
+    let key = ConnKey::new(tern_auth::Kind::Connector, "mock", "work");
     tokens
         .save(
             &key,

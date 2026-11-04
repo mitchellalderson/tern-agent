@@ -141,6 +141,12 @@ pub struct OAuthClientConfig {
     /// one even from desktop apps (Google's "Desktop app" clients).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret_secret: Option<String>,
+    /// The issuer this app belongs to (`https://login.acme.com`). The app,
+    /// and its secret, are only used for sign-ins whose endpoints are on
+    /// this origin. Built-in providers (`google`, `slack`…) are bound to
+    /// their profile's endpoints without it; any other provider needs it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
 }
 
 /// Deferred approvals (tooling spec §5.2).

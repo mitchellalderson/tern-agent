@@ -396,12 +396,21 @@ async fn connection_tokens_saved_after_startup_are_redacted() {
     let j = j.with_secrets(secrets.clone());
     secrets
         .set_many(&[
-            ("conn/gmail/work/oauth/access_token", "ya29.first-token"),
-            ("conn/gmail/work/oauth/refresh_token", "1//refresh-token"),
+            (
+                "conn/connector:gmail/work/oauth/access_token",
+                "ya29.first-token",
+            ),
+            (
+                "conn/connector:gmail/work/oauth/refresh_token",
+                "1//refresh-token",
+            ),
         ])
         .unwrap();
     secrets
-        .set("conn/gmail/work/oauth/access_token", "ya29.second-token")
+        .set(
+            "conn/connector:gmail/work/oauth/access_token",
+            "ya29.second-token",
+        )
         .unwrap();
     let out = "a ya29.first-token b ya29.second-token c 1//refresh-token".to_owned();
     j.step_with(

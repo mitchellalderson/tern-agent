@@ -233,7 +233,7 @@ impl McpServer {
     }
 
     /// A declared secret, for this instance's account
-    /// (`conn/<server>/<slug>/<NAME>`, the plain name for the default).
+    /// (`conn/mcp:<server>/<slug>/<NAME>`, the plain name for the default).
     fn secret(&self, name: &str) -> Option<String> {
         self.overrides.get(name).cloned().or_else(|| {
             self.secrets.get(&Connections::secret_name(
