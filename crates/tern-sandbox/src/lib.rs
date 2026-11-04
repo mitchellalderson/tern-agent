@@ -193,6 +193,27 @@ impl HostBackend {
         } else {
             vec!["sh".into(), "-c".into(), cmd.into()]
         };
+        self.wrap(policy, shell, cwd)
+    }
+
+    /// The argv that runs `program` (with its arguments) in `cwd` under this
+    /// backend's sandbox, for callers that talk to the process themselves
+    /// (the `python` tool's interpreter helper). Errors only when the policy
+    /// requires a sandbox that isn't available.
+    pub fn confine_argv(
+        &self,
+        program: Vec<std::ffi::OsString>,
+        cwd: &Path,
+    ) -> Result<Vec<std::ffi::OsString>, SandboxError> {
+        self.wrap(&self.policy, program, cwd)
+    }
+
+    fn wrap(
+        &self,
+        policy: &HostPolicy,
+        shell: Vec<std::ffi::OsString>,
+        cwd: &Path,
+    ) -> Result<Vec<std::ffi::OsString>, SandboxError> {
         match self.confinement() {
             Confinement::Off => Ok(shell),
             Confinement::Unavailable(why) => {
@@ -538,6 +559,36 @@ mod tests {
             max_output: 1024,
             on_output: None,
             network: false,
+        }
+    }
+
+    #[test]
+    fn confine_argv_wraps_any_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = HostBackend::new(HostPolicy {
+            network: false,
+            ..HostPolicy::confined()
+        });
+        let program: Vec<std::ffi::OsString> = vec!["/bin/tern".into(), "__monty-exec".into()];
+        let argv = b.confine_argv(program.clone(), dir.path()).unwrap();
+        assert_eq!(argv[argv.len() - 2..], program[..], "{argv:?}");
+        match b.confinement() {
+            #[cfg(target_os = "macos")]
+            Confinement::Seatbelt => {
+                assert_eq!(argv[0], SANDBOX_EXEC);
+                let profile = argv[2].to_string_lossy();
+                assert!(
+                    profile.contains("(deny network-outbound (remote ip))"),
+                    "{profile}"
+                );
+            }
+            #[cfg(target_os = "linux")]
+            Confinement::Landlock { .. } => {
+                assert_eq!(argv[1], HELPER_ARG);
+                assert!(argv.iter().any(|a| a == "--no-network"), "{argv:?}");
+            }
+            // No OS sandbox here: the program runs as given.
+            _ => assert_eq!(argv, program),
         }
     }
 

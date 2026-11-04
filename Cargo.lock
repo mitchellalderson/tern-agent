@@ -2451,6 +2451,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monty-alloc"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ff806373965fb569766ac1ca771b416bd0ce09b3c52074d15459573fd845443"
+dependencies = [
+ "monty-types",
+]
+
+[[package]]
 name = "monty-fs"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4557,6 +4566,7 @@ dependencies = [
  "crossterm",
  "dispatch2",
  "futures",
+ "monty-alloc",
  "nix 0.31.3",
  "objc2",
  "objc2-app-kit",
@@ -4693,12 +4703,15 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "monty",
+ "monty-alloc",
  "monty-fs",
  "monty-types",
+ "nix 0.31.3",
  "serde",
  "serde_json",
  "tempfile",
  "tern-core",
+ "tern-sandbox",
  "tokio",
  "tokio-util",
  "tracing",

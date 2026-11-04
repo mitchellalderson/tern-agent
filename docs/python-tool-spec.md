@@ -1,6 +1,7 @@
 # tern `python`: sandboxed compute that calls tools, not the network
 
-Status: PY0 built (2026-11-04): read-only compute in-process, see §9 and DECISIONS.md PY0. PY1–PY3 not built.
+Status: PY0 and PY1 built (2026-11-04): read-only compute, run in a sandboxed `tern __monty-exec` helper; see §9 and
+DECISIONS.md PY0, PY1. PY1b–PY3 not built.
 Builds on T0 (effects), T3a (taint), T3 (outbox, autonomy) and the step journal.
 Interpreter: [Monty](https://pydantic.dev/monty), Pydantic's Python subset written in Rust. Monty facts below were
 checked against Monty 1.4.0 on 2026-11-04 (§11). Related:
@@ -27,10 +28,10 @@ checked against Monty 1.4.0 on 2026-11-04 (§11). Related:
 - **Resume by re-running, not by snapshots.** The clock is frozen, `random` is seeded from the run, and every host
   call's result is journaled. A script interrupted by a crash runs again from the top, and its host calls are
   answered from the journal. Divergence is caught by the journal's existing input hash.
-- **Out of process (PY1).** The daemon runs scripts in `tern __monty-exec`, a helper child process under the existing
-  Seatbelt/Landlock profile with network off. Monty's memory limit counts at the global allocator, so a per-script
-  process is also the only clean way to cap memory. A crash, a stack overflow or a Monty bug kills the helper, not the
-  daemon. **PY0 runs Monty in-process** on its own thread with a 64 MB stack and Monty's own limits (§5.2).
+- **Out of process (PY1, built).** The daemon runs scripts in `tern __monty-exec`, a helper child process under the
+  existing Seatbelt/Landlock profile with network off. Monty's memory limit counts at the global allocator, so a
+  per-script process is also the only clean way to cap memory. A crash, a stack overflow or a Monty bug kills the
+  helper, not the daemon. (PY0 ran Monty in-process; that mode remains for tests, §5.2.)
 - **Cost.** Monty is pure Rust and MIT. It adds an estimated 3–8 MB to the binary (PY0 measures this), and it needs
   Rust 1.96 where tern declares 1.89. The language is a subset: no classes with inheritance, no generators, no
   pandas or numpy. For those, `shell` with `python3` stays, and asks every time.
@@ -329,16 +330,16 @@ per-connector rate limits, and are subject to the run's cancellation token. A ca
 Compilation isn't charged to Monty's time budgets. Monty caps it structurally (200 levels of AST nesting, among
 others), and the helper's wall clock covers the rest.
 
-### 5.2 The helper process (PY1)
+### 5.2 The helper process (PY1, built)
 
-**PY0 runs Monty in the daemon's process**, on a dedicated thread with a 64 MB stack, talking to the async side over
+**PY0 ran Monty in the daemon's process**, on a dedicated thread with a 64 MB stack, talking to the async side over
 channels shaped like the protocol below, so moving it out is a transport change. What PY0 gives up, and PY1 restores:
 a native crash (Monty's README says an abort inside it "takes your process with it") ends the daemon, and
 `max_memory` is enforced only by Monty's own pre-checks of predictable sizes (`'x' * 10**9` is refused), not by
 counting every allocation, which needs `monty-alloc` as a per-process global allocator. Time limits, recursion and
 tern's host-call cap are fully enforced in PY0.
 
-From PY1 the daemon never runs Monty in its own process. It runs `tern __monty-exec`, the same trick as `tern __sandbox-exec`
+**Built in PY1** (DECISIONS.md PY1): the daemon never runs Monty in its own process. It runs `tern __monty-exec`, the same trick as `tern __sandbox-exec`
 on Linux (sandbox-design.md): `main` checks for the argument before clap.
 
 Why out of process:
@@ -346,26 +347,35 @@ Why out of process:
   allocator for the whole daemon, where scripts' allocations mix with everything else's.
 - **Crash isolation.** A panic, a native stack overflow (`map`/`sorted` callbacks recurse on the Rust stack) or an
   abort in a young interpreter kills the helper, and the tool returns an error.
-- **Defence in depth.** The helper runs under the shell's OS sandbox with **network off** and no readable paths but
-  the workspace (Seatbelt on macOS, Landlock plus seccomp on Linux). If someone finds a Monty escape, it lands in a
-  process that can't open a socket, can't read `~/.ssh` or `~/.tern`, and can't write anywhere. `confine = "required"`
-  refuses to run scripts when the sandbox isn't available; `"auto"` runs them anyway (Monty is itself a sandbox) and
-  says so in `tern doctor`.
+- **Defence in depth.** The helper runs under the shell's OS sandbox with **network off**, whatever `[sandbox]
+  network` says (Seatbelt on macOS, Landlock plus seccomp on Linux), with `write_paths` dropped and tern's own
+  binary directory added to its reads. If someone finds a Monty escape, it lands in a process that can't open a
+  socket and can't read `~/.ssh` or `~/.tern`. As built it can still write to the workspace and temp directories at
+  the OS level (the profile shell commands get; Monty's own mount is read-only), and read what `shell` can.
+  `confine = "required"` refuses to run scripts when the sandbox isn't available; `"auto"` runs them anyway (Monty is
+  itself a sandbox); `"off"` runs the helper unconfined. A `tern doctor` line for this is PY3.
 - **Clean environment**: scrubbed like the shell's. No secrets ever reach the helper; host calls that need them run in
   the daemon.
 
-The protocol is length-prefixed JSON on stdin/stdout:
+The protocol is newline-delimited JSON on stdin/stdout (as built; calls are synchronous, so there are no call ids
+yet, and `print` output comes back with the result rather than streamed):
 
 ```
-daemon → helper  {"start": {code, inputs, limits, clock, seed, mount, stubs}}
-helper → daemon  {"call": {"id": 3, "name": "lua__county__lookup", "args": {...}, "await": true}}
-helper → daemon  {"print": "looked up 3 of 24\n"}
-daemon → helper  {"resume": {"id": 3, "ok": {...}}}   |  {"resume": {"id": 3, "raise": ["PermissionError", "…"]}}
-helper → daemon  {"done": {"result": ..., "error": null, "calls": 24}}
+daemon → helper  {code, inputs, env: {clock_secs, seed}, workspace, callable, blocked, limits}
+helper → daemon  {"Call": {"name": "lua__county__lookup", "input": {...}}}
+daemon → helper  {"Done": {"content": "...", "is_error": false}}  |  {"Refused": "…"}
+helper → daemon  {"Finished": {"result": ..., "printed": "...", "calls": {...}}}
 ```
 
 The helper is stateless between messages apart from the suspended interpreter. Journaling, approvals and tool calls
-stay in the daemon. Monty ships a `monty-proto` crate; PY0 checks whether it fits before we write our own.
+stay in the daemon. `monty-proto` (protobuf, built for Monty's pool) wasn't used: our messages are tern's own
+(tool names, refusals, the journaled env), and JSON keeps the crate count down.
+
+**Limits in the helper**: Monty's (time per script and between calls, recursion, `max_memory` now counted at the
+allocator), tern's host-call cap (enforced by the helper, which aborts the run past it), a memory ceiling
+(`monty-alloc` as the tern binary's global allocator, armed only in the helper at `max_memory` + 4 MB; past it the
+helper exits 65 and the tool reports `MemoryError`), and `RLIMIT_CPU` at the interpreter limit + 10 s for anything
+Monty can't see. The daemon kills the helper on cancel and at the wall limit (`kill_on_drop`).
 
 Cost: one `exec` of the static tern binary per script, a few milliseconds, on top of Monty's ~5 ms cold start. A pool
 of warm helpers is a PY3 option if this ever shows in traces. It still beats `python3` start-up. `tern run` and the
@@ -503,7 +513,8 @@ stub_budget = 2048          # bytes of function stubs in the prompt
 | Phase | Scope | Size | Exit criteria |
 |---|---|---|---|
 | **PY0** read-only compute (**built**) | Monty 1.4.0 pinned, MSRV 1.96, `python` cargo feature (default on). The `python` tool in-process (§5.2); host functions for `read` tools (§3.1–3.3), by tool name, synchronous; sub-step journaling and deterministic re-run (§4.1) with a journaled clock and seed; taint (§3.6); reads that would ask, and every write, refused with `PermissionError`; the read-only workspace mount; time, memory, host-call, code and output limits; errors and hints (§6.2); a `## Compute` prompt section; `runs show` lines for sub-steps | M | Met: a script loops over a Luau connector with one journaled sub-step per call; a crash mid-script resumes without repeating calls (the connector's own counter proves it); an untrusted result taints the run and the output; a write tool is refused; limits and unsupported features give clean errors with hints |
-| **PY1** isolation and asking | `tern __monty-exec` helper under the OS sandbox, `monty-alloc` there (§5.2); mid-script approvals for reads that ask (§3.4); async host functions and `gather` with `max_parallel`; `reuse_reads`; stub list in the prompt; the run inspector nesting sub-steps; determinism fuzz; `cargo deny`; musl builds verified; `[python]` config | M | The motivating case with 30 neighbours through `gather`; a script reading an untrusted page then `http_fetch`ing a new host asks (needs T3's host limit); a native stack overflow in a script leaves the daemon running |
+| **PY1** isolation (**built**) | `tern __monty-exec` helper under the OS sandbox with network off, `monty-alloc` ceiling and `RLIMIT_CPU` there (§5.2); JSON-lines transport; crash, OOM and CPU-limit exits turned into tool errors | M | Met: a helper that aborts mid-script is a tool error and the run finishes; the memory limit ends the helper with `MemoryError`; a crash mid-script resumes with the journaled clock and calls |
+| **PY1b** asking and speed | Mid-script approvals for reads that ask (§3.4; the T3 egress work in `py_call` is the start); async host functions and `gather` with `max_parallel`; `reuse_reads`; stub list in the prompt; streamed `print`; the run inspector nesting sub-steps; determinism fuzz; `cargo deny`; `[python]` config | M | The motivating case with 30 neighbours through `gather`; a script reading an untrusted page then `http_fetch`ing a new host asks |
 | **PY2** writes | `write` host functions behind `allow_writes`; granted writes; asks and outbox deferral returning `queued` (§3.5); `max_writes`; divergence after writes fails safe (§4.2); approval cards show the script | M | A tainted script's `write_file` goes to the outbox once, replays without a second item, and the script's result says `queued` |
 | **PY3** polish | Agent profile defaults and the per-agent ceiling (AP3); type-check scripts against stubs before running; `tern doctor` lines (feature present, sandbox confined, limits); warm helper pool if traces show the need; desktop script viewer | S–M | |
 

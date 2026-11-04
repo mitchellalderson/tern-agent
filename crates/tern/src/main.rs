@@ -36,9 +36,21 @@ use cli::{
     Cli, Command, ConfigCommand, ConnectorsCommand, RunsCommand, ServiceCommand, SessionsCommand,
 };
 
+/// Counts live bytes so a `python` helper can cap its memory
+/// (docs/python-tool-spec.md §5.2). Elsewhere it only counts: the ceiling is
+/// armed by the helper alone.
+#[cfg(feature = "python")]
+#[global_allocator]
+static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
+
 fn main() -> ExitCode {
     // `tern __sandbox-exec …`: confine this process, then exec a shell command.
     if let Some(code) = tern_sandbox::run_helper_if_requested() {
+        return code;
+    }
+    // `tern __monty-exec`: interpret one `python` script for the daemon.
+    #[cfg(feature = "python")]
+    if let Some(code) = tern_python::helper::run_if_requested() {
         return code;
     }
     let cli = Cli::parse_from(tray::rewrite_args(std::env::args_os().collect()));
