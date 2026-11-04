@@ -426,6 +426,10 @@ relay. One account can therefore be "my cloud core" plus "my home server".
 
 Mobile has no "This Mac". On first launch it offers *Sign in* or *Scan pairing code*.
 
+**Built so far (T8b):** the desktop app asks on first launch whether tern runs on this Mac or on a server (pairing
+link, or URL plus code), keeps one profile in `desktop.json` with the device token in the Keychain, and switches from
+Settings. *Cloud* is a disabled "coming soon" row. A list of several cores and the sidebar switcher are still to come.
+
 ### 7.2 `tern_client` transports
 
 ```dart

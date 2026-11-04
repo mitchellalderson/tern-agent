@@ -33,7 +33,7 @@ tern service install                    # ...and start it at login
 tern doctor                             # check everything and say what's missing
 ```
 
-**Desktop app** (macOS 11+): download [tern-desktop-macos.dmg](https://github.com/mitchellalderson/tern-agent/releases/latest/download/tern-desktop-macos.dmg) and drag tern to Applications. It carries its own `tern`, so you don't need the CLI: press **Start tern** and add a model.
+**Desktop app** (macOS 11+): download [tern-desktop-macos.dmg](https://github.com/mitchellalderson/tern-agent/releases/latest/download/tern-desktop-macos.dmg) and drag tern to Applications. It carries its own `tern`, so you don't need the CLI. On first launch it asks where tern should run (this Mac, with an option to start at login and a menu-bar icon, or a tern server you pair with); then add a model.
 
 **Telegram**, remote devices, schedules, MCP servers, connectors, sandboxing and every other option are covered in the [reference](docs/reference.md).
 
