@@ -566,7 +566,10 @@ mod tests {
         let j = serde_json::to_value(&a).unwrap_or_default();
         assert_eq!(j["method"], "oauth");
         assert_eq!(serde_json::from_value::<ConnAuth>(j).ok(), Some(a));
-        let k = serde_json::to_value(ConnAuth::Key { names: vec!["K".into()] }).unwrap_or_default();
+        let k = serde_json::to_value(ConnAuth::Key {
+            names: vec!["K".into()],
+        })
+        .unwrap_or_default();
         assert_eq!(k, json!({"method": "key", "names": ["K"]}));
     }
 

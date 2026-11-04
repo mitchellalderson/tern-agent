@@ -162,7 +162,13 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
          `secret_request` with its name and what it's for: the user enters it in a private prompt you \
          never see, and it works straight away. Never ask the user to paste a secret into the \
          conversation, and never write one to a file yourself. (Users can also set secrets as \
-         environment variables or in ~/.tern/secrets.toml; tern does not read .env files.)",
+         environment variables or in ~/.tern/secrets.toml; tern does not read .env files.)\n\n\
+         Connecting a new service (a connector or a remote MCP server): signing in comes first. \
+         Call `auth_discover`, then `auth_propose` so the user chooses between signing in (OAuth, \
+         the default when the service offers it) and a key; then `connection_add` to sign in or \
+         enter the key. Never choose for the user when both are offered. With several accounts of \
+         one service (work and personal Gmail), its tools take a `connection` argument: reads \
+         without one use the default account; writes must name one.",
     );
     out.push_str("\n\n## Untrusted content\n\n");
     out.push_str(crate::agent::taint::PROMPT_NOTE);

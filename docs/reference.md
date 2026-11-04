@@ -625,6 +625,10 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 - **Taint** ([below](#taint)): once a run has read untrusted content, its `write` and `destructive` calls ask, whatever "always" grants say.
 - **"Always allow"** is never offered for destructive tools, for calls in a tainted run, for commands that run other commands (`bash`, `env`, `sudo`, `find`, interpreters, …) or for activating connectors, and allowlisted shell commands can't chain (`;`, `|`, `$( )`, …).
 
+### Signing in
+
+When the agent connects a new service it checks how the service signs in (`auth_discover`), shows you a card to choose between signing in and an API key (`auth_propose`), and then a "Sign in to …" card (`connection_add`) that opens the service's own page in your browser, or a code to enter on any device. OAuth tokens are kept like secrets, refreshed by tern, sent only to the connector's declared hosts, and never shown to the agent. Sign-in addresses the agent found on the web must be on the service's own domain or a known identity provider, and the card says when the service publishes nothing to confirm them. See [`tern connections`](#tern-connections).
+
 ### Taint
 
 A run is **tainted** once untrusted content reaches it (docs/personal-agent-tooling-spec.md §5.3):

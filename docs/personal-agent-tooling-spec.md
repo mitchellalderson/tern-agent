@@ -399,6 +399,7 @@ capabilities = { oauth = { google = { scopes = { "gmail.readonly", "gmail.send" 
 - For a remote core, the device-code flow where the provider supports it, or the desktop app runs the browser leg
   and hands the code to the core over the API.
 - Scopes are part of the capability diff on activation.
+- **Status: built (T4a).** As specified, in the `tern-auth` crate, with these choices (DECISIONS.md, T4a): PKCE (S256) always, on an exact `127.0.0.1` redirect with `Host` and `state` checks and RFC 9207 `iss`; the device flow as the card's "use a code instead" for remote cores (the app doesn't hand a code to the core); one refresh per connection at a time; tokens as connection-scoped secrets in secrets.toml; every OAuth server reached only through a guard (https, public addresses unless `[auth] local_issuers`, no redirects). `tern connections add` is the CLI (no separate `tern auth`). No profile ships a client ID: the local tier is "bring your own app" (`[auth.clients]`), and servers with registration need none.
 
 ### 6.3 Read/write split and untrusted results
 
@@ -488,6 +489,8 @@ host):
  7. test       connector_test / MCP verify, under that connection
 ```
 
+**Status: built (T4a)**: `auth_discover`, `auth_propose` and `connection_add`; the guides in `connector_write`, `mcp_add` (`oauth: true` saves an http server that answers 401 until an account signs in) and the system prompt, and a `connect-a-service` skill installed once. See DECISIONS.md, T4a.
+
 #### 6.7.1 `auth_discover` (host-side)
 
 A read-only tool. The host runs checks in a fixed order, so the common cases need no model reasoning and no web
@@ -575,6 +578,8 @@ mcp-management-spec §9. Stdio servers keep using environment secrets, but per c
 A **connector** (or MCP server definition) is code and capabilities. A **connection** is one authenticated account
 using it: *Gmail · work (mitch@inngest.com)* and *Gmail · personal (mitch@gmail.com)* are two connections of one
 `gmail` connector. Users can add as many as they like. Each is stored and authorised separately.
+
+**Status: built (T4a)**, with these differences (DECISIONS.md, T4a): connections live in the database, not `config.toml`; per-connection watches, channel-pinned defaults and pausing routines on removal aren't built (watches run under the default account); standing grants for connector and MCP tools don't exist yet, so "grants per connection" is the store's `@slug` keying and cleanup only.
 
 #### 6.8.1 Model
 
@@ -1011,7 +1016,7 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 | **1. Quick wins** | Small changes to what exists. No new data model, no new protocols. Each item is days, not weeks. | **T0** effects on every tool, money-movement deny · **T1a** on today's schedules: `NO_REPLY`, quiet hours, per-schedule run caps and budget · **T5a** memory flush before compaction, capped `user.md`/`memory.md` · **T6a** provider fallback chains (done) · **T8a** `/v1/status`, `/v1/shutdown`, `tern start`/`stop`, `tern service install` with `SuccessfulExit = false`, "Quit tern completely" in the app (one-click stop for non-technical users, before the tray exists) · **T7a** browser via an MCP recipe (docs only; done) | S each | nothing |
 | **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests (done) · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles (done: T3a taint, then T3 the outbox and autonomy; the Tasks view is T6b) · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits (done) | L / M / S–M | Stage 1 (effects, budgets) |
 | **3. Organize and surface** | Make background work visible and tidy. Mostly UI plus straightforward store work. | **T2** channels, home, posts, reply-to-act, Telegram topics · **T6b** activity ledger with hash chain, Tasks view, `tern security audit` · **T8b** `tern tray` on macOS (helper bundle, notifications with actions, login items, quit escalation, `tern://` links) · **T5b** skill capture | M each | Stage 2 (routines, outbox) |
-| **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) · **T4b-ii** gateway connectors (ntfy, then Slack) | L | Stage 2 (taint before any external input); secret-requests spec built |
+| **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** (done) `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) · **T4b-ii** gateway connectors (ntfy, then Slack) | L | Stage 2 (taint before any external input); secret-requests spec built |
 | **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` · **T6d** `tern mcp serve` · **T4c** OpenAPI-to-connector and recorded test fixtures · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
 | **6. Multiplayer** (later) | Several people with one agent: group rooms first, then members on one core, then hosted workspaces (§15) | **M0** Telegram, Slack and Discord group rooms with guests · **M1** members, per-member connections, approvals and memory · **M2** tern Cloud workspaces, invites, seats | M0 S–M, M1 L, M2 M | Stages 2–3 (taint, channels); M2 needs tern Cloud |
 
