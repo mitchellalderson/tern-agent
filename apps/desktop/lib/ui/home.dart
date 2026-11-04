@@ -3,10 +3,11 @@ import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:tern_client/tern_client.dart';
 
+import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
-import 'background_prompt.dart';
 import 'conversation.dart';
 import 'offline.dart';
 import 'providers.dart';
@@ -15,12 +16,20 @@ import 'secrets.dart';
 import 'settings.dart';
 import 'side_panel.dart';
 import 'sidebar.dart';
+import 'where_to_run.dart';
 import 'widgets.dart';
 
 class Home extends StatefulWidget {
-  const Home({super.key, required this.store});
+  const Home({super.key, required this.store, this.prefs, this.connections});
 
   final TernStore store;
+
+  /// Loaded from disk when not given (tests).
+  final AppPrefs? prefs;
+
+  /// Where tern runs and switching it; without it the app stays on this
+  /// computer and doesn't ask.
+  final Connections? connections;
 
   @override
   State<Home> createState() => _HomeState();
@@ -30,7 +39,13 @@ class _HomeState extends State<Home> {
   var _panel = true;
   late final AppLifecycleListener _lifecycle;
   final _control = TernControl(bin: findTern());
-  final _prefs = AppPrefs.load();
+  late final _prefs = widget.prefs ?? AppPrefs.load();
+
+  /// On a tern server: nothing here to start, stop or start at login
+  /// (spec §11.5, "Remote cores").
+  bool get _remote =>
+      widget.connections?.isRemote ??
+      widget.store.client.endpoint is RemoteEndpoint;
 
   @override
   void initState() {
@@ -41,15 +56,20 @@ class _HomeState extends State<Home> {
           widget.store.appActive = s == AppLifecycleState.resumed,
       onExitRequested: _onExit,
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) maybeAskKeepRunning(context, _control, _prefs);
-    });
+    final connections = widget.connections;
+    if (connections != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) maybeAskWhereToRun(context, _control, connections);
+      });
+    }
   }
 
   /// Closing the window quits the app; Settings decides whether tern
   /// stops with it.
   Future<AppExitResponse> _onExit() async {
-    if (_prefs.onClose != OnClose.quitTern) return AppExitResponse.exit;
+    if (_remote || _prefs.onClose != OnClose.quitTern) {
+      return AppExitResponse.exit;
+    }
     final quit = await quitTernCompletely(
       context,
       widget.store,
@@ -61,7 +81,13 @@ class _HomeState extends State<Home> {
 
   void _quitCompletely() => quitTernCompletely(context, widget.store, _control);
 
-  void _settings() => showSettingsDialog(context, _control, _prefs);
+  void _settings() => showSettingsDialog(
+    context,
+    _control,
+    _prefs,
+    store: widget.store,
+    connections: widget.connections,
+  );
 
   @override
   void dispose() {
@@ -78,7 +104,9 @@ class _HomeState extends State<Home> {
       body: ListenableBuilder(
         listenable: store,
         builder: (context, _) {
-          if (store.health == null) return OfflineView(store: store);
+          if (store.health == null) {
+            return OfflineView(store: store, onSettings: _settings);
+          }
           return LayoutBuilder(
             builder: (context, box) {
               // Narrow windows drop the panel before the conversation.
@@ -123,11 +151,12 @@ class _HomeState extends State<Home> {
           const SingleActivator(LogicalKeyboardKey.comma, control: true): () {
             if (store.health != null) showProvidersDialog(context, store);
           },
-          const SingleActivator(
-            LogicalKeyboardKey.keyQ,
-            control: true,
-            alt: true,
-          ): _quitCompletely,
+          if (!_remote)
+            const SingleActivator(
+              LogicalKeyboardKey.keyQ,
+              control: true,
+              alt: true,
+            ): _quitCompletely,
         },
         child: Focus(autofocus: true, child: body),
       );
@@ -181,15 +210,17 @@ class _HomeState extends State<Home> {
                   type: PlatformProvidedMenuItemType.quit,
                 ),
                 // Stops tern too (spec §11.5a); ⌘Q only closes the window.
-                PlatformMenuItem(
-                  label: 'Quit tern completely',
-                  shortcut: const SingleActivator(
-                    LogicalKeyboardKey.keyQ,
-                    meta: true,
-                    alt: true,
+                // A server's tern isn't the app's to stop.
+                if (!_remote)
+                  PlatformMenuItem(
+                    label: 'Quit tern completely',
+                    shortcut: const SingleActivator(
+                      LogicalKeyboardKey.keyQ,
+                      meta: true,
+                      alt: true,
+                    ),
+                    onSelected: _quitCompletely,
                   ),
-                  onSelected: _quitCompletely,
-                ),
               ],
             ),
           ],

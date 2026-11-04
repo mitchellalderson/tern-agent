@@ -31,7 +31,7 @@ cargo build --profile dist -p tern    # → target/dist/tern
 
 ### Desktop app
 
-macOS 11+ (Apple Silicon and Intel): download [tern-desktop-macos.dmg](https://github.com/mitchellalderson/tern-agent/releases/latest/download/tern-desktop-macos.dmg) and drag tern to Applications. The app carries its own `tern`, so on first launch press **Start tern** and add a model; you don't need the CLI. It also asks once whether to keep tern running in the background: **Start at login** starts tern and its menu-bar icon when you log in (both appear in System Settings › General › Login Items). To also use that binary from a terminal:
+macOS 11+ (Apple Silicon and Intel): download [tern-desktop-macos.dmg](https://github.com/mitchellalderson/tern-agent/releases/latest/download/tern-desktop-macos.dmg) and drag tern to Applications. The app carries its own `tern`, so you don't need the CLI. On first launch it asks where tern should run: **On this Mac** (with **Start tern when I log in**, which starts tern and its menu-bar icon at login; both appear in System Settings › General › Login Items), or **On a tern server**: paste the pairing link from `tern devices pair` on that server. You can switch later in Settings. Then add a model. To also use that binary from a terminal:
 
 ```sh
 ln -s "/Applications/tern.app/Contents/Library/LoginItems/tern Tray.app/Contents/MacOS/tern-tray" ~/.local/bin/tern

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:tern_client/tern_client.dart';
 
 import '../state/daemon.dart';
 import '../state/store.dart';
@@ -7,9 +8,12 @@ import 'widgets.dart';
 
 /// Shown until the app has reached the daemon once.
 class OfflineView extends StatefulWidget {
-  const OfflineView({super.key, required this.store});
+  const OfflineView({super.key, required this.store, this.onSettings});
 
   final TernStore store;
+
+  /// Settings, to change server or go back to this computer.
+  final VoidCallback? onSettings;
 
   @override
   State<OfflineView> createState() => _OfflineViewState();
@@ -39,6 +43,7 @@ class _OfflineViewState extends State<OfflineView> {
   Widget build(BuildContext context) {
     final c = context.colors;
     final store = widget.store;
+    final remote = store.client.endpoint is RemoteEndpoint;
     return WindowDragArea(
       child: Container(
         color: c.background,
@@ -53,6 +58,8 @@ class _OfflineViewState extends State<OfflineView> {
               Text(
                 store.link == Link.connecting
                     ? 'Connecting to tern…'
+                    : remote
+                    ? "Can't reach the tern server"
                     : "tern isn't running",
                 style: const TextStyle(
                   fontSize: 18,
@@ -68,7 +75,12 @@ class _OfflineViewState extends State<OfflineView> {
               ),
               const SizedBox(height: 20),
               if (store.link == Link.offline) ...[
-                if (_bin != null)
+                if (remote)
+                  OutlinedButton(
+                    onPressed: widget.onSettings,
+                    child: const Text('Change server…'),
+                  )
+                else if (_bin != null)
                   FilledButton(
                     onPressed: _starting ? null : _start,
                     style: FilledButton.styleFrom(

@@ -813,6 +813,9 @@ Stopped state (the icon stays until the user quits it; one click brings tern bac
   the daemon silently mid-run.
 - **Remote cores**: the tray can point at any connection profile. With a remote core (tier 3 or 4) there's no local
   daemon. The tray shows the remote's status, and Start/Stop and service items are hidden.
+- **First launch asks where tern runs** (T8b): on this Mac (with Start at login, which installs the daemon service and
+  the tray), on a tern server (pairing link, or URL plus code), or tern Cloud (shown disabled until it exists). On a
+  server the app hides Start at login, the close-window choice and Quit tern completely, and installs nothing locally.
 
 ### 11.5a Stopping tern, for people who never open a terminal
 
@@ -922,10 +925,10 @@ with one **Start tern** button. Off is always visible as off.
 **T8a** shipped `/v1/status`, `/v1/shutdown`, `tern start`/`stop`, `tern service` and the app's Quit and Settings.
 **T8b** shipped `tern tray` on macOS (status line, Open tern, Start/Quit tern with the §11.5a escalation, Start at
 login, Close this icon), `SMAppService` login items from the bundle with the plain plists kept for CLI installs,
-`tern service install --tray`, the `tern Tray.app` helper and the app's first-launch "Keep tern running in the
-background?". Still open from this section: Needs you and approve-from-notification (T3), Recent posts and New
+`tern service install --tray`, the `tern Tray.app` helper and the app's first-launch "Where should tern run?" (this
+Mac with Start at login, or a paired server; tern Cloud reserved). Still open from this section: Needs you and approve-from-notification (T3), Recent posts and New
 message… (T2, `tern://` links), Initiative (T1b), `GET /v1/clients` and notification de-duplication, Restart tern to
-update, remote profiles in the tray, the first-close notification, **Remove tern from this Mac…**, and Linux (T8c).
+update, the tray watching a remote profile, the first-close notification, **Remove tern from this Mac…**, and Linux (T8c).
 DECISIONS.md, T8b, has the details.
 
 ## 12. Phases

@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:tern_client/tern_client.dart';
 
+import 'connection.dart';
+
 /// Finding and starting `tern daemon` when it isn't running.
 ///
 /// The release build of the macOS app carries its own `tern`, matched to the
@@ -176,48 +178,47 @@ enum OnClose { keepRunning, quitTern }
 /// The app's own settings, in a small JSON file outside tern's data
 /// directory.
 class AppPrefs {
-  AppPrefs(
-    this.file, {
-    this.onClose = OnClose.keepRunning,
-    this.askedBackground = false,
-  });
+  AppPrefs(this.file, {this.onClose = OnClose.keepRunning, this.connection});
 
   /// `~/Library/Application Support/tern/desktop.json` on macOS,
   /// `$XDG_CONFIG_HOME/tern/desktop.json` elsewhere.
-  factory AppPrefs.load([Map<String, String>? env]) {
+  factory AppPrefs.load([Map<String, String>? env]) =>
+      AppPrefs.fromFile(File('${dir(env)}/desktop.json'));
+
+  /// The app's own settings directory.
+  static String dir([Map<String, String>? env]) {
     env ??= Platform.environment;
     final home = env['HOME'] ?? '';
-    final dir = Platform.isMacOS
+    return Platform.isMacOS
         ? '$home/Library/Application Support/tern'
         : '${env['XDG_CONFIG_HOME'] ?? '$home/.config'}/tern';
-    return AppPrefs.fromFile(File('$dir/desktop.json'));
   }
 
   factory AppPrefs.fromFile(File file) {
     var onClose = OnClose.keepRunning;
-    var asked = false;
+    Profile? connection;
     try {
       final j = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
       if (j['on_close'] == 'quit_tern') onClose = OnClose.quitTern;
-      asked = j['asked_background'] == true;
+      connection = Profile.fromJson(j['connection']);
     } on Object {
       // Missing or unreadable: defaults.
     }
-    return AppPrefs(file, onClose: onClose, askedBackground: asked);
+    return AppPrefs(file, onClose: onClose, connection: connection);
   }
 
   final File file;
   OnClose onClose;
 
-  /// The first-launch "Keep tern running in the background?" was answered.
-  bool askedBackground;
+  /// Where tern runs; null until the first-launch chooser is answered.
+  Profile? connection;
 
   Future<void> save() async {
     await file.parent.create(recursive: true);
     await file.writeAsString(
       jsonEncode({
         'on_close': onClose == OnClose.quitTern ? 'quit_tern' : 'keep_running',
-        'asked_background': askedBackground,
+        'connection': ?connection?.toJson(),
       }),
     );
   }
