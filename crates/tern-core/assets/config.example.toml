@@ -136,6 +136,13 @@ docker_pids = 512          # 0 for no limit
 # local_issuers = []           # OAuth servers allowed on private addresses, e.g. ["http://127.0.0.1:8080"]
 # client_metadata_url = ""     # https URL of a client ID metadata document, for servers that take one instead of registration
 
+# Bundles: connectors, skills and routines others share as a URL or a
+# file (`tern bundle install`). Each is shown in full and installed only on
+# approval; connectors arrive inactive and routines paused.
+# [bundles]
+# require_signed = false       # refuse unsigned bundles instead of warning
+# allow_private_hosts = false  # fetch bundle URLs on your own network (http allowed there)
+
 # OAuth apps you registered yourself, by provider. Google wants a "Desktop
 # app" client, whose client secret goes in secrets.toml under the name given.
 # [auth.clients]

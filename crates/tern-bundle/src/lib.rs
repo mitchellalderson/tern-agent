@@ -12,7 +12,10 @@
 //! - [`state`] is the lockfile and the trust store; [`installed`] is the
 //!   read-only view for other parts of tern (`tern security audit`).
 
+pub mod install;
+pub mod lookalike;
 pub mod manifest;
+pub mod plan;
 pub mod sign;
 pub mod source;
 pub mod state;
@@ -21,7 +24,9 @@ use std::path::PathBuf;
 
 use tern_core::TernHome;
 
+pub use install::{InstallOptions, Installer, Outcome, Prepared};
 pub use manifest::{Manifest, RoutineTemplate};
+pub use plan::Plan;
 pub use sign::{PublicKey, SecretKey};
 pub use source::{Bundle, Fetcher, Origin, Raw};
 pub use state::{InstalledBundle, Lock, TrustStore};

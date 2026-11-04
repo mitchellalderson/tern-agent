@@ -490,6 +490,48 @@ pub enum ConnectorsCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum BundleCommand {
+    /// What is installed, from where, and how it is signed.
+    List,
+    /// Show everything a bundle can do, then install it if you approve.
+    /// Connectors arrive inactive and routines paused.
+    Install {
+        /// An https URL (`…#sha256=<hex>` pins it), a .tar.zst, or a directory.
+        source: String,
+        /// The SHA-256 the bundle must have (as its author published it).
+        #[arg(long)]
+        sha256: Option<String>,
+        /// The agent its routines belong to (default: tern).
+        #[arg(long)]
+        agent: Option<String>,
+        /// Show what it would do and stop.
+        #[arg(long)]
+        dry_run: bool,
+        /// Approve without asking (you've read the plan).
+        #[arg(long)]
+        yes: bool,
+        /// Accept an update signed by a different key than the installed one.
+        #[arg(long)]
+        accept_new_key: bool,
+    },
+    /// Fetch an installed bundle again from where it came from; asks again
+    /// when the new version can do more.
+    Update {
+        name: String,
+        #[arg(long)]
+        sha256: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        accept_new_key: bool,
+    },
+    /// Remove a bundle and the connectors, skills and routines it installed.
+    Remove {
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Make your signing key (bundles/signing.key) for `tern bundle export`.
     Keygen,
     /// Trust a signing key (minisign format, `RW…`, or a .pub file), or

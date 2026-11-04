@@ -1,18 +1,69 @@
-//! `tern bundle`: signing keys and trust (tooling spec §6.5).
+//! `tern bundle`: install, update, remove and list bundles; signing keys
+//! and trust (tooling spec §6.5).
 
+use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
-use tern_bundle::{Paths, PublicKey, SecretKey, TrustStore};
+use anyhow::Context;
+use tern_bundle::{InstallOptions, Installer, Paths, PublicKey, SecretKey, TrustStore};
 use tern_core::TernHome;
+use tern_store::Store;
 
 use crate::cli::BundleCommand;
 
 pub fn run(home: &TernHome, command: Option<BundleCommand>) -> anyhow::Result<ExitCode> {
     let paths = Paths::new(home);
-    match command.unwrap_or(BundleCommand::Trust {
-        key: None,
-        name: None,
-    }) {
+    match command.unwrap_or(BundleCommand::List) {
+        BundleCommand::List => list(home),
+        BundleCommand::Install {
+            source,
+            sha256,
+            agent,
+            dry_run,
+            yes,
+            accept_new_key,
+        } => install(
+            home,
+            &source,
+            sha256.as_deref(),
+            &InstallOptions {
+                agent,
+                accept_new_key,
+            },
+            dry_run,
+            yes,
+            false,
+        ),
+        BundleCommand::Update {
+            name,
+            sha256,
+            dry_run,
+            yes,
+            accept_new_key,
+        } => {
+            let installer = Installer::new(home);
+            let Some(b) = installer.installed(&name)? else {
+                eprintln!("no bundle named {name} is installed (see `tern bundle list`)");
+                return Ok(ExitCode::FAILURE);
+            };
+            if b.source.starts_with("openclaw:") {
+                eprintln!("{name} was made by `tern import openclaw`; run that again instead");
+                return Ok(ExitCode::FAILURE);
+            }
+            install(
+                home,
+                &b.source,
+                sha256.as_deref(),
+                &InstallOptions {
+                    agent: None,
+                    accept_new_key,
+                },
+                dry_run,
+                yes,
+                true,
+            )
+        }
+        BundleCommand::Remove { name, yes } => remove(home, &name, yes),
         BundleCommand::Keygen => keygen(&paths),
         BundleCommand::Trust { key: None, .. } => trusted(&paths),
         BundleCommand::Trust {
@@ -100,5 +151,183 @@ fn trusted(paths: &Paths) -> anyhow::Result<ExitCode> {
         };
         println!("{id}  {name}  {}  added {}", k.key, k.added_at);
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn open_store(home: &TernHome) -> anyhow::Result<Store> {
+    home.ensure_layout()?;
+    Store::open(&home.db_path()).context("opening tern's database")
+}
+
+/// Ask on the terminal; `false` without one.
+pub(crate) fn confirm(question: &str) -> bool {
+    if !std::io::stdin().is_terminal() {
+        eprintln!("{question} Not asking without a terminal: pass --yes to approve.");
+        return false;
+    }
+    print!("{question} [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut answer);
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+fn block_on<F: std::future::Future>(f: F) -> anyhow::Result<F::Output> {
+    Ok(tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting the async runtime")?
+        .block_on(f))
+}
+
+fn install(
+    home: &TernHome,
+    source: &str,
+    sha256: Option<&str>,
+    opts: &InstallOptions,
+    dry_run: bool,
+    yes: bool,
+    update: bool,
+) -> anyhow::Result<ExitCode> {
+    let installer = Installer::new(home);
+    let bundle = block_on(installer.read(source, sha256))??;
+    let store = open_store(home)?;
+    let prepared = installer.prepare(bundle, Some(&store))?;
+    let plan = &prepared.plan;
+    print!("{}", plan.render());
+    println!();
+    let conflicts = plan.conflicts();
+    if !conflicts.is_empty() {
+        for c in conflicts {
+            eprintln!("✗ {c}");
+        }
+        return Ok(ExitCode::FAILURE);
+    }
+    if dry_run {
+        println!("(dry run: nothing installed)");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let same = plan
+        .installed
+        .as_ref()
+        .is_some_and(|i| i.sha256 == plan.sha256);
+    if update && same {
+        println!("{} is up to date ({}).", plan.name, plan.version);
+        return Ok(ExitCode::SUCCESS);
+    }
+    // An update that can't do anything the approved version couldn't goes
+    // ahead; anything else asks.
+    let grows =
+        plan.changes.as_ref().is_none_or(|c| c.grows()) || plan.signature.state == "new_key";
+    let question = match &plan.installed {
+        Some(i) => format!(
+            "Update {} from {} to {}?",
+            plan.name, i.version, plan.version
+        ),
+        None => format!("Install {} {}?", plan.name, plan.version),
+    };
+    if grows && !yes && !confirm(&question) {
+        println!("Not installed.");
+        return Ok(ExitCode::FAILURE);
+    }
+    let out = installer.install(&prepared, &store, opts)?;
+    for l in &out.lines {
+        println!("  {l}");
+    }
+    println!(
+        "{} {} {}. Pinned in {}.",
+        if plan.installed.is_some() {
+            "Updated"
+        } else {
+            "Installed"
+        },
+        plan.name,
+        plan.version,
+        installer.paths.lock().display()
+    );
+    if !plan.connectors.is_empty() {
+        println!(
+            "Connectors are drafts until activated: ask tern to activate one, or use the app's Library."
+        );
+    }
+    let missing: Vec<&str> = plan
+        .secrets
+        .iter()
+        .filter(|s| !s.set)
+        .map(|s| s.name.as_str())
+        .collect();
+    if !missing.is_empty() {
+        println!(
+            "Set these secrets before using them: {}",
+            missing.join(", ")
+        );
+    }
+    for c in plan.connections.iter().filter(|c| !c.connected) {
+        println!(
+            "Sign in for {}: tern connections add {}",
+            c.connector, c.connector
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn list(home: &TernHome) -> anyhow::Result<ExitCode> {
+    let bundles = tern_bundle::installed(home);
+    if bundles.is_empty() {
+        println!("No bundles installed. Install one with `tern bundle install <url|file|dir>`.");
+    }
+    for b in &bundles {
+        println!("{} {} — {}", b.name, b.version, b.signature_words());
+        println!("    from {}", b.source);
+        println!("    sha256 {}", b.sha256);
+        let mut parts = Vec::new();
+        if !b.connectors.is_empty() {
+            parts.push(format!("connectors {}", b.connectors.join(", ")));
+        }
+        if !b.skills.is_empty() {
+            parts.push(format!("skills {}", b.skills.join(", ")));
+        }
+        if !b.routines.is_empty() {
+            let names: Vec<&str> = b.routines.iter().map(|r| r.name.as_str()).collect();
+            parts.push(format!("routines {}", names.join(", ")));
+        }
+        if !parts.is_empty() {
+            println!("    {}", parts.join("; "));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn remove(home: &TernHome, name: &str, yes: bool) -> anyhow::Result<ExitCode> {
+    let installer = Installer::new(home);
+    let Some(b) = installer.installed(name)? else {
+        eprintln!("no bundle named {name} is installed (see `tern bundle list`)");
+        return Ok(ExitCode::FAILURE);
+    };
+    println!(
+        "Removing {} {} removes connectors {}, skills {} and {} routine(s).",
+        b.name,
+        b.version,
+        if b.connectors.is_empty() {
+            "(none)".into()
+        } else {
+            b.connectors.join(", ")
+        },
+        if b.skills.is_empty() {
+            "(none)".into()
+        } else {
+            b.skills.join(", ")
+        },
+        b.routines.len()
+    );
+    if !yes && !confirm(&format!("Remove {name}?")) {
+        return Ok(ExitCode::FAILURE);
+    }
+    let store = open_store(home)?;
+    let out = installer.remove(name, &store)?;
+    for l in &out.lines {
+        println!("  {l}");
+    }
+    println!("Removed {name}.");
     Ok(ExitCode::SUCCESS)
 }
