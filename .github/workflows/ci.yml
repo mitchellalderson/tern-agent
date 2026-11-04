@@ -61,7 +61,11 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Analyze the desktop app
         working-directory: apps/desktop
-        run: flutter analyze
+        # flutter analyze also covers packages/tern_client, whose own
+        # dependencies (package:test) a fresh checkout doesn't have yet.
+        run: |
+          (cd packages/tern_client && dart pub get)
+          flutter analyze
       - name: Check the shell scripts
         if: runner.os == 'Linux'
         run: shellcheck install.sh scripts/*.sh apps/desktop/tool/*.sh
