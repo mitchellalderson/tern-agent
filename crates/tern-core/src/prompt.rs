@@ -49,6 +49,14 @@ pub struct PromptInputs<'a> {
     pub memory: &'a MemoryConfig,
 }
 
+/// Appended when the `python` tool is registered (docs/python-tool-spec.md §6.1).
+pub const COMPUTE_NOTE: &str = "\n\n## Compute\n\nWhen a task needs many tool calls plus \
+computation (look up 30 addresses and compare them, total a list of invoices), use the `python` tool if you \
+have it and call your tools from the script by name, instead of calling them one by one or writing Python \
+for `shell`. Never call a service's API from `shell` or `python3` when a tool already covers it: the tool \
+carries the user's approvals and limits. Use `shell` with `python3` only for packages such as pandas or \
+numpy.";
+
 pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
     let persona = read_nonempty(&inp.home.persona_path())
         .unwrap_or_else(|| defaults::PERSONA_MD.trim().to_owned());

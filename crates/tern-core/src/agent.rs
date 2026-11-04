@@ -31,6 +31,7 @@ use crate::types::{
 
 mod carry;
 mod channel;
+mod script;
 pub use carry::CarryOutput;
 pub use channel::DigestOutput;
 mod outbox;
@@ -597,11 +598,14 @@ impl Agent {
                                 });
                             })
                         };
-                        let (mut r, consumes) = with_call(
+                        let call_fut = with_call(
                             &call.id,
                             with_progress(sink, self.tools.call_in(scope, &ctx, &call)),
-                        )
-                        .await;
+                        );
+                        // A script's own tool calls are sub-steps after this one.
+                        let (mut r, consumes) = self
+                            .serve_scripts(run, idx, &call, scope, &ctx, taint.is_set(), call_fut)
+                            .await?;
                         // A tool may mark its own result (channel_read of
                         // tainted posts).
                         r.untrusted |= untrusted;
@@ -613,6 +617,9 @@ impl Agent {
                     .await?;
                 idx += 1;
                 taint.contacted(host);
+                while self.journal.peek(&run.id, idx)? == Some(StepKind::PyCall) {
+                    idx += 1;
+                }
                 if result.value.untrusted {
                     taint.mark(&self.store, &run.id, &taint::tool_reason(&call.name))?;
                 }

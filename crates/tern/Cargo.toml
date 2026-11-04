@@ -13,7 +13,7 @@ workspace = true
 # `tern tray`, the menu-bar icon, and SMAppService login items
 # (personal-agent-tooling-spec §11.3). Its dependencies are macOS-only, so
 # Linux and musl server builds are unchanged with it on.
-default = ["tray"]
+default = ["tray", "python"]
 tray = [
     "dep:tray-icon",
     "dep:objc2",
@@ -22,6 +22,8 @@ tray = [
     "dep:dispatch2",
     "dep:smappservice-rs",
 ]
+# The `python` tool on Monty (docs/python-tool-spec.md).
+python = ["dep:tern-python"]
 
 [dependencies]
 tern-core.workspace = true
@@ -30,6 +32,7 @@ tern-lua.workspace = true
 tern-mcp.workspace = true
 tern-store.workspace = true
 tern-providers.workspace = true
+tern-python = { workspace = true, optional = true }
 tern-sandbox.workspace = true
 tern-tools.workspace = true
 tern-tui.workspace = true

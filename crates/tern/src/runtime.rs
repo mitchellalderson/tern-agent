@@ -63,12 +63,12 @@ impl PromptMaker {
             .into_iter()
             .map(|s| (s.name, s.description))
             .collect();
-        let integrations = self
-            .tools
-            .upgrade()
+        let tools = self.tools.upgrade();
+        let integrations = tools
+            .as_ref()
             .map(|t| t.describe_sources())
             .unwrap_or_default();
-        tern_core::prompt::system_prompt(&tern_core::prompt::PromptInputs {
+        let mut prompt = tern_core::prompt::system_prompt(&tern_core::prompt::PromptInputs {
             home: &self.home,
             role,
             // Only runs that get the agent_* tools hear about them.
@@ -78,7 +78,11 @@ impl PromptMaker {
             skills: &skills,
             integrations: &integrations,
             memory: &self.memory,
-        })
+        });
+        if tools.is_some_and(|t| t.get(tern_core::script::PYTHON).is_some()) {
+            prompt.push_str(tern_core::prompt::COMPUTE_NOTE);
+        }
+        prompt
     }
 }
 
@@ -480,6 +484,8 @@ fn build_tools(
     if config.subagents.enabled && config.subagents.max_depth >= 1 {
         tern_tools::agents::register(&mut registry, subagents.clone());
     }
+    #[cfg(feature = "python")]
+    registry.register(Arc::new(tern_python::Python::default()));
 
     let lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
     let dirs = tern_lua::tools::Dirs {

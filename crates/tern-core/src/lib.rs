@@ -16,6 +16,7 @@ pub mod net;
 pub mod outbox;
 pub mod prompt;
 pub mod quiet;
+pub mod script;
 pub mod secrets;
 pub mod skills;
 pub mod subagent;

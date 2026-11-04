@@ -7,7 +7,7 @@ Everything tern does, command by command. For installing and a first chat, see t
 | | |
 |---|---|
 | **Models** | Anthropic, plus any OpenAI-compatible endpoint (OpenRouter, Ollama, vLLM, LM Studio). Models are `provider:model`; switch with `--model` or `/model`. |
-| **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `http_fetch`, long-term memory and capped profile notes (`user.md`, `memory.md`), search over past conversations, skills, schedules. |
+| **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `python` (sandboxed compute that calls your tools), `http_fetch`, long-term memory and capped profile notes (`user.md`, `memory.md`), search over past conversations, skills, schedules. |
 | **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. A run that has read untrusted content (a web page, mail, a tool marked `untrusted`) is **tainted**: its `write` and `destructive` calls ask whatever "always" says, and the prompt says why ([Taint](#taint)). A write nobody answers in time waits in the [outbox](#outbox) instead of being denied, and `autonomy` sets how much runs may do without asking ([Autonomy](#autonomy)). |
 | **MCP** | Ask the agent ("add the GitHub MCP server"; you approve the exact command each time, and only on this machine for local commands), or add, test, toggle and remove servers with `/mcp` in the chat or [`tern mcp`](#tern-mcp), or edit `[mcp.servers.<name>]` (stdio or streamable HTTP); changes apply without a restart, a server's pasted `mcpServers` JSON works too, and their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. For a browser, see [Recipe: give tern a browser](recipes/browser.md). |
 | **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
@@ -480,6 +480,18 @@ docker_image = "debian:stable-slim"
 
 Commands then run in one long-lived container per workspace, with the workspace mounted at `/workspace`, files owned by you, no capabilities, and limits from `docker_memory`, `docker_cpus` and `docker_pids`. What each backend confines, per platform, is in [docs/sandbox-design.md](sandbox-design.md).
 
+## Compute (`python`)
+
+The `python` tool runs a script in [Monty](https://pydantic.dev/monty), a Python subset written in Rust, inside tern. It is for computation over data your tools fetch: a script calls tools by their names, for example `lua__county__lookup(address=a)` in a loop, and returns a summary. It never asks for approval itself, because every tool call it makes goes through the same checks as a direct one (docs/python-tool-spec.md).
+
+- **What a script can call**: the run's read-only tools (`read_file`, `http_fetch`, `memory_search`, Luau and MCP tools with `effect = "read"`, …). Write and destructive tools, `shell`, sub-agents, posts, secrets and connector or schedule management raise `PermissionError` ("call it directly"), as does a read that would need your approval.
+- **Recorded like direct calls**: each call is a `py_call` step in the run's journal (`tern runs show` lists them under the `python` step). After a crash, `tern resume` re-runs the script with the same clock and random seed and answers calls already made from the journal, so a lookup isn't repeated.
+- **Taint**: a call to an untrusted tool taints the run, and the script's result reaches the model wrapped as untrusted.
+- **Sandbox**: no network, environment variables or processes. Files under the workspace are readable at `/workspace`; nothing is writable.
+- **Limits** per script: 30 s of interpreter time (10 s between tool calls), 10 minutes in all, 256 MB for large values, 1000 levels of recursion, 200 tool calls, 64 KB of code, and the usual 32 KB result (16 KB of it for `print` output).
+- **The subset**: functions, comprehensions, f-strings, `match`, dataclasses and the modules `json`, `re`, `csv`, `math`, `datetime`, `collections`, `itertools`, `functools`, `decimal`, `random`, `hashlib`, `base64`, `bisect`, `tomllib`, `pathlib`. No class inheritance, generators, `del`, `@property`, or packages. Errors come back with a hint on what to write instead. For pandas or numpy the model uses `shell` with `python3`, which asks every time.
+- Tool calls are synchronous for now (no `await` or `asyncio.gather`). Builds without the default `python` cargo feature leave the tool out.
+
 ## Security model
 
 The threat model, what isn't covered, and how to report a vulnerability are in [SECURITY.md](../SECURITY.md). In short:
@@ -488,6 +500,7 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 - **File tools** can't modify `~/.tern` and can't read `secrets.toml` or the database. Reads and writes outside the workspace need approval, and paths that escape the workspace through `..` or symlinks are refused.
 - **`http_fetch`** refuses loopback, private, link-local, and cloud-metadata addresses, checking every redirect hop and pinning DNS between the check and the connection.
 - **Luau connectors** run in sandboxed VMs (no files, processes, or `require`; 5 s and 64 MB per call) and can only reach the hosts and secrets they declare, including across redirects. An activated connector that changes, or that declares different capabilities than you approved, isn't loaded.
+- **`python`** scripts reach nothing but the run's read-only tools, each checked and journaled like a direct call, and a read-only view of the workspace; see [Compute](#compute-python).
 - **`shell`** runs in an OS sandbox (Seatbelt on macOS, Landlock on Linux) that confines writes to the workspace and keeps your home directory and `~/.tern` unreadable; see [Sandboxing](#sandboxing).
 - **Effects** are enforced by tern, not the model: `destructive` calls ask every time and `money_movement` / `trade` tools are refused outright, even with `--yes`.
 - **Taint** ([below](#taint)): once a run has read untrusted content, its `write` and `destructive` calls ask, whatever "always" grants say.
