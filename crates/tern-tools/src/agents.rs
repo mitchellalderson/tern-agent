@@ -74,8 +74,10 @@ impl Tool for AgentSpawn {
                     "tools": { "description": "'all' (default), 'read_only', or a list of tool names.",
                         "oneOf": [ { "enum": ["all", "read_only"] }, { "type": "array", "items": { "type": "string" } } ] },
                     "model": { "type": "string", "description": "A model alias from the configuration or provider:model. Default: the configured sub-agent model." },
-                    "max_iterations": { "type": "integer", "minimum": 1 },
-                    "budget_tokens": { "type": "integer", "minimum": 10000 }
+                    "max_iterations": { "type": "integer", "minimum": 1,
+                        "description": "Steps for this sub-agent. Default and ceiling are configured; ask for more when it must read or try a lot." },
+                    "budget_tokens": { "type": "integer", "minimum": 10000,
+                        "description": "Tokens for this sub-agent (input + output + cache, counted on every step). Ask for more when it must read a lot, or when retrying one that ran out." }
                 }
             }),
         )

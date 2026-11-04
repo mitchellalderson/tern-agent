@@ -601,15 +601,8 @@ impl Subagents {
         let scope = self
             .scope_for(req.tools.as_ref(), depth)
             .map_err(anyhow::Error::msg)?;
-        let max_iterations = req.max_iterations.map_or(self.limits.max_iterations, |n| {
-            n.clamp(1, self.limits.max_iterations)
-        });
-        // 0 in config = no limit.
-        let budget = match (self.limits.budget_tokens, req.budget_tokens) {
-            (0, asked) => asked,
-            (limit, Some(asked)) => Some(asked.min(limit)),
-            (limit, None) => Some(limit),
-        };
+        let limits = child_limits(&self.limits, &req);
+        let (max_iterations, budget) = (limits.max_iterations, limits.budget_tokens);
 
         let session_id = new_id();
         let run_id = new_id();
@@ -617,6 +610,7 @@ impl Subagents {
             Some(build) => build(&req.label, depth),
             None => parent.system_prompt.clone().unwrap_or_default(),
         };
+        let system = format!("{system}\n\n{}", limits_section(max_iterations, budget));
         let queued = {
             let _g = self
                 .gate
@@ -668,7 +662,17 @@ impl Subagents {
         if !queued {
             self.start(&run_id, false);
         }
-        Ok(json!({ "agent": req.label, "run_id": run_id, "status": status, "model": model }))
+        let mut out = json!({
+            "agent": req.label, "run_id": run_id, "status": status, "model": model,
+            "max_iterations": max_iterations, "budget_tokens": budget,
+        });
+        if !limits.lowered.is_empty() {
+            out["note"] = json!(format!(
+                "lowered to the configured ceiling: {}",
+                limits.lowered.join(", ")
+            ));
+        }
+        Ok(out)
     }
 
     async fn try_wait(&self, ctx: &ToolCtx, req: WaitRequest) -> anyhow::Result<Value> {
@@ -1274,9 +1278,106 @@ impl SubagentHost for Subagents {
     }
 }
 
+/// A child's step and token limits, and which asks the ceilings lowered.
+#[derive(Debug, PartialEq, Eq)]
+struct ChildLimits {
+    max_iterations: u32,
+    budget_tokens: Option<u64>,
+    lowered: Vec<String>,
+}
+
+/// The configured limits are defaults; `agent_spawn` may ask for more, up
+/// to the ceilings, so a retry after running out can actually get more.
+fn child_limits(limits: &SubagentLimits, req: &SpawnRequest) -> ChildLimits {
+    let mut lowered = Vec::new();
+    let max_iterations = match req.max_iterations {
+        None => limits.max_iterations,
+        Some(n) if n > limits.max_iterations_ceiling => {
+            lowered.push(format!(
+                "max_iterations {n} → {}",
+                limits.max_iterations_ceiling
+            ));
+            limits.max_iterations_ceiling
+        }
+        Some(n) => n.max(1),
+    };
+    // 0 in config = no budget / no ceiling.
+    let budget_tokens = match req.budget_tokens {
+        None => (limits.budget_tokens > 0).then_some(limits.budget_tokens),
+        Some(n) if limits.budget_tokens_ceiling > 0 && n > limits.budget_tokens_ceiling => {
+            lowered.push(format!(
+                "budget_tokens {n} → {}",
+                limits.budget_tokens_ceiling
+            ));
+            Some(limits.budget_tokens_ceiling)
+        }
+        Some(n) => Some(n),
+    };
+    ChildLimits {
+        max_iterations,
+        budget_tokens,
+        lowered,
+    }
+}
+
+/// Appended to a child's system prompt so it can pace itself.
+fn limits_section(max_iterations: u32, budget: Option<u64>) -> String {
+    let tokens = match budget {
+        Some(b) => format!(
+            " and {b} tokens (every model call counts its whole input again, so long files and \
+             outputs use it up fast)"
+        ),
+        None => String::new(),
+    };
+    format!(
+        "## Your limits\n\nYou have {max_iterations} steps{tokens}. Read and search only what the task \
+         needs. When you reach a limit you get one last turn, without tools, to write your report."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_limits_default_and_ceiling() {
+        let limits = SubagentLimits::from(&SubagentsConfig::default());
+        let req = |iters: Option<u32>, budget: Option<u64>| SpawnRequest {
+            label: "a".into(),
+            task: "t".into(),
+            tools: None,
+            model: None,
+            max_iterations: iters,
+            budget_tokens: budget,
+        };
+        let got = child_limits(&limits, &req(None, None));
+        assert_eq!((got.max_iterations, got.budget_tokens), (30, Some(400_000)));
+        // Asking for more than the default works: a retry can grow.
+        let got = child_limits(&limits, &req(Some(60), Some(1_000_000)));
+        assert_eq!(
+            (got.max_iterations, got.budget_tokens),
+            (60, Some(1_000_000))
+        );
+        assert!(got.lowered.is_empty());
+        // Past the ceiling it is lowered, and says so.
+        let got = child_limits(&limits, &req(Some(500), Some(9_000_000)));
+        assert_eq!(
+            (got.max_iterations, got.budget_tokens),
+            (100, Some(2_000_000))
+        );
+        assert_eq!(got.lowered.len(), 2);
+        // 0 = no budget and no ceiling.
+        let open = SubagentLimits {
+            budget_tokens: 0,
+            budget_tokens_ceiling: 0,
+            ..limits
+        };
+        assert_eq!(child_limits(&open, &req(None, None)).budget_tokens, None);
+        assert_eq!(
+            child_limits(&open, &req(None, Some(9_000_000))).budget_tokens,
+            Some(9_000_000)
+        );
+    }
 
     #[test]
     fn labels() {

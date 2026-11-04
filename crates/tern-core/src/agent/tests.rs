@@ -1320,13 +1320,13 @@ async fn child_run_sees_and_may_call_only_its_scoped_tools() {
 }
 
 #[tokio::test]
-async fn budget_and_iteration_limits_stop_the_run_and_replay_the_same() {
+async fn budget_and_iteration_limits_end_with_a_closing_turn_and_replay_the_same() {
     let h = Harness::new();
     let tool = Arc::new(Counter::new("count", true, false));
     let calls = tool.calls.clone();
     let script = Arc::new(Script::new(vec![
         Reply::Tool("count", json!({})),
-        Reply::Tool("count", json!({})),
+        Reply::Text("found one so far"),
         Reply::Text("done"),
     ]));
     let agent = h.agent(script.clone(), vec![tool], Arc::new(AutoApprove));
@@ -1334,13 +1334,30 @@ async fn budget_and_iteration_limits_stop_the_run_and_replay_the_same() {
     let run = start_limited(&h, &agent, None, Some(1), None);
     let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
     assert_eq!(out.status, RunStatus::Completed);
+    // The closing turn's text is the report, with the stop note after it.
     assert!(
-        out.final_text.contains("[stopped: token budget"),
+        out.final_text
+            .starts_with("found one so far\n\n[stopped: token budget"),
         "{}",
         out.final_text
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let model_calls = script.seen.lock().unwrap().len();
+    let seen = script.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2);
+    assert!(!seen[0].forbid_tool_calls);
+    // Same tools (the history has tool calls), but no calls allowed, and
+    // told why after the tool results.
+    assert!(seen[1].forbid_tool_calls);
+    assert_eq!(tool_names(&seen[1]), ["count"]);
+    let last = seen[1].messages.last().unwrap();
+    assert_eq!(last.role, Role::User);
+    assert!(matches!(last.content[0], ContentBlock::ToolResult { .. }));
+    assert!(
+        last.text().contains("used up your token budget (1 tokens)"),
+        "{}",
+        last.text()
+    );
+    let model_calls = seen.len();
 
     // Driving it again (as after a crash) replays to the same decision
     // without calling the model or the tool.
@@ -1349,7 +1366,10 @@ async fn budget_and_iteration_limits_stop_the_run_and_replay_the_same() {
     assert_eq!(again.final_text, out.final_text);
     assert_eq!(script.seen.lock().unwrap().len(), model_calls);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(h.kinds(&run), ["llm:completed", "tool:completed"]);
+    assert_eq!(
+        h.kinds(&run),
+        ["llm:completed", "tool:completed", "llm:completed"]
+    );
 
     // The run's own max_iterations overrides the config's.
     h.store.create_session("s2", "cli", None).unwrap();
@@ -1357,16 +1377,15 @@ async fn budget_and_iteration_limits_stop_the_run_and_replay_the_same() {
         store: h.store.clone(),
         session: "s2".into(),
     };
+    // A closing turn that calls a tool anyway ends the run without running it.
     let script = Arc::new(Script::new(vec![
         Reply::Tool("count", json!({})),
         Reply::Tool("count", json!({})),
         Reply::Text("done"),
     ]));
-    let agent = h2.agent(
-        script,
-        vec![Arc::new(Counter::new("count", true, false))],
-        Arc::new(AutoApprove),
-    );
+    let tool = Arc::new(Counter::new("count", true, false));
+    let calls = tool.calls.clone();
+    let agent = h2.agent(script, vec![tool], Arc::new(AutoApprove));
     let input = agent.journal.to_row(&Message::user_text("task")).unwrap();
     let run = h2
         .store
@@ -1390,6 +1409,51 @@ async fn budget_and_iteration_limits_stop_the_run_and_replay_the_same() {
     assert!(
         out.final_text
             .contains("[stopped: reached max_iterations (1)]"),
+        "{}",
+        out.final_text
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn closing_turn_starts_before_the_next_call_would_cross_the_budget() {
+    let replies = || {
+        vec![
+            Reply::Tool("count", json!({})),
+            Reply::Tool("count", json!({})),
+            Reply::Text("report"),
+        ]
+    };
+    let h = Harness::new();
+    let script = Arc::new(Script::new(replies()));
+    let agent = h.agent(
+        script.clone(),
+        vec![Arc::new(Counter::new("count", true, false))],
+        Arc::new(AutoApprove),
+    );
+    let first_input = {
+        let run = start_limited(&h, &agent, None, None, None);
+        agent.drive(&run, CancellationToken::new()).await.unwrap();
+        let seen = script.seen.lock().unwrap();
+        let r = &seen[0];
+        crate::compaction::estimate_tokens(&r.system, &r.messages, &r.tools)
+    };
+
+    // The first call uses first_input + 2 of the budget, under it; another
+    // call at least as big would cross it, so the next one is the closing turn.
+    let h2 = Harness::new();
+    let script = Arc::new(Script::new(replies()));
+    let tool = Arc::new(Counter::new("count", true, false));
+    let calls = tool.calls.clone();
+    let agent = h2.agent(script.clone(), vec![tool], Arc::new(AutoApprove));
+    let run = start_limited(&h2, &agent, None, Some(2 * first_input + 2), None);
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let seen = script.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(seen[1].forbid_tool_calls);
+    assert!(
+        out.final_text.contains("[stopped: token budget"),
         "{}",
         out.final_text
     );

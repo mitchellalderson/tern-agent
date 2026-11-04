@@ -23,9 +23,9 @@ pub enum AgentRole<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentPrompt {
     pub max_concurrent: u32,
-    /// Per child unless `agent_spawn` asks for fewer (`[subagents].max_iterations`).
+    /// Per child unless `agent_spawn` asks for a different number (`[subagents].max_iterations`).
     pub max_iterations: u32,
-    /// Per child unless `agent_spawn` asks for fewer (`[subagents].budget_tokens`).
+    /// Per child unless `agent_spawn` asks for a different number (`[subagents].budget_tokens`).
     pub budget_tokens: u64,
     /// What `agent_spawn` accepts as `model`: aliases, described.
     pub models: Vec<String>,

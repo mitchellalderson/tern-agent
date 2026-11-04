@@ -109,6 +109,9 @@ pub fn request_body(req: &ChatRequest) -> Value {
                 })
             })
             .collect();
+        if req.forbid_tool_calls {
+            body["tool_choice"] = json!("none");
+        }
     }
     body
 }
@@ -304,6 +307,7 @@ mod tests {
                 input_schema: json!({"type": "object"}),
             }],
             max_tokens: 50,
+            forbid_tool_calls: false,
         }
     }
 
@@ -320,6 +324,11 @@ mod tests {
         assert_eq!(m[3]["role"], "tool");
         assert_eq!(m[3]["content"], "ERROR: nope");
         assert_eq!(b["tools"][0]["function"]["name"], "read_file");
+        assert!(b.get("tool_choice").is_none());
+
+        let mut r = req();
+        r.forbid_tool_calls = true;
+        assert_eq!(request_body(&r)["tool_choice"], "none");
     }
 
     async fn collect(body: &str) -> Vec<StreamEvent> {

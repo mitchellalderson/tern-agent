@@ -127,6 +127,11 @@ pub struct ChatRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolSpec>,
     pub max_tokens: u32,
+    /// Offer `tools` (requests with tool history must) but let the model
+    /// only answer in text: a run's closing turn. Left out of the
+    /// serialized request when false, so journaled digests don't change.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forbid_tool_calls: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

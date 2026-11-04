@@ -72,6 +72,9 @@ pub fn request_body(req: &ChatRequest) -> Value {
             last["cache_control"] = json!({ "type": "ephemeral" });
         }
         body["tools"] = Value::Array(tools);
+        if req.forbid_tool_calls {
+            body["tool_choice"] = json!({ "type": "none" });
+        }
     }
     body
 }
@@ -228,6 +231,7 @@ mod tests {
                 input_schema: json!({"type": "object"}),
             }],
             max_tokens: 100,
+            forbid_tool_calls: false,
         }
     }
 
@@ -238,6 +242,16 @@ mod tests {
         assert_eq!(b["tools"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(b["messages"][0]["content"][0]["type"], "text");
         assert_eq!(b["stream"], true);
+        assert!(b.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn closing_turn_keeps_tools_but_forbids_calls() {
+        let mut r = req();
+        r.forbid_tool_calls = true;
+        let b = request_body(&r);
+        assert_eq!(b["tools"][0]["name"], "read_file");
+        assert_eq!(b["tool_choice"]["type"], "none");
     }
 
     #[test]

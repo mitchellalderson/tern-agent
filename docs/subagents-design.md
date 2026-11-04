@@ -156,8 +156,10 @@ max_depth = 1             # 1 = children can't spawn; 2 = one level of grandchil
 max_concurrent = 4        # running children per parent run
 max_children = 12         # children per parent run, in total
 max_concurrent_global = 8 # across the daemon; spawns beyond this queue (status "queued")
-max_iterations = 30       # per child, unless agent_spawn asks for fewer
-budget_tokens = 400000    # per child: input + output + cache tokens, unless agent_spawn asks for fewer
+max_iterations = 30       # per child, unless agent_spawn asks for a different number
+max_iterations_ceiling = 100   # the most agent_spawn may ask for
+budget_tokens = 400000    # per child: input + output + cache tokens, unless agent_spawn asks for a different number
+budget_tokens_ceiling = 2000000  # the most agent_spawn may ask for (0 = none)
 ask_parent_timeout_secs = 900
 ```
 
@@ -166,8 +168,9 @@ ask_parent_timeout_secs = 900
 - **Concurrency.** Beyond `max_concurrent`, `agent_spawn` still succeeds but the child is `queued` (run row created,
   not driven) and starts when a sibling finishes. The model never has to retry.
 - **Budget.** Checked in the agent loop after each `llm` step from journaled usage (the same source compaction uses),
-  so replay makes the same decision. Over budget, the run completes with `[stopped: token budget]`, like
-  `max_iterations` today. A parent's own budget, if set, counts its children's usage too.
+  so replay makes the same decision. When the next call would cross the budget, or `max_iterations` is reached, the
+  run gets one closing turn without tool calls to write its report, then completes with `[stopped: …]` after it
+  (DECISIONS, S4–S5). A parent's own budget, if set, counts its children's usage too.
 - **Iterations.** `AgentConfig::max_iterations` becomes the default; the run row's `max_iterations` overrides it.
 
 ### 1.7 Tools and model a sub-agent gets

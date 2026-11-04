@@ -33,6 +33,9 @@ pub const TRUNCATED_TOOL_MESSAGE: &str = "not run: your reply hit the output tok
 pub const INTERRUPTED_TOOL_MESSAGE: &str = "interrupted: this call may have partially executed before a crash; verify state before retrying";
 /// Starts the note appended to the final text of a run stopped by a limit.
 pub const STOPPED_MARKER: &str = "[stopped: ";
+/// Sent with the closing turn of a run that reached a limit, so it reports
+/// what it has instead of stopping mid-task with nothing to show.
+pub const WRAP_UP_MESSAGE: &str = "You have used up your {limit}, so you can't call any more tools. Write your final reply now from what you have: lead with the answer or result in the shape you were asked for, then say what you checked, what is unfinished and what you would do next.";
 
 /// Resolves the provider half of a `provider:model` reference.
 pub type ProviderFactory =
@@ -347,6 +350,9 @@ impl Agent {
         // to correct the chars/4 estimate. Derived from journaled usage, so
         // replay makes the same compaction decisions.
         let mut correction = 1.0_f64;
+        // Set once a limit is reached: the next model call is the closing
+        // turn, made without tools.
+        let mut wrap_up: Option<Limit> = None;
         loop {
             if cancel.is_cancelled() {
                 return Ok(RunStatus::Interrupted);
@@ -372,12 +378,16 @@ impl Agent {
                 }
             }
             let estimate = compaction::estimate_tokens(&system, &messages, &tools);
+            if let Some(limit) = wrap_up {
+                push_user_text(&mut messages, &limit.wrap_up_message());
+            }
             let req = ChatRequest {
                 model: model.model.clone(),
                 system: system.clone(),
                 messages,
                 tools: tools.clone(),
                 max_tokens,
+                forbid_tool_calls: wrap_up.is_some(),
             };
             let step_input = LlmStepInput {
                 model: &req.model,
@@ -418,6 +428,8 @@ impl Agent {
             if reported > 0 && estimate > 0 {
                 correction = reported as f64 / estimate as f64;
             }
+            // This call's input: the least the next one costs.
+            let last_input = reported;
             add_usage(&mut outcome.usage, &turn.value.usage);
             outcome.final_text = turn.value.message.text();
             self.emit(AgentEvent::AssistantMessage {
@@ -432,6 +444,13 @@ impl Agent {
                 });
             }
 
+            if let Some(limit) = wrap_up {
+                // Any call it makes anyway is left unanswered; the session's
+                // next request closes it.
+                outcome.final_text.push_str(&limit.note(&outcome.usage));
+                return Ok(RunStatus::Completed);
+            }
+
             let calls: Vec<ToolCall> = turn.value.message.tool_uses().collect();
             if calls.is_empty() {
                 // No finishing with live children: wait for their reports
@@ -443,8 +462,11 @@ impl Agent {
                     outcome.error = Some(cap);
                     return Ok(RunStatus::Failed);
                 }
-                if let Some(note) = limit_note(run, iterations, max_iterations, &outcome.usage) {
-                    outcome.final_text.push_str(&note);
+                // It has given its answer; no closing turn needed.
+                if let Some(limit) =
+                    limit_reached(run, iterations, max_iterations, &outcome.usage, 0)
+                {
+                    outcome.final_text.push_str(&limit.note(&outcome.usage));
                     return Ok(RunStatus::Completed);
                 }
                 match self.inbox_step(run, idx, true, cancel).await {
@@ -551,10 +573,7 @@ impl Agent {
                 outcome.error = Some(cap);
                 return Ok(RunStatus::Failed);
             }
-            if let Some(note) = limit_note(run, iterations, max_iterations, &outcome.usage) {
-                outcome.final_text.push_str(&note);
-                return Ok(RunStatus::Completed);
-            }
+            wrap_up = limit_reached(run, iterations, max_iterations, &outcome.usage, last_input);
         }
     }
 
@@ -851,6 +870,7 @@ impl Agent {
             messages: vec![compaction::summary_request(&transcript)],
             tools: vec![],
             max_tokens: compaction::SUMMARY_MAX_TOKENS,
+            forbid_tool_calls: false,
         };
         self.journal
             .step_with(
@@ -1000,20 +1020,70 @@ fn token_cap(run: &RunRow, usage: &Usage) -> Option<String> {
     })
 }
 
-/// The note for a run that reached its iteration limit or token budget, if
-/// it has. Both come from journaled values, so replay decides the same.
-fn limit_note(run: &RunRow, iterations: u32, max: u32, usage: &Usage) -> Option<String> {
-    if iterations >= max {
-        return Some(format!(
-            "\n\n{STOPPED_MARKER}reached max_iterations ({max})]"
-        ));
+/// A limit a run has reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Limit {
+    Iterations(u32),
+    Tokens(u64),
+}
+
+impl Limit {
+    fn wrap_up_message(self) -> String {
+        let limit = match self {
+            Limit::Iterations(max) => format!("step limit ({max} steps)"),
+            Limit::Tokens(budget) => format!("token budget ({budget} tokens)"),
+        };
+        format!("[{}]", WRAP_UP_MESSAGE.replace("{limit}", &limit))
     }
-    let used = tokens_used(usage);
-    match run.budget_tokens {
-        Some(budget) if used >= budget => Some(format!(
-            "\n\n{STOPPED_MARKER}token budget ({used} of {budget} tokens)]"
-        )),
+
+    /// Appended to the final text of the run it stopped.
+    fn note(self, usage: &Usage) -> String {
+        match self {
+            Limit::Iterations(max) => {
+                format!("\n\n{STOPPED_MARKER}reached max_iterations ({max})]")
+            }
+            Limit::Tokens(budget) => format!(
+                "\n\n{STOPPED_MARKER}token budget ({} of {budget} tokens)]",
+                tokens_used(usage)
+            ),
+        }
+    }
+}
+
+/// The limit a run has reached, if any. The token budget counts as reached
+/// once the next call, costing at least `next_input` (the last call's
+/// input), would cross it, so the closing turn lands near the budget rather
+/// than a whole context past it. Both come from journaled values, so replay
+/// decides the same.
+fn limit_reached(
+    run: &RunRow,
+    iterations: u32,
+    max: u32,
+    usage: &Usage,
+    next_input: u64,
+) -> Option<Limit> {
+    if iterations >= max {
+        return Some(Limit::Iterations(max));
+    }
+    // A scheduled run's budget is its tokens_per_run cap, which fails it
+    // instead (`token_cap`).
+    match run.budget_tokens.filter(|_| run.trigger != "cron") {
+        Some(budget) if tokens_used(usage) + next_input >= budget => Some(Limit::Tokens(budget)),
         _ => None,
+    }
+}
+
+/// Add `text` to the conversation as the user's, after any tool results.
+fn push_user_text(messages: &mut Vec<Message>, text: &str) {
+    let block = ContentBlock::Text {
+        text: text.to_owned(),
+    };
+    match messages.last_mut() {
+        Some(last) if last.role == Role::User => last.content.push(block),
+        _ => messages.push(Message {
+            role: Role::User,
+            content: vec![block],
+        }),
     }
 }
 
