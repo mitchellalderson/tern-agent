@@ -324,6 +324,70 @@ impl Backend for TuiBackend {
         }
     }
 
+    /// Without the daemon, channels can be listed, made and read; sending
+    /// into one needs it (mention wakes, answer posts).
+    fn channels(&self) -> BackendResult<Vec<tern_tui::ChannelInfo>> {
+        let store = &self.rt().store;
+        let rows = store.channels(false).map_err(err)?;
+        Ok(rows
+            .into_iter()
+            .map(|c| tern_tui::ChannelInfo {
+                needs_you: store.open_needs_you(&c.id).unwrap_or(0),
+                active_runs: 0,
+                id: c.id,
+                slug: c.slug,
+                title: c.title,
+                kind: c.kind,
+            })
+            .collect())
+    }
+
+    fn create_channel(
+        &self,
+        slug: &str,
+        title: Option<&str>,
+    ) -> BackendResult<tern_tui::ChannelInfo> {
+        tern_core::channels::check_slug(slug)?;
+        let store = &self.rt().store;
+        if store.channel(slug).map_err(err)?.is_some() {
+            return Err(format!("there is already a channel #{slug}"));
+        }
+        let c = store
+            .create_channel(&tern_store::ChannelRow {
+                id: tern_core::agent::new_id(),
+                slug: slug.to_owned(),
+                title: title.filter(|t| !t.is_empty()).unwrap_or(slug).to_owned(),
+                kind: "topic".into(),
+                created_by: "user".into(),
+                ..Default::default()
+            })
+            .map_err(err)?;
+        Ok(tern_tui::ChannelInfo {
+            id: c.id,
+            slug: c.slug,
+            title: c.title,
+            kind: c.kind,
+            needs_you: 0,
+            active_runs: 0,
+        })
+    }
+
+    fn channel_posts(&self, id: &str, limit: usize) -> BackendResult<Vec<tern_tui::PostLine>> {
+        let store = &self.rt().store;
+        let mut rows = store.posts(id, None, limit).map_err(err)?;
+        rows.reverse();
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let suggestion = tern_core::channels::suggestion_of(store, &r).map(Box::new);
+                crate::remote::post_line(tern_core::channels::Post {
+                    suggestion,
+                    ..tern_core::channels::Post::from(r)
+                })
+            })
+            .collect())
+    }
+
     fn agents(&self) -> BackendResult<Vec<AgentInfo>> {
         let rows = self.rt().store.agents(false).map_err(err)?;
         Ok(rows

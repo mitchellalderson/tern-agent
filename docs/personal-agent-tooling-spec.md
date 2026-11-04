@@ -1146,8 +1146,10 @@ Acceptance highlights (each phase also passes clippy `-D warnings` and `cargo te
 
 ## 14. Open questions
 
-- Telegram topics in private bot chats: which Bot API version, and does it need the user to enable anything? Fallback
-  is the `#slug ·` prefix.
+- ~~Telegram topics in private bot chats: which Bot API version, and does it need the user to enable anything?~~
+  Answered in C5: Bot API 9.3 (31 Dec 2025) added topics in private chats, enabled for the bot by its owner
+  (`User.has_topics_enabled`); bots may create them since 9.4 (9 Feb 2026). tern tries, and falls back to the
+  `#slug ·` prefix.
 - OAuth client IDs for Google: is "bring your own client" acceptable friction for tier 1, or do we run a
   token-exchange broker (which is a hosted dependency, and then belongs to tern Cloud)?
 - Should the gate model also judge **channel routing** ("this post belongs in #finances"), as Duet appears to do, or

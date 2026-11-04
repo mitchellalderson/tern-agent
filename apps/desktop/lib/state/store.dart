@@ -383,6 +383,45 @@ class TernStore extends ChangeNotifier {
     }
   }
 
+  /// Accept an agent's channel suggestion: the channel is created, and
+  /// the conversation it came from and `routines` move there unless left
+  /// out. Opens the new channel. Returns the daemon's reason on failure.
+  Future<String?> acceptSuggestion(
+    ChannelSuggestion s, {
+    bool moveConversation = true,
+    List<String>? routines,
+  }) async {
+    try {
+      final id = await client.acceptSuggestion(
+        s.id,
+        moveConversation: moveConversation,
+        routines: routines,
+      );
+      if (s.sessionId case final moved? when moveConversation) {
+        _streamSessions.remove(moved);
+      }
+      channels = await client.channels();
+      sessions = await client.sessions();
+      schedules = await client.schedules();
+      posts.remove(id);
+      await openChannelView(id);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  Future<String?> declineSuggestion(ChannelSuggestion s) async {
+    try {
+      await client.declineSuggestion(s.id);
+      channels = await client.channels();
+      notifyListeners();
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
   /// Mark a needs-you post (or its pointer in Home) done.
   Future<void> resolvePost(Post post) async {
     try {

@@ -15,6 +15,7 @@ pub const DEFAULT: &str = "tern";
 pub const SYSTEM_TOOLS: &[&str] = &[
     "channel_read",
     "channel_post",
+    "channel_suggest",
     "history_search",
     "secret_request",
     "memory_save",

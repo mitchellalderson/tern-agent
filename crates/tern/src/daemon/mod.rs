@@ -24,6 +24,7 @@ pub mod listen;
 pub mod manager;
 pub mod outbox;
 pub mod scheduler;
+pub mod suggestions;
 pub mod tls;
 pub mod uploads;
 pub mod waiting;

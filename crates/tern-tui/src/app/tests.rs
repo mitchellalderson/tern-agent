@@ -46,6 +46,12 @@ struct Fake {
     /// Pending outbox items, and (id, approve, input, note) decisions.
     outbox: Mutex<Vec<tern_core::outbox::OutboxItem>>,
     decided: Mutex<Vec<Decided>>,
+    /// (channel, text) passed to `send_to_channel`; posts per channel;
+    /// channels made; suggestions decided.
+    channel_sends: Mutex<Vec<(String, String)>>,
+    channel_posts: Mutex<std::collections::BTreeMap<String, Vec<crate::PostLine>>>,
+    channels_made: Mutex<Vec<String>>,
+    suggestions: Mutex<Vec<(i64, bool)>>,
 }
 
 #[async_trait]
@@ -268,6 +274,69 @@ impl Backend for Fake {
             a("tern:inbox", "inbox", "Inbox", 2),
             a("tern:research", "research", "Research", 0),
         ])
+    }
+    fn channels(&self) -> BackendResult<Vec<crate::ChannelInfo>> {
+        let c = |id: &str, slug: &str, kind: &str, needs_you| crate::ChannelInfo {
+            id: id.into(),
+            slug: slug.into(),
+            title: if slug == "home" {
+                "Home".into()
+            } else {
+                slug.into()
+            },
+            kind: kind.into(),
+            needs_you,
+            active_runs: 0,
+        };
+        let mut l = vec![
+            c("home", "home", "main", 3),
+            c("dm:inbox", "dm-inbox", "main", 0),
+            c("c-fin", "finances", "topic", 1),
+        ];
+        for s in self.channels_made.lock().unwrap().iter() {
+            l.push(c(&format!("c-{s}"), s, "topic", 0));
+        }
+        Ok(l)
+    }
+    fn create_channel(&self, slug: &str, _: Option<&str>) -> BackendResult<crate::ChannelInfo> {
+        self.channels_made.lock().unwrap().push(slug.into());
+        Ok(crate::ChannelInfo {
+            id: format!("c-{slug}"),
+            slug: slug.into(),
+            title: slug.into(),
+            kind: "topic".into(),
+            needs_you: 0,
+            active_runs: 0,
+        })
+    }
+    fn send_to_channel(&self, id: &str, text: &str, _: Option<&str>) -> BackendResult<Started> {
+        let mut s = self.channel_sends.lock().unwrap();
+        s.push((id.into(), text.into()));
+        Ok(Started {
+            session_id: format!("{id}-main"),
+            run_id: format!("rc{}", s.len()),
+            model: "mock:default".into(),
+        })
+    }
+    fn channel_posts(&self, id: &str, _: usize) -> BackendResult<Vec<crate::PostLine>> {
+        Ok(self
+            .channel_posts
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .unwrap_or_default())
+    }
+    fn decide_suggestion(&self, id: i64, accept: bool) -> BackendResult<String> {
+        self.suggestions.lock().unwrap().push((id, accept));
+        if accept {
+            self.channels_made.lock().unwrap().push("travel".into());
+        }
+        Ok(if accept {
+            "created #travel".into()
+        } else {
+            "declined".into()
+        })
     }
     fn send_to_agent(
         &self,
@@ -1699,4 +1768,109 @@ fn sign_in_cards_choose_open_and_close() {
     });
     assert!(app.auth_prompt.is_none());
     drop(rx);
+}
+
+fn post(id: i64, author: &str, kind: &str, text: &str, run: Option<&str>) -> crate::PostLine {
+    crate::PostLine {
+        id,
+        author: author.into(),
+        author_kind: if author == "you" { "user" } else { "agent" }.into(),
+        kind: kind.into(),
+        text: text.into(),
+        run_id: run.map(Into::into),
+        needs_you: kind == "needs_you",
+        suggestion: None,
+    }
+}
+
+#[test]
+fn channel_commands_switch_post_and_show_what_needs_you() {
+    let (mut app, fake) = new_app();
+    fake.channel_posts.lock().unwrap().insert(
+        "c-fin".into(),
+        vec![
+            post(1, "you", "message", "How much on cards?", None),
+            post(2, "tern", "answer", "About 1,240 EUR.", Some("r0")),
+        ],
+    );
+    submit(&mut app, "/channels");
+    let n = notices(&app);
+    assert!(n.contains("▸ Home  (3 need you)"), "{n}");
+    assert!(n.contains("  #finances  (1 need you)"), "{n}");
+    assert!(!n.contains("dm-inbox"), "DMs are /agent's");
+    submit(&mut app, "/channel nope");
+    assert!(notices(&app).contains("no channel #nope"));
+
+    // Switching shows the recent posts; the status line says where.
+    submit(&mut app, "/channel #finances");
+    assert_eq!(app.channel.as_ref().unwrap().slug, "finances");
+    let n = notices(&app);
+    assert!(n.contains("tern: About 1,240 EUR."), "{n}");
+    let s = screen(&mut app, 100, 12);
+    assert!(s.contains("#finances · tern"), "{s}");
+    assert!(s.contains("3 need you"), "{s}");
+
+    // A send posts to the channel; afterwards, what others said is shown,
+    // not the driven run's own answer (it streamed).
+    let fx = submit(&mut app, "And Northwind?");
+    assert!(matches!(fx.as_slice(), [Effect::Drive { run_id, .. }] if run_id == "rc1"));
+    assert_eq!(
+        fake.channel_sends.lock().unwrap().as_slice(),
+        [("c-fin".to_owned(), "And Northwind?".to_owned())]
+    );
+    fake.channel_posts
+        .lock()
+        .unwrap()
+        .get_mut("c-fin")
+        .unwrap()
+        .extend([
+            post(3, "you", "message", "And Northwind?", None),
+            post(4, "tern", "answer", "310 EUR.", Some("rc1")),
+            post(
+                5,
+                "Research",
+                "answer",
+                "Northwind's terms are net 30.",
+                Some("rk"),
+            ),
+        ]);
+    app.on_run_done(outcome(RunStatus::Completed));
+    let n = notices(&app);
+    assert!(n.contains("Research: Northwind's terms are net 30."), "{n}");
+    assert!(!n.contains("tern: 310 EUR."), "{n}");
+
+    // A suggestion card in Home is answered by slug.
+    fake.channel_posts.lock().unwrap().insert(
+        "home".into(),
+        vec![crate::PostLine {
+            suggestion: Some((9, "travel".into(), true)),
+            ..post(
+                6,
+                "tern",
+                "needs_you",
+                "Suggests a new channel, #travel: Trips.",
+                None,
+            )
+        }],
+    );
+    submit(&mut app, "/channel accept travel");
+    assert_eq!(fake.suggestions.lock().unwrap().as_slice(), [(9, true)]);
+    assert_eq!(app.channel.as_ref().unwrap().slug, "travel");
+
+    // A new channel, then Home again.
+    submit(&mut app, "/channel new launch Q4 launch");
+    assert_eq!(fake.channels_made.lock().unwrap().last().unwrap(), "launch");
+    assert_eq!(app.channel.as_ref().unwrap().slug, "launch");
+    submit(&mut app, "/channel home");
+    assert!(app.channel.is_none());
+    submit(&mut app, "hi");
+    assert_eq!(
+        fake.started.lock().unwrap().len(),
+        1,
+        "Home is the TUI's own sessions"
+    );
+    // /agent leaves the channel.
+    submit(&mut app, "/channel finances");
+    submit(&mut app, "/agent inbox");
+    assert!(app.channel.is_none());
 }

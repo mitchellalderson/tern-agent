@@ -76,8 +76,38 @@ pub struct Post {
     pub approval_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_request_id: Option<String>,
+    /// A `needs_you` post (or its pointer) for a `channel_suggest` card:
+    /// accept or decline it, which closes the post.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<Box<Suggestion>>,
     /// Unix ms.
     pub created_at: i64,
+}
+
+/// A channel an agent suggested (`channel_suggest`, channels-design C5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Suggestion {
+    pub id: i64,
+    pub slug: String,
+    pub title: String,
+    pub why: String,
+    /// Routines accepting would move there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routines: Vec<RoutineRef>,
+    /// `pending`, `accepted` or `declined`.
+    pub state: String,
+    /// The channel accepting created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    /// The conversation it was suggested in (accepting can move it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutineRef {
+    pub id: String,
+    pub title: String,
 }
 
 fn is_zero(n: &i64) -> bool {
@@ -106,9 +136,46 @@ impl From<tern_store::PostRow> for Post {
             outbox_id: None,
             approval_id: None,
             secret_request_id: None,
+            suggestion: None,
             created_at: p.created_at,
         }
     }
+}
+
+/// The suggestion a `channel_suggest` card (or its Home pointer) stands
+/// for. A routine is named by the start of its prompt.
+pub fn suggestion_of(store: &tern_store::Store, row: &tern_store::PostRow) -> Option<Suggestion> {
+    let card = match (row.kind.as_str(), row.points_to) {
+        ("pointer", Some(to)) => to,
+        _ => row.id,
+    };
+    let s = store.suggestion_of_post(card).ok().flatten()?;
+    let routines = s
+        .routines
+        .iter()
+        .filter_map(|id| store.schedule(id).ok().flatten())
+        .map(|r| RoutineRef {
+            title: r
+                .prompt
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(60)
+                .collect(),
+            id: r.id,
+        })
+        .collect();
+    Some(Suggestion {
+        id: s.id,
+        slug: s.slug,
+        title: s.title,
+        why: s.why,
+        routines,
+        state: s.state,
+        channel_id: s.channel_id,
+        session_id: s.session_id,
+    })
 }
 
 /// A channel slug: `[a-z0-9][a-z0-9-]{0,31}`.

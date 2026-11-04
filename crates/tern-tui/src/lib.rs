@@ -44,6 +44,8 @@ pub type BackendResult<T> = Result<T, String>;
 
 const NO_SETUP: &str = "this backend can't manage providers";
 const NO_MCP: &str = "this backend can't manage MCP servers";
+const NO_CHANNELS: &str =
+    "channels need the background agent: start it with `tern start`, then reopen tern";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Started {
@@ -62,6 +64,33 @@ pub struct AgentInfo {
     pub needs_you: usize,
     pub active_runs: usize,
     pub is_default: bool,
+}
+
+/// A channel, for `/channels` and `/channel` (channels-design C5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelInfo {
+    pub id: String,
+    pub slug: String,
+    pub title: String,
+    /// `main` (Home, a DM) or `topic`.
+    pub kind: String,
+    /// Open needs-you posts; Home's counts everything waiting on you.
+    pub needs_you: usize,
+    pub active_runs: usize,
+}
+
+/// A post, as the TUI prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostLine {
+    pub id: i64,
+    pub author: String,
+    pub author_kind: String,
+    pub kind: String,
+    pub text: String,
+    pub run_id: Option<String>,
+    pub needs_you: bool,
+    /// A `channel_suggest` card: `(suggestion id, slug, pending)`.
+    pub suggestion: Option<(i64, String, bool)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,6 +270,32 @@ pub trait Backend: Send + Sync + 'static {
     /// Agent profiles, the default first. Empty when the core has none.
     fn agents(&self) -> BackendResult<Vec<AgentInfo>> {
         Ok(Vec::new())
+    }
+    /// Channels, Home first.
+    fn channels(&self) -> BackendResult<Vec<ChannelInfo>> {
+        Err(NO_CHANNELS.into())
+    }
+    /// Create topic channel `slug`.
+    fn create_channel(&self, _slug: &str, _title: Option<&str>) -> BackendResult<ChannelInfo> {
+        Err(NO_CHANNELS.into())
+    }
+    /// Post `text` in topic channel `id`: the lead (or whoever it
+    /// @mentions) answers; the started run is the first's.
+    fn send_to_channel(
+        &self,
+        _id: &str,
+        _text: &str,
+        _model: Option<&str>,
+    ) -> BackendResult<Started> {
+        Err(NO_CHANNELS.into())
+    }
+    /// A channel's newest `limit` posts, oldest first.
+    fn channel_posts(&self, _id: &str, _limit: usize) -> BackendResult<Vec<PostLine>> {
+        Err(NO_CHANNELS.into())
+    }
+    /// Accept or decline a channel suggestion; what happened, in words.
+    fn decide_suggestion(&self, _id: i64, _accept: bool) -> BackendResult<String> {
+        Err(NO_CHANNELS.into())
     }
     /// Send `text` into agent `id`'s DM: its current thread, or a new one
     /// with `new_topic`.

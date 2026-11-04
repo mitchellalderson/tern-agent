@@ -61,11 +61,13 @@ pub fn view(store: &Store, row: tern_store::PostRow) -> Post {
         Some((_, id)) => (None, Some(id)),
         None => (None, None),
     };
+    let suggestion = tern_core::channels::suggestion_of(store, &row).map(Box::new);
     Post {
         points_to_channel,
         outbox_id,
         approval_id,
         secret_request_id,
+        suggestion,
         ..Post::from(row)
     }
 }
@@ -124,7 +126,8 @@ impl Manager {
             }
             return self.send_home(channel, text, new_topic, model).await;
         }
-        self.send_to_topic(channel, text, reply_to, model).await
+        self.send_to_topic(channel, text, reply_to, model, None)
+            .await
     }
 
     /// A reply under a post in Home or an agent's DM. Conversations are

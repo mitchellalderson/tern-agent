@@ -10,6 +10,7 @@ mod migrations;
 mod outbox_repo;
 mod repo;
 mod subagents_repo;
+mod suggestions_repo;
 mod webhooks_repo;
 
 pub use agents_repo::{AgentChange, AgentRow, DEFAULT_AGENT, dm_slug};
@@ -20,6 +21,7 @@ pub use devices_repo::{DeviceGrant, DeviceRow};
 pub use members_repo::{ChannelWakes, Member, mention_slugs};
 pub use outbox_repo::{NewOutbox, OutboxRow};
 pub use subagents_repo::{MailRow, NewMail};
+pub use suggestions_repo::{NewSuggestion, SuggestionRow};
 pub use webhooks_repo::WebhookRow;
 
 pub use repo::{

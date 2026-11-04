@@ -362,6 +362,217 @@ impl Tool for ChannelPost {
     }
 }
 
+/// `channel_suggest` (channels-design C5, tooling spec §4.2): propose a
+/// channel. It never creates one: the user gets a card in the conversation
+/// the run is in (where its approvals wait) and accepts or declines.
+pub struct ChannelSuggest {
+    store: Store,
+    on_post: Option<OnPost>,
+}
+
+impl ChannelSuggest {
+    pub fn new(store: Store, on_post: Option<OnPost>) -> Self {
+        Self { store, on_post }
+    }
+
+    /// The channel a request from session `root` waits in: a routine's,
+    /// the one it posts to; else its session's; else Home (as
+    /// `daemon::waiting::conversation_of`).
+    fn conversation_of(&self, root: &str) -> String {
+        let store = &self.store;
+        store
+            .schedule_for_session(root)
+            .ok()
+            .flatten()
+            .and_then(|r| r.channel_id)
+            .or_else(|| {
+                store
+                    .session(root)
+                    .ok()
+                    .flatten()
+                    .and_then(|s| s.channel_id)
+            })
+            .filter(|c| {
+                store
+                    .channel(c)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|c| c.archived_at.is_none())
+            })
+            .unwrap_or_else(|| tern_store::HOME.into())
+    }
+}
+
+#[derive(Deserialize)]
+struct SuggestArgs {
+    slug: String,
+    title: Option<String>,
+    why: String,
+    #[serde(default)]
+    routines: Vec<String>,
+}
+
+#[async_trait]
+impl Tool for ChannelSuggest {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "channel_suggest",
+            "Suggest a new channel to the user when a topic keeps coming up and would be easier in its own place (#finances, #launch). The user gets a card and accepts or declines; nothing is created until then, and accepting can move this conversation and the routines you name there. Don't wait for the answer.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string", "description": "lowercase letters, digits and dashes, e.g. finances" },
+                    "title": { "type": "string" },
+                    "why": { "type": "string", "description": "one or two sentences, shown on the card" },
+                    "routines": { "type": "array", "items": { "type": "string" }, "description": "routines (ids or titles) that belong there" }
+                },
+                "required": ["slug", "why"]
+            }),
+        )
+    }
+
+    /// Granted: it only writes a card to tern's own store; the user decides.
+    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+        ToolPolicy::granted_write(true)
+    }
+
+    async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
+        let a: SuggestArgs = match args(raw) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        let slug = a.slug.trim().trim_start_matches('#').to_lowercase();
+        if let Err(e) = tern_core::channels::check_slug(&slug) {
+            return ToolResult::error(e);
+        }
+        let why = a.why.trim();
+        if why.is_empty() {
+            return ToolResult::error("say why, in a sentence or two");
+        }
+        let title = a
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map_or_else(|| slug.clone(), str::to_owned);
+        let store = &self.store;
+        match store.channel(&slug) {
+            Ok(Some(c)) => {
+                return ToolResult::error(format!(
+                    "#{} already exists{}: post there, or the user can move this conversation there",
+                    c.slug,
+                    if c.archived_at.is_some() {
+                        " (archived)"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => return ToolResult::error(e.to_string()),
+        }
+        let run = match store.run(&ctx.run_id) {
+            Ok(Some(r)) => r,
+            Ok(None) => return ToolResult::error("run not found"),
+            Err(e) => return ToolResult::error(e.to_string()),
+        };
+        if run.parent_run_id.is_some() {
+            return ToolResult::error(
+                "a sub-agent doesn't suggest channels: say so in your report instead",
+            );
+        }
+        // Routines named by id or title.
+        let mut routines = Vec::new();
+        if !a.routines.is_empty() {
+            let all = match store.schedules() {
+                Ok(l) => l,
+                Err(e) => return ToolResult::error(e.to_string()),
+            };
+            for name in &a.routines {
+                let n = name.trim();
+                // A routine's title is the start of its prompt.
+                let lower = n.to_lowercase();
+                let found = all.iter().find(|s| {
+                    s.id == n || (!lower.is_empty() && s.prompt.to_lowercase().starts_with(&lower))
+                });
+                match found {
+                    Some(s) if !routines.contains(&s.id) => routines.push(s.id.clone()),
+                    Some(_) => {}
+                    None => return ToolResult::error(format!("no routine {n:?}")),
+                }
+            }
+        }
+        let call = current_call_id().unwrap_or_else(tern_core::agent::new_id);
+        let key = format!("suggest:{}:{call}", run.id);
+        if let Ok(Some(p)) = store.post_by_key(&key) {
+            return ToolResult::ok(format!("suggested #{slug} (card {})", p.id));
+        }
+        let root = store
+            .root_run(&run.id)
+            .ok()
+            .and_then(|r| store.run(&r).ok().flatten())
+            .map_or_else(|| run.session_id.clone(), |r| r.session_id);
+        let channel = self.conversation_of(&root);
+        let me = store
+            .session_agent(&ctx.session_id)
+            .ok()
+            .and_then(|a| store.agent(&a).ok().flatten());
+        let (author_id, author_name) = me
+            .map(|a| (a.id, a.name))
+            .unwrap_or_else(|| (author::AGENT.into(), author::AGENT.into()));
+        let suggestion = match store.create_suggestion(&tern_store::NewSuggestion {
+            slug: &slug,
+            title: &title,
+            why,
+            routines: &routines,
+            run_id: Some(&run.id),
+            session_id: Some(&root),
+        }) {
+            Ok(s) => s,
+            Err(e) => return ToolResult::error(e.to_string()),
+        };
+        let named = if title.eq_ignore_ascii_case(&slug) {
+            String::new()
+        } else {
+            format!(" ({title})")
+        };
+        let written = store.add_post(&NewPost {
+            channel_id: &channel,
+            session_id: Some(&root),
+            run_id: Some(&run.id),
+            author_kind: "agent",
+            author_id: &author_id,
+            author: &author_name,
+            kind: "needs_you",
+            text: &format!("Suggests a new channel, #{slug}{named}: {why}"),
+            dedupe_key: Some(&key),
+            tainted: run.taint.is_some(),
+            ..NewPost::default()
+        });
+        let row = match written {
+            Ok((row, _)) => row,
+            Err(e) => return ToolResult::error(format!("posting the card: {e}")),
+        };
+        if let Err(e) = store.set_suggestion_post(suggestion.id, row.id) {
+            return ToolResult::error(e.to_string());
+        }
+        if let Some(f) = &self.on_post {
+            let pointer = store.pointer_to(row.id).ok().flatten();
+            f(row);
+            if let Some(p) = pointer {
+                f(p);
+            }
+        }
+        ToolResult::ok(format!(
+            "Suggested #{slug}. The user sees a card to accept or decline; carry on, you don't need to wait."
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
