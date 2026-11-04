@@ -1,0 +1,20 @@
+{
+  "id": "sch_0a1b2c3d4e5f",
+  "cron": "*/30 * * * *",
+  "prompt": "Check the deploy queue",
+  "session_id": "019a0b1c2d3e7f00a1b2c3d4e5f60718",
+  "deliver_to": "telegram:5151",
+  "enabled": true,
+  "next_run_at": 1762185600000,
+  "last_run_at": 1762183800000,
+  "last_status": "completed",
+  "last_quiet": true,
+  "quiet_hours": "23:00-06:30",
+  "urgent": false,
+  "runs_per_day": 12,
+  "usd_per_day": 0.5,
+  "tokens_per_run": 200000,
+  "paused": "budget",
+  "paused_until": 1762210800000,
+  "paused_reason": "runs_per_day"
+}

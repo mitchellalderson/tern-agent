@@ -288,6 +288,7 @@ mod tests {
                     name: None,
                     context_window: None,
                     created: None,
+                    pricing: None,
                 })
                 .collect(),
         }

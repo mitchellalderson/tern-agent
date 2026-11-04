@@ -23,7 +23,7 @@ const NOT_CHAT: &[&str] = &[
 ];
 
 /// A successful listing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Listing {
     pub models: Vec<ModelInfo>,
     /// Set when `base_url` had no version path and adding `/v1` worked.
@@ -160,6 +160,7 @@ async fn anthropic(
                 name: m["display_name"].as_str().map(str::to_owned),
                 context_window: m["max_input_tokens"].as_u64(),
                 created: None,
+                pricing: None,
             })
         }));
         match (page["has_more"].as_bool(), page["last_id"].as_str()) {
@@ -194,12 +195,31 @@ async fn openai_compat(
                 name: m["name"].as_str().map(str::to_owned),
                 context_window: m["context_length"].as_u64(),
                 created: m["created"].as_i64(),
+                pricing: pricing(&m["pricing"]),
             })
         })
         .filter(|m| is_chat_model(&m.id))
         .collect();
     models.sort_by(|a, b| b.created.cmp(&a.created).then_with(|| a.id.cmp(&b.id)));
     Ok(models)
+}
+
+/// OpenRouter's `pricing`: USD per token, as strings (`"0.000003"`).
+fn pricing(p: &Value) -> Option<tern_core::config::Pricing> {
+    let per_mtok = |key: &str| -> Option<f64> {
+        let v = &p[key];
+        let n = v
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| v.as_f64())?;
+        (n >= 0.0 && n.is_finite()).then_some(n * 1_000_000.0)
+    };
+    Some(tern_core::config::Pricing {
+        input: per_mtok("prompt")?,
+        output: per_mtok("completion")?,
+        cache_read: per_mtok("input_cache_read"),
+        cache_write: per_mtok("input_cache_write"),
+    })
 }
 
 fn is_id_byte(b: u8) -> bool {
@@ -252,6 +272,7 @@ mod tests {
             base_url: Some(base.into()),
             api_key_secret: None,
             context_window: None,
+            prices: Default::default(),
         }
     }
 

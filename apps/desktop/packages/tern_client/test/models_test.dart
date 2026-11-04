@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:tern_client/tern_client.dart';
 import 'package:test/test.dart';
@@ -7,6 +8,18 @@ TernEvent ev(String s) => TernEvent.fromJson(jsonDecode(s) as Json);
 
 void main() {
   test('decodes agent events by type', () {
+    expect(
+      ev(
+        '{"type":"run_finished","run_id":"r","status":"completed","error":null,"quiet":true}',
+      ),
+      isA<RunFinished>().having((e) => e.quiet, 'quiet', isTrue),
+    );
+    expect(
+      ev(
+        '{"type":"run_finished","run_id":"r","status":"completed","error":null}',
+      ),
+      isA<RunFinished>().having((e) => e.quiet, 'quiet', isFalse),
+    );
     expect(
       ev('{"type":"run_started","run_id":"r","session_id":"s"}'),
       isA<RunStarted>().having((e) => e.sessionId, 'session', 's'),
@@ -102,6 +115,32 @@ void main() {
     );
     expect(s.nextRunAt, isNull);
     expect(s.lastRunAt!.year, 2025);
+    // An older daemon sends no T1a fields.
+    expect(s.lastQuiet, isFalse);
+    expect(s.limits.quietHours, isNull);
+    expect(s.pausedByBudget, isFalse);
+
+    // The shape the daemon sends today (checked against it in Rust).
+    final t1a = Schedule.fromJson(
+      jsonDecode(File('test/fixtures/schedule.json').readAsStringSync())
+          as Json,
+    );
+    expect(t1a.lastQuiet, isTrue);
+    expect(t1a.limits.quietHours, '23:00-06:30');
+    expect(t1a.limits.urgent, isFalse);
+    expect(t1a.limits.runsPerDay, 12);
+    expect(t1a.limits.usdPerDay, 0.5);
+    expect(t1a.limits.tokensPerRun, 200000);
+    expect(t1a.pausedByBudget, isTrue);
+    expect(t1a.pausedReason, 'runs_per_day');
+    expect(t1a.pausedUntil, isNotNull);
+    expect(const ScheduleLimits(runsPerDay: 3).toJson(), {
+      'quiet_hours': null,
+      'urgent': false,
+      'runs_per_day': 3,
+      'usd_per_day': null,
+      'tokens_per_run': null,
+    });
     final step = StepItem.fromJson(
       jsonDecode(
             '{"idx":0,"kind":"llm","status":"completed",'

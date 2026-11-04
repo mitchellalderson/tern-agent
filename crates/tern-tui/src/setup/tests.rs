@@ -34,6 +34,7 @@ fn models() -> Vec<ModelInfo> {
             name: None,
             context_window: Some(200_000),
             created: None,
+            pricing: None,
         })
         .collect()
 }

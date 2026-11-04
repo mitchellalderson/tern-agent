@@ -54,6 +54,9 @@ pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> R
     registry.register(Arc::new(schedule::ScheduleCreate {
         store: opts.store.clone(),
     }));
+    registry.register(Arc::new(schedule::ScheduleUpdate {
+        store: opts.store.clone(),
+    }));
     registry.register(Arc::new(schedule::ScheduleList {
         store: opts.store.clone(),
     }));

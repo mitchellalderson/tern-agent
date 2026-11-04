@@ -14,6 +14,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_daemon.sql"),
     include_str!("../migrations/0005_devices.sql"),
     include_str!("../migrations/0006_subagents.sql"),
+    include_str!("../migrations/0007_schedule_limits.sql"),
 ];
 
 pub const LATEST_VERSION: u32 = MIGRATIONS.len() as u32;

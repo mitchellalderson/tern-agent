@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::ProviderKind;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// What goes after `provider:`.
     pub id: String,
@@ -19,6 +19,9 @@ pub struct ModelInfo {
     /// Unix seconds, when the provider gives it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<i64>,
+    /// When the provider lists prices (OpenRouter does), for budgets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<crate::config::Pricing>,
 }
 
 /// Why a listing failed, in a shape clients can turn into wording.

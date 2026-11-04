@@ -4,9 +4,9 @@
 //! | Method | Path | |
 //! |---|---|---|
 //! | GET | `/v1/schedules` | all schedules, with their last run's status |
-//! | POST | `/v1/schedules` | create `{cron, prompt, deliver_to?}` |
+//! | POST | `/v1/schedules` | create `{cron, prompt, deliver_to?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
 //! | POST | `/v1/schedules/preview` | `{cron}` → normalized form and next 3 runs |
-//! | PATCH | `/v1/schedules/{id}` | change `{cron?, prompt?, enabled?, deliver_to?}` |
+//! | PATCH | `/v1/schedules/{id}` | change any of those, `enabled`, or `resume: true` (lift a budget pause); `null` returns a cap or `quiet_hours` to the default |
 //! | DELETE | `/v1/schedules/{id}` | delete |
 //! | POST | `/v1/schedules/{id}/run` | run now, without moving the next run |
 
@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tern_core::cron::Cron;
 use tern_store::ScheduleRow;
+use tern_tools::schedule::{ScheduleChange, ScheduleLimits};
 
 use super::api::{ApiError, ApiResult, Shared, bad, internal, not_found};
 
@@ -45,15 +46,40 @@ pub struct Schedule {
     pub last_run_at: Option<i64>,
     /// Status of the latest run in the schedule's session.
     pub last_status: Option<String>,
+    /// The latest run answered `NO_REPLY` and delivered nothing.
+    #[serde(default)]
+    pub last_quiet: bool,
+    /// `HH:MM-HH:MM` or `none`; absent = the `[schedules]` default.
+    #[serde(default)]
+    pub quiet_hours: Option<String>,
+    /// Delivers even during quiet hours.
+    #[serde(default)]
+    pub urgent: bool,
+    /// Caps; absent = the `[schedules]` default.
+    #[serde(default)]
+    pub runs_per_day: Option<u32>,
+    #[serde(default)]
+    pub usd_per_day: Option<f64>,
+    #[serde(default)]
+    pub tokens_per_run: Option<u64>,
+    /// `budget` while a daily cap has paused it.
+    #[serde(default)]
+    pub paused: Option<String>,
+    /// Unix ms: when a budget pause ends on its own.
+    #[serde(default)]
+    pub paused_until: Option<i64>,
+    /// Which cap paused it: `runs_per_day` or `usd_per_day`.
+    #[serde(default)]
+    pub paused_reason: Option<String>,
 }
 
 fn view(m: &Shared, s: ScheduleRow) -> Schedule {
-    let last_status =
+    let last =
         m.rt.store
             .runs_for_session(&s.session_id)
             .ok()
-            .and_then(|runs| runs.into_iter().last())
-            .map(|r| r.status);
+            .and_then(|runs| runs.into_iter().last());
+    let paused_until = s.paused_until.filter(|u| *u > tern_store::now_ms());
     Schedule {
         next_run_at: (s.enabled && s.next_run_at != i64::MAX).then_some(s.next_run_at),
         id: s.id,
@@ -63,7 +89,16 @@ fn view(m: &Shared, s: ScheduleRow) -> Schedule {
         deliver_to: s.deliver_to,
         enabled: s.enabled,
         last_run_at: s.last_run_at,
-        last_status,
+        last_quiet: last.as_ref().is_some_and(|r| r.quiet),
+        last_status: last.map(|r| r.status),
+        quiet_hours: s.quiet_hours,
+        urgent: s.urgent,
+        runs_per_day: s.runs_per_day,
+        usd_per_day: s.usd_per_day,
+        tokens_per_run: s.tokens_per_run,
+        paused: paused_until.map(|_| "budget".to_owned()),
+        paused_reason: paused_until.and(s.paused_reason),
+        paused_until,
     }
 }
 
@@ -78,6 +113,8 @@ struct CreateBody {
     prompt: String,
     /// `none` (default) or `telegram:<chat_id>`.
     deliver_to: Option<String>,
+    #[serde(flatten)]
+    limits: ScheduleLimits,
 }
 
 fn target(t: Option<&str>) -> Result<Option<String>, ApiError> {
@@ -95,8 +132,14 @@ async fn create(
     Json(b): Json<CreateBody>,
 ) -> Result<(StatusCode, Json<Schedule>), ApiError> {
     let deliver_to = target(b.deliver_to.as_deref())?;
-    let row = tern_tools::schedule::create_schedule(&m.rt.store, &b.cron, &b.prompt, deliver_to)
-        .map_err(bad)?;
+    let row = tern_tools::schedule::create_schedule(
+        &m.rt.store,
+        &b.cron,
+        &b.prompt,
+        deliver_to,
+        &b.limits,
+    )
+    .map_err(bad)?;
     Ok((StatusCode::CREATED, Json(view(&m, row))))
 }
 
@@ -122,6 +165,10 @@ struct UpdateBody {
     prompt: Option<String>,
     enabled: Option<bool>,
     deliver_to: Option<String>,
+    #[serde(default)]
+    resume: bool,
+    #[serde(flatten)]
+    limits: ScheduleLimits,
 }
 
 async fn update(
@@ -129,34 +176,21 @@ async fn update(
     UrlPath(id): UrlPath<String>,
     Json(b): Json<UpdateBody>,
 ) -> ApiResult<Schedule> {
-    let store = &m.rt.store;
-    let mut s = store
-        .schedule(&id)
-        .map_err(internal)?
+    let deliver_to = match &b.deliver_to {
+        Some(t) => Some(target(Some(t))?),
+        None => None,
+    };
+    let ch = ScheduleChange {
+        cron: b.cron,
+        prompt: b.prompt,
+        enabled: b.enabled,
+        deliver_to,
+        limits: b.limits,
+        resume: b.resume,
+    };
+    let s = tern_tools::schedule::update_schedule(&m.rt.store, &id, &ch)
+        .map_err(bad)?
         .ok_or_else(|| not_found("schedule"))?;
-    let reschedule = b.cron.is_some() || b.enabled == Some(true) && !s.enabled;
-    if let Some(c) = b.cron {
-        s.cron = parse(&c)?.to_string();
-    }
-    if let Some(p) = b.prompt {
-        if p.trim().is_empty() {
-            return Err(bad("prompt is empty"));
-        }
-        p.trim().clone_into(&mut s.prompt);
-    }
-    if let Some(e) = b.enabled {
-        s.enabled = e;
-    }
-    if b.deliver_to.is_some() {
-        s.deliver_to = target(b.deliver_to.as_deref())?;
-    }
-    if reschedule {
-        // Re-enabling starts from now rather than catching up missed slots.
-        s.next_run_at = parse(&s.cron)?
-            .next_after(chrono::Local::now())
-            .map_or(i64::MAX, |t| t.timestamp_millis());
-    }
-    store.update_schedule(&s).map_err(internal)?;
     Ok(Json(view(&m, s)))
 }
 
@@ -174,18 +208,25 @@ async fn run_now(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiRe
             .schedule(&id)
             .map_err(internal)?
             .ok_or_else(|| not_found("schedule"))?;
-    let started = m
-        .start(
-            Some(&s.session_id),
-            None,
-            &s.prompt,
-            "cron",
-            "cron",
-            s.deliver_to.as_deref(),
-        )
-        .await
-        .map_err(bad)?;
+    let started = m.start_scheduled(&s).await.map_err(bad)?;
     Ok(Json(
         json!({ "run_id": started.run_id, "session_id": started.session_id }),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fixture the Dart client decodes is exactly this API's shape.
+    #[test]
+    fn dart_fixture_matches_the_api() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/desktop/packages/tern_client/test/fixtures/schedule.json"
+        );
+        let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let parsed: Schedule = serde_json::from_value(fixture.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), fixture);
+    }
 }

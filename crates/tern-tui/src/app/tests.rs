@@ -211,6 +211,7 @@ fn outcome(status: RunStatus) -> BackendResult<RunOutcome> {
         final_text: String::new(),
         error: None,
         usage: Usage::default(),
+        quiet: false,
     })
 }
 
@@ -820,6 +821,7 @@ fn sub_agent_events_update_their_line_and_never_the_transcript() {
             run_id: "c1".into(),
             status: "completed".into(),
             error: None,
+            quiet: false,
         },
         // Another client's run: ignored.
         AgentEvent::TextDelta {

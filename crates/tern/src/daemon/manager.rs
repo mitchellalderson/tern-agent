@@ -376,6 +376,27 @@ impl Manager {
         Ok(started)
     }
 
+    /// Start a run of schedule `s` in its session, with its token cap.
+    /// Daily caps are the scheduler's job; "Run now" doesn't check them.
+    pub async fn start_scheduled(
+        self: &Arc<Self>,
+        s: &tern_store::ScheduleRow,
+    ) -> anyhow::Result<crate::runtime::StartedRun> {
+        self.stop_session(&s.session_id, true).await;
+        let started = self
+            .rt
+            .start_run(Some(&s.session_id), None, &s.prompt, "cron", "cron")?;
+        if let Some(t) = &s.deliver_to {
+            self.rt.store.set_run_deliver_to(&started.run_id, t)?;
+        }
+        let cap = s.tokens_per_run.or(self.rt.live().schedules.tokens_per_run);
+        if let Some(cap) = cap {
+            self.rt.store.set_run_budget_tokens(&started.run_id, cap)?;
+        }
+        self.spawn(&started.session_id, &started.run_id, false);
+        Ok(started)
+    }
+
     /// Drive `run_id` on a background task, then deliver its result. False
     /// (and nothing happens) if it is already being driven.
     pub fn spawn(self: &Arc<Self>, session_id: &str, run_id: &str, resume: bool) -> bool {
@@ -417,20 +438,18 @@ impl Manager {
     }
 
     async fn deliver(&self, outcome: &RunOutcome) {
+        let Ok(Some(run)) = self.rt.store.run(&outcome.run_id) else {
+            return;
+        };
         // Sub-agents report to their parent, never to a chat.
-        if let Ok(Some(run)) = self.rt.store.run(&outcome.run_id)
-            && run.parent_run_id.is_some()
-        {
+        if run.parent_run_id.is_some() {
+            return;
+        }
+        if outcome.quiet {
+            tracing::info!(run = %run.id, "scheduled run answered NO_REPLY; nothing delivered");
             return;
         }
         let Ok(Some(target)) = self.rt.store.run_deliver_to(&outcome.run_id) else {
-            return;
-        };
-        let Some((name, chat)) = target.split_once(':') else {
-            return;
-        };
-        let Some(g) = self.gateway(name) else {
-            tracing::warn!(target, "no gateway to deliver to");
             return;
         };
         let text = match outcome.status {
@@ -442,9 +461,89 @@ impl Manager {
             // Interrupted runs were stopped on purpose; the gateway says so.
             RunStatus::Interrupted | RunStatus::Running => return,
         };
-        if let Err(e) = g.deliver(chat, Some(&outcome.run_id), &text).await {
+        let schedule = (run.trigger == "cron")
+            .then(|| {
+                self.rt
+                    .store
+                    .schedule_for_session(&run.session_id)
+                    .ok()
+                    .flatten()
+            })
+            .flatten();
+        match schedule {
+            Some(s) => self.hold_or_send(&s, &target, Some(&run.id), &text).await,
+            None => {
+                if let Err(e) = self.send_to(&target, Some(&run.id), &text).await {
+                    tracing::warn!(target, error = %e, "delivery failed");
+                }
+            }
+        }
+    }
+
+    /// Deliver `text` for schedule `s` to its target, if it has one.
+    pub async fn deliver_for_schedule(
+        &self,
+        s: &tern_store::ScheduleRow,
+        run_id: Option<&str>,
+        text: &str,
+    ) {
+        if let Some(target) = &s.deliver_to {
+            self.hold_or_send(s, target, run_id, text).await;
+        }
+    }
+
+    /// Send now, or hold until the schedule's quiet hours end (held
+    /// deliveries are in the database, so a restart keeps them).
+    async fn hold_or_send(
+        &self,
+        s: &tern_store::ScheduleRow,
+        target: &str,
+        run_id: Option<&str>,
+        text: &str,
+    ) {
+        let quiet = s
+            .quiet_hours
+            .as_deref()
+            .and_then(|q| q.parse::<tern_core::quiet::QuietHours>().ok())
+            .unwrap_or(self.rt.live().schedules.quiet_hours);
+        let release = (!s.urgent)
+            .then(|| quiet.release_at(chrono::Local::now()))
+            .flatten();
+        if let Some(at) = release {
+            let label = super::scheduler::title(s);
+            match self.rt.store.hold_delivery(
+                target,
+                run_id,
+                Some(&label),
+                text,
+                at.timestamp_millis(),
+            ) {
+                Ok(()) => {
+                    tracing::info!(schedule = %s.id, until = %at, "quiet hours: delivery held");
+                    return;
+                }
+                Err(e) => tracing::warn!(error = %e, "could not hold delivery; sending now"),
+            }
+        }
+        if let Err(e) = self.send_to(target, run_id, text).await {
             tracing::warn!(target, error = %e, "delivery failed");
         }
+    }
+
+    /// Send `text` to `gateway:chat`.
+    pub async fn send_to(
+        &self,
+        target: &str,
+        run_id: Option<&str>,
+        text: &str,
+    ) -> Result<(), String> {
+        let (name, chat) = target
+            .split_once(':')
+            .ok_or_else(|| format!("bad delivery target {target:?}"))?;
+        let g = self
+            .gateway(name)
+            .ok_or_else(|| format!("no gateway {name:?} to deliver to"))?;
+        g.deliver(chat, run_id, text).await
     }
 
     /// Cancel the run in `session`, optionally waiting (briefly) for it to stop.

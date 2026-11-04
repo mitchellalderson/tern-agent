@@ -285,7 +285,12 @@ impl Runtime {
             self.store
                 .set_session_model(&session.id, &model.to_string())?;
         }
-        let system = self.prompts.build(AgentRole::Main, 0);
+        let role = if trigger == "cron" {
+            AgentRole::Scheduled
+        } else {
+            AgentRole::Main
+        };
+        let system = self.prompts.build(role, 0);
         let run = self
             .agent
             .start_run(&session.id, text, &model, &system, trigger)?;

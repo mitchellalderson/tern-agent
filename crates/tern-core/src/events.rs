@@ -103,6 +103,10 @@ pub enum AgentEvent {
         run_id: String,
         status: String,
         error: Option<String>,
+        /// A scheduled run that answered `NO_REPLY`: there is nothing to
+        /// show or notify about.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        quiet: bool,
     },
 }
 

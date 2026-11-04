@@ -52,8 +52,12 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "skill_read",
 ];
 /// Persistent, user-facing changes belong to the main agent.
-pub const CHILD_EXCLUDED_TOOLS: &[&str] =
-    &["schedule_create", "schedule_delete", "connector_activate"];
+pub const CHILD_EXCLUDED_TOOLS: &[&str] = &[
+    "schedule_create",
+    "schedule_update",
+    "schedule_delete",
+    "connector_activate",
+];
 
 /// Numeric limits from `[subagents]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

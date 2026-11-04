@@ -381,7 +381,8 @@ class TernStore extends ChangeNotifier {
   }
 
   void _notifyFinished(String session, RunFinished e) {
-    if (!_unseen(session) || e.status == 'interrupted') return;
+    // A quiet run (`NO_REPLY`) had nothing to say.
+    if (!_unseen(session) || e.status == 'interrupted' || e.quiet) return;
     final title = sessions.where((s) => s.id == session).firstOrNull?.title;
     final reply = transcripts[session]?.items
         .whereType<AssistantItem>()
@@ -599,6 +600,7 @@ class TernStore extends ChangeNotifier {
     required String cron,
     required String prompt,
     String? deliverTo,
+    ScheduleLimits limits = const ScheduleLimits(),
   }) async {
     try {
       if (id == null) {
@@ -606,6 +608,7 @@ class TernStore extends ChangeNotifier {
           cron: cron,
           prompt: prompt,
           deliverTo: deliverTo,
+          limits: limits,
         );
       } else {
         await client.updateSchedule(
@@ -613,6 +616,7 @@ class TernStore extends ChangeNotifier {
           cron: cron,
           prompt: prompt,
           deliverTo: deliverTo ?? 'none',
+          limits: limits,
         );
       }
       await refreshSchedules();
@@ -622,9 +626,14 @@ class TernStore extends ChangeNotifier {
     }
   }
 
+  /// Pause or resume a routine. Resuming also lifts a budget pause.
   Future<void> setScheduleEnabled(Schedule s, bool enabled) async {
     try {
-      await client.updateSchedule(s.id, enabled: enabled);
+      await client.updateSchedule(
+        s.id,
+        enabled: enabled,
+        resume: enabled && s.pausedByBudget,
+      );
     } on TernException catch (e) {
       error = e.message;
     }

@@ -165,6 +165,9 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
     r.section("Daemon");
     check_daemon(&mut r, home);
 
+    r.section("Schedules");
+    check_schedules(&mut r, home, &config);
+
     r.section("Sandbox");
     match config.sandbox.backend {
         SandboxBackendKind::Host => {
@@ -379,6 +382,90 @@ fn check_database(r: &mut Report, path: &Path) {
             ),
             (Err(e), _) | (_, Err(e)) => r.check(Status::Fail, e.to_string(), None),
         },
+    }
+}
+
+/// Schedules a daily cap has paused, USD caps that can't apply because the
+/// model's price is unknown, and deliveries waiting for quiet hours to end.
+fn check_schedules(r: &mut Report, home: &TernHome, config: &Config) {
+    let path = home.db_path();
+    if !path.exists() {
+        r.check(Status::Info, "none yet", None);
+        return;
+    }
+    let Ok(store) = Store::open(&path) else {
+        return;
+    };
+    let Ok(schedules) = store.schedules() else {
+        return;
+    };
+    if schedules.is_empty() {
+        r.check(Status::Info, "none", None);
+        return;
+    }
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+    let models =
+        crate::providers::ModelCache::load(home.root().join("cache").join("models.json"), tx);
+    let now = tern_store::now_ms();
+    let mut fine = 0;
+    for s in &schedules {
+        let title = crate::daemon::scheduler::title(s);
+        let mut ok = true;
+        if let Some(until) = s.paused_until.filter(|u| *u > now) {
+            ok = false;
+            let when = chrono::DateTime::from_timestamp_millis(until)
+                .map(|d| {
+                    d.with_timezone(&chrono::Local)
+                        .format("%a %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            r.check(
+                Status::Warn,
+                format!(
+                    "“{title}” is paused by its budget ({}) until {when}",
+                    s.paused_reason.as_deref().unwrap_or("daily cap")
+                ),
+                Some("Resume it in the app or ask tern to (schedule_update with resume), or raise the cap."),
+            );
+        }
+        if s.usd_per_day.or(config.schedules.usd_per_day).is_some() {
+            let model = store
+                .session(&s.session_id)
+                .ok()
+                .flatten()
+                .and_then(|sess| sess.model)
+                .or_else(|| config.default_model.clone());
+            if let Some(m) =
+                model.filter(|m| crate::providers::price_of(config, &models, m).is_none())
+            {
+                ok = false;
+                r.check(
+                    Status::Warn,
+                    format!("“{title}”: usd_per_day is ignored, no price is known for {m}"),
+                    Some("Add it under [providers.<name>.prices] in config.toml (USD per million tokens)."),
+                );
+            }
+        }
+        if ok && s.enabled {
+            fine += 1;
+        }
+    }
+    if fine > 0 {
+        r.check(
+            Status::Ok,
+            format!("{fine} schedule(s) running normally"),
+            None,
+        );
+    }
+    if let Ok(n) = store.held_delivery_count()
+        && n > 0
+    {
+        r.check(
+            Status::Info,
+            format!("{n} delivery(ies) held until quiet hours end"),
+            None,
+        );
     }
 }
 

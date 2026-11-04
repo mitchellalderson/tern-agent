@@ -100,6 +100,9 @@ pub struct RunOutcome {
     pub final_text: String,
     pub error: Option<String>,
     pub usage: Usage,
+    /// A scheduled run that completed with `NO_REPLY`: deliver nothing.
+    #[serde(default)]
+    pub quiet: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -254,6 +257,7 @@ impl Agent {
             final_text: String::new(),
             error: None,
             usage: Usage::default(),
+            quiet: false,
         };
         let result = self.drive_inner(&run, &cancel, &mut outcome).await;
         match result {
@@ -269,6 +273,15 @@ impl Agent {
         }
         self.store
             .set_run_status(&run.id, outcome.status.as_str(), outcome.error.as_deref())?;
+        // Decided from the journaled answer, so a resumed run decides the same.
+        if outcome.status == RunStatus::Completed
+            && run.trigger == "cron"
+            && run.parent_run_id.is_none()
+            && crate::quiet::is_no_reply(&outcome.final_text)
+        {
+            outcome.quiet = true;
+            self.store.set_run_quiet(&run.id)?;
+        }
         if let Some(h) = host {
             h.run_ended(&run, &outcome).await;
         }
@@ -282,6 +295,7 @@ impl Agent {
             run_id: run.id.clone(),
             status: outcome.status.as_str().into(),
             error: outcome.error.clone(),
+            quiet: outcome.quiet,
         });
         Ok(outcome)
     }
@@ -416,6 +430,10 @@ impl Agent {
                 if !self.inbox_due(run, idx, true)? {
                     return Ok(RunStatus::Completed);
                 }
+                if let Some(cap) = token_cap(run, &outcome.usage) {
+                    outcome.error = Some(cap);
+                    return Ok(RunStatus::Failed);
+                }
                 if let Some(note) = limit_note(run, iterations, max_iterations, &outcome.usage) {
                     outcome.final_text.push_str(&note);
                     return Ok(RunStatus::Completed);
@@ -510,6 +528,10 @@ impl Agent {
                 }
             }
 
+            if let Some(cap) = token_cap(run, &outcome.usage) {
+                outcome.error = Some(cap);
+                return Ok(RunStatus::Failed);
+            }
             if let Some(note) = limit_note(run, iterations, max_iterations, &outcome.usage) {
                 outcome.final_text.push_str(&note);
                 return Ok(RunStatus::Completed);
@@ -943,6 +965,22 @@ pub fn new_id() -> String {
     uuid::Uuid::now_v7().simple().to_string()
 }
 
+fn tokens_used(usage: &Usage) -> u64 {
+    usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens
+}
+
+/// Why a scheduled run with a token budget (its schedule's
+/// `tokens_per_run`) must stop, once it has used it all. It fails rather
+/// than finishing with a note: nobody asked for a partial answer.
+/// Sub-agents keep the note, so their parent gets what they found.
+fn token_cap(run: &RunRow, usage: &Usage) -> Option<String> {
+    let budget = run.budget_tokens.filter(|_| run.trigger == "cron")?;
+    let used = tokens_used(usage);
+    (used >= budget).then(|| {
+        format!("stopped: this run used {used} tokens, over its cap of {budget} (tokens_per_run)")
+    })
+}
+
 /// The note for a run that reached its iteration limit or token budget, if
 /// it has. Both come from journaled values, so replay decides the same.
 fn limit_note(run: &RunRow, iterations: u32, max: u32, usage: &Usage) -> Option<String> {
@@ -951,10 +989,7 @@ fn limit_note(run: &RunRow, iterations: u32, max: u32, usage: &Usage) -> Option<
             "\n\n{STOPPED_MARKER}reached max_iterations ({max})]"
         ));
     }
-    let used = usage.input_tokens
-        + usage.output_tokens
-        + usage.cache_read_tokens
-        + usage.cache_write_tokens;
+    let used = tokens_used(usage);
     match run.budget_tokens {
         Some(budget) if used >= budget => Some(format!(
             "\n\n{STOPPED_MARKER}token budget ({used} of {budget} tokens)]"

@@ -500,6 +500,7 @@ sealed class TernEvent {
         runId: run,
         status: j['status'] as String,
         error: j['error'] as String?,
+        quiet: j['quiet'] as bool? ?? false,
       ),
       _ => UnknownEvent(j),
     };
@@ -676,12 +677,19 @@ class UsageEvent extends RunEvent {
 }
 
 class RunFinished extends RunEvent {
-  const RunFinished({required String runId, required this.status, this.error})
-    : super(runId);
+  const RunFinished({
+    required String runId,
+    required this.status,
+    this.error,
+    this.quiet = false,
+  }) : super(runId);
 
   /// `completed`, `failed` or `interrupted`.
   final String status;
   final String? error;
+
+  /// A scheduled run that answered `NO_REPLY`: nothing to notify about.
+  final bool quiet;
 }
 
 class ApprovalRequested extends TernEvent {
@@ -722,6 +730,11 @@ class Schedule {
     this.nextRunAt,
     this.lastRunAt,
     this.lastStatus,
+    this.lastQuiet = false,
+    this.limits = const ScheduleLimits(),
+    this.paused,
+    this.pausedUntil,
+    this.pausedReason,
   });
 
   factory Schedule.fromJson(Json j) => Schedule(
@@ -734,6 +747,11 @@ class Schedule {
     nextRunAt: _maybeTime(j['next_run_at']),
     lastRunAt: _maybeTime(j['last_run_at']),
     lastStatus: j['last_status'] as String?,
+    lastQuiet: j['last_quiet'] as bool? ?? false,
+    limits: ScheduleLimits.fromJson(j),
+    paused: j['paused'] as String?,
+    pausedUntil: _maybeTime(j['paused_until']),
+    pausedReason: j['paused_reason'] as String?,
   );
 
   final String id;
@@ -749,6 +767,61 @@ class Schedule {
   final DateTime? nextRunAt;
   final DateTime? lastRunAt;
   final String? lastStatus;
+
+  /// The latest run answered `NO_REPLY` and delivered nothing.
+  final bool lastQuiet;
+
+  /// Quiet hours, urgency and caps.
+  final ScheduleLimits limits;
+
+  /// `budget` while a daily cap has paused it (it stays [enabled]).
+  final String? paused;
+
+  /// When a budget pause ends on its own.
+  final DateTime? pausedUntil;
+
+  /// Which cap paused it: `runs_per_day` or `usd_per_day`.
+  final String? pausedReason;
+
+  bool get pausedByBudget => paused == 'budget';
+}
+
+/// A routine's quiet hours, urgency and caps. Null means the daemon's
+/// `[schedules]` default.
+class ScheduleLimits {
+  const ScheduleLimits({
+    this.quietHours,
+    this.urgent = false,
+    this.runsPerDay,
+    this.usdPerDay,
+    this.tokensPerRun,
+  });
+
+  factory ScheduleLimits.fromJson(Json j) => ScheduleLimits(
+    quietHours: j['quiet_hours'] as String?,
+    urgent: j['urgent'] as bool? ?? false,
+    runsPerDay: j['runs_per_day'] as int?,
+    usdPerDay: (j['usd_per_day'] as num?)?.toDouble(),
+    tokensPerRun: j['tokens_per_run'] as int?,
+  );
+
+  /// `HH:MM-HH:MM` (local) or `none`.
+  final String? quietHours;
+
+  /// Delivers even during quiet hours.
+  final bool urgent;
+  final int? runsPerDay;
+  final double? usdPerDay;
+  final int? tokensPerRun;
+
+  /// Every field, nulls included: a null puts the default back.
+  Json toJson() => {
+    'quiet_hours': quietHours,
+    'urgent': urgent,
+    'runs_per_day': runsPerDay,
+    'usd_per_day': usdPerDay,
+    'tokens_per_run': tokensPerRun,
+  };
 }
 
 class CronPreview {

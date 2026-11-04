@@ -13,6 +13,8 @@ use crate::home::TernHome;
 pub enum AgentRole<'a> {
     /// The agent the user talks to.
     Main,
+    /// The main agent running a schedule's prompt on its own.
+    Scheduled,
     /// A sub-agent another run started with `agent_spawn`, by its label.
     Subagent { label: &'a str },
 }
@@ -49,9 +51,16 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
         .unwrap_or_else(|| defaults::PERSONA_MD.trim().to_owned());
     let mut out = persona;
 
-    if let AgentRole::Subagent { label } = inp.role {
-        out.push_str("\n\n");
-        out.push_str(&SUBAGENT_ROLE.replace("{label}", label));
+    match inp.role {
+        AgentRole::Subagent { label } => {
+            out.push_str("\n\n");
+            out.push_str(&SUBAGENT_ROLE.replace("{label}", label));
+        }
+        AgentRole::Scheduled => {
+            out.push_str("\n\n");
+            out.push_str(&SCHEDULED_ROLE.replace("{no_reply}", crate::quiet::NO_REPLY));
+        }
+        AgentRole::Main => {}
     }
 
     if let Some(user) = read_nonempty(&inp.home.user_path()) {
@@ -200,6 +209,16 @@ them.
 - Your final message is the report. Lead with the answer in the shape the brief asked for, then what you checked, what \
 you assumed, and anything left undone. Use exact paths, links and figures. No preamble, and no \"let me know if…\".";
 
+const SCHEDULED_ROLE: &str = "## This is a scheduled run
+
+The user set this prompt to run on a schedule; they are not watching. Your final message is sent to them as a \
+notification.
+
+- If there is nothing worth telling them this time (no change, nothing new, nothing that needs them), answer with \
+exactly `{no_reply}` and nothing else. Nothing is sent, and the run is recorded as quiet. Prefer this over \
+\"nothing to report\".
+- Otherwise lead with what matters, briefly. Don't ask questions you need answered to finish: nobody may reply soon.";
+
 /// `400000` → `400,000`.
 fn with_thousands(n: u64) -> String {
     let digits = n.to_string();
@@ -328,5 +347,11 @@ mod tests {
 
         let nested = system_prompt(&inp(AgentRole::Subagent { label: "a" }, Some(&sub)));
         assert!(nested.contains("## You are a sub-agent") && nested.contains("## Sub-agents"));
+
+        let scheduled = system_prompt(&inp(AgentRole::Scheduled, None));
+        assert!(scheduled.contains("## This is a scheduled run"));
+        assert!(scheduled.contains("answer with exactly `NO_REPLY`"));
+        assert!(!scheduled.contains('{'));
+        assert!(!main.contains("NO_REPLY"));
     }
 }

@@ -50,13 +50,27 @@ class _RoutineRow extends StatelessWidget {
     final s = schedule;
     final title = s.prompt.split('\n').first;
     final failed = s.lastStatus == 'failed';
+    final budget = s.enabled && s.pausedByBudget;
+    final active = s.enabled && !budget;
     // The panel is narrow: the schedule in words here, the next run on hover.
     final detail = !s.enabled
         ? 'Paused'
+        : budget
+        ? 'Paused: budget · resumes ${_resumes(s.pausedUntil)}'
         : failed
         ? 'Last run failed · ${cronInWords(s.cron)}'
+        : s.lastQuiet
+        ? 'Last run quiet · ${cronInWords(s.cron)}'
         : cronInWords(s.cron);
     final next = s.nextRunAt;
+    final tip = budget
+        ? 'A daily cap (${s.pausedReason ?? 'budget'}) was reached. '
+              'Resume it now from the menu, or it continues on its own.'
+        : s.lastQuiet && s.enabled
+        ? 'The last run had nothing to report, so nothing was sent.'
+        : next == null
+        ? s.cron
+        : 'Next run ${whenInWords(next)} · ${s.cron}';
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: () => store.open(s.sessionId),
@@ -65,9 +79,9 @@ class _RoutineRow extends StatelessWidget {
         child: Row(
           children: [
             Icon(
-              Icons.schedule,
+              budget ? Icons.pause_circle_outline : Icons.schedule,
               size: 16,
-              color: s.enabled ? c.accent : c.muted,
+              color: active ? c.accent : c.muted,
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -80,20 +94,21 @@ class _RoutineRow extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 13.5,
-                      color: s.enabled ? c.text : c.muted,
+                      color: active ? c.text : c.muted,
                     ),
                   ),
                   Tooltip(
-                    message: next == null
-                        ? s.cron
-                        : 'Next run ${whenInWords(next)} · ${s.cron}',
+                    message: tip,
                     child: Text(
                       detail,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 11.5,
-                        color: failed && s.enabled ? c.error : c.muted,
+                        color: failed && active ? c.error : c.muted,
+                        fontStyle: s.lastQuiet && active && !failed
+                            ? FontStyle.italic
+                            : null,
                       ),
                     ),
                   ),
@@ -108,7 +123,7 @@ class _RoutineRow extends StatelessWidget {
               onSelected: (a) => switch (a) {
                 'run' => store.runSchedule(s),
                 'edit' => showRoutineSheet(context, store, editing: s),
-                'pause' => store.setScheduleEnabled(s, !s.enabled),
+                'pause' => store.setScheduleEnabled(s, !active),
                 'delete' => _confirmDelete(context),
                 _ => null,
               },
@@ -117,7 +132,7 @@ class _RoutineRow extends StatelessWidget {
                 const PopupMenuItem(value: 'edit', child: Text('Edit…')),
                 PopupMenuItem(
                   value: 'pause',
-                  child: Text(s.enabled ? 'Pause' : 'Resume'),
+                  child: Text(active ? 'Pause' : 'Resume'),
                 ),
                 const PopupMenuDivider(),
                 const PopupMenuItem(value: 'delete', child: Text('Delete…')),
@@ -127,6 +142,16 @@ class _RoutineRow extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// "tomorrow" for a pause ending at the next midnight.
+  String _resumes(DateTime? until) {
+    if (until == null) return 'tomorrow';
+    final now = DateTime.now();
+    final tomorrow = DateTime(now.year, now.month, now.day + 1);
+    return until.isAfter(tomorrow.add(const Duration(minutes: 1)))
+        ? whenInWords(until)
+        : 'tomorrow';
   }
 
   Future<void> _confirmDelete(BuildContext context) async {
@@ -196,6 +221,31 @@ class _RoutineSheetState extends State<RoutineSheet> {
     text: widget.editing?.deliverTo?.replaceFirst('telegram:', ''),
   );
   late var _telegram = widget.editing?.deliverTo != null;
+  late final _limits = widget.editing?.limits ?? const ScheduleLimits();
+
+  /// `null` = the daemon's default, `none`, or a custom window.
+  late String? _quietMode = switch (_limits.quietHours) {
+    null => null,
+    'none' => 'none',
+    _ => 'custom',
+  };
+  late final _quiet = TextEditingController(
+    text: _quietMode == 'custom' ? _limits.quietHours : '22:00-07:30',
+  );
+  late var _urgent = _limits.urgent;
+  late final _runs = TextEditingController(
+    text: _limits.runsPerDay?.toString(),
+  );
+  late final _usd = TextEditingController(text: _limits.usdPerDay?.toString());
+  late final _tokens = TextEditingController(
+    text: _limits.tokensPerRun?.toString(),
+  );
+  late var _showLimits =
+      _limits.quietHours != null ||
+      _limits.urgent ||
+      _limits.runsPerDay != null ||
+      _limits.usdPerDay != null ||
+      _limits.tokensPerRun != null;
   CronPreview? _preview;
   String? _cronError;
   String? _error;
@@ -216,6 +266,9 @@ class _RoutineSheetState extends State<RoutineSheet> {
     _prompt.dispose();
     _cron.dispose();
     _chat.dispose();
+    for (final c in [_quiet, _runs, _usd, _tokens]) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -242,10 +295,41 @@ class _RoutineSheetState extends State<RoutineSheet> {
     }
   }
 
+  static final _window = RegExp(r'^\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}$');
+
+  /// Empty is the default; otherwise a positive number.
+  static bool _cap(String text, {bool decimal = false}) {
+    final t = text.trim();
+    if (t.isEmpty) return true;
+    final n = decimal ? double.tryParse(t) : int.tryParse(t);
+    return n != null && n > 0;
+  }
+
+  bool get _limitsValid =>
+      (_quietMode != 'custom' || _window.hasMatch(_quiet.text.trim())) &&
+      _cap(_runs.text) &&
+      _cap(_usd.text, decimal: true) &&
+      _cap(_tokens.text);
+
+  ScheduleLimits get _newLimits {
+    int? n(TextEditingController c) => int.tryParse(c.text.trim());
+    return ScheduleLimits(
+      quietHours: switch (_quietMode) {
+        'custom' => _quiet.text.trim().replaceAll(' ', ''),
+        final m => m,
+      },
+      urgent: _urgent,
+      runsPerDay: n(_runs),
+      usdPerDay: double.tryParse(_usd.text.trim()),
+      tokensPerRun: n(_tokens),
+    );
+  }
+
   bool get _valid =>
       _prompt.text.trim().isNotEmpty &&
       _preview != null &&
-      (!_telegram || int.tryParse(_chat.text.trim()) != null);
+      (!_telegram || int.tryParse(_chat.text.trim()) != null) &&
+      _limitsValid;
 
   Future<void> _save() async {
     setState(() {
@@ -257,6 +341,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
       cron: _cron.text.trim(),
       prompt: _prompt.text.trim(),
       deliverTo: _telegram ? 'telegram:${_chat.text.trim()}' : null,
+      limits: _newLimits,
     );
     if (!mounted) return;
     if (err == null) {
@@ -269,6 +354,91 @@ class _RoutineSheetState extends State<RoutineSheet> {
     }
   }
 
+  /// Quiet hours, urgent, and the three caps (empty = the default).
+  List<Widget> _limitsSection(BuildContext context) {
+    final c = context.colors;
+    final labels = Theme.of(context).textTheme.labelSmall;
+    final small = TextStyle(fontSize: 12, color: c.muted);
+    Widget cap(String label, TextEditingController ctl, String hint) =>
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: small),
+              const SizedBox(height: 4),
+              TextField(
+                controller: ctl,
+                onChanged: (_) => setState(() {}),
+                keyboardType: TextInputType.number,
+                decoration: _box(context, hint: hint),
+              ),
+            ],
+          ),
+        );
+    return [
+      const SizedBox(height: 6),
+      Text('QUIET HOURS', style: labels),
+      const SizedBox(height: 6),
+      SegmentedButton<String?>(
+        segments: const [
+          ButtonSegment(value: null, label: Text('Default')),
+          ButtonSegment(value: 'custom', label: Text('Custom')),
+          ButtonSegment(value: 'none', label: Text('Off')),
+        ],
+        selected: {_quietMode},
+        showSelectedIcon: false,
+        onSelectionChanged: (v) => setState(() => _quietMode = v.first),
+      ),
+      if (_quietMode == 'custom') ...[
+        const SizedBox(height: 8),
+        TextField(
+          controller: _quiet,
+          onChanged: (_) => setState(() {}),
+          style: mono.copyWith(fontSize: 13),
+          decoration: _box(
+            context,
+            hint: '22:00-07:30',
+            error: _window.hasMatch(_quiet.text.trim())
+                ? null
+                : 'Use HH:MM-HH:MM, e.g. 22:00-07:30',
+          ),
+        ),
+      ],
+      const SizedBox(height: 4),
+      Text(
+        'Results finishing in quiet hours are sent when they end, '
+        'together in one message.',
+        style: small,
+      ),
+      CheckboxListTile(
+        value: _urgent,
+        onChanged: (v) => setState(() => _urgent = v ?? false),
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        controlAffinity: ListTileControlAffinity.leading,
+        title: const Text('Urgent: send even during quiet hours'),
+      ),
+      const SizedBox(height: 6),
+      Text('LIMITS', style: labels),
+      const SizedBox(height: 6),
+      Row(
+        children: [
+          cap('Runs per day', _runs, 'default'),
+          const SizedBox(width: 8),
+          cap('USD per day', _usd, 'default'),
+          const SizedBox(width: 8),
+          cap('Tokens per run', _tokens, 'default'),
+        ],
+      ),
+      const SizedBox(height: 4),
+      Text(
+        'At a daily limit the routine pauses until tomorrow and tells you '
+        'once. A run over its tokens is stopped.',
+        style: small,
+      ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
@@ -278,7 +448,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 520),
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(22, 20, 22, 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -367,6 +537,26 @@ class _RoutineSheetState extends State<RoutineSheet> {
                   decoration: _box(context, hint: 'Telegram chat id'),
                 ),
               ],
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => setState(() => _showLimits = !_showLimits),
+                  icon: Icon(
+                    _showLimits ? Icons.expand_less : Icons.expand_more,
+                    size: 16,
+                    color: c.muted,
+                  ),
+                  label: Text(
+                    'Quiet hours and limits',
+                    style: TextStyle(color: c.muted),
+                  ),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                  ),
+                ),
+              ),
+              if (_showLimits) ..._limitsSection(context),
               if (_error case final e?) ...[
                 const SizedBox(height: 12),
                 Text(e, style: TextStyle(fontSize: 12.5, color: c.error)),
