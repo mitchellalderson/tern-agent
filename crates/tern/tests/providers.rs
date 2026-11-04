@@ -297,6 +297,75 @@ async fn add_use_and_remove_a_provider_without_restarting() {
     assert!(!secrets.contains("FAKE_API_KEY"), "{secrets}");
 }
 
+/// Spawns a sub-agent on the parent's first turn; answers everything else.
+struct Spawner;
+
+impl wiremock::Respond for Spawner {
+    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+        let body = String::from_utf8_lossy(&req.body);
+        let spawn = !body.contains("\"role\":\"tool\"") && !body.contains("CHILD-TASK");
+        let stream = if spawn {
+            let args = json!({ "label": "helper", "task": "CHILD-TASK" }).to_string();
+            let call = json!({ "choices": [{ "delta": { "tool_calls": [{
+                "index": 0, "id": "call_1", "type": "function",
+                "function": { "name": "agent_spawn", "arguments": args },
+            }] } }] });
+            format!(
+                "data: {call}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] })
+            )
+        } else {
+            STREAM.to_owned()
+        };
+        ResponseTemplate::new(200).set_body_raw(stream, "text/event-stream")
+    }
+}
+
+/// Providers added after startup reach sub-agents too, not only the parent.
+#[tokio::test(flavor = "multi_thread")]
+async fn sub_agents_can_use_a_provider_added_after_startup() {
+    let fake = fake_provider().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(Spawner)
+        .with_priority(1)
+        .mount(&fake)
+        .await;
+    let d = daemon();
+    let api = Api::new(&d);
+    api.ok(
+        Method::POST,
+        "/v1/providers",
+        Some(json!({ "kind": "openai_compat", "name": "fake", "base_url": fake.uri(), "key": "sk-good" })),
+    )
+    .await;
+
+    let started = api
+        .ok(Method::POST, "/v1/runs", Some(json!({ "text": "hi" })))
+        .await;
+    let run = started["run_id"].as_str().unwrap();
+    api.ok(Method::GET, &format!("/v1/runs/{run}/wait"), None)
+        .await;
+    let bodies: Vec<String> = fake
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() == "/v1/chat/completions")
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect();
+    assert!(
+        bodies.iter().all(|b| !b.contains("is not configured")),
+        "{bodies:#?}"
+    );
+    assert!(
+        bodies
+            .iter()
+            .any(|b| b.contains("CHILD-TASK") && !b.contains("agent_spawn")),
+        "the child never ran: {bodies:#?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn anthropic_needs_a_key_and_names_itself() {
     let d = daemon();

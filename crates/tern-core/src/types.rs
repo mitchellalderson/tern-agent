@@ -206,6 +206,12 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderErr
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn id(&self) -> &str;
+    /// Output tokens to ask for per turn, when the provider knows its models
+    /// allow more than the agent's default. Too low and long tool calls (a
+    /// whole file in one write) are cut off mid-argument.
+    fn max_output_tokens(&self) -> Option<u32> {
+        None
+    }
     async fn stream(
         &self,
         req: ChatRequest,

@@ -13,6 +13,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{http, sse};
 
 const API_VERSION: &str = "2023-06-01";
+/// Every current Claude model allows at least this many output tokens.
+const MAX_OUTPUT_TOKENS: u32 = 32_000;
 
 pub struct Anthropic {
     id: String,
@@ -173,6 +175,10 @@ impl Decoder {
 impl Provider for Anthropic {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn max_output_tokens(&self) -> Option<u32> {
+        Some(MAX_OUTPUT_TOKENS)
     }
 
     async fn stream(

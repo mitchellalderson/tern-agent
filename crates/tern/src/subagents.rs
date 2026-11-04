@@ -8,7 +8,7 @@
 //! runs are driven: the daemon drives children through its `Manager`, the
 //! embedded TUI and `tern run` through [`LocalDriver`].
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::Duration;
 
@@ -118,8 +118,9 @@ pub struct Subagents {
     tools: Weak<ToolRegistry>,
     config: SubagentsConfig,
     limits: SubagentLimits,
-    /// Configured provider names; any is accepted with the mock provider.
-    providers: BTreeSet<String>,
+    /// The live config, so providers added after startup (e.g. from the
+    /// desktop setup) are usable. Any provider is accepted with the mock.
+    live: Arc<RwLock<tern_core::Config>>,
     mock: bool,
     driver: RwLock<Option<Arc<dyn RunDriver>>>,
     /// Builds a child's system prompt from its label and depth.
@@ -146,6 +147,7 @@ impl Subagents {
         events: broadcast::Sender<AgentEvent>,
         tools: Weak<ToolRegistry>,
         config: &tern_core::Config,
+        live: Arc<RwLock<tern_core::Config>>,
         mock: bool,
     ) -> Self {
         Self {
@@ -155,7 +157,7 @@ impl Subagents {
             tools,
             limits: SubagentLimits::from(&config.subagents),
             config: config.subagents.clone(),
-            providers: config.providers.keys().cloned().collect(),
+            live,
             mock,
             driver: RwLock::new(None),
             prompt: OnceLock::new(),
@@ -401,7 +403,13 @@ impl Subagents {
                 aliases()
             )
         })?;
-        if !self.mock && !self.providers.contains(&m.provider) {
+        let configured = self
+            .live
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .providers
+            .contains_key(&m.provider);
+        if !self.mock && !configured {
             return Err(format!(
                 "provider {:?} is not configured; use an alias ({}) or a configured provider",
                 m.provider,

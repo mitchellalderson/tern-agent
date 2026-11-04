@@ -22,11 +22,14 @@ use crate::journal::{InFlight, Journal, StepError, StepKind, StepOutput};
 use crate::subagent::{HostSlot, InboxEntry, InboxOutput};
 use crate::tool::{ProgressSink, ToolCtx, ToolRegistry, ToolResult, with_call, with_progress};
 use crate::types::{
-    AssistantTurn, ChatRequest, ContentBlock, Message, Provider, ProviderError, Role, StreamEvent,
-    ToolCall, Usage,
+    AssistantTurn, ChatRequest, ContentBlock, Message, Provider, ProviderError, Role, StopReason,
+    StreamEvent, ToolCall, Usage,
 };
 
 pub const MAX_LLM_ATTEMPTS: u32 = 5;
+/// The result of a tool call cut off by the output limit. Its arguments are
+/// incomplete, so it is never run.
+pub const TRUNCATED_TOOL_MESSAGE: &str = "not run: your reply hit the output token limit before this call's arguments were complete, so they were cut off. Nothing ran. Send less in one call: split a long file into a smaller first version and add to it, or drop what isn't needed";
 pub const INTERRUPTED_TOOL_MESSAGE: &str = "interrupted: this call may have partially executed before a crash; verify state before retrying";
 /// Starts the note appended to the final text of a run stopped by a limit.
 pub const STOPPED_MARKER: &str = "[stopped: ";
@@ -332,6 +335,7 @@ impl Agent {
         let tools = self.tools.specs_for(scope);
         let max_iterations = run.max_iterations.unwrap_or(self.cfg.max_iterations);
         let window = self.cfg.context_window(&model.provider);
+        let max_tokens = provider.max_output_tokens().unwrap_or(self.cfg.max_tokens);
         let mut idx: u32 = 0;
         let mut iterations: u32 = 0;
         // Provider-reported tokens / our estimate for the last request; used
@@ -368,7 +372,7 @@ impl Agent {
                 system: system.clone(),
                 messages,
                 tools: tools.clone(),
-                max_tokens: self.cfg.max_tokens,
+                max_tokens,
             };
             let step_input = LlmStepInput {
                 model: &req.model,
@@ -448,9 +452,14 @@ impl Agent {
                     Err(e) => return Err(e.into()),
                 }
             }
+            // Hitting the output limit cuts off the last call mid-argument.
+            let truncated_id = (turn.value.stop_reason == StopReason::MaxTokens)
+                .then(|| calls.last().map(|c| c.id.clone()))
+                .flatten();
             for call in calls {
+                let truncated = truncated_id.as_deref() == Some(call.id.as_str());
                 let in_scope = crate::tool::in_scope(scope, &call.name);
-                let policy = if in_scope {
+                let policy = if in_scope && !truncated {
                     self.tools.policy(&ctx, &call)
                 } else {
                     // Refused without running; nothing to approve or redo.
@@ -484,6 +493,11 @@ impl Agent {
                 let result = self
                     .journal
                     .step_with(&run.id, idx, StepKind::Tool, &call, in_flight, || async {
+                        if truncated {
+                            let r = ToolResult::error(TRUNCATED_TOOL_MESSAGE);
+                            let msg = tool_result(&call, &r);
+                            return Ok(StepOutput::new(r).with_messages(vec![msg]));
+                        }
                         let sink: ProgressSink = {
                             let (events, run_id, id) =
                                 (self.events.clone(), run.id.clone(), call.id.clone());

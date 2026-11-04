@@ -181,6 +181,7 @@ impl Runtime {
                 agent.event_sender(),
                 Arc::downgrade(&tools),
                 &config,
+                live.clone(),
                 mock,
             ));
             host.set_driver(Arc::new(LocalDriver::new(&agent)));

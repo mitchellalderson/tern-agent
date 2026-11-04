@@ -15,6 +15,8 @@ use crate::types::{EventStream, StopReason, ToolSpec};
 enum Reply {
     Text(&'static str),
     Tool(&'static str, Value),
+    /// A tool call whose arguments the output limit cut off.
+    CutOff(&'static str, &'static str),
 }
 
 /// Replies by number of assistant turns so far; can fail the first N calls.
@@ -126,6 +128,18 @@ impl Provider for Script {
                     partial_json: input.to_string(),
                 }));
                 StopReason::ToolUse
+            }
+            Reply::CutOff(name, partial) => {
+                let id = format!("call_{n}");
+                evs.push(Ok(StreamEvent::ToolUseStart {
+                    id: id.clone(),
+                    name: name.into(),
+                }));
+                evs.push(Ok(StreamEvent::ToolUseInputDelta {
+                    id,
+                    partial_json: partial.into(),
+                }));
+                StopReason::MaxTokens
             }
         };
         evs.push(Ok(StreamEvent::MessageStop {
@@ -355,6 +369,28 @@ async fn tool_loop_feeds_results_back() {
     assert_eq!(last_tool_result(second), Some(("count=1".into(), false)));
     assert_eq!(second.system, "system");
     assert_eq!(second.tools[0].name, "count");
+}
+
+#[tokio::test]
+async fn a_call_cut_off_by_the_output_limit_is_not_run_and_the_model_is_told() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", false, false));
+    let calls = tool.calls.clone();
+    let script = Arc::new(Script::new(vec![
+        Reply::CutOff("count", r#"{"name": "ghost""#),
+        Reply::Text("done"),
+    ]));
+    let agent = h.agent(script.clone(), vec![tool], Arc::new(AutoApprove));
+    let run = h.start(&agent, "go");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "a cut-off call never runs");
+    let second = &script.seen.lock().unwrap()[1];
+    assert_eq!(
+        last_tool_result(second),
+        Some((TRUNCATED_TOOL_MESSAGE.into(), true))
+    );
+    assert_eq!(second.max_tokens, AgentConfig::default().max_tokens);
 }
 
 #[tokio::test]
