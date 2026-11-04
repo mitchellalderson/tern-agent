@@ -695,6 +695,7 @@ mod tests {
                 "schedules",
                 "memory",
                 "home",
+                "outbox",
                 "api"
             ]
         );
