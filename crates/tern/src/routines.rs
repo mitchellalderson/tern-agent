@@ -46,6 +46,10 @@ impl RoutineChecks for LuaChecks {
             hosts,
         })
     }
+
+    async fn gate(&self, connector: Option<&str>, code: &str) -> Result<(), String> {
+        tern_lua::watch::check_gate(&self.host, &self.dir, connector, code)
+    }
 }
 
 /// A Luau host for routines: the same store and secrets as connectors.

@@ -64,6 +64,14 @@ async fn run_due(manager: &Arc<Manager>) -> anyhow::Result<()> {
             poll(manager, &s, &defaults).await;
             continue;
         }
+        if !gate_passes(manager, &s, now).await {
+            if s.trigger() == "once" {
+                store.finish_once(&s.id, now.timestamp_millis())?;
+            } else {
+                store.advance_schedule(&s.id, next)?;
+            }
+            continue;
+        }
         if pause_for_cap(manager, &s, &defaults, now).await? {
             store.advance_schedule(&s.id, next)?;
             continue;
@@ -91,6 +99,48 @@ fn still_paused(manager: &Manager, s: &ScheduleRow, now: DateTime<Local>) -> any
         manager.rt.store.unpause_schedule(&s.id, false)?;
     }
     Ok(false)
+}
+
+/// Run `s`'s gate, if it has one (tooling spec §3.3): false skips this
+/// slot without a model call. A gate that fails lets the run go ahead, so a
+/// broken gate costs a run rather than a missed brief; `last_check` says so.
+async fn gate_passes(manager: &Manager, s: &ScheduleRow, now: DateTime<Local>) -> bool {
+    let Some(code) = &s.gate else {
+        return true;
+    };
+    let routine = serde_json::json!({
+        "id": s.id,
+        "last_run_at": s.last_run_at,
+        "now": now.timestamp_millis(),
+    });
+    let result = match manager.rt.lua_host() {
+        Ok(host) => {
+            tern_lua::watch::gate(
+                &host,
+                &manager.rt.home.connectors_dir(),
+                s.gate_connector.as_deref(),
+                code,
+                &routine,
+            )
+            .await
+        }
+        Err(e) => Err(e.to_string()),
+    };
+    let (pass, check) = match result {
+        Ok(true) => (true, "gate: passed".to_owned()),
+        Ok(false) => (false, "gate: skipped".to_owned()),
+        Err(e) => {
+            tracing::warn!(schedule = %s.id, error = %e, "gate failed; running anyway");
+            (true, format!("gate failed, ran anyway: {e}"))
+        }
+    };
+    if !pass {
+        tracing::info!(schedule = %s.id, "gate said no; skipping this run");
+    }
+    if let Err(e) = manager.rt.store.set_routine_check(&s.id, &check) {
+        tracing::warn!(schedule = %s.id, error = %e, "recording a gate failed");
+    }
+    pass
 }
 
 /// Pause `s` until tomorrow if a daily cap stops it, notifying once.

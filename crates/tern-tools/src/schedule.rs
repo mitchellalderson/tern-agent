@@ -59,6 +59,13 @@ pub struct ScheduleLimits {
     pub usd_per_day: Option<Option<f64>>,
     #[serde(default, deserialize_with = "some")]
     pub tokens_per_run: Option<Option<u64>>,
+    /// Luau run before each cron or once slot; false skips the run (T1b).
+    /// `null` or empty removes it.
+    #[serde(default, deserialize_with = "some")]
+    pub gate: Option<Option<String>>,
+    /// The active connector whose hosts, secrets and tools the gate gets.
+    #[serde(default, deserialize_with = "some")]
+    pub gate_connector: Option<Option<String>>,
 }
 
 impl ScheduleLimits {
@@ -95,7 +102,52 @@ impl ScheduleLimits {
             }
             row.tokens_per_run = t;
         }
+        let blank = |v: &Option<String>| {
+            v.as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        };
+        if let Some(g) = &self.gate {
+            row.gate = blank(g);
+        }
+        if let Some(c) = &self.gate_connector {
+            row.gate_connector = blank(c);
+        }
+        if row.gate.is_some() && row.trigger() == "watch" {
+            return Err(
+                "a gate is for cron and once routines; a watch already decides when to run".into(),
+            );
+        }
         Ok(())
+    }
+
+    /// Check a gate given here (with its connector) compiles. A gate left
+    /// as it is was checked when it was set.
+    pub async fn check(
+        &self,
+        row: Option<&ScheduleRow>,
+        checks: Option<&dyn RoutineChecks>,
+    ) -> Result<(), String> {
+        if self.gate.is_none() && self.gate_connector.is_none() {
+            return Ok(());
+        }
+        let pick = |given: &Option<Option<String>>, old: Option<&String>| match given {
+            Some(v) => v.clone().filter(|v| !v.trim().is_empty()),
+            None => old.cloned(),
+        };
+        let gate = pick(&self.gate, row.and_then(|r| r.gate.as_ref()));
+        let connector = pick(
+            &self.gate_connector,
+            row.and_then(|r| r.gate_connector.as_ref()),
+        );
+        match gate {
+            None => Ok(()),
+            Some(code) => {
+                let checks = checks.ok_or("gates aren't available here")?;
+                checks.gate(connector.as_deref(), &code).await
+            }
+        }
     }
 }
 
@@ -127,6 +179,8 @@ pub const MIN_EVERY_SECS: i64 = 60;
 pub trait RoutineChecks: Send + Sync {
     /// Watch `watch` of active connector `connector`.
     async fn watch(&self, connector: &str, watch: &str) -> Result<WatchSummary, String>;
+    /// Whether gate `code` compiles, with `connector`'s capabilities.
+    async fn gate(&self, connector: Option<&str>, code: &str) -> Result<(), String>;
 }
 
 /// What the user should know about a watch before it runs: how often, and
@@ -337,7 +391,9 @@ fn limit_properties() -> serde_json::Map<String, Value> {
         "urgent": { "type": "boolean", "description": "deliver even during quiet hours. Only when the user says it's urgent." },
         "runs_per_day": { "type": ["integer", "null"], "description": "cap; when reached the schedule pauses until tomorrow" },
         "usd_per_day": { "type": ["number", "null"], "description": "spend cap per day, in USD" },
-        "tokens_per_run": { "type": ["integer", "null"], "description": "a run that uses more tokens is stopped" }
+        "tokens_per_run": { "type": ["integer", "null"], "description": "a run that uses more tokens is stopped" },
+        "gate": { "type": ["string", "null"], "description": "Luau checked before each cron/once run, at no token cost; a false result skips that run. An expression (`os.date(\"*t\").wday ~= 1`) or statements with `return`. Gets `ctx` and `routine`; with `gate_connector`, also `connector` (its tools, e.g. `#connector.tools.unread.run(ctx, {}) > 0`) and that connector's hosts (GET only)." },
+        "gate_connector": { "type": ["string", "null"], "description": "an active connector the gate may use" }
     });
     match props {
         Value::Object(m) => m,
@@ -531,6 +587,12 @@ pub fn describe_limits(s: &ScheduleRow) -> String {
     if let Some(t) = s.tokens_per_run {
         parts.push(format!("{t} tokens/run"));
     }
+    if s.gate.is_some() {
+        parts.push(match &s.gate_connector {
+            Some(c) => format!("gated (with {c})"),
+            None => "gated".into(),
+        });
+    }
     if parts.is_empty() {
         String::new()
     } else {
@@ -606,6 +668,9 @@ impl Tool for ScheduleCreate {
             Ok(w) => w,
             Err(e) => return ToolResult::error(e),
         };
+        if let Err(e) = a.limits.check(None, self.checks.as_deref()).await {
+            return ToolResult::error(e);
+        }
         let deliver_to = resolve_target(&self.store, &ctx.session_id, a.deliver_to.as_deref());
         let row = match create_routine(
             &self.store,
@@ -693,6 +758,10 @@ impl Tool for ScheduleUpdate {
             Err(e) => return e,
         };
         if let Err(e) = check_trigger(&mut a.trigger, self.checks.as_deref()).await {
+            return ToolResult::error(e);
+        }
+        let old = self.store.schedule(&a.id).ok().flatten();
+        if let Err(e) = a.limits.check(old.as_ref(), self.checks.as_deref()).await {
             return ToolResult::error(e);
         }
         if owned(&self.store, &a.id, &caller(&self.store, ctx)).is_none() {
@@ -1083,6 +1152,66 @@ mod tests {
                 _ => Err(format!("connector {connector} has no watch {watch:?}")),
             }
         }
+
+        async fn gate(&self, connector: Option<&str>, code: &str) -> Result<(), String> {
+            match (connector, code) {
+                (Some(c), _) if c != "github" => Err(format!("connector {c} is not active")),
+                (_, "true and") => Err("syntax error".into()),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn gates_are_checked_and_only_for_clock_routines() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_session("s", "api", None).unwrap();
+        let ctx = ToolCtx {
+            workspace: std::env::temp_dir(),
+            run_id: "r".into(),
+            session_id: "s".into(),
+            cancel: CancellationToken::new(),
+        };
+        let checks: Option<std::sync::Arc<dyn RoutineChecks>> =
+            Some(std::sync::Arc::new(FakeChecks));
+        let create = ScheduleCreate {
+            store: store.clone(),
+            checks: checks.clone(),
+        };
+        for bad in [
+            json!({"prompt": "x", "cron": "0 8 * * *", "gate": "true and"}),
+            json!({"prompt": "x", "cron": "0 8 * * *", "gate": "true", "gate_connector": "nope"}),
+            json!({"prompt": "x", "watch": "github.reviews", "gate": "true"}),
+        ] {
+            let r = create.call(&ctx, bad.clone()).await;
+            assert!(r.is_error, "{bad}: {}", r.content);
+        }
+        let r = create
+            .call(&ctx, json!({"prompt": "brief", "cron": "0 8 * * *", "gate": " #connector.tools.search.run(ctx, {}) > 0 ", "gate_connector": "github"}))
+            .await;
+        assert!(
+            !r.is_error && r.content.contains("gated (with github)"),
+            "{}",
+            r.content
+        );
+        let s = store.schedules().unwrap().remove(0);
+        assert_eq!(
+            s.gate.as_deref(),
+            Some("#connector.tools.search.run(ctx, {}) > 0")
+        );
+        let update = ScheduleUpdate {
+            store: store.clone(),
+            checks,
+        };
+        assert!(
+            update
+                .call(&ctx, json!({"id": s.id, "gate_connector": "nope"}))
+                .await
+                .is_error
+        );
+        let r = update.call(&ctx, json!({"id": s.id, "gate": null})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(store.schedule(&s.id).unwrap().unwrap().gate, None);
     }
 
     #[tokio::test]

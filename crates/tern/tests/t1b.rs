@@ -397,3 +397,56 @@ async fn watch_events_start_tainted_runs_once_each_across_restarts() {
         .unwrap();
     assert_eq!(cursor, r#"{"n":3}"#);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gate_skips_runs_without_a_model_call() {
+    let env = Env::new(None, "");
+    env.script(json!({ "turns": [{ "text": "Brief: all quiet." }] }));
+    env.connector("quiet", QUIET);
+    let _daemon = env.daemon();
+    let bad = env
+        .api()
+        .post("http://tern/v1/schedules")
+        .json(&json!({ "cron": "0 3 * * *", "prompt": "x", "gate": "true and" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400, "a gate that doesn't compile is refused");
+    let s = env
+        .create(json!({ "cron": "0 3 * * *", "prompt": "Morning brief",
+            "gate": "#connector.tools.ping.run(ctx, {}) == 99", "gate_connector": "quiet" }))
+        .await;
+    assert_eq!(s["gate_connector"], "quiet");
+    let id = s["id"].as_str().unwrap();
+    env.due(id);
+    let end = Instant::now() + Duration::from_secs(15);
+    while env.schedule(id).await["last_check"] != "gate: skipped" {
+        assert!(Instant::now() < end, "gate never ran");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    ticks().await;
+    assert_eq!(env.query("SELECT count(*) FROM runs"), 0);
+    let s = env.schedule(id).await;
+    assert!(
+        s["next_run_at"].as_i64().unwrap() > tern_store::now_ms(),
+        "moved on"
+    );
+
+    // The same routine with a gate that says yes runs.
+    let res = env
+        .api()
+        .patch(format!("http://tern/v1/schedules/{id}"))
+        .json(&json!({ "gate": "connector.tools.ping.run(ctx, {}) == \"pong\"" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.text().await.unwrap());
+    env.due(id);
+    env.wait_count(
+        "SELECT count(*) FROM runs WHERE status = 'completed'",
+        1,
+        15,
+    )
+    .await;
+    assert_eq!(env.schedule(id).await["last_check"], "gate: passed");
+}

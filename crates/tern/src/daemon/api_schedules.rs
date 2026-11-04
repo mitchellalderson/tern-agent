@@ -4,7 +4,7 @@
 //! | Method | Path | |
 //! |---|---|---|
 //! | GET | `/v1/schedules[?agent=]` | all schedules (or one agent's), with their last run's status |
-//! | POST | `/v1/schedules` | create `{cron | at | watch (+ every, backfill, include_self), prompt, agent?, deliver_to?, channel?, autonomy?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
+//! | POST | `/v1/schedules` | create `{cron | at | watch (+ every, backfill, include_self), prompt, gate?, gate_connector?, agent?, deliver_to?, channel?, autonomy?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
 //! | POST | `/v1/schedules/preview` | `{cron}` → normalized form and next 3 runs |
 //! | PATCH | `/v1/schedules/{id}` | change any of those, `enabled`, or `resume: true` (lift a budget pause); `null` returns a cap or `quiet_hours` to the default |
 //!
@@ -109,6 +109,11 @@ pub struct Schedule {
     pub last_check: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_check_at: Option<i64>,
+    /// Luau run before each cron or once slot; false skips the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_connector: Option<String>,
 }
 
 fn cron() -> String {
@@ -167,6 +172,8 @@ fn view(m: &Shared, s: ScheduleRow) -> Schedule {
         include_self: s.include_self,
         last_check: s.last_check,
         last_check_at: s.last_check_at,
+        gate: s.gate,
+        gate_connector: s.gate_connector,
     }
 }
 
@@ -259,21 +266,26 @@ fn target(t: Option<&str>) -> Result<Option<String>, ApiError> {
 }
 
 /// Check a trigger's watch against the active connectors.
-async fn check_trigger(m: &Shared, t: &mut TriggerArgs) -> Result<(), ApiError> {
+async fn check_trigger(
+    m: &Shared,
+    t: &mut TriggerArgs,
+    limits: &ScheduleLimits,
+    old: Option<&ScheduleRow>,
+) -> Result<(), ApiError> {
+    let checks = m.rt.routine_checks().map_err(internal)?;
     if t.watch.is_some() {
-        let checks = m.rt.routine_checks().map_err(internal)?;
         tern_tools::schedule::check_trigger(t, Some(&checks))
             .await
             .map_err(bad)?;
     }
-    Ok(())
+    limits.check(old, Some(&checks)).await.map_err(bad)
 }
 
 async fn create(
     State(m): State<Shared>,
     Json(mut b): Json<CreateBody>,
 ) -> Result<(StatusCode, Json<Schedule>), ApiError> {
-    check_trigger(&m, &mut b.trigger).await?;
+    check_trigger(&m, &mut b.trigger, &b.limits, None).await?;
     let deliver_to = target(b.deliver_to.as_deref())?;
     if let Some(a) = &b.autonomy {
         autonomy(a)?;
@@ -345,7 +357,8 @@ async fn update(
     UrlPath(id): UrlPath<String>,
     Json(mut b): Json<UpdateBody>,
 ) -> ApiResult<Schedule> {
-    check_trigger(&m, &mut b.trigger).await?;
+    let old = m.rt.store.schedule(&id).map_err(internal)?;
+    check_trigger(&m, &mut b.trigger, &b.limits, old.as_ref()).await?;
     let deliver_to = match &b.deliver_to {
         Some(t) => Some(target(Some(t))?),
         None => None,
