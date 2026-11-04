@@ -39,8 +39,14 @@ impl Guard {
         }
     }
 
+    /// Whether `path` (canonical) may be read by file tools. Also used per
+    /// file by `search_files`, so a directory search can't reach a secret.
+    pub fn allows_read(&self, path: &Path) -> bool {
+        !self.no_read.iter().any(|p| p == path)
+    }
+
     pub fn check_read(&self, r: &Resolved) -> Result<(), String> {
-        if self.no_read.contains(&r.path) {
+        if !self.allows_read(&r.path) {
             return Err(format!("{} is off limits to file tools", r.path.display()));
         }
         Ok(())
@@ -52,6 +58,14 @@ impl Guard {
                 "{} is inside tern's data directory ({}), which file tools can't modify",
                 r.path.display(),
                 p.display()
+            ));
+        }
+        // Git reads `.git/config` and hooks as code (`core.fsmonitor`,
+        // `core.pager`), so a file tool writing there is a way to run commands.
+        if r.path.components().any(|c| c.as_os_str() == ".git") {
+            return Err(format!(
+                "{} is git metadata; file tools can't modify it",
+                r.path.display()
             ));
         }
         Ok(())

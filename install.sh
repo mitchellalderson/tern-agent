@@ -49,10 +49,11 @@ fi
 target="$arch-$os"
 asset="tern-$target.tar.gz"
 
+# HTTPS only: the checksum comes from the same server as the archive, so a
+# plain-HTTP mirror would let an on-path attacker replace both.
 proto="=https"
 if [ -n "${TERN_DOWNLOAD_URL:-}" ]; then
   base="${TERN_DOWNLOAD_URL%/}"
-  proto="=http,https"
 elif [ "$VERSION" = latest ]; then
   base="https://github.com/$REPO/releases/latest/download"
 else

@@ -239,7 +239,9 @@ impl Tool for SearchFiles {
             Ok(re) => re,
             Err(e) => return ToolResult::error(format!("invalid regex: {e}")),
         };
-        let task = tokio::task::spawn_blocking(move || search(&root, &re, a.glob.as_deref()));
+        let guard = self.guard.clone();
+        let task =
+            tokio::task::spawn_blocking(move || search(&root, &re, a.glob.as_deref(), &guard));
         match task.await {
             Ok(Ok(out)) => ToolResult::ok(out),
             Ok(Err(e)) => ToolResult::error(e),
@@ -248,7 +250,12 @@ impl Tool for SearchFiles {
     }
 }
 
-fn search(root: &std::path::Path, re: &regex::Regex, glob: Option<&str>) -> Result<String, String> {
+fn search(
+    root: &std::path::Path,
+    re: &regex::Regex,
+    glob: Option<&str>,
+    guard: &Guard,
+) -> Result<String, String> {
     let mut builder = ignore::WalkBuilder::new(root);
     if let Some(glob) = glob {
         let mut ov = ignore::overrides::OverrideBuilder::new(root);
@@ -259,6 +266,12 @@ fn search(root: &std::path::Path, re: &regex::Regex, glob: Option<&str>) -> Resu
     let mut truncated = false;
     'walk: for entry in builder.build().flatten() {
         if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        // Checked per file: the root may be allowed while a file under it
+        // (a secret, or a symlink to one) isn't.
+        let real = std::fs::canonicalize(entry.path()).unwrap_or_else(|_| entry.path().to_owned());
+        if !guard.allows_read(&real) {
             continue;
         }
         if entry

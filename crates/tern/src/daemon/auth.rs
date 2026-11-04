@@ -185,14 +185,16 @@ fn deny(status: StatusCode, msg: &str) -> Response {
 }
 
 /// The client's address: the peer, or with `trust_proxy` and a loopback
-/// peer, the first `X-Forwarded-For` entry.
+/// peer, the last `X-Forwarded-For` entry. A proxy appends the address it
+/// saw to whatever the client sent, so the first entry is the client's own
+/// claim and any value there could be made up per request.
 fn client_ip(peer: SocketAddr, headers: &HeaderMap, trust_proxy: bool) -> IpAddr {
     if trust_proxy
         && peer.ip().is_loopback()
         && let Some(ip) = headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
+            .and_then(|v| v.rsplit(',').next())
             .and_then(|v| v.trim().parse().ok())
     {
         return ip;
@@ -791,7 +793,8 @@ mod tests {
         h.insert("x-forwarded-for", "203.0.113.9, 10.0.0.1".parse().unwrap());
         let lo: SocketAddr = "127.0.0.1:5000".parse().unwrap();
         let lan: SocketAddr = "192.168.1.4:5000".parse().unwrap();
-        assert_eq!(client_ip(lo, &h, true).to_string(), "203.0.113.9");
+        // The proxy appends the address it saw, so the last entry is the client.
+        assert_eq!(client_ip(lo, &h, true).to_string(), "10.0.0.1");
         assert_eq!(client_ip(lo, &h, false), lo.ip());
         assert_eq!(client_ip(lan, &h, true), lan.ip());
     }

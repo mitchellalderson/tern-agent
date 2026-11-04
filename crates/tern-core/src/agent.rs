@@ -848,7 +848,10 @@ impl Agent {
                 let why = approval::READONLY_MESSAGE.to_owned();
                 return Ok((ApprovalOutcome::Denied, why));
             }
-            approval::Check::Ask { effect, always } => (effect, always && always_ok),
+            approval::Check::Ask { effect, always } => (
+                effect,
+                always && always_ok && approval::pattern_for(call).is_some(),
+            ),
         };
         let req = ApprovalRequest {
             id: new_id(),

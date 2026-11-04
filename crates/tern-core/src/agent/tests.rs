@@ -668,11 +668,12 @@ async fn always_allow_is_remembered_and_journaled() {
         }
     }
     let h = Harness::new();
-    let tool = Arc::new(Counter::new("danger", false, true));
+    // Only shell commands can get an "always" pattern; other tools are asked each time.
+    let tool = Arc::new(Counter::new("shell", false, true));
     let asks = Arc::new(Always(AtomicU32::new(0)));
     let replies = vec![
-        Reply::Tool("danger", json!({})),
-        Reply::Tool("danger", json!({"again": true})),
+        Reply::Tool("shell", json!({"command": "echo hi"})),
+        Reply::Tool("shell", json!({"command": "echo again"})),
         Reply::Text("ok"),
     ];
     let agent = h.agent(
@@ -688,7 +689,7 @@ async fn always_allow_is_remembered_and_journaled() {
         "second call is allowlisted"
     );
     assert_eq!(tool.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(h.store.allowlist("danger").unwrap(), ["*"]);
+    assert_eq!(h.store.allowlist("shell").unwrap(), ["echo *"]);
     assert_eq!(
         h.kinds(&run),
         [
@@ -744,16 +745,16 @@ async fn effects_decide_when_to_ask_and_show_in_the_request() {
     assert!(asked.is_empty());
     assert_eq!(calls, 2);
 
-    // write: asks once, then the "always" grant covers it.
+    // write: asks every time; "always" isn't offered for a non-shell tool.
     let h = Harness::new();
     let (asked, calls, _) = twice(
         &h,
         Counter::with_policy("send", ToolPolicy::new(Effect::Write, false)),
     )
     .await;
-    assert_eq!(asked.len(), 1);
+    assert_eq!(asked.len(), 2);
     assert_eq!(asked[0].effect, Effect::Write);
-    assert_eq!(asked[0].pattern.as_deref(), Some("*"));
+    assert!(asked.iter().all(|r| r.pattern.is_none()));
     assert_eq!(asked[0].headline(), format!("write · {}", asked[0].summary));
     assert_eq!(calls, 2);
 

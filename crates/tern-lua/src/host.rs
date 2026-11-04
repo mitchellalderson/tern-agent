@@ -392,8 +392,14 @@ fn error_chain(e: &reqwest::Error) -> String {
 /// connector's allowlist (reqwest's default would follow anywhere, carrying
 /// custom headers like `X-Api-Key` along).
 fn connector_client(caps: &Capabilities) -> Result<reqwest::Client, LoadError> {
-    let allowed = caps.http.clone();
-    let policy = reqwest::redirect::Policy::custom(move |attempt| {
+    tern_core::net::http_client()
+        .redirect(connector_redirects(caps.http.clone()))
+        .build()
+        .map_err(|e| LoadError::Lua(format!("http client: {e}")))
+}
+
+fn connector_redirects(allowed: Vec<String>) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
         let host = attempt.url().host_str().unwrap_or_default().to_owned();
         if attempt.previous().len() >= 5 {
             attempt.error("too many redirects")
@@ -406,11 +412,50 @@ fn connector_client(caps: &Capabilities) -> Result<reqwest::Client, LoadError> {
         } else {
             attempt.follow()
         }
-    });
+    })
+}
+
+/// For a request to a hostname: resolve it, refuse non-public addresses, and
+/// return a client pinned to exactly those addresses, so DNS can't answer
+/// with a private one between the check and the connection. An IP literal is
+/// checked directly and needs no pinning; a private one is allowed only when
+/// the connector's own allowlist names that exact address.
+async fn pinned_client(
+    caps: &Capabilities,
+    url: &reqwest::Url,
+    host: &str,
+) -> Result<Option<reqwest::Client>, String> {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        let declared = caps.http.iter().any(|h| h.eq_ignore_ascii_case(bare));
+        return if tern_core::net::is_public(ip) || declared {
+            Ok(None)
+        } else {
+            Err(format!(
+                "http: {host} is a private, loopback, or link-local address"
+            ))
+        };
+    }
+    let port = url.port_or_known_default().unwrap_or(443);
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((bare, port))
+        .await
+        .map_err(|e| format!("http: resolving {host}: {e}"))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(format!("http: {host} did not resolve"));
+    }
+    if let Some(bad) = addrs.iter().find(|a| !tern_core::net::is_public(a.ip())) {
+        return Err(format!(
+            "http: refusing {host} ({}): private, loopback, and link-local addresses aren't allowed",
+            bad.ip()
+        ));
+    }
     tern_core::net::http_client()
-        .redirect(policy)
+        .redirect(connector_redirects(caps.http.clone()))
+        .resolve_to_addrs(bare, &addrs)
         .build()
-        .map_err(|e| LoadError::Lua(format!("http client: {e}")))
+        .map(Some)
+        .map_err(|e| format!("http client: {e}"))
 }
 
 /// `true` if `host` is allowed by an entry like `api.example.com` or `*.example.com`.
@@ -467,6 +512,10 @@ async fn http_request(
             "http: tools.{tool} declares effect = \"read\" but sent {method}; declare effect = \"write\", or set read_via_post = true if it only reads (GraphQL, search APIs)"
         )));
     }
+    let pinned = pinned_client(caps, &parsed, &host)
+        .await
+        .map_err(mlua::Error::runtime)?;
+    let client = pinned.as_ref().unwrap_or(client);
     let mut req = client.request(method, parsed);
     if let Some(headers) = opts.raw_get::<Option<Table>>("headers")? {
         for pair in headers.pairs::<String, String>() {

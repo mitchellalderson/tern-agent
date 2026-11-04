@@ -132,9 +132,15 @@ mod linux {
         Ok(status.ruleset)
     }
 
-    /// Deny new IP sockets (and io_uring, which could open them without the
-    /// `socket` syscall). Unix sockets still work.
-    fn no_network_filter() -> Result<seccompiler::BpfProgram, String> {
+    /// The seccomp filter for the command. It always denies `ptrace` and
+    /// `process_vm_*`, so the command can't read another same-user process's
+    /// memory or environment. With `network` off it also denies new IP
+    /// sockets (and io_uring, which could open them without the `socket`
+    /// syscall); Unix sockets still work.
+    ///
+    /// The rules list the calls to deny, so they go with `Errno` as the match
+    /// action and `Allow` for everything else.
+    fn command_filter(network: bool) -> Result<seccompiler::BpfProgram, String> {
         let err = |e: seccompiler::BackendError| format!("seccomp: {e}");
         let arch =
             TargetArch::try_from(std::env::consts::ARCH).map_err(|e| format!("seccomp: {e}"))?;
@@ -142,24 +148,43 @@ mod linux {
             SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, af as u64)
                 .and_then(|c| SeccompRule::new(vec![c]))
         };
-        let socket_rules = vec![
-            domain(libc::AF_INET).map_err(err)?,
-            domain(libc::AF_INET6).map_err(err)?,
-        ];
+        // An empty rule list matches every call with that number.
         let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
-        rules.insert(libc::SYS_socket, socket_rules);
-        rules.insert(libc::SYS_io_uring_setup, Vec::new());
+        for nr in [
+            libc::SYS_ptrace,
+            libc::SYS_process_vm_readv,
+            libc::SYS_process_vm_writev,
+        ] {
+            rules.insert(nr, Vec::new());
+        }
+        if !network {
+            let socket_rules = vec![
+                domain(libc::AF_INET).map_err(err)?,
+                domain(libc::AF_INET6).map_err(err)?,
+            ];
+            rules.insert(libc::SYS_socket, socket_rules);
+            rules.insert(libc::SYS_io_uring_setup, Vec::new());
+        }
         #[cfg(target_arch = "x86_64")]
         {
             // The x32 ABI numbers the same calls with bit 30 set.
             const X32: i64 = 0x4000_0000;
-            rules.insert(X32 | libc::SYS_socket, Vec::new());
-            rules.insert(X32 | libc::SYS_io_uring_setup, Vec::new());
+            let mut nrs = vec![
+                libc::SYS_ptrace,
+                libc::SYS_process_vm_readv,
+                libc::SYS_process_vm_writev,
+            ];
+            if !network {
+                nrs.extend([libc::SYS_socket, libc::SYS_io_uring_setup]);
+            }
+            for nr in nrs {
+                rules.insert(X32 | nr, Vec::new());
+            }
         }
         let filter = SeccompFilter::new(
             rules,
+            SeccompAction::Errno(libc::EPERM as u32),
             SeccompAction::Allow,
-            SeccompAction::Errno(libc::EACCES as u32),
             arch,
         )
         .map_err(err)?;
@@ -180,14 +205,12 @@ mod linux {
                     .into(),
             );
         }
-        if !a.network {
-            match no_network_filter()
-                .and_then(|p| seccompiler::apply_filter(&p).map_err(|e| format!("seccomp: {e}")))
-            {
-                Ok(()) => {}
-                Err(e) if a.require => return Err(e),
-                Err(e) => eprintln!("tern sandbox: network not blocked: {e}"),
-            }
+        match command_filter(a.network)
+            .and_then(|p| seccompiler::apply_filter(&p).map_err(|e| format!("seccomp: {e}")))
+        {
+            Ok(()) => {}
+            Err(e) if a.require => return Err(e),
+            Err(e) => eprintln!("tern sandbox: seccomp filter not applied: {e}"),
         }
         let (program, rest) = a.command.split_first().ok_or("no command given")?;
         let e = std::process::Command::new(program).args(rest).exec();

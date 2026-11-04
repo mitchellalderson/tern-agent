@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tern_core::net::is_public;
 use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult};
 use tern_core::types::ToolSpec;
 
@@ -69,38 +70,6 @@ impl HttpFetch {
             builder = builder.resolve_to_addrs(&host, &addrs);
         }
         builder.build().map_err(|e| e.to_string())
-    }
-}
-
-/// Whether an address is on the public internet.
-pub fn is_public(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            !(v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || o[0] == 0
-                || (o[0] == 100 && (o[1] & 0xc0) == 64) // 100.64/10 shared (CGNAT)
-                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0/24
-                || (o[0] == 198 && (o[1] & 0xfe) == 18) // 198.18/15 benchmarking
-                || o[0] >= 240)
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_public(IpAddr::V4(v4));
-            }
-            let seg = v6.segments();
-            !(v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || (seg[0] & 0xfe00) == 0xfc00 // unique local
-                || (seg[0] & 0xffc0) == 0xfe80) // link local
-        }
     }
 }
 

@@ -349,27 +349,118 @@ pub fn subject(call: &ToolCall) -> String {
     }
 }
 
-/// Commands that run other commands: `bash *` or `env *` would approve
-/// anything, so they're never offered for "always".
+/// Commands that run other commands, or take flags that do (`sed 1e`,
+/// `tar --checkpoint-action=exec`, `rg --pre`): `bash *` or `env *` would
+/// approve anything, so they're never offered for "always".
 const WRAPPERS: &[&str] = &[
-    "sh", "bash", "zsh", "fish", "dash", "ksh", "env", "sudo", "doas", "su", "xargs", "nohup",
-    "exec", "eval", "command", "builtin", "time", "timeout", "nice", "watch", "find", "python",
-    "python3", "node", "perl", "ruby", "php", "deno", "bun", "npx", "uvx", "ssh", "docker",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "dash",
+    "ksh",
+    "env",
+    "sudo",
+    "doas",
+    "su",
+    "xargs",
+    "nohup",
+    "exec",
+    "eval",
+    "command",
+    "builtin",
+    "time",
+    "timeout",
+    "nice",
+    "watch",
+    "find",
+    "python",
+    "python3",
+    "node",
+    "perl",
+    "ruby",
+    "php",
+    "deno",
+    "bun",
+    "npx",
+    "uvx",
+    "ssh",
+    "docker",
     "kubectl",
+    "sed",
+    "awk",
+    "gawk",
+    "tar",
+    "make",
+    "cargo",
+    "npm",
+    "pnpm",
+    "yarn",
+    "pip",
+    "pip3",
+    "go",
+    "gem",
+    "rsync",
+    "scp",
+    "sftp",
+    "vi",
+    "vim",
+    "nvim",
+    "ed",
+    "ex",
+    "less",
+    "more",
+    "man",
+    "rg",
+    "fd",
+    "osascript",
+    "open",
+    "xdg-open",
+    "lua",
+    "tclsh",
+    "rustc",
+    "gcc",
+    "cc",
+    "clang",
+    "git",
+];
+
+/// Git subcommands that can't run a program. Others can, through `-c` or
+/// config, so `git` gets a pattern only for these.
+const GIT_READ_ONLY: &[&str] = &[
+    "status",
+    "log",
+    "diff",
+    "show",
+    "rev-parse",
+    "ls-files",
+    "blame",
 ];
 
 /// Pattern "always allow" would record: for `shell`, the first word plus
-/// ` *`; `*` for other tools. `None` for commands that wrap others.
+/// ` *` (or `git <subcommand> *` for read-only git). `None` for commands
+/// that wrap others, and for every other tool: a pattern there would cover
+/// every path or target the tool can reach.
 pub fn pattern_for(call: &ToolCall) -> Option<String> {
-    let subject = subject(call);
-    match subject.split_whitespace().next() {
-        Some(first) if call.name == "shell" => {
-            let base = first.rsplit('/').next().unwrap_or(first);
-            (!WRAPPERS.contains(&base)).then(|| format!("{first} *"))
-        }
-        Some(_) | None if call.name == "shell" => None,
-        _ => Some("*".to_owned()),
+    if call.name != "shell" {
+        return None;
     }
+    let subject = subject(call);
+    let mut words = subject.split_whitespace();
+    let first = words.next()?;
+    let base = first
+        .trim_start_matches('\\')
+        .rsplit('/')
+        .next()
+        .unwrap_or(first);
+    if WRAPPERS.contains(&base) {
+        if base == "git" {
+            let sub = words.next()?;
+            return GIT_READ_ONLY.contains(&sub).then(|| format!("git {sub} *"));
+        }
+        return None;
+    }
+    Some(format!("{first} *"))
 }
 
 /// Characters that let one shell command run another. A command containing
@@ -433,7 +524,7 @@ mod tests {
     fn shell_patterns() {
         assert_eq!(
             pattern_for(&shell("  git status --short")).as_deref(),
-            Some("git *")
+            Some("git status *")
         );
         for wrapper in [
             "bash -c 'rm -rf ~'",
@@ -441,6 +532,12 @@ mod tests {
             "sudo ls",
             "/usr/bin/env ls",
             "find . -exec rm {} +",
+            "\\sh -c id",
+            "sed -n '1e id' f",
+            "tar --checkpoint=1 --checkpoint-action=exec=id",
+            "git -c core.pager=id log",
+            "git commit -m x",
+            "git",
             "",
         ] {
             assert_eq!(pattern_for(&shell(wrapper)), None, "{wrapper:?}");
@@ -655,14 +752,13 @@ mod tests {
     }
 
     #[test]
-    fn non_shell_tools_allow_all_with_star() {
+    fn non_shell_tools_are_never_offered_always() {
         let call = ToolCall {
             id: "1".into(),
             name: "write_file".into(),
             input: json!({}),
         };
-        assert_eq!(pattern_for(&call).as_deref(), Some("*"));
-        assert!(allowed_by(&["*".to_owned()], &call));
+        assert_eq!(pattern_for(&call), None);
         assert!(!allowed_by(&[], &call));
     }
 }
