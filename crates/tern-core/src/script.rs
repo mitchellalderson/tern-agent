@@ -41,6 +41,11 @@ pub const NOT_IN_SCRIPTS: &[&str] = &[
     "mcp_add",
     "mcp_update",
     "mcp_remove",
+    // Signing in: each call can reach a host the agent chose and show the
+    // user a card.
+    "auth_discover",
+    "auth_propose",
+    "connection_add",
 ];
 
 /// Whether a tool with this declared effect may be offered to scripts (PY0:

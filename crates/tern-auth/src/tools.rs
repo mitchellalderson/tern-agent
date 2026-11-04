@@ -98,6 +98,23 @@ pub struct AuthHost {
     pub clients: Clients,
     pub plans: Plans,
     pub config: AuthConfig,
+    /// `auth_propose` calls per run, against [`MAX_PROPOSALS_PER_RUN`].
+    proposals: Mutex<HashMap<String, u32>>,
+}
+
+/// `auth_propose` calls one run may make: each can fetch a researched
+/// issuer's metadata and show a card.
+pub const MAX_PROPOSALS_PER_RUN: u32 = 4;
+
+/// Count a call for `run` against `max`; `true` once it is over.
+fn over_limit(runs: &Mutex<HashMap<String, u32>>, run: &str, max: u32) -> bool {
+    let mut runs = runs.lock().unwrap_or_else(|e| e.into_inner());
+    if runs.len() > 1000 {
+        runs.clear();
+    }
+    let n = runs.entry(run.to_owned()).or_default();
+    *n += 1;
+    *n > max
 }
 
 impl AuthHost {
@@ -110,6 +127,7 @@ impl AuthHost {
             },
             plans: Plans::default(),
             config: cfg.clone(),
+            proposals: Mutex::default(),
         }
     }
 
@@ -415,12 +433,34 @@ impl Tool for AuthPropose {
         Effect::Read
     }
 
+    /// A researched plan is checked against its issuer's metadata, fetched
+    /// from a host the agent chose: in a tainted run that host is new
+    /// egress like any other (§5.3), so the user is asked first.
+    fn egress_host(&self, args: &Value) -> Option<String> {
+        if str_arg(args, "plan_id").is_some() {
+            return None;
+        }
+        let plan = args.get("plan")?;
+        let url = ["issuer", "authorize_url"]
+            .iter()
+            .find_map(|k| str_arg(plan, k))?;
+        reqwest::Url::parse(url)
+            .ok()?
+            .host_str()
+            .map(str::to_ascii_lowercase)
+    }
+
     /// The card is the user's own decision.
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
         ToolPolicy::new(Effect::Read, true)
     }
 
     async fn call(&self, ctx: &ToolCtx, args: Value) -> ToolResult {
+        if over_limit(&self.host.proposals, &ctx.run_id, MAX_PROPOSALS_PER_RUN) {
+            return ToolResult::error(
+                "this run has proposed enough sign-ins; tell the user what is left to connect",
+            );
+        }
         let (id, plan) = if let Some(id) = str_arg(&args, "plan_id") {
             match self.host.plans.get(id) {
                 Some(k) => (id.to_owned(), k.plan),
@@ -638,16 +678,7 @@ impl Tool for ConnectionAdd {
                     .unwrap_or_default()
             ));
         }
-        let over = {
-            let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
-            if runs.len() > 1000 {
-                runs.clear();
-            }
-            let n = runs.entry(ctx.run_id.clone()).or_default();
-            *n += 1;
-            *n > MAX_SIGN_INS_PER_RUN
-        };
-        if over {
+        if over_limit(&self.runs, &ctx.run_id, MAX_SIGN_INS_PER_RUN) {
             return ToolResult::error(
                 "this run has opened enough sign-in cards; tell the user what is left to connect",
             );
