@@ -155,6 +155,24 @@ void main() {
     expect(await client.removeSecret('DART_TEST_TOKEN'), isFalse);
   }, skip: bin == null ? 'set TERN_BIN to run' : false);
 
+  test('config settings: read, set keeping comments, reset', () async {
+    final file = File('${tmp.path}/.tern/config.toml');
+    final view = await client.configSettings();
+    final net = view.settings.firstWhere((s) => s.key == 'sandbox.network');
+    expect((net.value, net.set, net.risky), (true, false, true));
+
+    final set = await client.setSetting('sandbox.network', false);
+    expect((set.value, set.changed, set.restartPending), (false, true, true));
+    expect(await file.readAsString(), contains('[api]'));
+    expect(await file.readAsString(), contains('network = false'));
+    await expectLater(
+      client.setSetting('max_iterations', 'lots'),
+      throwsA(isA<TernException>().having((e) => e.status, 'status', 400)),
+    );
+    final reset = await client.resetSetting('sandbox.network');
+    expect((reset.value, reset.set), (true, false));
+  }, skip: bin == null ? 'set TERN_BIN to run' : false);
+
   test(
     'pairs over TLS with a pinned certificate, then is signed out',
     () async {

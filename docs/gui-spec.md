@@ -125,6 +125,8 @@ The GUI version of `tern runs show`: a timeline of journal steps (llm, tool, app
 
 Tabs: **Models** (providers, API key secrets, default model, context window), **Approvals** (allowlist patterns, delete), **Daemon** (status, logs folder, run at login, restart), **About** (versions, doctor results from §7.1).
 
+**Configuration** (built; tern › Configuration…, and **All settings (config.toml)…** in Settings): every other setting in `config.toml`, from `/v1/config/settings`. Sections in a left rail (General, Models, Shell & sandbox, Sub-agents, Schedules, Memory, Home, API & devices, then any new section the daemon reports) with a search across all of them. Each row: a label from the key, the key in mono, the example config's description, and a control for its kind (switch, segmented choice, number or text field, comma-separated list or model chain; "Edit in config.toml" for tables). A **Changed** mark when it differs from the default, with a reset; **Restart to apply** when saved but not yet in effect, plus a banner with **Restart tern** on this computer. Security-relevant settings carry a one-line note, tinted when the current value is the less safe one, and their section gets a shield. The window renders whatever the daemon describes, so new settings need no UI work. **Open config.toml** reveals the file when tern runs here.
+
 ## 5. Notifications and the menu bar
 
 - Native notification when a run finishes while the app isn't focused on that conversation, and always for approvals. Approval notifications carry Allow once / Deny actions that call the API directly.
@@ -179,7 +181,7 @@ The daemon serves JSON over HTTP on `~/.tern/tern.sock` (mode 0600), possibly a 
 | GET | `/v1/gateway/telegram` | status, paired chats |
 | POST / DELETE | `/v1/gateway/telegram/pairings[/{id}]` | create a code, unpair |
 | PUT | `/v1/secrets/{name}` | write-only |
-| GET / PATCH | `/v1/config` (P1) | read and edit config through the same validation as `tern config set` |
+| GET / PUT / DELETE | `/v1/config/settings[/{key}]` (built) | settings with defaults, descriptions and live/restart; set or reset one, validated, comments kept |
 | GET | `/v1/doctor` (P1) | doctor results as JSON |
 | GET | `/v1/tools` | full tool specs `[{name, description, input_schema}]` (built) |
 | GET | `/v1/runs/{id}/children[?recursive=1]`, `/v1/sessions/{id}/subagents` | sub-agent runs as `ChildRun` (built, S2; [subagents-design.md](subagents-design.md) §3.2) |

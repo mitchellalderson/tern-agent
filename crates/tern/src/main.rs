@@ -21,6 +21,7 @@ mod reset_cmd;
 mod run_cmd;
 mod runtime;
 mod service;
+mod settings;
 mod subagents;
 mod tray;
 mod tui_backend;

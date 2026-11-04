@@ -201,6 +201,37 @@ void main() {
     expect(secretName.hasMatch('A-B'), isFalse);
   });
 
+  test('decodes config settings', () {
+    final v = ConfigView.fromJson(
+      jsonDecode(
+            '{"path":"/h/.tern/config.toml","sections":[{"id":"sandbox",'
+            '"title":"Shell & sandbox","settings":[{"key":"sandbox.network",'
+            '"kind":"bool","optional":false,"value":true,"default":true,'
+            '"set":true,"description":"d","applies":"restart",'
+            '"restart_pending":false,"security":"s","risky":true,'
+            '"editable":true},{"key":"sandbox.docker_cpus","kind":"float",'
+            '"min":0.0,"optional":false,"value":1.5,"default":2.0,"set":true,'
+            '"description":"","applies":"live","restart_pending":true,'
+            '"risky":false,"editable":true},{"key":"x.y","kind":"future",'
+            '"value":{},"default":{},"set":false,"applies":"restart",'
+            '"restart_pending":false,"risky":false,"editable":false}]}]}',
+          )
+          as Json,
+    );
+    final [net, cpus, odd] = v.settings.toList();
+    expect(net.kind, SettingKind.boolean);
+    expect((net.risky, net.live, net.changed), (true, false, false));
+    expect(net.name, 'network');
+    expect((cpus.min, cpus.live, cpus.changed), (0.0, true, true));
+    expect(cpus.restartPending, isTrue);
+    expect(odd.kind, SettingKind.other);
+    expect(v.error, isNull);
+    expect(
+      ConfigView.fromJson({'path': 'p', 'error': 'bad'}).sections,
+      isEmpty,
+    );
+  });
+
   test('decodes status and shutdown replies', () {
     final s = DaemonStatus.fromJson(
       jsonDecode(

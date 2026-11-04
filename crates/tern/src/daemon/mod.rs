@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod api_channels;
+mod api_config;
 pub mod api_lifecycle;
 mod api_mcp;
 mod api_outbox;

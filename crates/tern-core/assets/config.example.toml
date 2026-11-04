@@ -8,8 +8,8 @@
 # default_model = "anthropic:claude-sonnet-4-5"
 # default_model = ["anthropic:claude-sonnet-4-5", "openrouter:anthropic/claude-sonnet-4.5"]
 
-workspace = "~/tern-workspace"
-max_iterations = 40
+workspace = "~/tern-workspace"   # where the agent works; shell commands start here
+max_iterations = 40              # model calls per run before it stops
 # Model context window in tokens; old messages are summarized past 75%.
 # Override per provider with `context_window` in its [providers.*] table.
 context_window = 128000
@@ -33,16 +33,18 @@ secret_request_timeout_secs = 900
 # base_url = "http://localhost:11434/v1"
 
 [sandbox]
+# Where shell commands run: "host" (this computer, in an OS sandbox) or
+# "docker" (a container per command).
 backend = "host"           # "host" | "docker"
-shell_timeout_secs = 120
-network = true             # false: no IP networking for shell commands
+shell_timeout_secs = 120   # a command running longer is stopped
+network = true             # IP networking for shell commands; false: none
 # Host backend: shell commands run in an OS sandbox (Seatbelt on macOS,
 # Landlock on Linux): write only to the workspace and temp dirs, no reads of
 # your home directory beyond these paths. See docs/sandbox-design.md.
 confine = "auto"           # "auto" | "required" | "off"
-read_paths = ["~/.gitconfig", "~/.config/git"]
-write_paths = []           # e.g. ["~/.cache", "~/.npm"]
-docker_image = "debian:stable-slim"
+read_paths = ["~/.gitconfig", "~/.config/git"]   # also readable, outside the workspace
+write_paths = []           # also writable, e.g. ["~/.cache", "~/.npm"]
+docker_image = "debian:stable-slim"   # docker backend: the image commands run in
 docker_memory = "2g"       # "" for no limit
 docker_cpus = 2.0          # 0 for no limit
 docker_pids = 512          # 0 for no limit
@@ -78,13 +80,14 @@ docker_pids = 512          # 0 for no limit
 # max_iterations_ceiling = 100  # the most agent_spawn may ask for
 # budget_tokens = 400000      # per sub-agent: input + output + cache tokens, on every model call
 # budget_tokens_ceiling = 2000000  # the most agent_spawn may ask for (0 = no ceiling)
+# ask_parent_timeout_secs = 900  # how long agent_ask_parent waits for an answer
 
 # Memory: user.md and memory.md are in every system prompt, each within a
 # token cap (chars / 4). Writes past a cap are refused with a request to
 # consolidate; a file edited by hand past its cap is cut, with a note.
 # [memory]
-# user_md_tokens = 1500
-# memory_md_tokens = 1500
+# user_md_tokens = 1500        # cap for user.md, what tern knows about you
+# memory_md_tokens = 1500      # cap for memory.md, the agent's own notes
 # flush = true                 # before compacting, let the agent save durable facts (memory_save)
 
 # How much runs may do without asking: "readonly", "supervised" (the
@@ -111,6 +114,17 @@ docker_pids = 512          # 0 for no limit
 # [home]
 # idle_hours = 6                # this long without a message
 # day_starts = "04:00"          # a new day (local), once idle for an hour
+
+# Where the API listens, for the desktop app on other devices and the
+# phone (docs/deployment-spec.md). The Unix socket is always on.
+# [api]
+# listen = ["unix", "tcp://0.0.0.0:8711"]  # add tcp:// listeners for paired devices
+# tls = "auto"  # "auto": a self-signed certificate devices pin; "files": tls_cert and tls_key; "off": plain HTTP
+# tls_cert = "/etc/tern/cert.pem"  # certificate chain (PEM), for tls = "files"
+# tls_key = "/etc/tern/key.pem"    # its private key (PEM), for tls = "files"
+# trust_proxy = false           # trust X-Forwarded-For from a reverse proxy on loopback
+# public_url = "https://tern.example.com"  # put in pairing links; default: the first tcp listener
+# remote_mcp_stdio = false      # let paired devices add stdio MCP servers (they run on this host)
 #
 # Prices (USD per million tokens) for models whose list doesn't give them:
 # [providers.anthropic.prices]

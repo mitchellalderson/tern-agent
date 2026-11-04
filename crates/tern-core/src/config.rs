@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::home::expand_tilde;
 
 pub mod edit;
+pub mod settings;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
