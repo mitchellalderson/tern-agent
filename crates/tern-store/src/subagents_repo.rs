@@ -150,6 +150,17 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Every mail to `run_id` of `kind`, consumed or not.
+    pub fn mail_of_kind(&self, run_id: &str, kind: &str) -> Result<Vec<MailRow>> {
+        let sql = format!(
+            "SELECT {MAIL_COLS} FROM agent_mail WHERE to_run_id = ?1 AND kind = ?2 ORDER BY id"
+        );
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([run_id, kind], mail_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn mail_by_key(&self, dedupe_key: &str) -> Result<Option<MailRow>> {
         let sql = format!("SELECT {MAIL_COLS} FROM agent_mail WHERE dedupe_key = ?1");
         Ok(self

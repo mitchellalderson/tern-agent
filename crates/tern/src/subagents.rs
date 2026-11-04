@@ -1168,7 +1168,7 @@ fn human_secs(secs: u64) -> String {
 
 /// A child's unanswered `agent_ask_parent`: the question mail and its body.
 /// Read from the store (the child's newest step is that tool call, still
-/// running, and no answer is waiting for it), so it works for a child driven
+/// running, and no answer has been sent for it), so it works for a child driven
 /// by another process.
 pub fn pending_question(
     store: &Store,
@@ -1192,10 +1192,12 @@ pub fn pending_question(
         return Ok(None);
     };
     let qid = subagent::question_id(mail.id);
-    let answered = store.pending_mail(&child.id)?.iter().any(|m| {
-        m.kind == "answer"
-            && serde_json::from_str::<Note>(&m.body)
-                .is_ok_and(|n| n.question_id.as_deref() == Some(qid.as_str()))
+    // Consumed answers count too: the child takes the answer in the ask
+    // step's own transaction, and until that step completes it still looks
+    // like the newest, started one.
+    let answered = store.mail_of_kind(&child.id, "answer")?.iter().any(|m| {
+        serde_json::from_str::<Note>(&m.body)
+            .is_ok_and(|n| n.question_id.as_deref() == Some(qid.as_str()))
     });
     if answered {
         return Ok(None);

@@ -1,7 +1,7 @@
 # Roadmap
 
 What tern does today, what comes next, and what it won't do. Each line links to the spec that describes it. Nothing
-below the first section is built; order can change, and items may be cut. The tooling spec's stages
+below "Built since v0.1" is built; order can change, and items may be cut. The tooling spec's stages
 ([§12.1](docs/personal-agent-tooling-spec.md#121-stages)) are the build order.
 
 ## Built (v0.1)
@@ -26,40 +26,81 @@ below the first section is built; order can change, and items may be cut. The to
 
 From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.1 unless noted.
 
+**Safety and control**
 - **Effects on every tool** (`read`, `write`, `destructive`) enforced by the host, and a money-movement deny (T0).
+- **Untrusted content is tracked** (T3a): a run that reads outside content is marked, its output is wrapped as data, and
+  it can't act on its own. Shell has no network by default.
+- **Outbox and autonomy** (T3): writes from unattended runs wait for your approval as cards in Home, on Telegram and in
+  the TUI (`/outbox`); autonomy profiles set how much a run may do alone. Approving `http_fetch` for a run, or for a
+  site for good, is one click.
+- **Credentials stay out of connectors** (T4b-i): the host injects them, and connectors get path allowlists and rate
+  limits.
+- Approvals land where the work is: cards in the run's conversation, with a pointer in Home.
+
+**Routines and schedules**
 - **Quieter schedules**: `NO_REPLY`, quiet hours, per-schedule run caps and budgets (T1a).
+- **Routines** (T1b): schedules become routines with cron and one-off triggers, Luau watches that remember where they
+  left off, gate scripts that skip a run, initiative levels, and digests.
+- **Webhook triggers** (T1c): an outside event can start a routine.
+
+**Memory and models**
+- **Memory flush before compaction**, with capped `user.md` and `memory.md` (T5a).
+- **Provider fallback chains**: if one model fails, the next takes over (T6a).
+- **A browser through an existing MCP server**, documented as a recipe (T7a).
+
+**Start, stop and tray**
 - **Start and stop without a terminal**: `tern service install`, `tern start` / `stop`, "Quit tern completely" (T8a).
 - **Menu-bar icon on macOS** (`tern tray`): status, Open, Start/Quit, Start at login through System Settings › Login
   Items (T8b). The desktop app's first launch asks where tern runs: this Mac, or a tern server you pair with.
-- **MCP management** from the TUI (`/mcp`), the CLI (`tern mcp`) and the desktop app, with no restart and no
+
+**Channels and agents**
+- **Channels** ([channels-design.md](docs/channels-design.md) C0–C4): Home as one stream, topic channels in the desktop
+  app, agents that share a channel and read each other's posts, sub-agents that post, "needs you" pointers into Home,
+  and moving conversations into channels. Conversations are flat everywhere: no reply threads or side chats. Every run
+  is told where it is and where its reply goes.
+- **Agent profiles** ([agent-profiles-design.md](docs/agent-profiles-design.md) AP0–AP2): several configurable agents,
+  each with its own DM, persona, model list, tools, memory and routines, in the desktop app and Telegram; agents in topic
+  channels that wake on `@mention`; and delegating work to another agent.
+
+**Connections**
+- **Sign in with OAuth** (T4a): the agent finds how a service signs in and proposes it; you approve. Several accounts
+  per service, for connectors and MCP servers, in a Connections view and `tern connections`.
+- **Chat gateways as connectors** (T4b-ii): ntfy and Slack, written in Luau, built in.
+- **MCP management** from the TUI (`/mcp`), the CLI (`tern mcp`), the desktop app and chat, with no restart and no
   `config.toml` editing ([mcp-management-spec.md](docs/mcp-management-spec.md) M0–M2).
-- `tern reset` clears all local data.
+
+**Compute and settings**
 - **Sandboxed compute**: a `python` tool on Monty, a Python subset in Rust, whose scripts call tern's read-only tools
-  as functions, each call checked and journaled, so loops over a connector don't go through `shell`
-  ([python-tool-spec.md](docs/python-tool-spec.md) PY0; isolation in a helper process, approvals and writes from
-  scripts are PY1–PY2).
+  as functions, each call checked and journaled, so loops over a connector don't go through `shell`. Scripts run in a
+  sandboxed helper process ([python-tool-spec.md](docs/python-tool-spec.md) PY0, PY1; writes from scripts are PY2).
+- **A config editor** in the desktop app, backed by a settings API, so most of `config.toml` can be changed without
+  opening it.
+- `tern reset` clears all local data.
 
-## Next: the rest of Stage 1
+## In progress
 
-- Memory flush before compaction, capped profile files (T5a); provider fallback chains (T6a).
-- A browser through an existing MCP server, documented as a recipe (T7a).
+Being built on other branches right now; not done until merged.
 
-## Then
+- Activity ledger with a hash chain, Tasks view, `tern security audit` (T6b).
+- Signed bundles, `tern bundle`, `import openclaw` (T4b-iii).
+- OpenAPI-to-connector and recorded test fixtures, for faster connector authoring (T4c).
+- Agents suggest channels; `/channel` in the TUI; Telegram topics (C5).
+- `tern mcp serve`: tern's tools for other agents over MCP (T6d).
+
+## Next
 
 | Stage | What | Spec |
 |---|---|---|
-| 2. Foundations | Routines with Luau watches, gate scripts and zero-token idle; initiative levels and digests (T1b). Taint for runs started by external content, an outbox with deferred approvals, autonomy profiles (T3). Credentials injected by the host so connectors never see them, path allowlists, rate limits (T4b-i). | tooling §3, §5, §6.1 |
-| 3. Organize | Channels over one shared memory, reply-to-act, Telegram topics (T2). Activity ledger, Tasks view, `tern security audit` (T6b). Skill capture (T5b). The tray's approvals, posts and initiative items as those land. | tooling §4, §8, §11 |
-| 4. Connections | OAuth-first sign-in, several accounts per service (T4a). Webhook triggers (T1c). Chat channels as Luau gateway connectors: ntfy, then Slack (T4b-ii). | tooling §6 |
-| 5. Ecosystem | Recipes (morning brief, follow-ups, meeting prep) and goals (T6c). Signed bundles, `import openclaw` (T4b-iii). `tern mcp serve` (T6d). Faster connector authoring (T4c). Tray on Linux (T8c). Native browser behind a feature flag (T7b). | tooling §6.5, §9, §10 |
-| 6. Multiplayer | Group rooms, then several members on one core, then hosted workspaces. | tooling §15 |
+| 3. Organize | Skill capture (T5b). | tooling §8 |
+| 5. Ecosystem | Recipes (morning brief, follow-ups, meeting prep) and goals (T6c). Native browser behind a feature flag (T7b). Tray on Linux (T8c). | tooling §6.5, §9, §10 |
+| Agent profiles | The rest of AP3: "Let agents decide" routing, a Telegram bot per agent, a per-agent autonomy ceiling, templates as signed bundles. | [agent-profiles-design.md](docs/agent-profiles-design.md) |
+| 6. Multiplayer | Group rooms with guests (M0), then several members on one core (M1), then hosted workspaces (M2). | tooling §15 |
 
 **Running it elsewhere** ([deployment-spec.md](docs/deployment-spec.md) §12): event replay and an async store (D0),
 container image and server guides (D2), Postgres (D3), a mobile app with push (D4), a hosted tier with export and
 leave (D5), and a relay so a home core gets phone reach without port forwarding (D6).
 
-**Desktop app** ([gui-spec.md](docs/gui-spec.md) §10): library of connectors, skills and memory (G3; MCP servers are done),
-channel settings (G4), agent profiles (G5), packaging, notarization and a Linux build (G6).
+**Desktop app** ([gui-spec.md](docs/gui-spec.md) §10): packaging, notarization and a Linux build (G6).
 
 ## Won't do
 
