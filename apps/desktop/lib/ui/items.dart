@@ -152,7 +152,11 @@ class _AssistantMessage extends StatelessWidget {
         blockquoteDecoration: BoxDecoration(
           border: Border(left: BorderSide(color: c.hairline, width: 3)),
         ),
-        a: body.copyWith(color: c.accent),
+        a: body.copyWith(
+          color: c.link,
+          fontWeight: FontWeight.w600,
+          decoration: TextDecoration.underline,
+        ),
         listBullet: body,
       ),
     );

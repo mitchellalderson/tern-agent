@@ -956,6 +956,6 @@ void main() {
       ),
     );
     expect(find.text('★'), findsOneWidget);
-    expect(AgentAvatar.colorFor('x', 'blue'), const Color(0xFF4C8DF6));
+    expect(AgentAvatar.colorFor('x', 'blue'), const Color(0xFF7FA6A0));
   });
 }

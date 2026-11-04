@@ -109,10 +109,7 @@ class _ConversationViewState extends State<ConversationView> {
                                     phase: phase!,
                                     since: t!.runSince,
                                   )
-                                : ItemView(
-                                    item: item,
-                                    store: store,
-                                  ),
+                                : ItemView(item: item, store: store),
                           ),
                         ),
                       ),
@@ -527,18 +524,20 @@ class _ComposerState extends State<Composer> {
               ),
             Container(
               decoration: BoxDecoration(
-                color: c.background,
+                color: c.card,
                 border: Border.all(
-                  color: _focus.hasFocus ? c.muted : c.hairline,
+                  color: _focus.hasFocus ? c.ink : c.hairline,
+                  width: 1.5,
                 ),
-                borderRadius: BorderRadius.circular(22),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.04),
-                    blurRadius: 12,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: _focus.hasFocus
+                    ? [
+                        BoxShadow(
+                          color: c.stripeYellow.withValues(alpha: 0.55),
+                          spreadRadius: 3,
+                        ),
+                      ]
+                    : null,
               ),
               padding: EdgeInsets.fromLTRB(store.streamOpen ? 6 : 18, 4, 6, 4),
               child: Row(
@@ -659,16 +658,9 @@ class MentionSuggestions extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 6),
       constraints: const BoxConstraints(maxWidth: 320, maxHeight: 220),
       decoration: BoxDecoration(
-        color: c.background,
-        border: Border.all(color: c.hairline),
-        borderRadius: BorderRadius.circular(10),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 14,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        color: c.card,
+        border: Border.all(color: c.ink, width: 1.5),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: ListView(
         shrinkWrap: true,

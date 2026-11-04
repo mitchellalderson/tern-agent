@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tern brand style sheet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:ital,wdth,wght@0,62..125,100..900;1,62..125,100..900&family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* stripes */
+  --red: #D93A2B;
+  --orange: #F07A2B;
+  --yellow: #F6B92B;
+  /* surfaces */
+  --cream: #F7EEDC;
+  --paper: #FCF7EB;
+  --sand: #EFE3CB;
+  --hairline: #E0D2B6;
+  /* type */
+  --ink: #2B2118;
+  --muted: #6F604F;
+  --link: #B3281D;
+  /* status */
+  --ok: #4F7A3A;
+  --warn: #B8841A;
+  --error: #B3281D;
+
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "DM Sans", system-ui, sans-serif;
+  --mono: "JetBrains Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; margin: 0; }
+body {
+  background: var(--cream);
+  color: var(--ink);
+  font: 400 16px/1.55 var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+/* ---------- the stripe motif ---------- */
+.stripes { display: grid; gap: 0; }
+.stripes i { display: block; }
+.stripes i:nth-child(1) { background: var(--red); }
+.stripes i:nth-child(2) { background: var(--orange); }
+.stripes i:nth-child(3) { background: var(--yellow); }
+.stripes.h > i { height: var(--t, 10px); }
+.stripes.v { grid-auto-flow: column; }
+.stripes.v > i { width: var(--t, 10px); }
+
+/* ---------- layout ---------- */
+header.hero { padding: 72px 0 56px; }
+.eyebrow {
+  font: 600 12px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 18px;
+}
+.wordmark {
+  font: italic 900 clamp(72px, 14vw, 148px)/.9 var(--display);
+  font-stretch: 125%; letter-spacing: -.03em; text-transform: lowercase;
+}
+.tagline { font: 400 20px/1.4 var(--body); color: var(--muted); max-width: 520px; margin-top: 22px; }
+.hero .stripes { margin-top: 40px; --t: 14px; transform: skewX(-18deg); transform-origin: left; width: 78%; }
+
+section { padding: 56px 0; border-top: 1px solid var(--hairline); }
+.sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 28px; }
+.sec-head .n { font: 600 12px var(--mono); color: var(--muted); }
+h2 { font: italic 800 34px/1.05 var(--display); font-stretch: 112%; letter-spacing: -.01em; }
+h3 { font: 700 13px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 32px 0 14px; }
+p.lede { max-width: 620px; color: var(--muted); margin-bottom: 8px; }
+
+/* ---------- swatches ---------- */
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
+.sw { border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; background: var(--paper); }
+.sw .chip { height: 92px; }
+.sw .meta { padding: 10px 12px 12px; }
+.sw b { display: block; font: 700 14px var(--body); }
+.sw code { font: 500 12px var(--mono); color: var(--muted); }
+.sw small { display: block; font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.35; }
+.sw.big { grid-column: span 1; }
+.stripe-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.stripe-row .sw .chip { height: 130px; }
+
+/* ---------- type ---------- */
+.type-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 720px) { .type-grid { grid-template-columns: 1fr; } }
+.card { background: var(--paper); border: 1px solid var(--hairline); border-radius: 12px; padding: 24px; }
+.sample-display { font: italic 800 44px/1 var(--display); font-stretch: 118%; letter-spacing: -.02em; }
+.sample-body { font: 400 16px/1.55 var(--body); }
+.sample-mono { font: 500 14px/1.6 var(--mono); background: var(--sand); border-radius: 8px; padding: 12px 14px; }
+.scale { display: grid; gap: 0; }
+.scale .row { display: grid; grid-template-columns: 110px 1fr; align-items: baseline; padding: 12px 0; border-bottom: 1px solid var(--hairline); gap: 12px; }
+.scale .row:last-child { border-bottom: 0; }
+.scale .tag { font: 500 12px var(--mono); color: var(--muted); }
+
+/* ---------- components ---------- */
+.demo { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 720px) { .demo { grid-template-columns: 1fr; } }
+.btn {
+  font: 700 14px var(--body); border: 2px solid var(--ink); background: transparent; color: var(--ink);
+  padding: 9px 18px; border-radius: 8px; cursor: pointer;
+}
+.btn.primary { background: var(--orange); }
+.btn.primary:hover { background: var(--yellow); }
+.btn.ghost { border-color: var(--hairline); }
+.btn.danger { background: var(--red); color: var(--paper); border-color: var(--red); }
+.row-flex { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.input {
+  width: 100%; font: 400 15px var(--body); color: var(--ink); background: var(--paper);
+  border: 1.5px solid var(--hairline); border-radius: 8px; padding: 10px 12px;
+}
+.input:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px color-mix(in srgb, var(--yellow) 55%, transparent); }
+.pill { font: 600 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 4px 9px; border-radius: 99px; border: 1.5px solid currentColor; }
+.pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.err { color: var(--error); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin-right: 6px; }
+
+.app {
+  display: grid; grid-template-columns: 170px 1fr; border: 1.5px solid var(--ink); border-radius: 12px;
+  overflow: hidden; background: var(--cream); min-height: 330px;
+}
+.app .side { background: var(--sand); border-right: 1px solid var(--hairline); padding: 14px 12px; font-size: 13.5px; }
+.app .side .logo { font: italic 900 20px var(--display); font-stretch: 125%; text-transform: lowercase; margin-bottom: 4px; }
+.app .side .stripes { margin: 6px 0 16px; transform: skewX(-18deg); transform-origin: left; width: 72%; --t: 4px; }
+.app .side .item { padding: 7px 9px; border-radius: 6px; color: var(--muted); }
+.app .side .item.sel { background: var(--cream); color: var(--ink); font-weight: 600; box-shadow: inset 3px 0 0 var(--orange); }
+.app .main { display: flex; flex-direction: column; }
+.app .topbar { display: flex; flex-direction: column; }
+.app .topbar .bar { padding: 10px 16px; font-weight: 700; font-size: 14px; border-bottom: 1px solid var(--hairline); }
+.app .chat { padding: 16px; display: grid; gap: 12px; flex: 1; align-content: start; font-size: 14px; }
+.bubble { padding: 9px 13px; border-radius: 12px; max-width: 80%; }
+.bubble.user { background: var(--sand); justify-self: end; }
+.bubble.agent { background: var(--paper); border: 1px solid var(--hairline); }
+.composer { margin: 0 16px 16px; border: 1.5px solid var(--ink); border-radius: 10px; padding: 10px 12px; background: var(--paper); color: var(--muted); font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+.composer .send { background: var(--orange); color: var(--ink); font-weight: 700; border-radius: 6px; padding: 4px 12px; font-size: 13px; }
+
+/* ---------- dark ---------- */
+.dark-panel {
+  --cream: #1F1812; --paper: #2A211A; --sand: #261E17; --hairline: #3D3226;
+  --ink: #F3E8D2; --muted: #B3A58F; --link: #F08A7A;
+  --red: #E5483A; --orange: #F58A3D; --yellow: #F9C846;
+  --ok: #8DB56F; --warn: #E3B04B; --error: #F08A7A;
+  background: var(--cream); color: var(--ink); border-radius: 14px; padding: 28px; border: 1px solid var(--hairline);
+}
+.dark-panel .swatches { margin-bottom: 22px; }
+
+/* ---------- rules ---------- */
+.rules { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 720px) { .rules { grid-template-columns: 1fr; } }
+.rules ul { list-style: none; padding: 0; display: grid; gap: 10px; }
+.rules li { padding-left: 22px; position: relative; font-size: 15px; }
+.rules li::before { content: ""; position: absolute; left: 0; top: .5em; width: 10px; height: 10px; border-radius: 2px; }
+.do li::before { background: var(--ok); }
+.dont li::before { background: var(--red); }
+.rules h4 { font: 800 15px var(--display); font-stretch: 112%; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
+
+.stripe-demos { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.stripe-demos .card { padding: 18px; display: grid; gap: 14px; align-content: start; }
+.stripe-demos .label { font: 500 12px var(--mono); color: var(--muted); }
+.tilt { transform: skewX(-18deg); transform-origin: left; }
+
+footer { padding: 40px 0 64px; border-top: 1px solid var(--hairline); color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+
+<div class="stripes h" style="--t: 8px"><i></i><i></i><i></i></div>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="eyebrow">Brand style sheet · v0.1 draft</div>
+    <div class="wordmark">tern</div>
+    <p class="tagline">A small, fast, well-travelled agent. Warm paper, sharp ink, and one racing stripe.</p>
+    <div class="stripes h"><i></i><i></i><i></i></div>
+  </header>
+
+  <!-- 01 -->
+  <section>
+    <div class="sec-head"><span class="n">01</span><h2>Stripe colors</h2></div>
+    <p class="lede">The three stripes are the whole brand. Always stacked in this order, red on top, orange in the middle, yellow on the bottom. They are decoration and emphasis, not body text.</p>
+    <div class="stripe-row" style="margin-top:20px">
+      <div class="sw"><div class="chip" style="background:var(--red)"></div><div class="meta"><b>Stripe Red</b><code>#D93A2B</code><small>Danger fill, top stripe, destructive buttons.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--orange)"></div><div class="meta"><b>Stripe Orange</b><code>#F07A2B</code><small>The primary accent. Primary buttons, selection edge, focus. Carries over from today's app.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--yellow)"></div><div class="meta"><b>Stripe Yellow</b><code>#F6B92B</code><small>Highlights, hover, focus glow, bottom stripe.</small></div></div>
+    </div>
+
+    <h3>Paper and ink</h3>
+    <div class="swatches">
+      <div class="sw"><div class="chip" style="background:var(--cream)"></div><div class="meta"><b>Cream</b><code>#F7EEDC</code><small>App background.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--paper)"></div><div class="meta"><b>Paper</b><code>#FCF7EB</code><small>Raised: cards, inputs, agent bubbles.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--sand)"></div><div class="meta"><b>Sand</b><code>#EFE3CB</code><small>Sidebar, user bubble, code.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--hairline)"></div><div class="meta"><b>Hairline</b><code>#E0D2B6</code><small>Dividers and quiet borders.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--ink)"></div><div class="meta"><b>Ink</b><code>#2B2118</code><small>Text and strong borders. 14:1 on cream.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--muted)"></div><div class="meta"><b>Muted</b><code>#6F604F</code><small>Secondary text. 5:1 on cream.</small></div></div>
+    </div>
+
+    <h3>Status</h3>
+    <div class="swatches">
+      <div class="sw"><div class="chip" style="background:var(--ok)"></div><div class="meta"><b>OK · Olive</b><code>#4F7A3A</code></div></div>
+      <div class="sw"><div class="chip" style="background:var(--warn)"></div><div class="meta"><b>Warn · Mustard</b><code>#B8841A</code></div></div>
+      <div class="sw"><div class="chip" style="background:var(--error)"></div><div class="meta"><b>Error · Brick</b><code>#B3281D</code><small>Also the link color.</small></div></div>
+    </div>
+  </section>
+
+  <!-- 02 -->
+  <section>
+    <div class="sec-head"><span class="n">02</span><h2>Stripe motif</h2></div>
+    <p class="lede">Hard edges, no gradients, no gaps. The stripe can be flat, or slanted 18° for the Baja feel. One stripe element per view is plenty.</p>
+    <div class="stripe-demos" style="margin-top:20px">
+      <div class="card"><div class="stripes h" style="--t:6px"><i></i><i></i><i></i></div><span class="label">Page edge · 6–8px each</span></div>
+      <div class="card"><div class="stripes h tilt" style="--t:12px;width:80%"><i></i><i></i><i></i></div><span class="label">Slanted · hero, empty states</span></div>
+      <div class="card"><div class="stripes h tilt" style="--t:4px;width:60%"><i></i><i></i><i></i></div><span class="label">Small · under the logo, 3–4px</span></div>
+      <div class="card"><div class="stripes v" style="--t:12px;height:60px;width:36px"><i></i><i></i><i></i></div><span class="label">Vertical · side tab or divider</span></div>
+      <div class="card" style="grid-column: span 2"><div style="display:flex;align-items:center;gap:14px"><div style="font:italic 900 34px var(--display);font-stretch:125%;text-transform:lowercase;letter-spacing:-.03em">tern</div><div class="stripes h tilt" style="--t:6px;flex:1"><i></i><i></i><i></i></div></div><span class="label">Logo lockup · wordmark plus stripe running off to the right</span></div>
+    </div>
+  </section>
+
+  <!-- 03 -->
+  <section>
+    <div class="sec-head"><span class="n">03</span><h2>Typography</h2></div>
+    <div class="type-grid">
+      <div class="card">
+        <div class="eyebrow">Display · Archivo Expanded</div>
+        <div class="sample-display">Ship it<br>sideways.</div>
+        <p style="margin-top:14px;color:var(--muted);font-size:14px">Weight 800–900, italic, width 112–125%. Wordmark, page titles, big numbers. Lowercase for the wordmark, sentence case elsewhere.</p>
+      </div>
+      <div class="card">
+        <div class="eyebrow">Body · DM Sans</div>
+        <p class="sample-body">The agent read three files, ran the tests, and found the failing one. It's waiting on your approval before touching the migration.</p>
+        <p style="margin-top:14px;color:var(--muted);font-size:14px">Weight 400 for text, 700 for emphasis and buttons. Warm, round, very readable at 14px.</p>
+      </div>
+      <div class="card" style="grid-column: 1 / -1">
+        <div class="eyebrow">Mono · JetBrains Mono</div>
+        <div class="sample-mono">$ tern run --profile accounting<br>▸ read_file ledger/2026-q3.csv · 412 rows</div>
+        <p style="margin-top:14px;color:var(--muted);font-size:14px">Code, commands, tool calls, small uppercase labels with letter-spacing.</p>
+      </div>
+    </div>
+
+    <h3>Scale</h3>
+    <div class="card scale">
+      <div class="row"><span class="tag">Title · 28 / 800i</span><span style="font:italic 800 28px/1.1 var(--display);font-stretch:112%">Weekly review</span></div>
+      <div class="row"><span class="tag">Heading · 18 / 700</span><span style="font:700 18px var(--body)">Pending approvals</span></div>
+      <div class="row"><span class="tag">Body · 14 / 400</span><span style="font:400 14px/1.5 var(--body)">Reconciled 38 of 41 transactions. Three need a human look.</span></div>
+      <div class="row"><span class="tag">Small · 12.5 / 400</span><span style="font:400 12.5px var(--body);color:var(--muted)">Updated 4 minutes ago</span></div>
+      <div class="row"><span class="tag">Label · 11 mono</span><span style="font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">Sessions</span></div>
+    </div>
+  </section>
+
+  <!-- 04 -->
+  <section>
+    <div class="sec-head"><span class="n">04</span><h2>Components</h2></div>
+    <div class="demo">
+      <div class="card">
+        <h3 style="margin-top:0">Buttons</h3>
+        <div class="row-flex">
+          <button class="btn primary">Approve</button>
+          <button class="btn">Cancel</button>
+          <button class="btn ghost">Later</button>
+          <button class="btn danger">Delete</button>
+        </div>
+        <p style="font-size:13px;color:var(--muted);margin-top:12px">Primary is orange with <em>ink</em> text, never white. 2px ink border, 8px radius. Hover goes yellow.</p>
+
+        <h3>Input</h3>
+        <input class="input" placeholder="Message tern…" value="">
+        <p style="font-size:13px;color:var(--muted);margin-top:8px">Focus: ink border plus a soft yellow glow.</p>
+
+        <h3>Status</h3>
+        <div class="row-flex">
+          <span class="pill ok"><span class="dot"></span>Done</span>
+          <span class="pill warn"><span class="dot"></span>Waiting</span>
+          <span class="pill err"><span class="dot"></span>Failed</span>
+        </div>
+      </div>
+
+      <div class="app">
+        <div class="side">
+          <div class="logo">tern</div>
+          <div class="stripes h"><i></i><i></i><i></i></div>
+          <div class="item sel">Q3 reconciliation</div>
+          <div class="item">Property brief</div>
+          <div class="item">Inbox triage</div>
+        </div>
+        <div class="main">
+          <div class="topbar">
+            <div class="bar">Q3 reconciliation</div>
+          </div>
+          <div class="chat">
+            <div class="bubble user">Reconcile the Q3 ledger against the bank export.</div>
+            <div class="bubble agent">Matched 38 of 41. Three are missing a receipt. <a href="#" style="color:var(--link);font-weight:600">Review them</a></div>
+          </div>
+          <div class="composer"><span>Message tern…</span><span class="send">Send</span></div>
+        </div>
+      </div>
+    </div>
+    <h3>Shape</h3>
+    <p class="lede">Radius 8 for controls, 12 for cards and bubbles, full-round only for pills. Borders are 1px hairline for rest and 1.5–2px ink for anything interactive or active. No drop shadows; depth comes from paper vs. sand.</p>
+  </section>
+
+  <!-- 05 -->
+  <section>
+    <div class="sec-head"><span class="n">05</span><h2>Dark mode</h2></div>
+    <p class="lede">Warm brown-black, never neutral gray. Stripes lift slightly in brightness so they still glow.</p>
+    <div class="dark-panel" style="margin-top:20px">
+      <div class="stripes h" style="--t:6px;margin-bottom:22px;max-width:260px"><i></i><i></i><i></i></div>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:var(--cream)"></div><div class="meta"><b>Night</b><code>#1F1812</code></div></div>
+        <div class="sw"><div class="chip" style="background:var(--paper)"></div><div class="meta"><b>Paper</b><code>#2A211A</code></div></div>
+        <div class="sw"><div class="chip" style="background:var(--hairline)"></div><div class="meta"><b>Hairline</b><code>#3D3226</code></div></div>
+        <div class="sw"><div class="chip" style="background:var(--ink)"></div><div class="meta"><b>Ink</b><code>#F3E8D2</code></div></div>
+        <div class="sw"><div class="chip" style="background:var(--muted)"></div><div class="meta"><b>Muted</b><code>#B3A58F</code></div></div>
+      </div>
+      <div class="row-flex">
+        <button class="btn primary" style="color:#2B2118;border-color:var(--ink)">Approve</button>
+        <button class="btn">Cancel</button>
+        <span class="pill ok"><span class="dot"></span>Done</span>
+        <span class="pill warn"><span class="dot"></span>Waiting</span>
+        <span class="pill err"><span class="dot"></span>Failed</span>
+      </div>
+      <p style="margin-top:16px;font-size:13px;color:var(--muted)">Dark stripes: red <code style="font-family:var(--mono)">#E5483A</code> · orange <code style="font-family:var(--mono)">#F58A3D</code> · yellow <code style="font-family:var(--mono)">#F9C846</code>. Primary button text stays dark ink in both modes.</p>
+    </div>
+  </section>
+
+  <!-- 06 -->
+  <section>
+    <div class="sec-head"><span class="n">06</span><h2>Rules of the road</h2></div>
+    <div class="rules">
+      <div class="card do">
+        <h4>Do</h4>
+        <ul>
+          <li>Keep the background cream and let the stripes be the only loud thing.</li>
+          <li>Use ink for text and for any border that means "you can click this".</li>
+          <li>Stack stripes red, orange, yellow, top to bottom or left to right.</li>
+          <li>Keep copy plain and short. Sentence case.</li>
+          <li>Leave generous empty space. Simple beats busy.</li>
+        </ul>
+      </div>
+      <div class="card dont">
+        <h4>Don't</h4>
+        <ul>
+          <li>Set body text in orange or yellow. They fail contrast on cream.</li>
+          <li>Put white text on orange. Use ink.</li>
+          <li>Use gradients, glows, glass, or drop shadows.</li>
+          <li>Reorder, recolor, or space out the stripes.</li>
+          <li>Use pure white or neutral gray anywhere.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Next up: lock this sheet, then write <code style="font-family:var(--mono)">docs/brand/brand-guide.md</code>, then restyle <code style="font-family:var(--mono)">apps/desktop</code>.
+  </footer>
+</div>
+</body>
+</html>

@@ -213,7 +213,7 @@ class ModelListState extends State<ModelList> {
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide(color: c.accent),
+                borderSide: BorderSide(color: c.ink),
               ),
             ),
           ),

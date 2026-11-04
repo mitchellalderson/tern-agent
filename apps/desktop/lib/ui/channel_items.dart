@@ -251,7 +251,7 @@ class PostCard extends StatelessWidget {
                   ),
                   child: Text(
                     'Open',
-                    style: TextStyle(fontSize: 12, color: c.accent),
+                    style: TextStyle(fontSize: 12, color: c.link),
                   ),
                 ),
             ],
@@ -262,7 +262,14 @@ class PostCard extends StatelessWidget {
             selectable: true,
             onTapLink: (_, href, _) => openTernLink(context, store, href),
             styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
-                .copyWith(p: Theme.of(context).textTheme.bodyMedium),
+                .copyWith(
+                  p: Theme.of(context).textTheme.bodyMedium,
+                  a: TextStyle(
+                    color: context.colors.link,
+                    fontWeight: FontWeight.w600,
+                    decoration: TextDecoration.underline,
+                  ),
+                ),
           ),
           for (final id in routineLinksIn(post.text))
             RoutineCard(item: RoutineItem(id), store: store),
