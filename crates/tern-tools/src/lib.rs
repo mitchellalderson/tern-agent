@@ -66,8 +66,10 @@ pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> R
         store: opts.store.clone(),
     }));
     registry.register(Arc::new(history::HistorySearch::new(opts.store.clone())));
-    registry.register(Arc::new(memory::SessionSearch::new(opts.store)));
-    registry.register(Arc::new(skills::SkillRead::new(opts.skills_dir)));
+    registry.register(Arc::new(memory::SessionSearch::new(opts.store.clone())));
+    registry.register(Arc::new(
+        skills::SkillRead::new(opts.skills_dir).with_store(opts.store),
+    ));
     Ok(())
 }
 

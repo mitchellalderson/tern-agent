@@ -21,8 +21,8 @@ use tern_core::subagent::ChildRun;
 use tern_core::types::{Role, ToolCall, Usage};
 use tern_store::{SessionRow, SessionSummary};
 use tern_tui::{
-    Backend, BackendResult, HistoryMessage, PendingApproval, PendingSecret, SessionInfo, Started,
-    UserPrompt,
+    AgentInfo, Backend, BackendResult, HistoryMessage, PendingApproval, PendingSecret, SessionInfo,
+    Started, UserPrompt,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -190,7 +190,7 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                         let decision = match rx.await.unwrap_or(Decision::Deny) {
                             Decision::AllowOnce => "once",
                             Decision::AlwaysAllow => "always",
-                            Decision::Deny => "deny",
+                            Decision::Deny | Decision::Unanswered => "deny",
                         };
                         let _ = http
                             .post(url)
@@ -632,6 +632,58 @@ impl Backend for Remote {
             json!({ "text": text }),
         )
         .map(|_| ())
+    }
+
+    /// A core without the `agents` feature answers 404: no profiles.
+    fn agents(&self) -> BackendResult<Vec<AgentInfo>> {
+        let list: Vec<crate::daemon::api_agents::Agent> = match self.get("/v1/agents") {
+            Ok(l) => l,
+            Err(_) => return Ok(Vec::new()),
+        };
+        Ok(list
+            .into_iter()
+            .map(|a| AgentInfo {
+                id: a.id,
+                slug: a.slug,
+                name: a.name,
+                needs_you: a.needs_you,
+                active_runs: a.active_runs,
+                is_default: a.is_default,
+            })
+            .collect())
+    }
+
+    /// Sent like the desktop sends into a DM, so cuts and queueing apply.
+    fn send_to_agent(
+        &self,
+        id: &str,
+        text: &str,
+        model: Option<&str>,
+        new_topic: bool,
+    ) -> BackendResult<Started> {
+        let list: Vec<crate::daemon::api_agents::Agent> = self.get("/v1/agents")?;
+        let agent = list
+            .into_iter()
+            .find(|a| a.id == id)
+            .ok_or_else(|| format!("no agent {id}"))?;
+        let channel = agent
+            .main_channel_id
+            .ok_or_else(|| format!("{} has no DM", agent.name))?;
+        let sent: crate::daemon::channels::Sent = self.send_json(
+            reqwest::Method::POST,
+            &format!("/v1/channels/{channel}/posts"),
+            json!({ "text": text, "new_topic": new_topic, "model": model }),
+        )?;
+        let model = model
+            .map(str::to_owned)
+            .or_else(|| agent.model.map(|c| c.primary().to_owned()))
+            .or_else(|| self.default_model())
+            .unwrap_or_default();
+        Ok(Started {
+            session_id: sent.session_id,
+            run_id: sent.run_id,
+            model,
+        })
     }
 
     fn remove_secret(&self, name: &str) -> BackendResult<bool> {

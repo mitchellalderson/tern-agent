@@ -3,17 +3,19 @@
 //!
 //! | Method | Path | |
 //! |---|---|---|
-//! | GET | `/v1/schedules` | all schedules, with their last run's status |
-//! | POST | `/v1/schedules` | create `{cron, prompt, deliver_to?, channel?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
+//! | GET | `/v1/schedules[?agent=]` | all schedules (or one agent's), with their last run's status |
+//! | POST | `/v1/schedules` | create `{cron, prompt, agent?, deliver_to?, channel?, autonomy?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
 //! | POST | `/v1/schedules/preview` | `{cron}` → normalized form and next 3 runs |
 //! | PATCH | `/v1/schedules/{id}` | change any of those, `enabled`, or `resume: true` (lift a budget pause); `null` returns a cap or `quiet_hours` to the default |
 //!
 //! `channel` (slug or id) is where the routine's results are posted
-//! (docs/channels-design.md §2.5); Home by default.
+//! (docs/channels-design.md §2.5): by default the owning agent's DM, Home
+//! for the default agent. `agent` (id or slug, default `tern`) owns it
+//! (docs/agent-profiles-design.md §4): its runs act as that agent.
 //! | DELETE | `/v1/schedules/{id}` | delete |
 //! | POST | `/v1/schedules/{id}/run` | run now, without moving the next run |
 
-use axum::extract::{Path as UrlPath, State};
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -77,6 +79,16 @@ pub struct Schedule {
     /// The channel its results are posted to.
     #[serde(default = "home")]
     pub channel_id: String,
+    /// Its autonomy profile; absent = the configured `autonomy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomy: Option<String>,
+    /// The agent whose job it is.
+    #[serde(default = "default_agent")]
+    pub agent_id: String,
+}
+
+fn default_agent() -> String {
+    tern_store::DEFAULT_AGENT.into()
 }
 
 fn home() -> String {
@@ -109,13 +121,39 @@ fn view(m: &Shared, s: ScheduleRow) -> Schedule {
         paused: paused_until.map(|_| "budget".to_owned()),
         paused_reason: paused_until.and(s.paused_reason),
         paused_until,
+        agent_id: s.agent_id.unwrap_or_else(default_agent),
         channel_id: s.channel_id.unwrap_or_else(home),
+        autonomy: s.autonomy,
     }
 }
 
-async fn list(State(m): State<Shared>) -> ApiResult<Vec<Schedule>> {
+#[derive(Deserialize)]
+struct ListQuery {
+    agent: Option<String>,
+}
+
+async fn list(State(m): State<Shared>, Query(q): Query<ListQuery>) -> ApiResult<Vec<Schedule>> {
+    let agent = q
+        .agent
+        .as_deref()
+        .map(|a| super::api_agents::find(&m, a).map(|a| a.id))
+        .transpose()?;
     let rows = m.rt.store.schedules().map_err(internal)?;
-    Ok(Json(rows.into_iter().map(|s| view(&m, s)).collect()))
+    Ok(Json(
+        rows.into_iter()
+            .filter(|s| agent.as_deref().is_none_or(|a| s.agent() == a))
+            .map(|s| view(&m, s))
+            .collect(),
+    ))
+}
+
+/// An agent to own a schedule: any but an archived one.
+fn owner(m: &Shared, a: &str) -> Result<String, ApiError> {
+    let a = super::api_agents::find(m, a)?;
+    if a.archived_at.is_some() {
+        return Err(bad(format!("{} is archived", a.name)));
+    }
+    Ok(a.id)
 }
 
 #[derive(Deserialize)]
@@ -125,6 +163,9 @@ struct CreateBody {
     /// `none` (default) or `telegram:<chat_id>`.
     deliver_to: Option<String>,
     channel: Option<String>,
+    agent: Option<String>,
+    /// `readonly`, `supervised`, `autonomous`, `yolo`, or `default`.
+    autonomy: Option<String>,
     #[serde(flatten)]
     limits: ScheduleLimits,
 }
@@ -136,6 +177,31 @@ fn channel_id(m: &Shared, c: &str) -> Result<String, ApiError> {
         return Err(bad(format!("#{} is archived", c.slug)));
     }
     Ok(c.id)
+}
+
+/// A routine's autonomy from the API: `default` (or empty) clears it.
+fn autonomy(a: &str) -> Result<Option<String>, ApiError> {
+    match a.trim() {
+        "" | "default" => Ok(None),
+        a => tern_core::approval::Autonomy::parse(a)
+            .map(|a| Some(a.as_str().to_owned()))
+            .ok_or_else(|| {
+                bad(format!(
+                    "autonomy {a:?} must be readonly, supervised, autonomous, yolo or default"
+                ))
+            }),
+    }
+}
+
+fn set_autonomy(m: &Shared, s: &mut ScheduleRow, a: Option<&str>) -> Result<(), ApiError> {
+    if let Some(a) = a {
+        let a = autonomy(a)?;
+        m.rt.store
+            .set_schedule_autonomy(&s.id, a.as_deref())
+            .map_err(internal)?;
+        s.autonomy = a;
+    }
+    Ok(())
 }
 
 fn target(t: Option<&str>) -> Result<Option<String>, ApiError> {
@@ -153,17 +219,25 @@ async fn create(
     Json(b): Json<CreateBody>,
 ) -> Result<(StatusCode, Json<Schedule>), ApiError> {
     let deliver_to = target(b.deliver_to.as_deref())?;
+    if let Some(a) = &b.autonomy {
+        autonomy(a)?;
+    }
     let channel = b
         .channel
         .as_deref()
         .map(|c| channel_id(&m, c))
         .transpose()?;
+    let agent = match b.agent.as_deref() {
+        Some(a) => owner(&m, a)?,
+        None => tern_store::DEFAULT_AGENT.into(),
+    };
     let mut row = tern_tools::schedule::create_schedule(
         &m.rt.store,
         &b.cron,
         &b.prompt,
         deliver_to,
         &b.limits,
+        &agent,
     )
     .map_err(bad)?;
     if let Some(c) = channel {
@@ -172,6 +246,7 @@ async fn create(
             .map_err(internal)?;
         row.channel_id = Some(c);
     }
+    set_autonomy(&m, &mut row, b.autonomy.as_deref())?;
     Ok((StatusCode::CREATED, Json(view(&m, row))))
 }
 
@@ -198,6 +273,10 @@ struct UpdateBody {
     enabled: Option<bool>,
     deliver_to: Option<String>,
     channel: Option<String>,
+    /// Hand the job to another agent; its results then go to that agent's
+    /// DM unless `channel` says otherwise.
+    agent: Option<String>,
+    autonomy: Option<String>,
     #[serde(default)]
     resume: bool,
     #[serde(flatten)]
@@ -213,11 +292,15 @@ async fn update(
         Some(t) => Some(target(Some(t))?),
         None => None,
     };
-    let channel = b
+    if let Some(a) = &b.autonomy {
+        autonomy(a)?;
+    }
+    let mut channel = b
         .channel
         .as_deref()
         .map(|c| channel_id(&m, c))
         .transpose()?;
+    let agent = b.agent.as_deref().map(|a| owner(&m, a)).transpose()?;
     let ch = ScheduleChange {
         cron: b.cron,
         prompt: b.prompt,
@@ -229,12 +312,24 @@ async fn update(
     let mut s = tern_tools::schedule::update_schedule(&m.rt.store, &id, &ch)
         .map_err(bad)?
         .ok_or_else(|| not_found("schedule"))?;
+    if let Some(a) = agent.filter(|a| a != s.agent()) {
+        m.rt.store.set_schedule_agent(&s.id, &a).map_err(internal)?;
+        if channel.is_none() {
+            channel =
+                m.rt.store
+                    .agent_channel(&a)
+                    .map_err(internal)?
+                    .map(|c| c.id);
+        }
+        s.agent_id = Some(a).filter(|a| a != tern_store::DEFAULT_AGENT);
+    }
     if let Some(c) = channel {
         m.rt.store
             .set_schedule_channel(&s.id, &c)
             .map_err(internal)?;
         s.channel_id = Some(c);
     }
+    set_autonomy(&m, &mut s, b.autonomy.as_deref())?;
     Ok(Json(view(&m, s)))
 }
 

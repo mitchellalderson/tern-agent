@@ -69,7 +69,9 @@ Unchanged in shape (one long-lived container per workspace, your uid, workspace 
 
 - it asks every time: the shell allowlist doesn't cover it (`git *` doesn't approve `git push` with network), and the
   prompt offers no "always". The prompt says `with network: <command>`;
-- its output is untrusted, so it taints the run (it may carry whatever the far end sent);
+- its output is untrusted, so it taints the run (it may carry whatever the far end sent). Output is untrusted
+  whenever a command could reach the network: also with `network = true`, and on a host backend with no OS sandbox,
+  where `network = false` isn't enforced;
 - the next command is offline again.
 
 This is what keeps shell commands from going around tern's tools: a script that calls an API directly skips the

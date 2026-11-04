@@ -14,7 +14,9 @@ use tern_store::{RunRow, Store};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
-use crate::approval::{self, ApprovalHandler, ApprovalOutcome, ApprovalRequest, Decision};
+use crate::approval::{
+    self, ApprovalHandler, ApprovalOutcome, ApprovalRequest, Autonomy, Decision, Gate,
+};
 use crate::compaction;
 use crate::config::ModelRef;
 use crate::events::AgentEvent;
@@ -32,6 +34,8 @@ mod channel;
 mod script;
 pub use carry::CarryOutput;
 pub use channel::DigestOutput;
+mod outbox;
+pub use outbox::tell_run as tell_outbox_run;
 pub mod taint;
 use taint::Taint;
 
@@ -65,6 +69,11 @@ pub struct AgentConfig {
     pub default_context_window: u64,
     /// Flush durable facts to memory before compacting (`[memory].flush`).
     pub memory_flush: bool,
+    /// How long a `write`/`destructive` approval waits before it goes to
+    /// the outbox, where the approval handler can defer (`[outbox]`).
+    pub approval_wait: Duration,
+    /// How long an outbox item waits for the user.
+    pub outbox_expiry: Duration,
 }
 
 impl Default for AgentConfig {
@@ -78,6 +87,8 @@ impl Default for AgentConfig {
             context_windows: std::collections::BTreeMap::new(),
             default_context_window: 128_000,
             memory_flush: false,
+            approval_wait: Duration::from_secs(120),
+            outbox_expiry: Duration::from_secs(72 * 60 * 60),
         }
     }
 }
@@ -199,6 +210,10 @@ impl Agent {
     pub fn event_sender(&self) -> broadcast::Sender<AgentEvent> {
         self.events.clone()
     }
+    pub fn journal(&self) -> &Journal {
+        &self.journal
+    }
+
     pub fn tools(&self) -> &ToolRegistry {
         &self.tools
     }
@@ -222,6 +237,30 @@ impl Agent {
         system_prompt: &str,
         trigger: &str,
     ) -> Result<RunRow, AgentError> {
+        self.start_run_as(
+            session_id,
+            user_text,
+            model,
+            system_prompt,
+            trigger,
+            None,
+            None,
+        )
+    }
+
+    /// [`Agent::start_run`] for an agent profile: its tool scope (JSON tool
+    /// names and `*` patterns) and memory scope, frozen on the run.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_run_as(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        model: &ModelRef,
+        system_prompt: &str,
+        trigger: &str,
+        tool_scope: Option<&str>,
+        memory_scope: Option<&str>,
+    ) -> Result<RunRow, AgentError> {
         let run_id = new_id();
         let input = self
             .journal
@@ -234,6 +273,8 @@ impl Agent {
                 trigger,
                 model: &model.to_string(),
                 system_prompt,
+                tool_scope,
+                memory_scope,
                 ..tern_store::NewRun::default()
             },
             &input,
@@ -345,6 +386,11 @@ impl Agent {
         };
 
         self.tools.prepare().await;
+        if run.trigger == crate::outbox::TRIGGER {
+            return self.outbox_exec(run, &ctx, outcome).await;
+        }
+        // Frozen on the run when it started, so replay asks where it asked.
+        let autonomy = Autonomy::of_run(run.autonomy.as_deref());
         // Sub-agents run with the scope, limits and budget frozen on their row.
         let scope: Option<Vec<String>> = run
             .tool_scope
@@ -519,15 +565,21 @@ impl Agent {
             for call in calls {
                 let truncated = truncated_id.as_deref() == Some(call.id.as_str());
                 let in_scope = crate::tool::in_scope(scope, &call.name);
-                let policy = if in_scope && !truncated {
-                    self.tools.policy(&ctx, &call)
+                let runs = in_scope && !truncated;
+                let host = runs.then(|| self.tools.egress_host(&call)).flatten();
+                let policy = if runs {
+                    taint.limit_egress(self.tools.policy(&ctx, &call), host.as_deref())
                 } else {
                     // Refused without running; nothing to approve or redo.
                     crate::tool::ToolPolicy::new(crate::tool::Effect::Read, true)
                 };
-                if approval::needs_check(&call.name, &policy, taint.is_set()) {
+                let gate = Gate {
+                    tainted: taint.is_set(),
+                    autonomy,
+                };
+                if approval::needs_check(&call.name, &policy, gate) {
                     let decision = self
-                        .approval_step(run, idx, &call, &policy, taint.reason(), cancel)
+                        .approval_step(run, idx, &call, &policy, gate, taint.reason(), cancel)
                         .await;
                     idx += 1;
                     match decision {
@@ -578,7 +630,7 @@ impl Agent {
                         );
                         // A script's own tool calls are sub-steps after this one.
                         let (mut r, consumes) = self
-                            .serve_scripts(run, idx, &call, scope, &ctx, taint.is_set(), call_fut)
+                            .serve_scripts(run, idx, &call, scope, &ctx, gate, call_fut)
                             .await?;
                         // A tool may mark its own result (channel_read of
                         // tainted posts).
@@ -590,6 +642,7 @@ impl Agent {
                     })
                     .await?;
                 idx += 1;
+                taint.contacted(host);
                 while self.journal.peek(&run.id, idx)? == Some(StepKind::PyCall) {
                     idx += 1;
                 }
@@ -726,12 +779,14 @@ impl Agent {
         Ok(out.value.mail.len())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn approval_step(
         &self,
         run: &RunRow,
         idx: u32,
         call: &ToolCall,
         policy: &crate::tool::ToolPolicy,
+        gate: Gate,
         taint: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<ApprovalOutcome, StepError> {
@@ -744,28 +799,11 @@ impl Agent {
                 call,
                 InFlight::Retry,
                 || async {
-                    let decision = self.decide(run, call, policy, taint, cancel).await?;
+                    let (decision, why) =
+                        self.decide(run, call, policy, gate, taint, cancel).await?;
                     let messages = match decision {
                         ApprovalOutcome::Approved => vec![],
-                        ApprovalOutcome::Denied if policy.forbidden.is_some() => {
-                            let flag = policy.forbidden.unwrap_or_default();
-                            vec![tool_result(
-                                call,
-                                &ToolResult::error(approval::forbidden_message(flag)),
-                            )]
-                        }
-                        ApprovalOutcome::Denied => {
-                            vec![tool_result(
-                                call,
-                                &ToolResult::error("denied: the user did not approve this call"),
-                            )]
-                        }
-                        ApprovalOutcome::Timeout => {
-                            vec![tool_result(
-                                call,
-                                &ToolResult::error("denied: approval timed out"),
-                            )]
-                        }
+                        _ => vec![tool_result(call, &ToolResult::error(why))],
                     };
                     Ok(StepOutput::new(decision).with_messages(messages))
                 },
@@ -780,27 +818,35 @@ impl Agent {
         Ok(out.value)
     }
 
-    /// The effect policy with the allowlist and the run's taint, then ask.
+    /// The effect policy with the allowlist, the run's taint and autonomy,
+    /// then ask; nobody answering in time sends a write to the outbox.
     /// Runs inside the approval step so the decision is journaled even when
-    /// the policy or the allowlist answers it.
+    /// the policy or the allowlist answers it. Returns the outcome and what
+    /// the model is told when the call doesn't run.
     async fn decide(
         &self,
         run: &RunRow,
         call: &ToolCall,
         policy: &crate::tool::ToolPolicy,
+        gate: Gate,
         taint: Option<&str>,
         cancel: &CancellationToken,
-    ) -> Result<ApprovalOutcome, StepError> {
+    ) -> Result<(ApprovalOutcome, String), StepError> {
         let always_ok = self.tools.allow_always(call);
         // A tool that opts out ignores old allowlist entries too.
         let granted = policy.forbidden.is_none()
             && always_ok
             && approval::allowed_by(&self.store.allowlist(&call.name)?, call);
-        let (effect, always) = match approval::check(&call.name, policy, granted, taint.is_some()) {
-            approval::Check::Allow => return Ok(ApprovalOutcome::Approved),
+        let (effect, always) = match approval::check(&call.name, policy, granted, gate) {
+            approval::Check::Allow => return Ok((ApprovalOutcome::Approved, String::new())),
             approval::Check::Forbid(flag) => {
                 tracing::warn!(run = %run.id, tool = %call.name, flag, "refused a forbidden tool");
-                return Ok(ApprovalOutcome::Denied);
+                let why = approval::forbidden_message(flag);
+                return Ok((ApprovalOutcome::Denied, why));
+            }
+            approval::Check::ReadOnly => {
+                let why = approval::READONLY_MESSAGE.to_owned();
+                return Ok((ApprovalOutcome::Denied, why));
             }
             approval::Check::Ask { effect, always } => (effect, always && always_ok),
         };
@@ -817,22 +863,41 @@ impl Agent {
             taint: taint.map(Into::into),
             local_only: policy.local_approval,
         };
-        let asked = tokio::time::timeout(self.cfg.approval_timeout, self.approvals.ask(&req));
+        // A write may wait in the outbox instead (tooling spec §5.2).
+        let deferrable = effect != crate::tool::Effect::Read && self.approvals.can_defer();
+        let wait = if deferrable {
+            self.cfg.approval_wait
+        } else {
+            self.cfg.approval_timeout
+        };
+        let asked = tokio::time::timeout(wait, self.approvals.ask(&req));
         let decision = tokio::select! {
             d = asked => d,
             () = cancel.cancelled() => return Err(StepError::Cancelled),
         };
+        let denied = |why: &str| (ApprovalOutcome::Denied, why.to_owned());
         Ok(match decision {
-            Ok(Decision::AllowOnce) => ApprovalOutcome::Approved,
+            Ok(Decision::AllowOnce) => (ApprovalOutcome::Approved, String::new()),
             Ok(Decision::AlwaysAllow) => {
                 // Without a pattern "always" can only mean "this once".
                 if let Some(p) = &req.pattern {
                     self.store.add_allowlist(&call.name, p)?;
                 }
-                ApprovalOutcome::Approved
+                (ApprovalOutcome::Approved, String::new())
             }
-            Ok(Decision::Deny) => ApprovalOutcome::Denied,
-            Err(_) => ApprovalOutcome::Timeout,
+            Ok(Decision::Deny) => denied("denied: the user did not approve this call"),
+            Ok(Decision::Unanswered) | Err(_) if deferrable => {
+                let id = self.defer(run, &req).await?;
+                (
+                    ApprovalOutcome::Deferred,
+                    crate::outbox::deferred_message(id),
+                )
+            }
+            Ok(Decision::Unanswered) => denied("denied: nobody was there to approve this call"),
+            Err(_) => (
+                ApprovalOutcome::Timeout,
+                "denied: approval timed out".to_owned(),
+            ),
         })
     }
 
@@ -1068,7 +1133,11 @@ impl Agent {
                                 .filter(|c| c.name == memory::FLUSH_TOOL);
                             for call in calls.take(memory::MAX_FLUSH_SAVES) {
                                 let policy = self.tools.policy(&ctx, &call);
-                                if approval::needs_check(&call.name, &policy, false) {
+                                let gate = Gate {
+                                    tainted: false,
+                                    autonomy: Autonomy::of_run(run.autonomy.as_deref()),
+                                };
+                                if approval::needs_check(&call.name, &policy, gate) {
                                     out.saved.push("skipped: would need approval".into());
                                     continue;
                                 }

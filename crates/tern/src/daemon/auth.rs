@@ -54,6 +54,11 @@ pub const FEATURES: &[&str] = &[
     "mcp",
     // `/v1/channels` and Home's stream (docs/channels-design.md).
     "channels",
+    // `/v1/agents`: agent profiles, each with its own DM
+    // (docs/agent-profiles-design.md).
+    "agents",
+    // `/v1/outbox` and `outbox_changed` events (tooling spec §5.2).
+    "outbox",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";
@@ -108,6 +113,8 @@ const OWNER_ONLY: &[&str] = &[
     "/v1/secrets",
     "/v1/providers",
     "/v1/shutdown",
+    // Moving conversations between channels rearranges what everyone sees.
+    "/v1/channels/move",
 ];
 
 /// Paths a `chat` device may change. Any other non-GET route is owner-only,
@@ -116,6 +123,7 @@ const CHAT_WRITES: &[&str] = &[
     "/v1/runs",
     "/v1/sessions",
     "/v1/approvals",
+    "/v1/outbox",
     "/v1/schedules",
     "/v1/memories",
     "/v1/uploads",

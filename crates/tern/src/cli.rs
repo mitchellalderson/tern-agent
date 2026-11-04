@@ -62,6 +62,12 @@ pub enum Command {
         #[command(subcommand)]
         command: GatewayCommand,
     },
+    /// List, create, edit and archive your agents: each has its own
+    /// persona, model, tools, memory, routines and DM.
+    Agents {
+        #[command(subcommand)]
+        command: Option<AgentsCommand>,
+    },
     /// List or show conversation sessions.
     Sessions {
         #[command(subcommand)]
@@ -71,6 +77,11 @@ pub enum Command {
     Runs {
         #[command(subcommand)]
         command: RunsCommand,
+    },
+    /// Writes waiting for your approval (deferred because nobody answered).
+    Outbox {
+        #[command(subcommand)]
+        command: Option<OutboxCommand>,
     },
     /// Manage Luau connectors.
     Connectors {
@@ -303,6 +314,39 @@ pub enum DevicesCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum AgentsCommand {
+    /// List agents (the default, `tern`, first).
+    List {
+        /// Include archived agents.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Create an agent and its DM.
+    New {
+        /// Display name, e.g. "Research".
+        name: String,
+        /// Its @name (default: from the name).
+        #[arg(long)]
+        slug: Option<String>,
+        /// Start from a template: research, inbox, marketing or blank.
+        #[arg(long)]
+        template: Option<String>,
+        /// `private` (default) or `shared`.
+        #[arg(long)]
+        memory: Option<String>,
+    },
+    /// Open an agent's persona in $EDITOR.
+    Edit { agent: String },
+    /// Archive an agent: hide it and pause its routines. Nothing is deleted.
+    Archive {
+        agent: String,
+        /// Unarchive it instead.
+        #[arg(long)]
+        undo: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum SessionsCommand {
     List,
     Show { id: String },
@@ -314,6 +358,30 @@ pub enum RunsCommand {
     List,
     /// Print a run's step journal.
     Show { run_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OutboxCommand {
+    /// What is waiting (`--all`: decided items too).
+    List {
+        #[arg(long)]
+        all: bool,
+    },
+    /// One item, with its arguments and result.
+    Show { id: i64 },
+    /// Run it now, exactly once.
+    Approve {
+        id: i64,
+        /// JSON arguments to run it with instead of the agent's.
+        #[arg(long)]
+        input: Option<String>,
+    },
+    /// Don't run it; the run that queued it is told if still working.
+    Reject {
+        id: i64,
+        #[arg(long)]
+        note: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

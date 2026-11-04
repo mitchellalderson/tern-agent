@@ -8,7 +8,7 @@ Everything tern does, command by command. For installing and a first chat, see t
 |---|---|
 | **Models** | Anthropic, plus any OpenAI-compatible endpoint (OpenRouter, Ollama, vLLM, LM Studio). Models are `provider:model`; switch with `--model` or `/model`. |
 | **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `python` (sandboxed compute that calls your tools), `http_fetch`, long-term memory and capped profile notes (`user.md`, `memory.md`), search over past conversations, skills, schedules. |
-| **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. A run that has read untrusted content (a web page, mail, a tool marked `untrusted`) is **tainted**: its `write` and `destructive` calls ask whatever "always" says, and the prompt says why ([Taint](#taint)). |
+| **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. A run that has read untrusted content (a web page, mail, a tool marked `untrusted`) is **tainted**: its `write` and `destructive` calls ask whatever "always" says, and the prompt says why ([Taint](#taint)). A write nobody answers in time waits in the [outbox](#outbox) instead of being denied, and `autonomy` sets how much runs may do without asking ([Autonomy](#autonomy)). |
 | **MCP** | Ask the agent ("add the GitHub MCP server"; you approve the exact command each time, and only on this machine for local commands), or add, test, toggle and remove servers with `/mcp` in the chat or [`tern mcp`](#tern-mcp), or edit `[mcp.servers.<name>]` (stdio or streamable HTTP); changes apply without a restart, a server's pasted `mcpServers` JSON works too, and their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. For a browser, see [Recipe: give tern a browser](recipes/browser.md). |
 | **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
@@ -59,8 +59,10 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern service`](#tern-service) | Start tern at login (launchd on macOS, systemd on Linux). |
 | [`tern tray`](#tern-tray) | The menu-bar icon (macOS): is tern running, Open, Start/Quit, Start at login. |
 | [`tern gateway pair`](#tern-gateway-pair) | Pair a Telegram account with the bot. |
+| [`tern agents`](#tern-agents) | List, create, edit or archive your agents. |
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
+| [`tern outbox`](#outbox) | Writes waiting for your approval: list, show, approve (optionally edited), reject. |
 | [`tern connectors`](#tern-connectors) | List or validate Luau connectors. |
 | [`tern setup`](#tern-setup) | Connect a model provider: paste a key, pick a model. |
 | [`tern providers`](#tern-providers) | List, add, or remove model providers (for scripts). |
@@ -169,6 +171,17 @@ tern gateway pair
 ```
 
 Prints an 8-character one-time code on stdout. Send it to your Telegram bot within 10 minutes to pair that Telegram account. Only paired accounts can talk to the bot or answer its approval buttons. Works whether or not the daemon is running, but the bot only answers while the daemon runs.
+
+### `tern agents`
+
+```sh
+tern agents [list] [--all]                    # each agent: @name, name, memory, model, routines (--all: archived too)
+tern agents new <name> [--slug s] [--template research|inbox|marketing|blank] [--memory private|shared]
+tern agents edit <name>                       # open its persona.md in $VISUAL / $EDITOR
+tern agents archive <name> [--undo]           # hide it and pause its routines; nothing is deleted
+```
+
+Works without the daemon; a running one picks changes up at the agent's next run. See [Agents](#agents).
 
 ### `tern sessions`
 
@@ -315,7 +328,7 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `memory.flush` | `true` | Before older context is summarized, give the agent one silent turn to save durable facts with `memory_save`. |
 | `sandbox.backend` | `host` | `host` or `docker`. |
 | `sandbox.shell_timeout_secs` | `120` | Per shell command. |
-| `sandbox.network` | `false` | IP networking for every shell command (both backends). Off: a command gets the network only when called with `network: true`, which asks every time. |
+| `sandbox.network` | `false` | IP networking for every shell command (both backends). Off, a command gets the network only when called with `network: true`, which asks every time. While a command can reach the network (it asked, `network = true`, or no OS sandbox enforces off), its output is untrusted and taints the run ([Taint](#taint)); with connectors or MCP servers active and the network reachable for every command, `tern doctor` says so. |
 | `sandbox.confine` | `auto` | Host backend: `auto` (sandbox when the OS can, else warn), `required` (refuse to run unconfined), `off`. |
 | `sandbox.read_paths` | `["~/.gitconfig", "~/.config/git"]` | Host backend: extra read-only paths. |
 | `sandbox.write_paths` | `[]` | Host backend: extra writable paths. |
@@ -339,6 +352,22 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `subagents.default_model` | none | Sub-agents' model when `agent_spawn` names none (unset = the parent's). May be a fallback chain. |
 | `subagents.models` | `{}` | Aliases `agent_spawn` can pass as `model`: `{ fast = "anthropic:claude-haiku-4-5" }`. Each may be a fallback chain. |
 | `secret_request_timeout_secs` | `900` | How long the agent's prompt for a secret waits for you. |
+| `autonomy` | `"supervised"` | `readonly`, `supervised`, `autonomous` or `yolo` ([Autonomy](#autonomy)). Routines can set their own. |
+| `outbox.wait_secs` | `120` | How long a `write`/`destructive` approval waits for an answer before it goes to the [outbox](#outbox) (at once when no client is attached). |
+| `outbox.expire_hours` | `72` | How long an outbox item waits for you. |
+
+The desktop app shows all of this (except providers, MCP servers and the Telegram gateway, which have their own windows) under **tern › Configuration…** or **Settings › All settings (config.toml)…**: every setting by section with its description from `config.example.toml`, a mark on what you've changed, a reset to the default, search, and a note on settings that matter for safety (`sandbox.network`, `sandbox.confine`, the API listeners). Changes are saved as you make them, keeping the file's comments. `default_model`, `schedules.*`, `home.*` and `api.remote_mcp_stdio` apply from the next run; the rest when tern restarts, which the window offers to do. The same is on the API, owner scope only:
+
+| Method | Path | |
+|---|---|---|
+| `GET` | `/v1/config/settings` | `{path, error?, sections: [{id, title, description?, settings}]}`; each setting is `{key, kind, choices?, min?, max?, optional, value, default, set, description, applies, restart_pending, security?, risky, editable}`. |
+| `PUT` | `/v1/config/settings/{key}` | Set `{"value": …}` (JSON; `null` unsets an optional setting). `400` for a wrong type or range or a config that wouldn't load, `404` for an unknown key. |
+| `DELETE` | `/v1/config/settings/{key}` | Back to the default: the key is removed from the file. |
+
+```sh
+curl --unix-socket ~/.tern/tern.sock -X PUT http://tern/v1/config/settings/sandbox.shell_timeout_secs \
+  -H 'content-type: application/json' -d '{"value": 300}'
+```
 
 Secrets are looked up by name in the environment first, then in `~/.tern/secrets.toml` (mode 0600):
 
@@ -385,6 +414,21 @@ tern remembers in two places:
 
 **Flush before compaction.** When a long conversation is about to be summarized, the agent first gets one silent model call over the part being summarized, with only `memory_save`, to keep durable facts (preferences, decisions, people, commitments). It's journaled, so a resumed run doesn't repeat it, and its tokens count toward the run's budget. If it fails, compaction goes ahead. Sub-agents and scheduled runs don't flush, nor does a run whose token budget can't cover it. `memory.flush = false` turns it off.
 
+## Agents
+
+You can have several agents, each with its own job: a name and avatar, a **persona** (who it is, its job, its tone), a model (or a fallback chain), the **tools** it may use, its **memory**, and its own **routines**. Each has a **DM**, a main channel like Home: one continuous chat with the same cuts, carry-over, History, side chats and queued sends. See [agent-profiles-design.md](agent-profiles-design.md).
+
+- **The agent you already had is `tern`**, the default agent. Its persona is `~/.tern/persona.md`, its memory the shared memory, and its DM is Home. It can be renamed and given an avatar (its id stays `tern`); its model is `default_model`. It can't be archived.
+- **Persona**: `~/.tern/agents/<name at creation>/persona.md`, editable in an editor or through the API. A new agent starts from a template (Research, Inbox, Marketing, Blank), never a blank page. tern always adds its own sections under every persona (memory, time, workspace, secrets, untrusted content, sub-agents, and, with more than one agent, who the others are): a persona can change who the agent is, not those rules.
+- **Tools**: `{"builtins": "all" | "read_only" | [names], "connectors": "all" | [names], "mcp": "all" | [servers], "skills": "all" | [names]}`; a missing key means all. A new agent gets every built-in tool except `shell`, no connectors, no MCP servers, all skills. Tools out of scope aren't offered to the model and are refused if called. Every agent keeps `channel_read`, `channel_post`, `history_search`, `secret_request` and its memory tools. Its sub-agents get no more than it has.
+- **Memory**: `private` (the default for new agents) or `shared`. `user.md` is always shared: who you are is the same for every agent. A private agent has its own `memory.md` (next to its persona) and its own long-term memories: `memory_save` keeps them its own unless `shared: true`, and `memory_search` finds its own and the shared ones. `session_search` only ever searches the agent's own conversations, never another agent's DM.
+- **Routines belong to an agent.** A schedule an agent creates (`schedule_create` in its DM) is its own: it runs as that agent and posts to its DM. The `schedule_*` tools see and change only the calling agent's schedules. Archiving an agent pauses its routines.
+- **Approvals still land in Home**, whichever agent asks; an agent's DM also shows its own (one request, answered in either place).
+- **Edits apply to the next run.** A run freezes its agent's persona, model, tool scope and memory scope when it starts.
+- **In the desktop app**, AGENTS in the sidebar lists your agents under Home (which carries tern's avatar; right-click it to edit tern): a badge counts what waits for you, a spinner shows one working, a dot new routine posts, and **+** creates one. An agent's row opens its DM, the same view as Home (dividers, New topic, History, side chats) with its name and avatar, its model, and **Edit** (the tune icon). The sheet has a template (Research, Inbox, Marketing, Blank; a template's routine can be added with it), name, avatar (glyph and colour), persona with what tern adds to every agent shown read-only beneath, model (a comma-separated list is a fallback chain), tools (built-ins, connectors, MCP servers with their status, skills; **Read-only** in one click), memory (Private / Shared) and Archive. The side panel follows the agent: its routines (**All** shows every agent's), the tools it may use, and its memory with chips for its own and the shared memories (in Home, Shared and each private agent). An approval from an agent's DM shows there as well as in Home: one request, answered in either.
+- **TUI**: `/agent <name>` talks to that agent in its DM (`/new` starts a new topic there, `/agent tern` goes back), `/agents` lists them with what's working and waiting. A sub-agent of the current run with the same label wins.
+- **API** (`agents` in `/v1/health`): `GET/POST /v1/agents`, `PATCH /v1/agents/{id}` (any field, `archived: true`), `GET/PUT /v1/agents/{id}/persona` (GET adds `system_sections`), `GET /v1/agents/templates`, `GET /v1/memories?agent=shared|<agent>&q=`, `GET /v1/schedules?agent=` and `agent` on schedule create/update. `/v1/events` adds `{"agents_changed": {}}`; run events, approvals and secret requests carry `agent_id`, and sessions their `agent_id` when not `tern`.
+
 ## Schedules
 
 The agent creates schedules with `schedule_create` and changes them with `schedule_update`; the desktop app calls them routines. Each one runs its prompt in a session of its own and delivers the final answer to its `deliver_to` (a Telegram chat, or nowhere: the result stays in the session).
@@ -396,7 +440,7 @@ The agent creates schedules with `schedule_create` and changes them with `schedu
   - `usd_per_day` needs the model's price, from `providers.<name>.prices` or the provider's model list. Without one the USD cap is ignored; the log says so once, and `tern doctor` lists it.
   - A run that uses more than `tokens_per_run` is stopped and fails with the reason ("stopped: this run used N tokens, over its cap of M"), which is delivered like any failure.
 - `tern doctor` reports schedules paused by a cap, USD caps that can't apply, and deliveries waiting for quiet hours to end.
-- **Results are posted to a channel** (Home unless the schedule's `channel` says otherwise; `POST`/`PATCH /v1/schedules` take `channel`, a slug or id). A `NO_REPLY` run posts nothing. `deliver_to` stays the push to Telegram.
+- **Results are posted to a channel** (its agent's DM, Home for `tern`, unless the schedule's `channel` says otherwise; `POST`/`PATCH /v1/schedules` take `channel`, a slug or id). A `NO_REPLY` run posts nothing. `deliver_to` stays the push to Telegram.
 
 ## Channels
 
@@ -405,11 +449,13 @@ Channels are topic timelines (`#finances`, `#launch`) over one shared memory; se
 - A channel's timeline is its **posts**: what you send there, the agent's answers, and routine results. Each post has an `author` to show and a stable `author_id` (`owner` for you, `tern` for the agent, `routine:<schedule id>`), which becomes a member or agent id later. Tool calls stay in the thread's session.
 - Sending into a topic channel (`POST /v1/channels/{id}/posts` `{text}`) writes your post and starts a run in the channel's **main thread**; its answer is posted as a reply to yours. With `reply_to` it goes to a **side thread** branched from that post. A channel's `instructions` are added to the system prompt of its runs.
 - Home's conversation is its messages, so sending there writes no post; Home's posts are what comes from elsewhere, such as routine results.
-- **Home is one continuous chat** cut into sessions behind the scenes, so no context grows forever. A message starts a new session after `[home] idle_hours` (default 6) without one, or once a new day has begun (`day_starts`, default 04:00 local) and the last message is an hour old, or when you ask for a **New topic** (the desktop's button or ⌘N, `new_topic: true` on the API, `/new` in Telegram). Never in the middle of a run. The new session's first run starts with a summary of the last one, what's still open there, and its last two exchanges verbatim; the agent can look further back with `history_search`. The desktop shows the stream as one scroll with a divider at each cut (click it for what was carried over), and **History** lists earlier sessions, side chats and conversations from before channels. Telegram chats follow the same rules, each as its own stream.
-- **Agents see what others posted.** Before each model call, a run in a channel (Home included) is shown the posts that came in from other threads, routines and agents since its conversation last looked: up to 20, newest kept, as one note that calls them information, not instructions. Posts written by a tainted run are framed as untrusted and taint the run that reads them. The agent can page or search posts with `channel_read` and post an update with `channel_post` (`needs_you` marks one that needs you; at most 10 per run; a tainted run's posts are tainted). Sub-agents and routines don't get the catch-up, and sub-agents can't post yet.
+- **Home is one continuous chat** cut into sessions behind the scenes, so no context grows forever. A message starts a new session after `[home] idle_hours` (default 6; `[main]` works too, and the same rules cut every agent's DM) without one, or once a new day has begun (`day_starts`, default 04:00 local) and the last message is an hour old, or when you ask for a **New topic** (the desktop's button or ⌘N, `new_topic: true` on the API, `/new` in Telegram). Never in the middle of a run. The new session's first run starts with a summary of the last one, what's still open there, and its last two exchanges verbatim; the agent can look further back with `history_search`. The desktop shows the stream as one scroll with a divider at each cut (click it for what was carried over), and **History** lists earlier sessions, side chats and conversations from before channels. Telegram chats follow the same rules, each as its own stream.
+- **Agents see what others posted.** Before each model call, a run in a channel (Home included) is shown the posts that came in from other threads, routines and agents since its conversation last looked: up to 20, newest kept, as one note that calls them information, not instructions. Posts written by a tainted run are framed as untrusted and taint the run that reads them. The agent can page or search posts with `channel_read` and post an update with `channel_post` (`needs_you` marks one that needs you; at most 10 per run; a tainted run's posts are tainted). Sub-agents and routines don't get the catch-up. A sub-agent posts only when spawned with `"post": true` (`agent_spawn`): then it can `channel_post` as `tern/<label>`, and its report is posted when it finishes.
+- **Needs you**: a `needs_you` post outside Home also puts a pointer in Home. Both stay open until you mark either one done (**Done** in the app, `POST /v1/posts/{id}/resolve`); `needs_you` in `GET /v1/channels` counts the open ones (in Home, with approvals and secret requests). A channel shows one live line per member at work ("tern/research-1 · Running http_fetch"); `GET /v1/runs/active` gives each run's `channel_id` and `author_id`.
 - **Sending while tern is working doesn't stop it.** In Home, a channel, or a Telegram chat, the message goes to the run in progress, which reads it at its next step (Stop still stops). `POST /v1/runs` with a `session_id` still replaces the run, as before.
 - **Side chats**: "Branch into side chat" on a message in Home opens a conversation beside the stream that quotes it; it shows as a card in the stream and in History, and its context stays separate. API: `POST /v1/runs` with `channel` and `branched_from: "message:<id>"`.
 - **In the desktop app**, CHANNELS in the sidebar lists topic channels (bold with a dot when there are new posts, a spinner while tern works there; read state stays on this computer) and **+** makes one (a name, and optional instructions). A channel opens as a timeline: posts with who wrote them (◷ for routines), **Reply in thread** (a side thread in the right pane), **Open thread** (the run behind a post, tool steps and all), and a composer that posts to the channel. The gear edits the title and instructions or archives the channel. A routine's editor chooses the channel it posts to. **Approvals and secret requests are answered in Home** whichever channel asked; the channel shows "Waiting for you in Home".
+- **Moving conversations into a channel**: the folder icon on Home's header (the current topic), on a divider (the topic it starts), on a side chat, in the thread pane, or several at once from History (tick them, then **Move to channel…**) moves them into a topic channel, new or existing, as threads with their history. Where each was, a "Moved to #slug" note stays; the channel gets a "Moved here from …" post. A conversation tern is working in can't move until it finishes. Moving Home's current topic starts a fresh one. API: `POST /v1/channels/move` `{sessions, channel | new_channel: {title, slug?, instructions?}}` (owner scope).
 - `GET /v1/channels/home/stream?before=&limit=` returns the stream's messages, posts and side chats interleaved, newest first, with a `cut` item where each session starts, and `next` to page back.
 - API: `GET/POST /v1/channels`, `PATCH /v1/channels/{id}` (`title`, `instructions`, `archived`), `GET /v1/channels/{id}/posts?before=&limit=` (newest first), `POST /v1/channels/{id}/posts`, `GET /v1/sessions?channel=` (a channel's threads), and `channel` on `POST /v1/runs` for a new thread. `/v1/events` adds `{"post_created": {"post": …}}` and `{"channels_changed": {}}`, and run events carry `channel_id`.
 
@@ -425,6 +471,8 @@ Channels are topic timelines (`#finances`, `#launch`) over one shared memory; se
 3. Start `tern daemon`, run `tern gateway pair`, and send the printed code to your bot.
 
 Only paired Telegram accounts can talk to the bot or answer its approval buttons.
+
+**Agents in Telegram.** `/agents` lists your [agents](#agents); `/agent research` switches the chat to Research's DM (its replies start `Research · `), and `/agent tern` goes back. Each agent keeps its own stream in the chat, cut by the same rules (`/new` is a new topic with the agent you're talking to). In a group with **topics** enabled, where the bot is an admin that may manage topics, `/agent research` opens a topic named Research instead: everything written there goes to Research. Approvals for a run go to the chat or topic that started it.
 
 ### Remote access
 
@@ -491,11 +539,43 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 
 A run is **tainted** once untrusted content reaches it (docs/personal-agent-tooling-spec.md §5.3):
 
-- **What taints**: the result of a tool marked untrusted (`http_fetch`, `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
+- **What taints**: the result of a tool marked untrusted (`http_fetch`, `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`, and `shell` when the command could reach the network: it asked for it with `network: true`, `sandbox.network = true`, or no OS sandbox enforces the default `false`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
 - **It sticks** for the rest of the run, survives a crash and `tern resume` exactly (it's rebuilt from the journal), and doesn't carry to the next run in the conversation.
-- **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, memory, schedules), and "always" isn't offered. The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) keep their grants, since what they reach starts tainted. With nobody to ask (a routine at night), the call is denied. A tainted run also skips the memory flush before compaction. There's no setting to turn this off.
+- **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, memory, schedules), and "always" isn't offered. The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) and `channel_post` keep their grants, since what they reach is tainted too. With nobody to ask (a routine at night), the call goes to the [outbox](#outbox). A network read (`http_fetch`) to a host the run hasn't reached yet asks too, so a page can't have the agent send what it knows somewhere new. A tainted run also skips the memory flush before compaction. Only `autonomy = "yolo"` turns this off.
 - **What the model sees**: untrusted results arrive as `<untrusted source="http_fetch">…</untrusted>`, and the system prompt says text inside is data, not instructions.
 - **Where it shows**: `tern runs list` / `runs show`, `taint` on runs in `GET /v1/sessions/{id}/runs` (absent while clean), `taint` on approval requests, `untrusted: true` on tool step outputs, the desktop's run inspector (a "tainted" badge), and approval cards in the desktop, the TUI, Telegram and `tern run`. A routine or channel answer written by a tainted run is a **tainted post** (`tainted: true`, a shield next to the author in the desktop).
+
+### Outbox
+
+A `write` or `destructive` call that asks while nobody answers (no app, TUI or tray attached, or `[outbox] wait_secs` passing, default 120) goes to the **outbox** instead of being denied (spec §5.2). The model is told it is "queued for approval as outbox #12" and carries on; a routine's post lists what is waiting. Then:
+
+- **Approve** (the desktop's card in Home, Telegram's button if the run reports to a chat, `tern outbox approve 12`, or `POST /v1/outbox/12/approve`) runs the call exactly once, on a small system run in the same session: a crash can't run it twice, and a second approval is refused. **Edit…** in the app (`--input '{…}'`, `{"input": {…}}`) approves it with arguments you changed. The result is posted to the channel (and sent to the chat), and the conversation learns it ran.
+- **Reject** (`tern outbox reject 12 --note "…"`) drops it. A run still working is told either way, with your note.
+- Items **expire** after `[outbox] expire_hours` (default 72) and say so once in Home.
+- Commands that run on the host outside the sandbox can only be decided on that computer (the app or TUI over the local socket), as with approvals.
+
+```sh
+tern outbox                 # what is waiting
+tern outbox list --all      # decided items too
+tern outbox show 12         # arguments, why it waited, the result
+tern outbox approve 12 [--input '{"to": "carol@example.com"}']
+tern outbox reject 12 [--note "not to Bob"]
+```
+
+API: `GET /v1/outbox[?state=all|<state>]`, `GET /v1/outbox/{id}`, `POST /v1/outbox/{id}/approve` `{input?}`, `POST /v1/outbox/{id}/reject` `{note?}` (chat scope), and `{"outbox_changed": {"id", "state"}}` on `/v1/events`. `/v1/health` lists the `outbox` feature. Only the daemon defers: `tern run` and the TUI without a daemon deny as before.
+
+### Autonomy
+
+`autonomy` (spec §5.4) sets how much runs may do without asking. It is frozen on each run when it starts, so a resumed run asks where it asked before; sub-agents run under their parent's.
+
+| `autonomy` | |
+|---|---|
+| `readonly` | `read` tools only; anything else is refused without asking (the agent is told it is read-only). Sub-agents and posts still work. |
+| `supervised` (default) | As described under Approvals: `write` asks unless granted, `destructive` every time. |
+| `autonomous` | An untainted `write` doesn't ask. `destructive`, forced prompts (commands outside the allowlist, activating a connector) and anything in a tainted run still ask. |
+| `yolo` | Nothing asks, tainted or not. Tools flagged `money_movement` or `trade` are still refused. `tern doctor` shows it in red. |
+
+Set it globally (`autonomy = "autonomous"` in `config.toml`) or per routine: `autonomy` on `POST/PATCH /v1/schedules` (`"default"` clears it). The agent's own `schedule_*` tools can't set it.
 
 ## Measurements
 
@@ -525,4 +605,4 @@ If tern hits an internal error it writes `~/.tern/logs/crash-<time>.txt` (messag
 
 ## Data
 
-Everything lives in `~/.tern` (`TERN_HOME` to move it): `config.toml`, `secrets.toml`, `tern.db` (SQLite, WAL), `persona.md`, `user.md` and `memory.md` (included in the system prompt; see [Memory](#memory)), `skills/`, `connectors/`, `logs/` (daily rotated; set `TERN_LOG=debug` for more).
+Everything lives in `~/.tern` (`TERN_HOME` to move it): `config.toml`, `secrets.toml`, `tern.db` (SQLite, WAL), `persona.md`, `user.md` and `memory.md` (included in the system prompt; see [Memory](#memory)), `agents/` (other agents' personas and private `memory.md`; see [Agents](#agents)), `skills/`, `connectors/`, `logs/` (daily rotated; set `TERN_LOG=debug` for more).

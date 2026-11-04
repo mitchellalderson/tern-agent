@@ -17,5 +17,6 @@
   "paused": "budget",
   "paused_until": 1762210800000,
   "paused_reason": "runs_per_day",
-  "channel_id": "home"
+  "channel_id": "home",
+  "agent_id": "tern"
 }

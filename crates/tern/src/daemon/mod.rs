@@ -2,9 +2,12 @@
 //! scheduler, gateways, and the local API on `~/.tern/tern.sock`.
 
 pub mod api;
+pub mod api_agents;
 pub mod api_channels;
+mod api_config;
 pub mod api_lifecycle;
 mod api_mcp;
+mod api_outbox;
 mod api_providers;
 mod api_runs;
 mod api_schedules;
@@ -14,6 +17,7 @@ pub mod auth;
 pub mod channels;
 pub mod listen;
 pub mod manager;
+pub mod outbox;
 pub mod scheduler;
 pub mod tls;
 pub mod uploads;
@@ -113,6 +117,7 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     let _ = routes.gateways.set(gateways);
 
     let manager = Manager::new(rt.clone(), routes.clone());
+    let _ = routes.manager.set(Arc::downgrade(&manager));
     if let Some(h) = &rt.subagents {
         h.set_driver(Arc::new(manager::ManagerDriver(Arc::downgrade(&manager))));
     }
@@ -124,8 +129,15 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     // one first starts it itself, and `spawn` won't drive a run twice.
     for run in triage_running_runs(&rt.store, RESUME_MAX_AGE)? {
         tracing::info!(run = %run.id, "resuming run after restart");
-        manager.spawn(&run.session_id, &run.id, true);
+        if run.trigger == tern_core::outbox::TRIGGER {
+            manager.drive_outbox_run(run.id);
+        } else {
+            manager.spawn(&run.session_id, &run.id, true);
+        }
     }
+    // Tooling spec §5.2: items approved just before a crash, then expiry.
+    manager.reconcile_outbox();
+    manager.spawn_outbox_expiry(shutdown.clone());
     if let Some(h) = &rt.subagents {
         h.kick();
     }

@@ -49,6 +49,12 @@ pub struct ApiApproval {
     /// content (…)"; grants don't apply and "always" isn't offered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub taint: Option<String>,
+    /// The channel of the session at the top of the run's tree, and its
+    /// agent (agent profiles §3): an agent's DM mirrors the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     /// Only a client on this host (the Unix socket) may answer: the call
     /// would run a command here outside the sandbox.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -71,9 +77,16 @@ impl ApiApprovals {
         self.tx().subscribe()
     }
 
-    /// Ask attached clients; deny at once if none is listening.
+    /// Ask attached clients; `Unanswered` at once if none is listening (the
+    /// agent then queues a write in the outbox). The request leaves the
+    /// pending list when the agent stops waiting.
     /// `root_session_id` is the session at the top of a sub-agent's tree.
-    async fn ask(&self, req: &ApprovalRequest, root_session_id: Option<String>) -> Decision {
+    async fn ask(
+        &self,
+        req: &ApprovalRequest,
+        root_session_id: Option<String>,
+        at: Where,
+    ) -> Decision {
         let (tx, rx) = oneshot::channel();
         let msg = ApiApproval {
             id: req.id.clone(),
@@ -89,17 +102,17 @@ impl ApiApprovals {
             root_session_id: root_session_id.filter(|_| req.parent_run_id.is_some()),
             taint: req.taint.clone(),
             local_only: req.local_only,
+            channel_id: at.0,
+            agent_id: at.1,
         };
         if let Ok(mut p) = self.pending.lock() {
             p.insert(req.id.clone(), (msg.clone(), tx));
         }
+        let _unlist = UnlistApproval(self, req.id.clone());
         if self.tx().send(msg).is_err() {
-            if let Ok(mut p) = self.pending.lock() {
-                p.remove(&req.id);
-            }
-            return Decision::Deny;
+            return Decision::Unanswered;
         }
-        rx.await.unwrap_or(Decision::Deny)
+        rx.await.unwrap_or(Decision::Unanswered)
     }
 
     pub fn answer(&self, id: &str, decision: Decision) -> bool {
@@ -125,6 +138,18 @@ impl ApiApprovals {
     }
 }
 
+/// Drops an approval from the pending list when its asker stops waiting
+/// (answered, timed out into the outbox, or cancelled).
+struct UnlistApproval<'a>(&'a ApiApprovals, String);
+
+impl Drop for UnlistApproval<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut p) = self.0.pending.lock() {
+            p.remove(&self.1);
+        }
+    }
+}
+
 /// A secret request waiting for an API client to answer (never with the
 /// values: those only travel in the answer).
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -144,6 +169,11 @@ pub struct ApiSecretRequest {
     pub agent_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session_id: Option<String>,
+    /// As on [`ApiApproval`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 type PendingSecrets = Mutex<HashMap<String, (ApiSecretRequest, oneshot::Sender<SecretValues>)>>;
@@ -177,7 +207,12 @@ impl ApiSecretRequests {
         self.tx().subscribe()
     }
 
-    async fn ask(&self, req: &SecretRequest, root_session_id: Option<String>) -> SecretValues {
+    async fn ask(
+        &self,
+        req: &SecretRequest,
+        root_session_id: Option<String>,
+        at: Where,
+    ) -> SecretValues {
         let (tx, rx) = oneshot::channel();
         let msg = ApiSecretRequest {
             id: req.id.clone(),
@@ -190,6 +225,8 @@ impl ApiSecretRequests {
             parent_run_id: req.parent_run_id.clone(),
             agent_label: req.agent_label.clone(),
             root_session_id: root_session_id.filter(|_| req.parent_run_id.is_some()),
+            channel_id: at.0,
+            agent_id: at.1,
         };
         if let Ok(mut p) = self.pending.lock() {
             p.insert(req.id.clone(), (msg.clone(), tx));
@@ -243,6 +280,8 @@ pub struct Routes {
     pub api: ApiApprovals,
     pub secrets: ApiSecretRequests,
     pub lifecycle: Lifecycle,
+    /// Set once the daemon's manager exists, to announce outbox items.
+    pub manager: OnceLock<Weak<Manager>>,
 }
 
 /// What `/v1/status` and `/v1/shutdown` need from the daemon (T8a).
@@ -272,6 +311,9 @@ pub struct Router(pub Arc<Routes>);
 /// A gateway and the chat on it a run tree reports to.
 type ChatTarget = (Arc<dyn Gateway>, String);
 
+/// The channel and agent of a run tree's root session.
+type Where = (Option<String>, Option<String>);
+
 impl Router {
     /// The session at the top of `run_id`'s tree, and the gateway chat that
     /// tree reports to, if any.
@@ -291,6 +333,19 @@ impl Router {
             Some((g, chat.to_owned()))
         });
         (root.map(|r| r.session_id), chat)
+    }
+
+    fn at(&self, root_session: Option<&str>) -> Where {
+        let (Some(store), Some(id)) = (self.0.store.get(), root_session) else {
+            return (None, None);
+        };
+        match store.session(id) {
+            Ok(Some(s)) => {
+                let agent = s.agent().to_owned();
+                (s.channel_id, Some(agent))
+            }
+            _ => (None, None),
+        }
     }
 }
 
@@ -322,7 +377,21 @@ impl ApprovalHandler for Router {
     async fn ask(&self, req: &ApprovalRequest) -> Decision {
         match self.place(&req.run_id) {
             (_, Some((g, chat))) if !req.local_only => g.ask_approval(&chat, req).await,
-            (root, _) => self.0.api.ask(req, root).await,
+            (root, _) => {
+                let at = self.at(root.as_deref());
+                self.0.api.ask(req, root, at).await
+            }
+        }
+    }
+
+    /// The daemon executes approved outbox items.
+    fn can_defer(&self) -> bool {
+        true
+    }
+
+    async fn deferred(&self, _req: &ApprovalRequest, id: i64) {
+        if let Some(m) = self.0.manager.get().and_then(Weak::upgrade) {
+            m.announce_outbox(id).await;
         }
     }
 
@@ -341,7 +410,8 @@ impl ApprovalHandler for Router {
                 text: None,
             });
         }
-        let values = self.0.secrets.ask(req, root).await;
+        let at = self.at(root.as_deref());
+        let values = self.0.secrets.ask(req, root, at).await;
         if let Some(n) = &mut notice {
             // What the tool will save: a value that cleans up to nothing
             // (`""`, a bare `Bearer `) counts as skipped there too.
@@ -388,7 +458,7 @@ impl Manager {
         })
     }
 
-    fn gateway(&self, name: &str) -> Option<Arc<dyn Gateway>> {
+    pub(super) fn gateway(&self, name: &str) -> Option<Arc<dyn Gateway>> {
         self.routes
             .gateways
             .get()
@@ -464,6 +534,9 @@ impl Manager {
             .start_run(Some(&s.session_id), None, &s.prompt, "cron", "cron")?;
         if let Some(t) = &s.deliver_to {
             self.rt.store.set_run_deliver_to(&started.run_id, t)?;
+        }
+        if let Some(a) = s.autonomy.as_deref() {
+            self.rt.store.set_run_autonomy(&started.run_id, a)?;
         }
         let cap = s.tokens_per_run.or(self.rt.live().schedules.tokens_per_run);
         if let Some(cap) = cap {
@@ -690,14 +763,36 @@ impl Manager {
             .is_ok_and(|a| a.values().any(|x| x.run_id == run_id))
     }
 
+    /// The `external_ref` of `chat`'s sessions with the agent it talks to
+    /// (`/agent` in Telegram; agent profiles §6.4).
+    fn chat_key(&self, source: &str, chat: &str) -> (String, String) {
+        let agent = tern_gateway::chat_agents::get(&self.rt.store, source, chat);
+        let key = tern_gateway::chat_agents::session_ref(chat, &agent);
+        (agent, key)
+    }
+
+    /// The chat's current session: the default agent's in Home (as before
+    /// profiles), another agent's in its DM.
     fn chat_session(&self, source: &str, chat: &str) -> anyhow::Result<tern_store::SessionRow> {
-        if let Some(s) = self.rt.store.latest_session_for(source, chat)? {
+        let (agent, key) = self.chat_key(source, chat);
+        if let Some(s) = self.rt.store.latest_session_for(source, &key)? {
             return Ok(s);
+        }
+        if agent != tern_store::DEFAULT_AGENT
+            && let Some(dm) = self.rt.store.agent_channel(&agent)?
+        {
+            return Ok(self.rt.store.create_thread(&tern_store::NewThread {
+                id: &tern_core::agent::new_id(),
+                source,
+                channel_id: &dm.id,
+                external_ref: Some(&key),
+                ..tern_store::NewThread::default()
+            })?);
         }
         Ok(self.rt.store.create_session_with_ref(
             &tern_core::agent::new_id(),
             source,
-            chat,
+            &key,
             None,
         )?)
     }
@@ -736,6 +831,20 @@ pub struct Chats(pub Arc<Manager>);
 
 #[async_trait]
 impl ChatHost for Chats {
+    /// A chat button: the chat is remote, so local-only items are refused.
+    async fn decide_outbox(&self, id: i64, approve: bool) -> Result<String, String> {
+        if approve {
+            self.0
+                .approve_outbox(id, None, true)
+                .map(|_| "Approved; running it".to_owned())
+        } else {
+            self.0
+                .reject_outbox(id, None, true)
+                .map(|_| "Rejected".to_owned())
+        }
+        .map_err(|e| e.to_string())
+    }
+
     /// The chat is a stream like Home (docs/channels-design.md §2.6): a
     /// message goes to the run working there, else to the current segment
     /// or, after idle hours or a new day, to a new one.
@@ -782,18 +891,20 @@ impl ChatHost for Chats {
     }
 
     async fn stop(&self, source: &str, chat: &str) -> bool {
-        match self.0.rt.store.latest_session_for(source, chat) {
+        let (_, key) = self.0.chat_key(source, chat);
+        match self.0.rt.store.latest_session_for(source, &key) {
             Ok(Some(s)) => self.0.stop_session(&s.id, false).await,
             _ => false,
         }
     }
 
     async fn status(&self, source: &str, chat: &str) -> String {
+        let (_, key) = self.0.chat_key(source, chat);
         let session = self
             .0
             .rt
             .store
-            .latest_session_for(source, chat)
+            .latest_session_for(source, &key)
             .ok()
             .flatten();
         let model = self

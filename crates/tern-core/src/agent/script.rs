@@ -11,7 +11,7 @@ use serde_json::json;
 use tern_store::RunRow;
 
 use super::{Agent, INTERRUPTED_TOOL_MESSAGE};
-use crate::approval::{self, Check};
+use crate::approval::{self, Autonomy, Check, Gate};
 use crate::journal::{InFlight, StepError, StepKind, StepOutput};
 use crate::script::{self, HostReply, HostRequest, ScriptEnv, ScriptHost};
 use crate::tool::{Effect, ToolCtx, ToolResult};
@@ -31,6 +31,8 @@ struct Serving<'a> {
     seq: u32,
     /// The run's taint, updated by the script's own untrusted results.
     tainted: bool,
+    /// The run's autonomy (tooling spec §5.4), as for direct calls.
+    autonomy: Autonomy,
 }
 
 impl Agent {
@@ -83,7 +85,7 @@ impl Agent {
         call: &ToolCall,
         scope: Option<&[String]>,
         ctx: &ToolCtx,
-        tainted: bool,
+        gate: Gate,
         fut: F,
     ) -> Result<T, StepError>
     where
@@ -101,7 +103,8 @@ impl Agent {
             ctx,
             callable: callable.iter().map(|t| t.name.clone()).collect(),
             seq: 0,
-            tainted,
+            tainted: gate.tainted,
+            autonomy: gate.autonomy,
         };
         let (host, mut rx) = ScriptHost::channel(callable, blocked);
         let fut = script::with_host(host, fut);
@@ -175,7 +178,11 @@ impl Agent {
                 policy.effect
             ));
         }
-        match approval::check(name, &policy, false, s.tainted) {
+        let gate = Gate {
+            tainted: s.tainted,
+            autonomy: s.autonomy,
+        };
+        match approval::check(name, &policy, false, gate) {
             Check::Allow => None,
             Check::Ask { .. } => Some(
                 "this call needs the user's approval, which a script can't ask for yet; call it \
@@ -183,6 +190,7 @@ impl Agent {
                     .into(),
             ),
             Check::Forbid(flag) => Some(approval::forbidden_message(flag)),
+            Check::ReadOnly => Some(approval::READONLY_MESSAGE.to_owned()),
         }
     }
 

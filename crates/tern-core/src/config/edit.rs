@@ -199,6 +199,34 @@ impl ConfigFile {
         self.doc.remove(key).is_some()
     }
 
+    /// Remove a dotted `key` (`sandbox.network`), keeping its table even
+    /// when that leaves it empty. Returns whether it was set.
+    pub fn remove_path(&mut self, key: &str) -> bool {
+        let Some((tables, leaf)) = key.rsplit_once('.') else {
+            return self.remove(key);
+        };
+        let mut item = self.doc.as_item_mut();
+        for part in tables.split('.') {
+            match item.get_mut(part) {
+                Some(i) => item = i,
+                None => return false,
+            }
+        }
+        item.as_table_like_mut()
+            .is_some_and(|t| t.remove(leaf).is_some())
+    }
+
+    /// Whether the file sets the dotted `key`.
+    pub fn contains(&self, key: &str) -> bool {
+        key.split('.')
+            .try_fold(self.doc.as_item(), |item, part| item.get(part))
+            .is_some()
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// The config this file would load as.
     pub fn parsed(&self) -> Result<Config, ConfigError> {
         Config::parse(&self.doc.to_string(), &self.path)

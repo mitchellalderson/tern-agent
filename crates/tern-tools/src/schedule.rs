@@ -110,14 +110,34 @@ fn limit_properties() -> serde_json::Map<String, Value> {
     }
 }
 
-/// Validate and save a schedule with its own `cron` session. `deliver_to`
-/// is already resolved (`None` = keep results in the session).
+/// The agent a tool call acts for: its session's (agent profiles §4).
+fn caller(store: &Store, ctx: &ToolCtx) -> String {
+    store
+        .session_agent(&ctx.session_id)
+        .unwrap_or_else(|_| tern_store::DEFAULT_AGENT.into())
+}
+
+/// Schedule `id` if `agent` owns it: one agent can't see or change
+/// another's jobs.
+fn owned(store: &Store, id: &str, agent: &str) -> Option<ScheduleRow> {
+    store
+        .schedule(id)
+        .ok()
+        .flatten()
+        .filter(|s| s.agent() == agent)
+}
+
+/// Validate and save a schedule owned by `agent`, with its own `cron`
+/// session. `deliver_to` is already resolved (`None` = keep results in the
+/// session). An agent's results are posted to its DM; the default agent's
+/// to Home.
 pub fn create_schedule(
     store: &Store,
     cron: &str,
     prompt: &str,
     deliver_to: Option<String>,
     limits: &ScheduleLimits,
+    agent: &str,
 ) -> Result<ScheduleRow, String> {
     let cron: Cron = cron
         .parse()
@@ -139,13 +159,25 @@ pub fn create_schedule(
         deliver_to,
         enabled: true,
         next_run_at: next.timestamp_millis(),
+        agent_id: (agent != tern_store::DEFAULT_AGENT).then(|| agent.to_owned()),
         ..ScheduleRow::default()
     };
+    if row.agent_id.is_some() {
+        let dm = store
+            .agent_channel(agent)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("agent {agent} has no DM"))?;
+        row.channel_id = Some(dm.id);
+    }
     limits.apply(&mut row)?;
     store
         .create_session(&row.session_id, "cron", None)
+        .and_then(|_| store.set_session_agent(&row.session_id, agent))
         .and_then(|_| store.create_schedule(&row))
         .map_err(|e| format!("saving schedule: {e}"))?;
+    if row.channel_id.is_none() {
+        row.channel_id = Some(tern_store::HOME.into());
+    }
     Ok(row)
 }
 
@@ -310,6 +342,7 @@ impl Tool for ScheduleCreate {
             &a.prompt,
             deliver_to.clone(),
             &a.limits,
+            &caller(&self.store, ctx),
         ) {
             Ok(r) => r,
             Err(e) => return ToolResult::error(e),
@@ -376,6 +409,9 @@ impl Tool for ScheduleUpdate {
             Ok(a) => a,
             Err(e) => return e,
         };
+        if owned(&self.store, &a.id, &caller(&self.store, ctx)).is_none() {
+            return ToolResult::error(format!("no schedule {:?} of yours", a.id));
+        }
         let ch = ScheduleChange {
             cron: a.cron,
             prompt: a.prompt,
@@ -397,7 +433,7 @@ impl Tool for ScheduleUpdate {
                 s.deliver_to.as_deref().unwrap_or("none"),
                 describe_limits(&s)
             )),
-            Ok(None) => ToolResult::error(format!("no schedule {:?}", a.id)),
+            Ok(None) => ToolResult::error(format!("no schedule {:?} of yours", a.id)),
             Err(e) => ToolResult::error(e),
         }
     }
@@ -416,7 +452,7 @@ impl Tool for ScheduleList {
     fn spec(&self) -> ToolSpec {
         spec(
             "schedule_list",
-            "List scheduled prompts.",
+            "List your scheduled prompts.",
             json!({ "type": "object", "properties": {} }),
         )
     }
@@ -425,8 +461,14 @@ impl Tool for ScheduleList {
         ToolPolicy::new(Effect::Read, true)
     }
 
-    async fn call(&self, _: &ToolCtx, _: Value) -> ToolResult {
-        match self.store.schedules() {
+    async fn call(&self, ctx: &ToolCtx, _: Value) -> ToolResult {
+        let me = caller(&self.store, ctx);
+        let mine = self.store.schedules().map(|l| {
+            l.into_iter()
+                .filter(|s| s.agent() == me)
+                .collect::<Vec<_>>()
+        });
+        match mine {
             Err(e) => ToolResult::error(e.to_string()),
             Ok(list) if list.is_empty() => ToolResult::ok("no schedules"),
             Ok(list) => ToolResult::ok(
@@ -475,8 +517,11 @@ impl Tool for ScheduleDelete {
         POLICY
     }
 
-    async fn call(&self, _: &ToolCtx, raw: Value) -> ToolResult {
+    async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
         let id = raw.get("id").and_then(Value::as_str).unwrap_or_default();
+        if owned(&self.store, id, &caller(&self.store, ctx)).is_none() {
+            return ToolResult::error(format!("no schedule {id:?} of yours"));
+        }
         match self.store.delete_schedule(id) {
             Ok(true) => ToolResult::ok(format!("deleted {id}")),
             Ok(false) => ToolResult::error(format!("no schedule {id:?}")),
@@ -592,5 +637,85 @@ mod tests {
         };
         assert!(!del.call(&ctx, json!({"id": s.id})).await.is_error);
         assert!(del.call(&ctx, json!({"id": s.id})).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn an_agent_sees_and_changes_only_its_own_schedules() {
+        let store = Store::open_in_memory().unwrap();
+        let (agent, dm) = store
+            .create_agent(&tern_store::AgentRow {
+                id: "tern:inbox".into(),
+                slug: "inbox".into(),
+                name: "Inbox".into(),
+                memory: "private".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .create_thread(&tern_store::NewThread {
+                id: "inbox-dm",
+                source: "api",
+                channel_id: &dm,
+                ..Default::default()
+            })
+            .unwrap();
+        store.create_session("home", "api", None).unwrap();
+        let ctx = |session: &str| ToolCtx {
+            workspace: std::env::temp_dir(),
+            run_id: "r".into(),
+            session_id: session.into(),
+            cancel: CancellationToken::new(),
+        };
+        let (inbox, home) = (ctx("inbox-dm"), ctx("home"));
+        let create = ScheduleCreate {
+            store: store.clone(),
+        };
+        let r = create
+            .call(
+                &inbox,
+                json!({"cron": "0 8 * * 1-5", "prompt": "sweep my inbox"}),
+            )
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        let s = store.schedules().unwrap().remove(0);
+        // Owned by Inbox, posting to its DM, its session acting as Inbox.
+        assert_eq!(s.agent(), agent.id);
+        assert_eq!(s.channel_id.as_deref(), Some(dm.as_str()));
+        assert_eq!(store.session_agent(&s.session_id).unwrap(), agent.id);
+        // tern doesn't see it and can't change or delete it.
+        let list = ScheduleList {
+            store: store.clone(),
+        };
+        assert_eq!(list.call(&home, json!({})).await.content, "no schedules");
+        assert!(list.call(&inbox, json!({})).await.content.contains("sweep"));
+        let update = ScheduleUpdate {
+            store: store.clone(),
+        };
+        let r = update
+            .call(&home, json!({"id": s.id, "enabled": false}))
+            .await;
+        assert!(
+            r.is_error && r.content.contains("of yours"),
+            "{}",
+            r.content
+        );
+        let del = ScheduleDelete {
+            store: store.clone(),
+        };
+        assert!(del.call(&home, json!({"id": s.id})).await.is_error);
+        assert!(store.schedule(&s.id).unwrap().unwrap().enabled);
+        assert!(
+            !update
+                .call(&inbox, json!({"id": s.id, "enabled": false}))
+                .await
+                .is_error
+        );
+        assert!(!del.call(&inbox, json!({"id": s.id})).await.is_error);
+        // tern's own still go to Home.
+        create
+            .call(&home, json!({"cron": "0 9 * * *", "prompt": "brief"}))
+            .await;
+        let s = store.schedules().unwrap().remove(0);
+        assert_eq!((s.agent(), s.channel_id.as_deref()), ("tern", Some("home")));
     }
 }

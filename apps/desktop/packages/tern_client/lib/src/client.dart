@@ -2,10 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'agents.dart';
 import 'channels.dart';
+import 'config.dart';
 import 'endpoint.dart';
 import 'lifecycle.dart';
 import 'mcp.dart';
+import 'outbox.dart';
 import 'models.dart';
 import 'providers.dart';
 import 'secret_requests.dart';
@@ -299,6 +302,72 @@ class TernClient {
           SessionItem.fromJson(s as Json),
       ];
 
+  // ---- agent profiles (docs/agent-profiles-design.md §7.1) ----
+
+  /// Agents, the default first; with `archived`, archived ones too.
+  Future<List<Agent>> agents({bool archived = false}) async => [
+    for (final a
+        in await _json('GET', '/v1/agents${archived ? '?archived=1' : ''}')
+            as List)
+      Agent.fromJson(a as Json),
+  ];
+
+  Future<List<AgentTemplate>> agentTemplates() async => [
+    for (final t in await _json('GET', '/v1/agents/templates') as List)
+      AgentTemplate.fromJson(t as Json),
+  ];
+
+  /// Create an agent and its DM. `model` is one model or a chain. Throws
+  /// [TernException] (409) if the name is taken.
+  Future<Agent> createAgent({
+    required String name,
+    String? slug,
+    AvatarSpec? avatar,
+    String? persona,
+    List<String>? model,
+    ToolScope? tools,
+    String? memory,
+    String? template,
+  }) async => Agent.fromJson(
+    await _json('POST', '/v1/agents', {
+      'name': name,
+      'slug': ?slug,
+      'avatar': ?avatar?.toJson(),
+      'persona': ?persona,
+      if (model != null && model.isNotEmpty)
+        'model': model.length == 1 ? model.first : model,
+      'tools': ?tools?.toJson(),
+      'memory': ?memory,
+      'template': ?template,
+    }),
+  );
+
+  /// Change an agent: `fields` as the API takes them (`null` clears one,
+  /// `archived: true` archives it).
+  Future<Agent> updateAgent(String id, Json fields) async =>
+      Agent.fromJson(await _json('PATCH', '/v1/agents/${_seg(id)}', fields));
+
+  Future<Persona> persona(String id) async =>
+      Persona.fromJson(await _json('GET', '/v1/agents/${_seg(id)}/persona'));
+
+  Future<void> setPersona(String id, String persona) =>
+      _json('PUT', '/v1/agents/${_seg(id)}/persona', {'persona': persona});
+
+  /// Memories: `agent` is `shared`, an agent (its own), or null for all.
+  Future<List<Memory>> memories({String? agent, String? query}) async {
+    final q = [
+      if (agent != null) 'agent=${Uri.encodeQueryComponent(agent)}',
+      if (query != null && query.isNotEmpty)
+        'q=${Uri.encodeQueryComponent(query)}',
+    ].join('&');
+    return [
+      for (final m
+          in await _json('GET', '/v1/memories${q.isEmpty ? '' : '?$q'}')
+              as List)
+        Memory.fromJson(m as Json),
+    ];
+  }
+
   Future<List<Channel>> channels({bool archived = false}) async => [
     for (final c
         in await _json('GET', '/v1/channels${archived ? '?archived=1' : ''}')
@@ -369,6 +438,24 @@ class TernClient {
       if (newTopic) 'new_topic': true,
     }),
   );
+
+  /// Move conversations into a topic channel (`channel`, an id or slug)
+  /// or a new one (`newChannelTitle`). Owner scope. Throws with 409 when
+  /// something is still running in one of them.
+  Future<MoveResult> moveToChannel(
+    List<String> sessions, {
+    String? channel,
+    String? newChannelTitle,
+  }) async => MoveResult.fromJson(
+    await _json('POST', '/v1/channels/move', {
+      'sessions': sessions,
+      'channel': ?channel,
+      if (newChannelTitle != null) 'new_channel': {'title': newChannelTitle},
+    }),
+  );
+
+  /// Mark a `needs_you` post or its pointer in Home done (both close).
+  Future<void> resolvePost(int id) => _json('POST', '/v1/posts/$id/resolve');
 
   /// A page of a main channel's stream, newest first.
   Future<StreamPage> stream(
@@ -463,12 +550,14 @@ class TernClient {
     String? deliverTo,
     ScheduleLimits? limits,
     String? channel,
+    String? agent,
   }) async => Schedule.fromJson(
     await _json('POST', '/v1/schedules', {
       'cron': cron,
       'prompt': prompt,
       'deliver_to': ?deliverTo,
       'channel': ?channel,
+      'agent': ?agent,
       ...?limits?.toJson(),
     }),
   );
@@ -484,6 +573,7 @@ class TernClient {
     ScheduleLimits? limits,
     bool resume = false,
     String? channel,
+    String? agent,
   }) async => Schedule.fromJson(
     await _json('PATCH', '/v1/schedules/$id', {
       'cron': ?cron,
@@ -491,6 +581,7 @@ class TernClient {
       'enabled': ?enabled,
       'deliver_to': ?deliverTo,
       'channel': ?channel,
+      'agent': ?agent,
       ...?limits?.toJson(),
       if (resume) 'resume': true,
     }),
@@ -542,6 +633,25 @@ class TernClient {
         await _json('PUT', '/v1/secrets/$name', {'value': value}),
       );
 
+  /// `config.toml` as settings, by section. Owner scope only.
+  Future<ConfigView> configSettings() async =>
+      ConfigView.fromJson(await _json('GET', '/v1/config/settings'));
+
+  /// Set one setting to a JSON `value` (`null` unsets an optional one).
+  /// The daemon checks it and keeps the file's comments.
+  Future<ConfigSetting> setSetting(String key, Object? value) async =>
+      ConfigSetting.fromJson(
+        await _json('PUT', '/v1/config/settings/${_seg(key)}', {
+          'value': value,
+        }),
+      );
+
+  /// Back to the default: removed from `config.toml`.
+  Future<ConfigSetting> resetSetting(String key) async =>
+      ConfigSetting.fromJson(
+        await _json('DELETE', '/v1/config/settings/${_seg(key)}'),
+      );
+
   /// Remove `name` from `secrets.toml`. Returns false if it wasn't there.
   Future<bool> removeSecret(String name) async {
     try {
@@ -555,6 +665,29 @@ class TernClient {
 
   Future<void> answer(String approval, Decision decision) =>
       _json('POST', '/v1/approvals/$approval', {'decision': decision.wire});
+
+  /// Outbox items waiting for the user (`all`: decided ones too). Check
+  /// `features` in [health] for `outbox` first.
+  Future<List<OutboxItem>> outbox({bool all = false}) async => [
+    for (final o
+        in await _json('GET', all ? '/v1/outbox?state=all' : '/v1/outbox')
+            as List)
+      OutboxItem.fromJson(o as Json),
+  ];
+
+  /// Run item [id] now, exactly once; [input] replaces its arguments.
+  /// Throws [TernException] with 409 if it was already decided or expired.
+  Future<OutboxItem> approveOutbox(int id, {Object? input}) async =>
+      OutboxItem.fromJson(
+        await _json('POST', '/v1/outbox/$id/approve', {'input': ?input})
+            as Json,
+      );
+
+  /// Don't run item [id]; [note] goes to the run that queued it.
+  Future<OutboxItem> rejectOutbox(int id, {String? note}) async =>
+      OutboxItem.fromJson(
+        await _json('POST', '/v1/outbox/$id/reject', {'note': ?note}) as Json,
+      );
 
   /// Put a file in the core's workspace (remote cores can't take a path).
   /// Returns its workspace-relative path, to mention in a message. Check

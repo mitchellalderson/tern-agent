@@ -215,6 +215,12 @@ pub trait Tool: Send + Sync {
     fn untrusted(&self) -> bool {
         false
     }
+    /// The host a call reaches, for tools that fetch from the network. In a
+    /// tainted run, a call to a host the run hasn't contacted yet asks
+    /// (tooling spec §5.3), so injected text can't send data somewhere new.
+    fn egress_host(&self, _args: &Value) -> Option<String> {
+        None
+    }
     /// Policy for this particular call; may depend on the arguments (e.g.
     /// writes outside the workspace need approval, writes inside don't).
     fn policy(&self, ctx: &ToolCtx, args: &Value) -> ToolPolicy;
@@ -303,6 +309,12 @@ impl ToolRegistry {
         self.all().into_keys().collect()
     }
 
+    /// Names of the tools registered directly (not from a source such as
+    /// an MCP server or the connectors).
+    pub fn builtin_names(&self) -> Vec<String> {
+        self.tools.keys().cloned().collect()
+    }
+
     /// Specs sorted by name, so requests (and their journal hashes) are stable.
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.all().values().map(|t| t.spec()).collect()
@@ -328,6 +340,12 @@ impl ToolRegistry {
             .into_iter()
             .map(|(name, t)| (name, (t.effect(), t.untrusted())))
             .collect()
+    }
+
+    /// The host `call` reaches ([`Tool::egress_host`]).
+    pub fn egress_host(&self, call: &ToolCall) -> Option<String> {
+        self.get(&call.name)
+            .and_then(|t| t.egress_host(&call.input))
     }
 
     /// Whether `name` returns third-party text ([`Tool::untrusted`]).
@@ -377,11 +395,16 @@ impl ToolRegistry {
 }
 
 /// Whether `name` is allowed by `scope` (`None` = every tool except the
-/// ones only sub-agents get, such as `agent_ask_parent`).
+/// ones only sub-agents get, such as `agent_ask_parent`). An entry ending
+/// in `*` allows names it is a prefix of: an agent profile's scope names a
+/// connector's or MCP server's tools that way (`mcp__browser__*`).
 pub fn in_scope(scope: Option<&[String]>, name: &str) -> bool {
     match scope {
         None => !crate::subagent::CHILD_ONLY_TOOLS.contains(&name),
-        Some(s) => s.iter().any(|n| n == name),
+        Some(s) => s.iter().any(|n| match n.strip_suffix('*') {
+            Some(prefix) => name.starts_with(prefix),
+            None => n == name,
+        }),
     }
 }
 

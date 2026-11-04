@@ -3,11 +3,58 @@
 
 pub mod telegram;
 
+/// Which agent profile a chat talks to (agent profiles §6.4): `/agent` in
+/// a chat (or a forum topic) sets it. Kept in the store, so the daemon
+/// finds the chat's session and the gateway its reply prefix.
+pub mod chat_agents {
+    use tern_store::{DEFAULT_AGENT, Store};
+
+    const NS: &str = "chat_agent";
+
+    /// The agent `chat` (on `source`) talks to: the default agent unless
+    /// `/agent` chose an active other one.
+    pub fn get(store: &Store, source: &str, chat: &str) -> String {
+        store
+            .kv_get(NS, &format!("{source}:{chat}"))
+            .ok()
+            .flatten()
+            .filter(|id| {
+                store
+                    .agent(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|a| a.archived_at.is_none())
+            })
+            .unwrap_or_else(|| DEFAULT_AGENT.into())
+    }
+
+    pub fn set(store: &Store, source: &str, chat: &str, agent: &str) -> tern_store::Result<()> {
+        let key = format!("{source}:{chat}");
+        if agent == DEFAULT_AGENT {
+            store.kv_delete(NS, &key)
+        } else {
+            store.kv_set(NS, &key, agent)
+        }
+    }
+
+    /// The `external_ref` of the chat's sessions with `agent`: the chat
+    /// itself for the default agent (as before profiles), else
+    /// `<chat>|<agent id>`, so each agent has its own stream in the chat.
+    pub fn session_ref(chat: &str, agent: &str) -> String {
+        if agent == DEFAULT_AGENT {
+            chat.to_owned()
+        } else {
+            format!("{chat}|{agent}")
+        }
+    }
+}
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use tern_core::approval::{ApprovalRequest, Decision, SecretRequest};
 use tern_core::events::AgentEvent;
+use tern_core::outbox::OutboxItem;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -28,6 +75,11 @@ pub trait ChatHost: Send + Sync {
     async fn stop(&self, source: &str, chat: &str) -> bool;
     async fn status(&self, source: &str, chat: &str) -> String;
     fn events(&self) -> broadcast::Receiver<AgentEvent>;
+    /// Approve (run it, exactly once) or reject a pending outbox item from
+    /// a chat button. Returns how it ended, in a few words.
+    async fn decide_outbox(&self, _id: i64, _approve: bool) -> Result<String, String> {
+        Err("this tern can't decide outbox items".into())
+    }
 }
 
 #[async_trait]
@@ -49,4 +101,7 @@ pub trait Gateway: Send + Sync {
     }
     /// Replace the notice with how the request ended.
     async fn secret_request_done(&self, _target: &str, _handle: &str, _text: &str) {}
+    /// Show a new outbox item (a call nobody approved in time) in `target`,
+    /// with Approve and Reject buttons unless only this host may decide it.
+    async fn outbox_notice(&self, _target: &str, _item: &OutboxItem) {}
 }

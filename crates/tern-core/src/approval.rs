@@ -16,6 +16,81 @@ pub enum Check {
     Ask { effect: Effect, always: bool },
     /// Refuse without asking; nothing can approve it.
     Forbid(&'static str),
+    /// Refuse without asking: the run's autonomy is `readonly`.
+    ReadOnly,
+}
+
+/// How much a run may do without asking (tooling spec §5.4), most
+/// restrictive first. Set globally (`autonomy`) and per routine, and
+/// frozen on the run when it starts. A per-agent ceiling (agent profiles)
+/// can later cap it with [`Ord::min`].
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Autonomy {
+    /// `read` effects only; anything else is refused without asking.
+    ReadOnly,
+    /// The §5.1 defaults.
+    #[default]
+    Supervised,
+    /// `write` doesn't ask in untainted runs; `destructive` still does.
+    Autonomous,
+    /// Nothing asks, tainted or not. Forbidden tools stay forbidden.
+    Yolo,
+}
+
+impl Autonomy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Autonomy::ReadOnly => "readonly",
+            Autonomy::Supervised => "supervised",
+            Autonomy::Autonomous => "autonomous",
+            Autonomy::Yolo => "yolo",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "readonly" => Some(Autonomy::ReadOnly),
+            "supervised" => Some(Autonomy::Supervised),
+            "autonomous" => Some(Autonomy::Autonomous),
+            "yolo" => Some(Autonomy::Yolo),
+            _ => None,
+        }
+    }
+
+    /// A run's stored profile: `None` (runs from before T3) or anything
+    /// unknown is `supervised`.
+    pub fn of_run(stored: Option<&str>) -> Self {
+        stored.and_then(Self::parse).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Display for Autonomy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What a run brings to [`check`]: its taint and its autonomy profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Gate {
+    pub tainted: bool,
+    pub autonomy: Autonomy,
+}
+
+impl Gate {
+    /// An untainted, supervised run.
+    pub const CLEAN: Gate = Gate {
+        tainted: false,
+        autonomy: Autonomy::Supervised,
+    };
+    /// A tainted, supervised run.
+    pub const TAINTED: Gate = Gate {
+        tainted: true,
+        autonomy: Autonomy::Supervised,
+    };
 }
 
 /// The effect policy, enforced by the host and never by the model:
@@ -27,15 +102,29 @@ pub enum Check {
 ///   covers it;
 /// - `money_movement` / `trade` tools are refused outright;
 /// - in a `tainted` run (tooling spec §5.3) every `write` and `destructive`
-///   call asks, whatever grants say, and never offers "always" (W7), except
-///   the [`TAINT_CONTAINED`] tools.
+///   call asks, whatever grants say, and nothing offers "always" (W7),
+///   except the [`TAINT_CONTAINED`] tools;
+/// - the run's autonomy (§5.4): `readonly` refuses anything but `read`,
+///   `autonomous` lets an untainted `write` through unless
+///   `requires_approval` forces a prompt, and `yolo` asks nothing.
 ///
 /// `shell` is the exception that defines the allowlist: a command outside
 /// it is destructive, one inside it is a granted write.
-pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, tainted: bool) -> Check {
+pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, gate: Gate) -> Check {
     if let Some(flag) = policy.forbidden {
         return Check::Forbid(flag);
     }
+    let contained = TAINT_CONTAINED.contains(&tool);
+    match gate.autonomy {
+        Autonomy::ReadOnly if policy.effect != Effect::Read && !contained => {
+            return Check::ReadOnly;
+        }
+        Autonomy::Yolo => return Check::Allow,
+        _ => {}
+    }
+    let own_grant = granted;
+    // No grant covers anything in a tainted run.
+    let granted = granted && !gate.tainted;
     let shell = tool == "shell";
     let effect = if shell && granted && policy.effect == Effect::Destructive {
         Effect::Write
@@ -46,11 +135,21 @@ pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, tainted: bool) -> C
         effect,
         always: effect != Effect::Destructive || shell,
     };
-    if tainted && effect != Effect::Read && !TAINT_CONTAINED.contains(&tool) {
-        return Check::Ask {
+    if gate.tainted {
+        let never = Check::Ask {
             effect,
             always: false,
         };
+        return match effect {
+            _ if contained => check(tool, policy, own_grant, Gate::CLEAN),
+            Effect::Read if policy.requires_approval => never,
+            Effect::Read => Check::Allow,
+            _ => never,
+        };
+    }
+    if gate.autonomy == Autonomy::Autonomous && effect == Effect::Write && !policy.requires_approval
+    {
+        return Check::Allow;
     }
     match effect {
         Effect::Destructive => ask,
@@ -62,9 +161,10 @@ pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, tainted: bool) -> C
     }
 }
 
-/// Writes that stay inside the run tree and carry taint along themselves: a
+/// Writes that stay inside tern and carry taint along themselves: a
 /// tainted run's sub-agents start tainted, and its mail taints whoever reads
-/// it. They keep their grants in a tainted run.
+/// it. They keep their grants in a tainted run, and a `readonly` run may
+/// still use them (its children are `readonly` too).
 pub const TAINT_CONTAINED: &[&str] = &[
     "agent_spawn",
     "agent_send",
@@ -81,9 +181,13 @@ pub fn taint_note(reason: &str) -> String {
 
 /// Whether a call must go through an approval step at all: some answer
 /// other than [`Check::Allow`] is possible before looking at grants.
-pub fn needs_check(tool: &str, policy: &ToolPolicy, tainted: bool) -> bool {
-    check(tool, policy, false, tainted) != Check::Allow
+pub fn needs_check(tool: &str, policy: &ToolPolicy, gate: Gate) -> bool {
+    check(tool, policy, false, gate) != Check::Allow
 }
+
+/// The message the model gets for a call a `readonly` run may not make.
+pub const READONLY_MESSAGE: &str = "blocked: this run is read-only (autonomy = \"readonly\"), so it \
+     can't make changes. Say what you would do instead, and the user can do it or run you with more autonomy.";
 
 /// The message the model gets for a forbidden call.
 pub fn forbidden_message(flag: &str) -> String {
@@ -99,6 +203,10 @@ pub enum Decision {
     /// Allow, and remember `pattern` for this tool.
     AlwaysAllow,
     Deny,
+    /// Nobody could be asked (no client attached, a chat message that
+    /// didn't go out). The agent queues the call in the outbox if it can,
+    /// else treats it as a denial.
+    Unanswered,
 }
 
 /// Journaled output of an `approval` step.
@@ -108,6 +216,9 @@ pub enum ApprovalOutcome {
     Approved,
     Denied,
     Timeout,
+    /// Nobody answered in time: the call went to the outbox (tooling spec
+    /// §5.2) and the run carried on without it.
+    Deferred,
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +297,17 @@ pub type SecretValues = std::collections::BTreeMap<String, String>;
 #[async_trait]
 pub trait ApprovalHandler: Send + Sync {
     async fn ask(&self, req: &ApprovalRequest) -> Decision;
+
+    /// Whether a `write` or `destructive` call nobody answers in time may go
+    /// to the outbox, to be approved later. Only the daemon can execute
+    /// outbox items, so only its handler says yes.
+    fn can_defer(&self) -> bool {
+        false
+    }
+
+    /// `req` went to the outbox as item `id`: tell the user where they
+    /// look (a chat card, an event for clients).
+    async fn deferred(&self, _req: &ApprovalRequest, _id: i64) {}
 
     /// Ask the user to enter secrets. `None` means nobody can be asked
     /// (non-interactive runs), which the tool reports as skipped.
@@ -356,23 +478,26 @@ mod tests {
     #[test]
     fn read_never_asks() {
         assert_eq!(
-            check("t", &policy(Effect::Read), false, false),
+            check("t", &policy(Effect::Read), false, Gate::CLEAN),
             Check::Allow
         );
-        assert!(!needs_check("t", &policy(Effect::Read), false));
+        assert!(!needs_check("t", &policy(Effect::Read), Gate::CLEAN));
     }
 
     #[test]
     fn write_asks_unless_granted() {
-        assert_eq!(check("t", &policy(Effect::Write), false, false), ASK_WRITE);
         assert_eq!(
-            check("t", &policy(Effect::Write), true, false),
+            check("t", &policy(Effect::Write), false, Gate::CLEAN),
+            ASK_WRITE
+        );
+        assert_eq!(
+            check("t", &policy(Effect::Write), true, Gate::CLEAN),
             Check::Allow
         );
         // The host's own grant (workspace writes, grandfathered connectors).
         let own = ToolPolicy::granted_write(false);
-        assert_eq!(check("t", &own, false, false), Check::Allow);
-        assert!(!needs_check("t", &own, false));
+        assert_eq!(check("t", &own, false, Gate::CLEAN), Check::Allow);
+        assert!(!needs_check("t", &own, Gate::CLEAN));
     }
 
     #[test]
@@ -382,14 +507,14 @@ mod tests {
             effect: Effect::Destructive,
             always: false,
         };
-        assert_eq!(check("t", &p, false, false), ask);
+        assert_eq!(check("t", &p, false, Gate::CLEAN), ask);
         assert_eq!(
-            check("t", &p, true, false),
+            check("t", &p, true, Gate::CLEAN),
             ask,
             "grants don't cover destructive"
         );
         let p = ToolPolicy { granted: true, ..p };
-        assert_eq!(check("t", &p, true, false), ask);
+        assert_eq!(check("t", &p, true, Gate::CLEAN), ask);
     }
 
     #[test]
@@ -399,23 +524,23 @@ mod tests {
             effect: Effect::Read,
             always: true,
         };
-        assert_eq!(check("t", &p, false, false), ask);
-        assert_eq!(check("t", &p, true, false), Check::Allow);
+        assert_eq!(check("t", &p, false, Gate::CLEAN), ask);
+        assert_eq!(check("t", &p, true, Gate::CLEAN), Check::Allow);
         let p = ToolPolicy::granted_write(false).forced(true);
-        assert_eq!(check("t", &p, false, false), ASK_WRITE);
+        assert_eq!(check("t", &p, false, Gate::CLEAN), ASK_WRITE);
     }
 
     #[test]
     fn shell_outside_the_allowlist_is_destructive() {
         let p = policy(Effect::Destructive).forced(true);
         assert_eq!(
-            check("shell", &p, false, false),
+            check("shell", &p, false, Gate::CLEAN),
             Check::Ask {
                 effect: Effect::Destructive,
                 always: true
             }
         );
-        assert_eq!(check("shell", &p, true, false), Check::Allow);
+        assert_eq!(check("shell", &p, true, Gate::CLEAN), Check::Allow);
     }
 
     #[test]
@@ -426,8 +551,11 @@ mod tests {
                 ..ToolPolicy::granted_write(true)
             };
             let p = ToolPolicy { effect, ..p };
-            assert_eq!(check("t", &p, true, false), Check::Forbid("money_movement"));
-            assert!(needs_check("t", &p, false));
+            assert_eq!(
+                check("t", &p, true, Gate::CLEAN),
+                Check::Forbid("money_movement")
+            );
+            assert!(needs_check("t", &p, Gate::CLEAN));
         }
         assert!(forbidden_message("trade").contains("`trade`"));
     }
@@ -440,28 +568,103 @@ mod tests {
         };
         // An "always" entry, the host's own grant, and the shell allowlist.
         assert_eq!(
-            check("t", &policy(Effect::Write), true, true),
+            check("t", &policy(Effect::Write), true, Gate::TAINTED),
             never(Effect::Write)
         );
         let own = ToolPolicy::granted_write(true);
-        assert_eq!(check("write_file", &own, false, true), never(Effect::Write));
-        assert!(needs_check("write_file", &own, true));
-        let shell = policy(Effect::Destructive).forced(true);
-        assert_eq!(check("shell", &shell, true, true), never(Effect::Write));
         assert_eq!(
-            check("t", &policy(Effect::Destructive), true, true),
+            check("write_file", &own, false, Gate::TAINTED),
+            never(Effect::Write)
+        );
+        assert!(needs_check("write_file", &own, Gate::TAINTED));
+        let shell = policy(Effect::Destructive).forced(true);
+        assert_eq!(
+            check("shell", &shell, true, Gate::TAINTED),
+            never(Effect::Destructive)
+        );
+        assert_eq!(
+            check("t", &policy(Effect::Destructive), true, Gate::TAINTED),
             never(Effect::Destructive)
         );
         // Reads don't ask, coordinating sub-agents keeps its grant, and
         // forbidden stays forbidden.
-        assert_eq!(check("t", &policy(Effect::Read), false, true), Check::Allow);
-        assert!(!needs_check("agent_spawn", &own, true));
+        assert_eq!(
+            check("t", &policy(Effect::Read), false, Gate::TAINTED),
+            Check::Allow
+        );
+        assert!(!needs_check("agent_spawn", &own, Gate::TAINTED));
         let money = ToolPolicy {
             forbidden: Some("trade"),
             ..own
         };
-        assert_eq!(check("t", &money, true, true), Check::Forbid("trade"));
+        assert_eq!(
+            check("t", &money, true, Gate::TAINTED),
+            Check::Forbid("trade")
+        );
         assert!(taint_note("http_fetch").contains("untrusted content"));
+    }
+
+    #[test]
+    fn autonomy_profiles_decide_what_asks() {
+        let gate = |autonomy, tainted| Gate { tainted, autonomy };
+        let write = policy(Effect::Write);
+        let wipe = policy(Effect::Destructive);
+        let ask = |effect, always| Check::Ask { effect, always };
+        // readonly: only reads; tern's own coordination still works.
+        let ro = gate(Autonomy::ReadOnly, false);
+        assert_eq!(check("t", &policy(Effect::Read), false, ro), Check::Allow);
+        assert_eq!(check("t", &write, true, ro), Check::ReadOnly);
+        assert_eq!(
+            check("t", &ToolPolicy::granted_write(true), false, ro),
+            Check::ReadOnly
+        );
+        assert_eq!(check("t", &wipe, false, ro), Check::ReadOnly);
+        assert_eq!(
+            check("agent_spawn", &ToolPolicy::granted_write(true), false, ro),
+            Check::Allow
+        );
+        // autonomous: untainted writes go through, unless forced; the rest
+        // is supervised.
+        let auto = gate(Autonomy::Autonomous, false);
+        assert_eq!(check("t", &write, false, auto), Check::Allow);
+        assert_eq!(
+            check("t", &write.forced(true), false, auto),
+            ask(Effect::Write, true)
+        );
+        assert_eq!(
+            check("t", &wipe, false, auto),
+            ask(Effect::Destructive, false)
+        );
+        assert_eq!(
+            check("t", &write, false, gate(Autonomy::Autonomous, true)),
+            ask(Effect::Write, false),
+            "taint wins over autonomous"
+        );
+        // yolo: nothing asks, tainted or not; forbidden stays forbidden.
+        let yolo = gate(Autonomy::Yolo, true);
+        assert_eq!(check("t", &wipe, false, yolo), Check::Allow);
+        assert_eq!(
+            check("shell", &wipe.forced(true), false, yolo),
+            Check::Allow
+        );
+        let money = ToolPolicy {
+            forbidden: Some("money_movement"),
+            ..write
+        };
+        assert_eq!(
+            check("t", &money, false, yolo),
+            Check::Forbid("money_movement")
+        );
+        // A tainted run's forced read (http_fetch to a new host) asks
+        // without "always", and old grants don't cover it.
+        assert_eq!(
+            check("t", &policy(Effect::Read).forced(true), true, Gate::TAINTED),
+            ask(Effect::Read, false)
+        );
+        assert!(Autonomy::ReadOnly < Autonomy::Supervised && Autonomy::Autonomous < Autonomy::Yolo);
+        assert_eq!(Autonomy::of_run(None), Autonomy::Supervised);
+        assert_eq!(Autonomy::of_run(Some("yolo")), Autonomy::Yolo);
+        assert_eq!(Autonomy::parse("readonly"), Some(Autonomy::ReadOnly));
     }
 
     #[test]

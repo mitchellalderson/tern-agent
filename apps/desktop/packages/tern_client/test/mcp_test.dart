@@ -40,8 +40,12 @@ void main() {
     expect(u.retryAt, isNotNull);
     expect(
       (McpState.fromJson(
-        j('{"kind":"unavailable","error":"x","retry_at":null,"failures":1}'),
-      ) as McpUnavailable).retryAt,
+                j(
+                  '{"kind":"unavailable","error":"x","retry_at":null,"failures":1}',
+                ),
+              )
+              as McpUnavailable)
+          .retryAt,
       isNull,
     );
     expect(McpState.fromJson(j('{"kind":"disabled"}')), isA<McpDisabled>());

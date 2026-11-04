@@ -80,8 +80,10 @@ pub trait SandboxBackend: Send + Sync {
         cancel: CancellationToken,
     ) -> Result<ExecOutput, SandboxError>;
 
-    /// Whether commands get IP networking without asking for it.
-    fn network(&self) -> bool {
+    /// Whether commands can reach the network: allowed by the settings, or
+    /// not blocked because nothing confines them. Their output is then
+    /// third-party text (tooling spec §5.3).
+    fn network_reachable(&self) -> bool {
         true
     }
 }
@@ -313,8 +315,13 @@ fn detect_os(_policy: &HostPolicy) -> Confinement {
 
 #[async_trait]
 impl SandboxBackend for HostBackend {
-    fn network(&self) -> bool {
+    /// `network = false` only holds where an OS sandbox enforces it.
+    fn network_reachable(&self) -> bool {
         self.policy.network
+            || matches!(
+                self.confinement(),
+                Confinement::Off | Confinement::Unavailable(_)
+            )
     }
 
     async fn exec(

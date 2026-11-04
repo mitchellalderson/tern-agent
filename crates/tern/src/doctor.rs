@@ -22,6 +22,8 @@ enum Status {
     Info,
     Warn,
     Fail,
+    /// A warning shown in red: a setting that turns safety off (`yolo`).
+    Danger,
 }
 
 struct Report {
@@ -45,6 +47,19 @@ impl Report {
             Status::Fail => {
                 self.fails += 1;
                 "FAIL"
+            }
+            Status::Danger => {
+                self.warns += 1;
+                use std::io::IsTerminal;
+                if std::io::stdout().is_terminal() {
+                    println!("  \x1b[1;31m[warn] {}\x1b[0m", msg.as_ref());
+                } else {
+                    println!("  [warn] {}", msg.as_ref());
+                }
+                for line in hint.unwrap_or_default().lines() {
+                    println!("         {line}");
+                }
+                return;
             }
         };
         println!("  [{mark}] {}", msg.as_ref());
@@ -232,6 +247,11 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
             ),
         },
     }
+
+    check_shell_network(&mut r, home, &config);
+
+    r.section("Autonomy");
+    check_autonomy(&mut r, home, &config);
 
     r.section("Remote access");
     check_listeners(&mut r, &config);
@@ -504,6 +524,107 @@ fn check_database(r: &mut Report, path: &Path) {
             ),
             (Err(e), _) | (_, Err(e)) => r.check(Status::Fail, e.to_string(), None),
         },
+    }
+}
+
+/// With integrations active, a shell that reaches the network is a way
+/// around them: a script can call the same API directly, skipping the
+/// connector's host allowlist, effect and the journal. Network is off by
+/// default (a command asks with `network: true`), so this is about configs
+/// that turn it on for every command, and hosts where nothing enforces off.
+fn check_shell_network(r: &mut Report, home: &TernHome, config: &Config) {
+    let unenforced = config.sandbox.backend == SandboxBackendKind::Host
+        && !config.sandbox.network
+        && matches!(
+            tern_sandbox::HostBackend::new(crate::runtime::host_policy(config, home)).confinement(),
+            tern_sandbox::Confinement::Off | tern_sandbox::Confinement::Unavailable(_)
+        );
+    if !config.sandbox.network && !unenforced {
+        return;
+    }
+    let luau = std::fs::read_dir(home.connectors_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_file() && e.path().extension().is_some_and(|x| x == "luau"))
+        .count();
+    let mcp = config.mcp.servers.values().filter(|s| s.enabled).count();
+    if luau + mcp == 0 {
+        return;
+    }
+    let (why, fix) = if unenforced {
+        (
+            "[sandbox] network = false isn't enforced without an OS sandbox",
+            "Use an OS sandbox (sandbox.confine = \"auto\" on a kernel with Landlock) or \
+             sandbox.backend = \"docker\". Shell output is treated as untrusted meanwhile.",
+        )
+    } else {
+        (
+            "[sandbox] network = true",
+            "Remove network = true under [sandbox] (off is the default): integrations then go \
+             through their tools, and a command that needs the network asks for it each time. \
+             Shell output is treated as untrusted while the network is on.",
+        )
+    };
+    r.check(
+        Status::Info,
+        format!(
+            "shell commands can reach the network directly ({why}), \
+             bypassing the allowlists of your {} active connector(s) and MCP server(s)",
+            luau + mcp
+        ),
+        Some(fix),
+    );
+}
+
+const YOLO_HINT: &str = "Nothing asks before acting, even after reading a web page or an email that could \
+     carry injected instructions. Set autonomy = \"supervised\" unless you mean it.";
+
+/// The autonomy profile (tooling spec §5.4): `yolo` anywhere is shown in
+/// red, globally or on a routine.
+fn check_autonomy(r: &mut Report, home: &TernHome, config: &Config) {
+    use tern_core::approval::Autonomy;
+    match config.autonomy {
+        Autonomy::Yolo => r.check(
+            Status::Danger,
+            "autonomy = \"yolo\": nothing asks",
+            Some(YOLO_HINT),
+        ),
+        a => r.check(Status::Ok, format!("autonomy = \"{a}\""), None),
+    }
+    let path = home.db_path();
+    if !path.exists() {
+        return;
+    }
+    let Ok(store) = Store::open(&path) else {
+        return;
+    };
+    for s in store.schedules().unwrap_or_default() {
+        let Some(a) = s.autonomy.as_deref().and_then(Autonomy::parse) else {
+            continue;
+        };
+        let title = crate::daemon::scheduler::title(&s);
+        match a {
+            Autonomy::Yolo => r.check(
+                Status::Danger,
+                format!("routine {title:?} runs with autonomy = \"yolo\""),
+                Some(YOLO_HINT),
+            ),
+            a => r.check(
+                Status::Info,
+                format!("routine {title:?}: autonomy = \"{a}\""),
+                None,
+            ),
+        }
+    }
+    if let Ok(pending) = store.outbox(Some("pending"), 200)
+        && !pending.is_empty()
+    {
+        r.check(
+            Status::Info,
+            format!("{} outbox item(s) waiting for you", pending.len()),
+            Some("See them with `tern outbox`."),
+        );
     }
 }
 

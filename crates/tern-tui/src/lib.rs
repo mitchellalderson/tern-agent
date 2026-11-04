@@ -51,6 +51,18 @@ pub struct Started {
     pub model: String,
 }
 
+/// An agent profile (docs/agent-profiles-design.md), as `/agents` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentInfo {
+    pub id: String,
+    pub slug: String,
+    pub name: String,
+    /// Approvals and secret requests from its runs.
+    pub needs_you: usize,
+    pub active_runs: usize,
+    pub is_default: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
     pub id: String,
@@ -206,6 +218,21 @@ pub trait Backend: Send + Sync + 'static {
     /// step.
     fn message_run(&self, _run_id: &str, _text: &str) -> BackendResult<()> {
         Err("this backend doesn't support sub-agents".into())
+    }
+    /// Agent profiles, the default first. Empty when the core has none.
+    fn agents(&self) -> BackendResult<Vec<AgentInfo>> {
+        Ok(Vec::new())
+    }
+    /// Send `text` into agent `id`'s DM: its current thread, or a new one
+    /// with `new_topic`.
+    fn send_to_agent(
+        &self,
+        _id: &str,
+        _text: &str,
+        _model: Option<&str>,
+        _new_topic: bool,
+    ) -> BackendResult<Started> {
+        Err("this backend doesn't support agent profiles".into())
     }
 }
 

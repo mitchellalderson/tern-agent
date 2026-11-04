@@ -158,6 +158,7 @@ class _FakeClient extends TernClient {
     String? deliverTo,
     ScheduleLimits? limits,
     String? channel,
+    String? agent,
   }) async {
     scheduleChannels.add(channel);
     return Schedule(

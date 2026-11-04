@@ -40,6 +40,17 @@ struct SaveArgs {
     content: String,
     #[serde(default)]
     tags: Vec<String>,
+    /// A private agent's save goes to the shared memories instead of its own.
+    #[serde(default)]
+    shared: bool,
+}
+
+/// The agent a run acts as and whether its memory is private (agent
+/// profiles §1.3); the default agent with shared memory if unknown.
+fn scope(store: &Store, ctx: &ToolCtx) -> (String, bool) {
+    store
+        .run_agent(&ctx.run_id)
+        .unwrap_or_else(|_| (tern_store::DEFAULT_AGENT.into(), false))
 }
 
 #[async_trait]
@@ -56,7 +67,8 @@ impl Tool for MemorySave {
                 "type": "object",
                 "properties": {
                     "content": { "type": "string" },
-                    "tags": { "type": "array", "items": { "type": "string" } }
+                    "tags": { "type": "array", "items": { "type": "string" } },
+                    "shared": { "type": "boolean", "description": "an agent with private memory: save it where every agent can find it (facts about the user, not your own notes)" }
                 },
                 "required": ["content"]
             }),
@@ -67,7 +79,7 @@ impl Tool for MemorySave {
         ToolPolicy::granted_write(false)
     }
 
-    async fn call(&self, _: &ToolCtx, raw: Value) -> ToolResult {
+    async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
         let a: SaveArgs = match args(raw) {
             Ok(a) => a,
             Err(e) => return e,
@@ -75,7 +87,10 @@ impl Tool for MemorySave {
         if a.content.trim().is_empty() {
             return ToolResult::error("content is empty");
         }
-        match self.store.save_memory(a.content.trim(), &a.tags) {
+        let (agent, private) = scope(&self.store, ctx);
+        let own = (private && !a.shared).then_some(agent.as_str());
+        match self.store.save_agent_memory(a.content.trim(), &a.tags, own) {
+            Ok(id) if own.is_some() => ToolResult::ok(format!("saved memory #{id} (yours)")),
             Ok(id) => ToolResult::ok(format!("saved memory #{id}")),
             Err(e) => ToolResult::error(format!("saving memory: {e}")),
         }
@@ -90,11 +105,24 @@ impl Tool for MemorySave {
 pub struct ProfileEdit {
     home: TernHome,
     caps: MemoryConfig,
+    /// To find a run's agent: a private agent's `memory` is its own file.
+    store: Option<Store>,
 }
 
 impl ProfileEdit {
     pub fn new(home: TernHome, caps: MemoryConfig) -> Self {
-        Self { home, caps }
+        Self {
+            home,
+            caps,
+            store: None,
+        }
+    }
+
+    pub fn with_store(self, store: Store) -> Self {
+        Self {
+            store: Some(store),
+            ..self
+        }
     }
 }
 
@@ -143,7 +171,7 @@ impl Tool for ProfileEdit {
         }
     }
 
-    async fn call(&self, _: &ToolCtx, raw: Value) -> ToolResult {
+    async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
         let a: ProfileArgs = match args(raw) {
             Ok(a) => a,
             Err(e) => return e,
@@ -154,7 +182,20 @@ impl Tool for ProfileEdit {
                 a.file
             ));
         };
-        let path = file.path(&self.home);
+        // `user.md` is always shared; `memory.md` is the agent's own when its
+        // memory is private (agent profiles §1.3).
+        let path = match (&self.store, file) {
+            (Some(store), ProfileFile::Memory) => {
+                let (agent, private) = scope(store, ctx);
+                tern_core::agents::memory_path(&self.home, &agent, private)
+            }
+            _ => file.path(&self.home),
+        };
+        if let Some(dir) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
+            return ToolResult::error(format!("creating {}: {e}", dir.display()));
+        }
         let current = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -253,13 +294,15 @@ impl Tool for MemorySearch {
         ToolPolicy::new(Effect::Read, true)
     }
 
-    async fn call(&self, _: &ToolCtx, raw: Value) -> ToolResult {
+    async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
         let a: SearchArgs = match args(raw) {
             Ok(a) => a,
             Err(e) => return e,
         };
         let limit = a.limit.unwrap_or(10).clamp(1, MAX_LIMIT);
-        match self.store.search_memories(&a.query, limit) {
+        let (agent, private) = scope(&self.store, ctx);
+        let own = private.then_some(agent.as_str());
+        match self.store.search_agent_memories(&a.query, limit, own) {
             Ok(hits) if hits.is_empty() => ToolResult::ok("no matching memories"),
             Ok(hits) => ToolResult::ok(
                 hits.iter()
@@ -269,7 +312,13 @@ impl Tool for MemorySearch {
                         } else {
                             format!(" [{}]", m.tags)
                         };
-                        format!("#{} ({}){tags}: {}", m.id, date(m.created_at), m.content)
+                        let own = if m.agent_id.is_some() { ", yours" } else { "" };
+                        format!(
+                            "#{} ({}{own}){tags}: {}",
+                            m.id,
+                            date(m.created_at),
+                            m.content
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -322,9 +371,14 @@ impl Tool for SessionSearch {
             Err(e) => return e,
         };
         let limit = a.limit.unwrap_or(10).clamp(1, MAX_LIMIT);
+        // Only this agent's conversations, never another agent's DM.
+        let agent = self
+            .store
+            .session_agent(&ctx.session_id)
+            .unwrap_or_else(|_| tern_store::DEFAULT_AGENT.into());
         match self
             .store
-            .search_messages(&a.query, limit, Some(&ctx.session_id))
+            .search_agent_messages(&a.query, limit, Some(&ctx.session_id), &agent)
         {
             Ok(hits) if hits.is_empty() => ToolResult::ok("no matching messages"),
             Ok(hits) => ToolResult::ok(
@@ -457,5 +511,130 @@ mod tests {
 
         assert!(tool.policy(&ctx(), &json!({"mode": "read"})).effect == Effect::Read);
         assert!(!tool.policy(&ctx(), &json!({"mode": "append"})).idempotent);
+    }
+
+    #[tokio::test]
+    async fn a_private_agent_keeps_its_own_memories_and_memory_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = TernHome::new(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let (agent, dm) = store
+            .create_agent(&tern_store::AgentRow {
+                id: "tern:research".into(),
+                slug: "research".into(),
+                name: "Research".into(),
+                memory: "private".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .create_thread(&tern_store::NewThread {
+                id: "dm",
+                source: "api",
+                channel_id: &dm,
+                ..Default::default()
+            })
+            .unwrap();
+        store.create_session("home", "api", None).unwrap();
+        let msg = tern_store::NewMessage {
+            role: "user".into(),
+            content_json: "[]".into(),
+            text: "hi".into(),
+            summary_of: None,
+        };
+        for (run, session, scope) in [("rr", "dm", Some("private")), ("rt", "home", None)] {
+            store
+                .create_run(
+                    &tern_store::NewRun {
+                        id: run,
+                        session_id: session,
+                        trigger: "user",
+                        model: "m:m",
+                        system_prompt: "",
+                        memory_scope: scope,
+                        ..Default::default()
+                    },
+                    &msg,
+                )
+                .unwrap();
+        }
+        let ctx = |run: &str, session: &str| ToolCtx {
+            workspace: std::env::temp_dir(),
+            run_id: run.into(),
+            session_id: session.into(),
+            cancel: CancellationToken::new(),
+        };
+        let (research, tern) = (ctx("rr", "dm"), ctx("rt", "home"));
+        let save = MemorySave::new(store.clone());
+        let r = save
+            .call(&research, json!({"content": "acme uses postgres"}))
+            .await;
+        assert!(r.content.ends_with("(yours)"), "{}", r.content);
+        save.call(
+            &research,
+            json!({"content": "acme user prefers email", "shared": true}),
+        )
+        .await;
+        save.call(&tern, json!({"content": "acme invoices are monthly"}))
+            .await;
+        let search = MemorySearch::new(store.clone());
+        let seen = search
+            .call(&research, json!({"query": "acme"}))
+            .await
+            .content;
+        assert_eq!(seen.lines().count(), 3, "{seen}");
+        assert!(seen.contains("yours"));
+        let seen = search.call(&tern, json!({"query": "acme"})).await.content;
+        assert_eq!(seen.lines().count(), 2, "{seen}");
+        assert!(!seen.contains("postgres"));
+
+        // memory.md is Research's own; user.md stays shared.
+        let edit =
+            ProfileEdit::new(home.clone(), MemoryConfig::default()).with_store(store.clone());
+        let r = edit
+            .call(
+                &research,
+                json!({"file": "memory", "mode": "append", "content": "Research note"}),
+            )
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        let own = tern_core::agents::memory_path(&home, &agent.id, true);
+        assert!(
+            std::fs::read_to_string(own)
+                .unwrap()
+                .contains("Research note")
+        );
+        assert!(!home.memory_path().exists());
+        edit.call(
+            &research,
+            json!({"file": "user", "mode": "append", "content": "Name: Sam"}),
+        )
+        .await;
+        assert!(
+            std::fs::read_to_string(home.user_path())
+                .unwrap()
+                .contains("Sam")
+        );
+
+        // session_search never reaches another agent's DM.
+        store
+            .create_run(
+                &tern_store::NewRun {
+                    id: "rr2",
+                    session_id: "dm",
+                    trigger: "user",
+                    model: "m:m",
+                    system_prompt: "",
+                    ..Default::default()
+                },
+                &tern_store::NewMessage {
+                    text: "the zebra project".into(),
+                    ..msg.clone()
+                },
+            )
+            .unwrap();
+        let ss = SessionSearch::new(store.clone());
+        let hit = ss.call(&tern, json!({"query": "zebra"})).await.content;
+        assert_eq!(hit, "no matching messages");
     }
 }

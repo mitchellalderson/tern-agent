@@ -47,6 +47,20 @@ pub struct PromptInputs<'a> {
     pub integrations: &'a [String],
     /// Caps on the injected `user.md` and `memory.md`.
     pub memory: &'a MemoryConfig,
+    /// The run's agent profile; `None` = the default agent's files.
+    pub agent: Option<&'a AgentPrompt>,
+}
+
+/// What a profile changes in the prompt (agent profiles §1.1).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentPrompt {
+    /// Its `persona.md`.
+    pub persona_path: std::path::PathBuf,
+    /// The `memory.md` of its memory scope.
+    pub memory_path: std::path::PathBuf,
+    /// The other active agents, one line each (`@slug · Name · first
+    /// line`); empty when it's the only one, and then no section.
+    pub others: Vec<String>,
 }
 
 /// Appended when the `python` tool is registered (docs/python-tool-spec.md §6.1).
@@ -58,8 +72,11 @@ carries the user's approvals and limits. Use `shell` with `python3` only for pac
 numpy.";
 
 pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
-    let persona = read_nonempty(&inp.home.persona_path())
-        .unwrap_or_else(|| defaults::PERSONA_MD.trim().to_owned());
+    let persona_path = inp
+        .agent
+        .map_or_else(|| inp.home.persona_path(), |a| a.persona_path.clone());
+    let persona =
+        read_nonempty(&persona_path).unwrap_or_else(|| defaults::PERSONA_MD.trim().to_owned());
     let mut out = persona;
 
     match inp.role {
@@ -74,13 +91,26 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
         AgentRole::Main => {}
     }
 
+    if let Some(a) = inp.agent.filter(|a| !a.others.is_empty()) {
+        out.push_str("\n\n");
+        out.push_str(AGENTS);
+        for line in &a.others {
+            out.push_str(&format!("\n- {line}"));
+        }
+    }
+
     let cfg = inp.memory;
     if let Some(user) = memory::read_capped(inp.home, ProfileFile::User, cfg.user_md_tokens) {
         out.push_str("\n\n## About the user\n\n");
         out.push_str(&user);
     }
 
-    let core = memory::read_capped(inp.home, ProfileFile::Memory, cfg.memory_md_tokens);
+    let core = match inp.agent {
+        Some(a) => {
+            memory::read_capped_at(&a.memory_path, ProfileFile::Memory, cfg.memory_md_tokens)
+        }
+        None => memory::read_capped(inp.home, ProfileFile::Memory, cfg.memory_md_tokens),
+    };
     if !matches!(inp.role, AgentRole::Subagent { .. }) {
         out.push_str("\n\n");
         out.push_str(
@@ -129,14 +159,35 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
         }
     }
 
+    // Always there: suggesting a connector matters most when none exists.
+    out.push_str("\n\n## Integrations\n");
     if !inp.integrations.is_empty() {
-        out.push_str("\n\n## Integrations\n");
         for line in inp.integrations {
             out.push_str(&format!("\n- {line}"));
         }
+        out.push_str("\n\n");
+        out.push_str(INTEGRATIONS_RULE);
     }
+    out.push_str("\n\n");
+    out.push_str(SUGGEST_CONNECTOR);
     out
 }
+
+/// Under the integrations list: a script calling the API directly would
+/// skip the connector's host allowlist, its effect, taint and the journal.
+const INTEGRATIONS_RULE: &str = "Always get data an integration provides through its tools, even when \
+     `shell`, `curl`, `http_fetch` or a script would be quicker: those skip its allowlist, approvals and \
+     record. For many lookups, call the tool once per item. Compute tools (such as `python`) may process \
+     what its tools returned, never fetch it themselves.";
+
+/// Suggest a connector for a service worth one, without building it unasked.
+const SUGGEST_CONNECTOR: &str = "When you're about to fetch data from an outside service with \
+     `http_fetch`, scraping or `shell`, and the user will likely want it again (a public or REST API, \
+     many lookups, a recurring task), first check whether the service has an API: a quick search or its \
+     docs, if you have tools for that. If it does, suggest making a connector for it in one sentence: \
+     what it would do, and why (repeatable, safer, every change approved). Build it with \
+     `connector_write` only if the user agrees. Skip this for one-off fetches, suggest it at most once \
+     per service in a conversation, and drop it if the user says no.";
 
 /// For a run with the `agent_*` tools: delegate proactively, and how.
 fn subagents_section(sub: &SubagentPrompt) -> String {
@@ -219,6 +270,16 @@ say what you checked and what you didn't.
 
 Sub-agents can't talk to the user except through approval prompts, which the user sees with the sub-agent's name. \
 {nest}";
+
+const AGENTS: &str = "## Agents
+
+The user has other agents, each with its own job, chat and memory. You are one of them. They don't see your \
+conversations or your memory, only what is posted in channels. If a request is clearly another agent's job, say \
+so and suggest the user ask it by name. Approvals for every agent are answered in \
+Home. To do something repeatedly (\"check every hour\"), create a schedule with `schedule_create` rather than \
+waiting in one run; your schedules are yours, and their results come to your chat.
+
+Other agents:";
 
 const MEMORY: &str = "## Memory\n\n`user.md` (about the user, above) and `memory.md` (core facts, below) are in \
 this prompt in every conversation, capped at {user} and {memory} tokens. Keep them short and current with \
@@ -308,6 +369,7 @@ mod tests {
             role: AgentRole::Main,
             subagents: None,
             memory: &MemoryConfig::default(),
+            agent: None,
         };
         let p = system_prompt(&inp);
         assert!(p.starts_with("I am tern."));
@@ -317,6 +379,8 @@ mod tests {
         assert!(p.contains("/ws"));
         assert!(p.contains("## Skills") && p.contains("- pdf: Work with PDFs"));
         assert!(p.contains("## Integrations\n\n- MCP server github"));
+        assert!(p.contains(INTEGRATIONS_RULE) && p.contains(SUGGEST_CONNECTOR));
+        assert!(p.find(INTEGRATIONS_RULE) < p.find(SUGGEST_CONNECTOR));
 
         std::fs::write(home.user_path(), "<!-- note -->\nName: Sam").unwrap();
         assert!(system_prompt(&inp).contains("## About the user\n\nName: Sam"));
@@ -335,9 +399,13 @@ mod tests {
             role: AgentRole::Main,
             subagents: None,
             memory: &MemoryConfig::default(),
+            agent: None,
         });
         assert!(p.starts_with("You are tern"));
         assert!(!p.contains("## Skills"));
+        // No integrations: no use-them-first rule, but still the suggestion.
+        assert!(!p.contains(INTEGRATIONS_RULE));
+        assert!(p.contains("## Integrations\n\n") && p.contains(SUGGEST_CONNECTOR));
         assert!(!p.contains("## Sub-agents") && !p.contains("agent_spawn"));
     }
 
@@ -363,6 +431,7 @@ mod tests {
             role,
             subagents,
             memory: &memory,
+            agent: None,
         };
 
         let main = system_prompt(&inp(AgentRole::Main, Some(&sub)));
@@ -413,6 +482,7 @@ mod tests {
             role,
             subagents: None,
             memory: &memory,
+            agent: None,
         };
         let p = system_prompt(&inp(AgentRole::Main));
         assert!(p.contains("## About the user\n\nName: Sam"));
@@ -425,5 +495,47 @@ mod tests {
 
         let child = system_prompt(&inp(AgentRole::Subagent { label: "x" }));
         assert!(child.contains("## What you remember") && !child.contains("## Memory\n"));
+    }
+
+    #[test]
+    fn an_agent_gets_its_persona_its_memory_and_the_shared_user_notes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = TernHome::new(tmp.path());
+        std::fs::write(home.persona_path(), "I am tern.").unwrap();
+        std::fs::write(home.user_path(), "Name: Sam.").unwrap();
+        std::fs::write(home.memory_path(), "Shared core fact.").unwrap();
+        let dir = crate::agents::dir(&home, "tern:research");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("persona.md"), "I am Research.").unwrap();
+        std::fs::write(dir.join("memory.md"), "Research's own fact.").unwrap();
+        let mut agent = AgentPrompt {
+            persona_path: dir.join("persona.md"),
+            memory_path: dir.join("memory.md"),
+            others: vec!["@tern · tern · You are tern".into()],
+        };
+        let memory = MemoryConfig::default();
+        let build = |agent: &AgentPrompt| {
+            system_prompt(&PromptInputs {
+                home: &home,
+                now: Local::now(),
+                workspace: Path::new("/ws"),
+                skills: &[],
+                integrations: &[],
+                role: AgentRole::Main,
+                subagents: None,
+                memory: &memory,
+                agent: Some(agent),
+            })
+        };
+        let p = build(&agent);
+        assert!(p.starts_with("I am Research."));
+        assert!(p.contains("## About the user\n\nName: Sam."));
+        assert!(p.contains("Research's own fact.") && !p.contains("Shared core fact."));
+        assert!(p.contains("## Agents") && p.contains("- @tern · tern · You are tern"));
+        // The system layer stays underneath every persona.
+        assert!(p.contains("## Untrusted content") && p.contains("## Secrets"));
+        // Alone, no Agents section.
+        agent.others.clear();
+        assert!(!build(&agent).contains("## Agents"));
     }
 }

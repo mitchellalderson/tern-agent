@@ -14,6 +14,7 @@ class Channel {
     this.needsYou = 0,
     this.activeRuns = 0,
     this.archived = false,
+    this.agentId,
     required this.updatedAt,
   });
 
@@ -28,6 +29,7 @@ class Channel {
     needsYou: j['needs_you'] as int? ?? 0,
     activeRuns: j['active_runs'] as int? ?? 0,
     archived: j['archived'] as bool? ?? false,
+    agentId: j['agent_id'] as String?,
     updatedAt: _time(j['updated_at'] as int? ?? 0),
   );
 
@@ -49,9 +51,20 @@ class Channel {
   /// Runs in progress in its threads.
   final int activeRuns;
   final bool archived;
+
+  /// A main channel: whose DM it is (`tern` for Home); a topic channel:
+  /// its lead.
+  final String? agentId;
   final DateTime updatedAt;
 
-  bool get isHome => kind == 'main';
+  /// The default agent's DM. Older cores have no other main channel.
+  bool get isHome => id == 'home' || (kind == 'main' && agentId == null);
+
+  /// Home or an agent's DM: a stream, not a timeline.
+  bool get isMain => kind == 'main';
+
+  /// An agent's DM other than Home.
+  bool get isDm => isMain && !isHome;
 }
 
 /// What an agent, a routine or the user said in a channel.
@@ -70,6 +83,8 @@ class Post {
     this.pointsTo,
     this.tainted = false,
     this.replies = 0,
+    this.resolvedAt,
+    this.pointsToChannel,
     required this.createdAt,
   });
 
@@ -87,6 +102,11 @@ class Post {
     pointsTo: j['points_to'] as int?,
     tainted: j['tainted'] as bool? ?? false,
     replies: j['replies'] as int? ?? 0,
+    resolvedAt: switch (j['resolved_at']) {
+      final int t => _time(t),
+      _ => null,
+    },
+    pointsToChannel: j['points_to_channel'] as String?,
     createdAt: _time(j['created_at'] as int),
   );
 
@@ -115,9 +135,38 @@ class Post {
 
   /// Posts replying to this one in a side thread.
   final int replies;
+
+  /// A `needs_you` post or pointer the user marked done.
+  final DateTime? resolvedAt;
+
+  /// A pointer: the channel of the post it points to.
+  final String? pointsToChannel;
   final DateTime createdAt;
 
   bool get mine => authorKind == 'user';
+
+  /// Waiting on the user: a `needs_you` post, or its pointer in Home.
+  bool get needsYou =>
+      (kind == 'needs_you' || kind == 'pointer') && resolvedAt == null;
+
+  Post resolved() => Post(
+    id: id,
+    channelId: channelId,
+    sessionId: sessionId,
+    runId: runId,
+    authorKind: authorKind,
+    authorId: authorId,
+    author: author,
+    kind: kind,
+    text: text,
+    replyTo: replyTo,
+    pointsTo: pointsTo,
+    tainted: tainted,
+    replies: replies,
+    resolvedAt: DateTime.now(),
+    pointsToChannel: pointsToChannel,
+    createdAt: createdAt,
+  );
 }
 
 /// One entry of a main channel's stream.
@@ -260,3 +309,27 @@ class Sent {
 
 DateTime _time(int t) =>
     DateTime.fromMillisecondsSinceEpoch(t > 100000000000 ? t : t * 1000);
+
+/// What `POST /v1/channels/move` did.
+class MoveResult {
+  const MoveResult({required this.channel, required this.moved});
+
+  factory MoveResult.fromJson(Json j) => MoveResult(
+    channel: Channel.fromJson(j['channel'] as Json),
+    moved: [
+      for (final m in j['moved'] as List)
+        (
+          sessionId: (m as Json)['session_id'] as String,
+          from: m['from'] as String,
+          fresh: m['fresh_session_id'] as String?,
+        ),
+    ],
+  );
+
+  /// Where they went.
+  final Channel channel;
+
+  /// Each conversation, the channel it left, and the empty segment that
+  /// took its place in a stream (Home's current one).
+  final List<({String sessionId, String from, String? fresh})> moved;
+}

@@ -125,6 +125,8 @@ The GUI version of `tern runs show`: a timeline of journal steps (llm, tool, app
 
 Tabs: **Models** (providers, API key secrets, default model, context window), **Approvals** (allowlist patterns, delete), **Daemon** (status, logs folder, run at login, restart), **About** (versions, doctor results from §7.1).
 
+**Configuration** (built; tern › Configuration…, and **All settings (config.toml)…** in Settings): every other setting in `config.toml`, from `/v1/config/settings`. Sections in a left rail (General, Models, Shell & sandbox, Sub-agents, Schedules, Memory, Home, API & devices, then any new section the daemon reports) with a search across all of them. Each row: a label from the key, the key in mono, the example config's description, and a control for its kind (switch, segmented choice, number or text field, comma-separated list or model chain; "Edit in config.toml" for tables). A **Changed** mark when it differs from the default, with a reset; **Restart to apply** when saved but not yet in effect, plus a banner with **Restart tern** on this computer. Security-relevant settings carry a one-line note, tinted when the current value is the less safe one, and their section gets a shield. The window renders whatever the daemon describes, so new settings need no UI work. **Open config.toml** reveals the file when tern runs here.
+
 ## 5. Notifications and the menu bar
 
 - Native notification when a run finishes while the app isn't focused on that conversation, and always for approvals. Approval notifications carry Allow once / Deny actions that call the API directly.
@@ -179,7 +181,7 @@ The daemon serves JSON over HTTP on `~/.tern/tern.sock` (mode 0600), possibly a 
 | GET | `/v1/gateway/telegram` | status, paired chats |
 | POST / DELETE | `/v1/gateway/telegram/pairings[/{id}]` | create a code, unpair |
 | PUT | `/v1/secrets/{name}` | write-only |
-| GET / PATCH | `/v1/config` (P1) | read and edit config through the same validation as `tern config set` |
+| GET / PUT / DELETE | `/v1/config/settings[/{key}]` (built) | settings with defaults, descriptions and live/restart; set or reset one, validated, comments kept |
 | GET | `/v1/doctor` (P1) | doctor results as JSON |
 | GET | `/v1/tools` | full tool specs `[{name, description, input_schema}]` (built) |
 | GET | `/v1/runs/{id}/children[?recursive=1]`, `/v1/sessions/{id}/subagents` | sub-agent runs as `ChildRun` (built, S2; [subagents-design.md](subagents-design.md) §3.2) |
@@ -192,7 +194,9 @@ Event changes:
 - Add an `id` to each SSE event, ready for `Last-Event-ID` replay later.
 - Built: `tool_output` (live output chunks of a running tool, matched to `tool_started` by `id`; never replayed), and for sub-agents ([subagents-design.md](subagents-design.md) §3.1) `subagent_spawned` (on the parent's run), `subagent_message` (`question`, `answer` or `message` between runs of a tree), `parent_run_id` and `root_session_id` on every event of a sub-agent run, and `parent_run_id`, `agent_label`, `root_session_id` on a sub-agent's `approval_requested` and in `/v1/approvals`. `/v1/health` reports the `subagents` feature.
 
-### 7.2 Agents (P1, design separately)
+### 7.2 Agents (P1)
+
+Detailed design: [agent-profiles-design.md](agent-profiles-design.md) (profiles, per-agent DMs as channels, agents owning routines, agents in topic channels, phases AP0–AP3). The sketch below is kept for context.
 
 The reference's sidebar is a list of agents with different jobs. tern has one agent with many sessions. Proposal: an **agent profile** is a name, avatar, persona (Markdown), default model, and a tool scope (which connectors, MCP servers and skills it can use). Sessions, schedules and channel routes gain an `agent_id`; the existing setup becomes the default agent, so nothing breaks. This is also where the planned per-role models (a fast main agent handing harder work to heavier sub-agents) would live.
 
@@ -248,12 +252,12 @@ Each phase ends usable, like the engine milestones.
 | G2 | Side panel: activity, routines CRUD, run inspector | schedules API, `runs/{id}/steps` |
 | G3 | Library: connectors (try and activate), MCP, skills, memory, settings | connectors, mcp, skills, memories, allowlist, secrets, config APIs |
 | G4 | Channels: Telegram status, pairing with QR, routing | gateway API |
-| G5 | Agents: sidebar of agent profiles, per-agent routines, memory scope, channel routing | §7.2 |
+| G5 | Agents: sidebar of agent profiles, per-agent routines, memory scope, channel routing | §7.2; [agent-profiles-design.md](agent-profiles-design.md) AP1 (built; topic-channel membership is AP2) |
 | G6 | Polish: menu bar extra, quick switcher, packaging and notarization, Linux build | — |
 
 ## 11. Open questions
 
-1. **Agents**: is a first-class agent profile (§7.2) the direction, or should the sidebar stay a list of conversations? It's the biggest change this spec implies for the engine.
+1. **Agents**: is a first-class agent profile (§7.2) the direction, or should the sidebar stay a list of conversations? It's the biggest change this spec implies for the engine. Proposed answer: yes, designed in [agent-profiles-design.md](agent-profiles-design.md).
 2. **"Channels"**: Telegram-style transports (as specced in §3), Claude Duet-style information streams, or both? If the latter, what does a stream contain and who writes to it?
 3. **Bundling**: should the app ship the `tern` binary and manage the daemon itself, or assume a separate install?
 4. **Platforms**: macOS-only for v1, or is Linux a requirement from the start?

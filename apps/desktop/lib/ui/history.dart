@@ -4,6 +4,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../theme.dart';
 import 'channel_items.dart';
+import 'move_dialog.dart';
 import 'widgets.dart';
 
 /// Home's History (docs/channels-design.md §5.2): earlier sessions of the
@@ -29,6 +30,9 @@ class _HistoryDialogState extends State<HistoryDialog> {
   List<SessionItem>? _all;
   String? _error;
 
+  /// Picked to move together into a channel.
+  final _picked = <String>{};
+
   @override
   void initState() {
     super.initState();
@@ -39,7 +43,7 @@ class _HistoryDialogState extends State<HistoryDialog> {
     try {
       final all = await widget.store.client.sessions(
         limit: 200,
-        channel: TernStore.homeId,
+        channel: widget.store.streamChannel,
       );
       if (mounted) setState(() => _all = all);
     } on TernException catch (e) {
@@ -69,7 +73,7 @@ class _HistoryDialogState extends State<HistoryDialog> {
   Widget build(BuildContext context) {
     final c = context.colors;
     final q = _search.text.trim().toLowerCase();
-    final head = widget.store.home?.mainSessionId;
+    final head = widget.store.stream?.mainSessionId;
     final shown = (_all ?? const <SessionItem>[])
         .where((s) => q.isEmpty || (s.title ?? '').toLowerCase().contains(q))
         .toList();
@@ -155,6 +159,16 @@ class _HistoryDialogState extends State<HistoryDialog> {
                                   color: c.muted,
                                 ),
                               ),
+                              trailing: Checkbox(
+                                value: _picked.contains(s.id),
+                                onChanged: s.messages == 0
+                                    ? null
+                                    : (v) => setState(
+                                        () => v == true
+                                            ? _picked.add(s.id)
+                                            : _picked.remove(s.id),
+                                      ),
+                              ),
                               onTap: () {
                                 Navigator.of(context).pop();
                                 if (s.id != head) widget.store.openThread(s.id);
@@ -163,6 +177,34 @@ class _HistoryDialogState extends State<HistoryDialog> {
                         ],
                       ),
               ),
+              if (_picked.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Row(
+                    children: [
+                      Text(
+                        '${_picked.length} picked',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const Spacer(),
+                      FilledButton.icon(
+                        icon: const Icon(
+                          Icons.drive_file_move_outline,
+                          size: 16,
+                        ),
+                        label: const Text('Move to channel…'),
+                        onPressed: () {
+                          final picked = _picked.toList();
+                          final store = widget.store;
+                          final nav = Navigator.of(context);
+                          final host = nav.context;
+                          nav.pop();
+                          showMoveDialog(host, store, picked);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
             ],
           ),
         ),

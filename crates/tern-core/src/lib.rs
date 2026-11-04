@@ -1,6 +1,7 @@
 //! Domain types, configuration, the step journal, and the agent loop.
 
 pub mod agent;
+pub mod agents;
 pub mod approval;
 pub mod channels;
 pub mod compaction;
@@ -13,6 +14,7 @@ pub mod mcp;
 pub mod memory;
 pub mod models;
 pub mod net;
+pub mod outbox;
 pub mod prompt;
 pub mod quiet;
 pub mod script;

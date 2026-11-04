@@ -26,8 +26,9 @@ void main() {
     final free = await ServerSocket.bind('127.0.0.1', 0);
     port = free.port;
     await free.close();
-    await File('$home/config.toml')
-        .writeAsString('[api]\nlisten = ["unix", "tcp://127.0.0.1:$port"]\n');
+    await File(
+      '$home/config.toml',
+    ).writeAsString('[api]\nlisten = ["unix", "tcp://127.0.0.1:$port"]\n');
     final script = File('${tmp.path}/script.json');
     await script.writeAsString(
       jsonEncode({
@@ -153,6 +154,26 @@ void main() {
     );
     expect(await client.removeSecret('DART_TEST_TOKEN'), isTrue);
     expect(await client.removeSecret('DART_TEST_TOKEN'), isFalse);
+  }, skip: bin == null ? 'set TERN_BIN to run' : false);
+
+  test('config settings: read, set keeping comments, reset', () async {
+    final file = File('${tmp.path}/.tern/config.toml');
+    final view = await client.configSettings();
+    final net = view.settings.firstWhere((s) => s.key == 'sandbox.network');
+    // Off by default.
+    expect((net.value, net.set, net.risky), (false, false, false));
+
+    final set = await client.setSetting('sandbox.network', true);
+    expect((set.value, set.changed, set.restartPending), (true, true, true));
+    expect(set.risky, isTrue);
+    expect(await file.readAsString(), contains('[api]'));
+    expect(await file.readAsString(), contains('network = true'));
+    await expectLater(
+      client.setSetting('max_iterations', 'lots'),
+      throwsA(isA<TernException>().having((e) => e.status, 'status', 400)),
+    );
+    final reset = await client.resetSetting('sandbox.network');
+    expect((reset.value, reset.set), (false, false));
   }, skip: bin == null ? 'set TERN_BIN to run' : false);
 
   test(

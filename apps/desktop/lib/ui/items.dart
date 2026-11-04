@@ -12,6 +12,7 @@ import '../theme.dart';
 import 'agents.dart';
 import 'channel_items.dart';
 import 'inspector.dart';
+import 'move_dialog.dart';
 
 /// One transcript item.
 class ItemView extends StatelessWidget {
@@ -64,7 +65,15 @@ class ItemView extends StatelessWidget {
     final ApprovalItem a => ApprovalCard(item: a, store: store),
     final SecretRequestItem r => SecretRequestCard(item: r, store: store),
     final RunEndItem r => _RunEnd(r, store: store),
-    final CutItem c => CutDivider(item: c),
+    final CutItem c => CutDivider(
+      item: c,
+      onMove: () =>
+          showMoveDialog(context, store, [c.cut.sessionId], what: 'this topic'),
+    ),
+    PostItem(:final post) when post.kind == 'moved' => MovedMarker(
+      post: post,
+      store: store,
+    ),
     PostItem(:final post) => PostCard(post: post, store: store),
     SideChatItem(:final chat) => SideChatCard(chat: chat, store: store),
   };
@@ -432,7 +441,9 @@ class _ApprovalCardState extends State<ApprovalCard> {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              '${outcome[0].toUpperCase()}${outcome.substring(1)}: ${a.summary}',
+              outcome == 'deferred'
+                  ? 'Nobody answered, so it waits in the outbox: ${a.summary}'
+                  : '${outcome[0].toUpperCase()}${outcome.substring(1)}: ${a.summary}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 12.5, color: c.muted),
@@ -464,7 +475,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
                 Icon(Icons.front_hand_outlined, size: 16, color: c.warn),
                 const SizedBox(width: 8),
                 Text(
-                  '${a.agentLabel ?? 'tern'} wants to run ${a.tool}',
+                  '${widget.store.askerName(a)} wants to run ${a.tool}',
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),

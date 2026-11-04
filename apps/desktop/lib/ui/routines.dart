@@ -7,25 +7,77 @@ import '../state/cron_words.dart';
 import '../state/store.dart';
 import '../theme.dart';
 
-/// The routines section of the side panel.
-class RoutinesSection extends StatelessWidget {
+/// The routines section of the side panel. With agent profiles it shows
+/// the open agent's jobs (agent profiles §4), and **All** shows every
+/// agent's, so what runs at night stays visible in one place.
+class RoutinesSection extends StatefulWidget {
   const RoutinesSection({super.key, required this.store});
 
   final TernStore store;
 
   @override
+  State<RoutinesSection> createState() => _RoutinesSectionState();
+}
+
+class _RoutinesSectionState extends State<RoutinesSection> {
+  var _all = false;
+
+  @override
   Widget build(BuildContext context) {
     final c = context.colors;
+    final store = widget.store;
+    final agent = store.hasAgents
+        ? store.streamAgent ?? (store.topicOpen ? null : store.defaultAgent)
+        : null;
+    final shown = agent == null || _all
+        ? store.schedules
+        : store.schedulesOf(agent);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text('ROUTINES', style: Theme.of(context).textTheme.labelSmall),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                agent == null || _all
+                    ? 'ROUTINES'
+                    : 'ROUTINES · ${agent.name.toUpperCase()}',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ),
+            if (agent != null && store.otherAgents.isNotEmpty)
+              SizedBox(
+                height: 22,
+                child: TextButton(
+                  onPressed: () => setState(() => _all = !_all),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    minimumSize: Size.zero,
+                  ),
+                  child: Text(
+                    _all ? agent.name : 'All',
+                    style: TextStyle(fontSize: 11.5, color: c.muted),
+                  ),
+                ),
+              ),
+          ],
+        ),
         const SizedBox(height: 6),
-        for (final s in store.schedules) _RoutineRow(store: store, schedule: s),
+        for (final s in shown)
+          _RoutineRow(
+            store: store,
+            schedule: s,
+            showAgent: _all || agent == null,
+          ),
+        if (shown.isEmpty && agent != null && !_all)
+          Text(
+            'Ask ${agent.name} to do something on a schedule, or add one.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
         Align(
           alignment: Alignment.centerLeft,
           child: TextButton.icon(
-            onPressed: () => showRoutineSheet(context, store),
+            onPressed: () => showRoutineSheet(context, store, agent: agent),
             icon: Icon(Icons.add, size: 16, color: c.muted),
             label: Text('New routine', style: TextStyle(color: c.muted)),
             style: TextButton.styleFrom(
@@ -39,10 +91,17 @@ class RoutinesSection extends StatelessWidget {
 }
 
 class _RoutineRow extends StatelessWidget {
-  const _RoutineRow({required this.store, required this.schedule});
+  const _RoutineRow({
+    required this.store,
+    required this.schedule,
+    this.showAgent = false,
+  });
 
   final TernStore store;
   final Schedule schedule;
+
+  /// Name the agent whose job it is (the All list).
+  final bool showAgent;
 
   @override
   Widget build(BuildContext context) {
@@ -63,8 +122,11 @@ class _RoutineRow extends StatelessWidget {
         ? 'Last run quiet · ${cronInWords(s.cron)}'
         : cronInWords(s.cron);
     final postsTo = store.channels
-        .where((ch) => ch.id == s.channelId && !ch.isHome)
+        .where((ch) => ch.id == s.channelId && !ch.isMain)
         .firstOrNull;
+    final owner = showAgent && store.otherAgents.isNotEmpty
+        ? store.agents.where((a) => a.id == s.agentId).firstOrNull
+        : null;
     final next = s.nextRunAt;
     final tip = budget
         ? 'A daily cap (${s.pausedReason ?? 'budget'}) was reached. '
@@ -106,7 +168,11 @@ class _RoutineRow extends StatelessWidget {
                   Tooltip(
                     message: tip,
                     child: Text(
-                      postsTo == null ? detail : '$detail · #${postsTo.slug}',
+                      [
+                        ?owner?.name,
+                        detail,
+                        if (postsTo != null) '#${postsTo.slug}',
+                      ].join(' · '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -189,9 +255,10 @@ Future<void> showRoutineSheet(
   BuildContext context,
   TernStore store, {
   Schedule? editing,
+  Agent? agent,
 }) => showDialog<void>(
   context: context,
-  builder: (_) => RoutineSheet(store: store, editing: editing),
+  builder: (_) => RoutineSheet(store: store, editing: editing, agent: agent),
 );
 
 class _Preset {
@@ -209,10 +276,18 @@ const _presets = [
 
 /// Create or edit a routine: what to do, when, and where results go.
 class RoutineSheet extends StatefulWidget {
-  const RoutineSheet({super.key, required this.store, this.editing});
+  const RoutineSheet({
+    super.key,
+    required this.store,
+    this.editing,
+    this.agent,
+  });
 
   final TernStore store;
   final Schedule? editing;
+
+  /// Whose job a new routine is (the open agent's).
+  final Agent? agent;
 
   @override
   State<RoutineSheet> createState() => _RoutineSheetState();
@@ -228,11 +303,22 @@ class _RoutineSheetState extends State<RoutineSheet> {
   );
   late var _telegram = widget.editing?.deliverTo != null;
 
-  /// Where results are posted: Home, or a topic channel (the one open when
-  /// a new routine is made there).
+  /// Who does it: an agent profile (the default agent without profiles).
+  late var _agent =
+      widget.editing?.agentId ?? widget.agent?.id ?? Agent.defaultId;
+
+  /// Where results are posted: its agent's DM (Home for the default
+  /// agent), or a topic channel (the one open when it is made there).
   late var _channel =
       widget.editing?.channelId ??
-      (widget.store.topicOpen ? widget.store.channel! : TernStore.homeId);
+      (widget.store.topicOpen ? widget.store.channel! : _dmOf(_agent));
+
+  String _dmOf(String agent) =>
+      widget.store.agents
+          .where((a) => a.id == agent)
+          .firstOrNull
+          ?.mainChannelId ??
+      TernStore.homeId;
   late final _limits = widget.editing?.limits ?? const ScheduleLimits();
 
   /// `null` = the daemon's default, `none`, or a custom window.
@@ -355,6 +441,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
       deliverTo: _telegram ? 'telegram:${_chat.text.trim()}' : null,
       limits: _newLimits,
       channel: widget.store.hasChannels ? _channel : null,
+      agent: widget.store.hasAgents ? _agent : null,
     );
     if (!mounted) return;
     if (err == null) {
@@ -530,8 +617,32 @@ class _RoutineSheetState extends State<RoutineSheet> {
               const SizedBox(height: 16),
               Text('RESULTS', style: labels),
               const SizedBox(height: 6),
+              if (widget.store.hasAgents && widget.store.agents.length > 1) ...[
+                DropdownButtonFormField<String>(
+                  key: const Key('routine-agent'),
+                  initialValue: _agent,
+                  isDense: true,
+                  decoration: _box(context),
+                  items: [
+                    for (final a in widget.store.agents)
+                      if (!a.archived || a.id == _agent)
+                        DropdownMenuItem(
+                          value: a.id,
+                          child: Text('Done by ${a.name}'),
+                        ),
+                  ],
+                  onChanged: (v) => setState(() {
+                    if (v == null) return;
+                    // Results follow the job to its new agent's DM.
+                    if (_channel == _dmOf(_agent)) _channel = _dmOf(v);
+                    _agent = v;
+                  }),
+                ),
+                const SizedBox(height: 8),
+              ],
               if (widget.store.hasChannels) ...[
                 DropdownButtonFormField<String>(
+                  key: ValueKey('routine-channel-$_channel'),
                   initialValue: _channel,
                   isDense: true,
                   decoration: _box(context),
@@ -541,7 +652,11 @@ class _RoutineSheetState extends State<RoutineSheet> {
                         DropdownMenuItem(
                           value: ch.id,
                           child: Text(
-                            ch.isHome ? 'Post to Home' : 'Post to #${ch.slug}',
+                            ch.isHome
+                                ? 'Post to Home'
+                                : ch.isDm
+                                ? 'Post to ${ch.title}\'s chat'
+                                : 'Post to #${ch.slug}',
                           ),
                         ),
                   ],

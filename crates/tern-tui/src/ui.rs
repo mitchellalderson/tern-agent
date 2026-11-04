@@ -565,7 +565,8 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .map(|s| s.title.clone().unwrap_or_else(|| s.id.clone()))
         .unwrap_or_else(|| "new session".into());
     let session: String = session.chars().take(40).collect();
-    let left = format!(" tern · {model} · {session}");
+    let agent = app.profile.as_ref().map_or("tern", |p| p.name.as_str());
+    let left = format!(" {agent} · {model} · {session}");
     let right = if let Some(h) = &app.hint {
         h.clone()
     } else if app.secret_prompt.is_some() {

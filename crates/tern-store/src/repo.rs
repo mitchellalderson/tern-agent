@@ -31,6 +31,17 @@ pub struct SessionRow {
     pub segment_reason: Option<String>,
     /// A side thread: `message:<id>` or `post:<id>` it branched from.
     pub branched_from: Option<String>,
+    /// Moved here from this channel (DECISIONS.md "T2 moves").
+    pub moved_from: Option<String>,
+    /// The agent whose thread it is; `None` = the default agent, `tern`.
+    pub agent_id: Option<String>,
+}
+
+impl SessionRow {
+    /// The agent whose thread this is.
+    pub fn agent(&self) -> &str {
+        self.agent_id.as_deref().unwrap_or(crate::DEFAULT_AGENT)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +77,12 @@ pub struct RunRow {
     /// Why the run is tainted (tooling spec §5.3); `None` while clean.
     /// Sticky: set once, never cleared.
     pub taint: Option<String>,
+    /// The agent's memory scope when the run started: `None` = shared,
+    /// `private` (agent profiles §1.3).
+    pub memory_scope: Option<String>,
+    /// Its autonomy profile (`readonly`, `supervised`, `autonomous`,
+    /// `yolo`), frozen at start; `None` = supervised.
+    pub autonomy: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +128,8 @@ pub struct MemoryRow {
     pub content: String,
     pub tags: String,
     pub created_at: i64,
+    /// `None` = shared; else the agent whose private memory it is.
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,16 +170,20 @@ pub struct NewRun<'a> {
     /// Start the run tainted, for this reason. A sub-agent of a tainted run
     /// starts tainted without it.
     pub taint: Option<&'a str>,
+    /// The agent's memory scope, frozen: `None` = shared, `private`. A
+    /// sub-agent takes its parent's.
+    pub memory_scope: Option<&'a str>,
 }
 
 /// The taint reason of a sub-agent spawned by a tainted run.
 pub const SPAWNED_BY_TAINTED: &str = "spawned by a tainted run";
 
 pub(crate) const SESSION_COLS: &str = "id, title, source, external_ref, model, created_at, updated_at, \
-    channel_id, prev_session_id, segment_reason, branched_from";
+    channel_id, prev_session_id, segment_reason, branched_from, moved_from, agent_id";
 pub(crate) const RUN_COLS: &str = "id, session_id, status, trigger, model, system_prompt, \
     input_message_id, started_at, updated_at, finished_at, error, parent_run_id, parent_call_id, \
-    label, depth, tool_scope, budget_tokens, max_iterations, quiet, input_taint, taint";
+    label, depth, tool_scope, budget_tokens, max_iterations, quiet, input_taint, taint, autonomy, \
+    memory_scope";
 const STEP_COLS: &str = "run_id, idx, kind, input_hash, input_json, output_json, status, \
                          usage_json, error, started_at, finished_at";
 const MESSAGE_COLS: &str =
@@ -179,6 +202,8 @@ pub(crate) fn session_row(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
         prev_session_id: r.get(8)?,
         segment_reason: r.get(9)?,
         branched_from: r.get(10)?,
+        moved_from: r.get(11)?,
+        agent_id: r.get(12)?,
     })
 }
 
@@ -205,6 +230,8 @@ pub(crate) fn run_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         quiet: r.get::<_, i64>(18)? != 0,
         input_taint: r.get(19)?,
         taint: r.get(20)?,
+        autonomy: r.get(21)?,
+        memory_scope: r.get(22)?,
     })
 }
 
@@ -288,8 +315,9 @@ impl Store {
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO runs (id, session_id, status, trigger, model, system_prompt, started_at, updated_at,
-               parent_run_id, parent_call_id, label, depth, tool_scope, budget_tokens, max_iterations)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+               parent_run_id, parent_call_id, label, depth, tool_scope, budget_tokens, max_iterations,
+               memory_scope)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 run.id,
                 run.session_id,
@@ -305,6 +333,7 @@ impl Store {
                 run.tool_scope,
                 run.budget_tokens.map(|b| b.min(i64::MAX as u64) as i64),
                 run.max_iterations,
+                run.memory_scope,
             ],
         )?;
         tx.execute(
@@ -324,6 +353,11 @@ impl Store {
             )?;
         }
         if let Some(parent) = run.parent_run_id {
+            // A sub-agent runs under its parent's autonomy profile.
+            tx.execute(
+                "UPDATE runs SET autonomy = (SELECT autonomy FROM runs WHERE id = ?2) WHERE id = ?1",
+                params![run.id, parent],
+            )?;
             // A sub-agent of a tainted run starts tainted: its brief may
             // carry what the parent read (tooling spec §12, open question).
             tx.execute(
@@ -331,12 +365,19 @@ impl Store {
                    AND EXISTS (SELECT 1 FROM runs WHERE id = ?2 AND taint IS NOT NULL)",
                 params![run.id, parent, SPAWNED_BY_TAINTED],
             )?;
-            // A sub-agent's session is in its parent's channel.
+            // A sub-agent's session is in its parent's channel and belongs
+            // to its agent, with the parent's memory scope (agent profiles §2).
             tx.execute(
-                "UPDATE sessions SET channel_id =
-                   (SELECT s.channel_id FROM runs r JOIN sessions s ON s.id = r.session_id WHERE r.id = ?2)
+                "UPDATE sessions SET (channel_id, agent_id) =
+                   (SELECT s.channel_id, s.agent_id FROM runs r JOIN sessions s ON s.id = r.session_id
+                    WHERE r.id = ?2)
                  WHERE id = ?1",
                 params![run.session_id, parent],
+            )?;
+            tx.execute(
+                "UPDATE runs SET memory_scope = (SELECT memory_scope FROM runs WHERE id = ?2)
+                 WHERE id = ?1 AND memory_scope IS NULL",
+                params![run.id, parent],
             )?;
         }
         let title: String = input.text.chars().take(80).collect();
@@ -583,8 +624,8 @@ impl Store {
         let rows = stmt.query_map(params![limit as i64, source], |r| {
             Ok(SessionSummary {
                 session: session_row(r)?,
-                messages: r.get(11)?,
-                runs: r.get(12)?,
+                messages: r.get(13)?,
+                runs: r.get(14)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -688,7 +729,7 @@ impl Store {
         Ok(conn.last_insert_rowid())
     }
 
-    /// BM25-ranked full-text search. Returns nothing for queries with no
+    /// BM25-ranked full-text search over shared memories. Returns nothing for queries with no
     /// searchable words.
     pub fn search_memories(&self, query: &str, limit: usize) -> Result<Vec<MemoryRow>> {
         let Some(q) = fts_query(query) else {
@@ -698,7 +739,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT m.id, m.content, COALESCE(m.tags, ''), m.created_at
              FROM memories_fts f JOIN memories m ON m.id = f.rowid
-             WHERE memories_fts MATCH ?1
+             WHERE memories_fts MATCH ?1 AND m.agent_id IS NULL
              ORDER BY bm25(memories_fts) LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![q, limit as i64], |r| {
@@ -707,6 +748,7 @@ impl Store {
                 content: r.get(1)?,
                 tags: r.get(2)?,
                 created_at: r.get(3)?,
+                agent_id: None,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)

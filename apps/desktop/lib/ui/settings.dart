@@ -6,6 +6,7 @@ import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
 import '../theme.dart';
+import 'config_editor.dart';
 import 'where_to_run.dart';
 
 Future<void> showSettingsDialog(
@@ -14,6 +15,7 @@ Future<void> showSettingsDialog(
   AppPrefs prefs, {
   TernStore? store,
   Connections? connections,
+  Future<void> Function()? onRestart,
 }) => showDialog<void>(
   context: context,
   builder: (_) => SettingsDialog(
@@ -21,6 +23,7 @@ Future<void> showSettingsDialog(
     prefs: prefs,
     store: store,
     connections: connections,
+    onRestart: onRestart,
   ),
 );
 
@@ -35,12 +38,16 @@ class SettingsDialog extends StatefulWidget {
     required this.prefs,
     this.store,
     this.connections,
+    this.onRestart,
   });
 
   final TernControl control;
   final AppPrefs prefs;
   final TernStore? store;
   final Connections? connections;
+
+  /// Passed on to the configuration window.
+  final Future<void> Function()? onRestart;
 
   @override
   State<SettingsDialog> createState() => _SettingsDialogState();
@@ -257,12 +264,27 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 Text(e, style: TextStyle(fontSize: 12, color: c.error)),
               ],
               const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Done'),
-                ),
+              Row(
+                children: [
+                  if (widget.store case final store? when store.health != null)
+                    TextButton(
+                      onPressed: () {
+                        // This dialog's context goes with it.
+                        final nav = Navigator.of(context)..pop();
+                        showConfigDialog(
+                          nav.context,
+                          store,
+                          onRestart: widget.onRestart,
+                        );
+                      },
+                      child: const Text('All settings (config.toml)…'),
+                    ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Done'),
+                  ),
+                ],
               ),
             ],
           ),

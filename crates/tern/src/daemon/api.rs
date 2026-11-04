@@ -8,7 +8,7 @@
 //! | GET | `/v1/tools` | full tool specs: `[{name, description, input_schema, effect, untrusted}]` |
 //! | POST | `/v1/models/check` | validate `{model}` |
 //! | POST | `/v1/runs` | send a message: `{text, session_id?, model?, channel?, branched_from?}` (`channel`: a new thread there; `branched_from`: a side chat) |
-//! | GET | `/v1/runs/active` | runs in progress: `[{run_id, session_id, parent_run_id?, label?}]` |
+//! | GET | `/v1/runs/active` | runs in progress: `[{run_id, session_id, parent_run_id?, label?, channel_id?, author_id?}]` |
 //! | POST | `/v1/runs/{id}/resume` | resume an interrupted run |
 //! | POST | `/v1/runs/{id}/cancel` | cancel a run and its sub-agents |
 //! | GET | `/v1/runs/{id}/wait` | block until the run finishes |
@@ -24,6 +24,7 @@
 //! | GET | `/v1/events` | Server-Sent Events: agent events and approval requests |
 //! | GET | `/v1/approvals` | approvals waiting for an API client |
 //! | POST | `/v1/approvals/{id}` | answer `{decision: "once" \| "always" \| "deny"}` |
+//! | GET / POST | `/v1/outbox[/{id}[/approve\|/reject]]` | deferred approvals (`api_outbox.rs`) |
 //! | GET / POST | `/v1/secret-requests[/{id}]` | the agent's prompts for secrets (`api_secrets.rs`) |
 //! | GET | `/v1/status` | version, uptime, counts, gateway health (`api_lifecycle.rs`) |
 //! | POST | `/v1/shutdown[?dry_run=1]` | stop with exit code 0 (`api_lifecycle.rs`) |
@@ -35,11 +36,14 @@
 //! `subagent_message` (docs/subagents-design.md §3.1). Approvals of a
 //! sub-agent's calls carry `parent_run_id`, `agent_label` and
 //! `root_session_id`.
-//! Agent events also carry `channel_id`, the channel of the run's session.
+//! Agent events also carry `channel_id`, the channel of the run's session,
+//! and `agent_id`, its agent (`tern` by default). Agent profiles are in
+//! `api_agents.rs`.
 //! Channels and posts are in `api_channels.rs`; schedules in `api_schedules.rs`; session runs and journal steps in
 //! `api_runs.rs`; sub-agent runs and messages in `api_subagents.rs`;
 //! secrets in `api_secrets.rs`; providers, model lists and the default model
-//! in `api_providers.rs`; MCP servers in `api_mcp.rs`.
+//! in `api_providers.rs`; MCP servers in `api_mcp.rs`; the config editor's
+//! settings in `api_config.rs`.
 //! Pairing, devices and uploads are in `auth.rs` and `uploads.rs`. TCP
 //! listeners (`listen.rs`) serve this same router behind device-token auth.
 
@@ -173,7 +177,10 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/approvals", get(pending_approvals))
         .route("/v1/approvals/{id}", post(approve))
         .merge(super::api_channels::routes())
+        .merge(super::api_agents::routes())
+        .merge(super::api_config::routes())
         .merge(super::api_schedules::routes())
+        .merge(super::api_outbox::routes())
         .merge(super::api_runs::routes())
         .merge(super::api_subagents::routes())
         .merge(super::api_secrets::routes())
@@ -327,6 +334,12 @@ pub struct ActiveRun {
     pub parent_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The channel of its session, for member lines (docs/channels-design.md §5.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    /// Who is working, as posts name them: `tern`, `tern/<label>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_id: Option<String>,
 }
 
 async fn active_runs(State(m): State<Shared>) -> Json<Vec<ActiveRun>> {
@@ -337,11 +350,24 @@ async fn active_runs(State(m): State<Shared>) -> Json<Vec<ActiveRun>> {
                 let row = m.rt.store.run(&run_id).ok().flatten();
                 let (parent_run_id, label) =
                     row.map(|r| (r.parent_run_id, r.label)).unwrap_or_default();
+                let channel_id =
+                    m.rt.store
+                        .session(&session_id)
+                        .ok()
+                        .flatten()
+                        .and_then(|s| s.channel_id);
+                let label = label.filter(|_| parent_run_id.is_some());
+                let author_id = Some(match &label {
+                    Some(l) => tern_core::channels::author::subagent(l),
+                    None => tern_core::channels::author::AGENT.to_owned(),
+                });
                 ActiveRun {
                     run_id,
                     session_id,
-                    label: label.filter(|_| parent_run_id.is_some()),
+                    label,
                     parent_run_id,
+                    channel_id,
+                    author_id,
                 }
             })
             .collect(),
@@ -445,6 +471,12 @@ pub struct SessionItem {
     /// A side thread: `message:<id>` or `post:<id>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branched_from: Option<String>,
+    /// Moved here from this channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<String>,
+    /// Its agent, when not the default one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 impl SessionItem {
@@ -461,6 +493,8 @@ impl SessionItem {
             prev_session_id: s.prev_session_id,
             segment_reason: s.segment_reason,
             branched_from: s.branched_from,
+            moved_from: s.moved_from,
+            agent_id: s.agent_id,
         }
     }
 }
@@ -679,6 +713,8 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
 struct RunPlace {
     session_id: String,
     channel_id: Option<String>,
+    /// The session's agent (agent profiles §7.1).
+    agent_id: String,
     /// Sub-agents only: their parent run and the session at the top of
     /// their tree.
     parent: Option<(String, String)>,
@@ -695,10 +731,11 @@ fn run_place(m: &Shared, run_id: &str) -> Option<RunPlace> {
         }
         None => None,
     };
-    let channel_id = store.session(&r.session_id).ok()??.channel_id;
+    let session = store.session(&r.session_id).ok()??;
     Some(RunPlace {
+        agent_id: session.agent().to_owned(),
+        channel_id: session.channel_id,
         session_id: r.session_id,
-        channel_id,
         parent,
     })
 }
@@ -730,6 +767,8 @@ fn with_session(m: &Shared, cache: &mut HashMap<String, RunPlace>, data: &mut Va
     if let Some(c) = place.channel_id {
         obj.entry("channel_id").or_insert_with(|| Value::String(c));
     }
+    obj.entry("agent_id")
+        .or_insert_with(|| Value::String(place.agent_id));
     if let Some((parent, root_session)) = place.parent {
         obj.entry("parent_run_id")
             .or_insert_with(|| Value::String(parent));

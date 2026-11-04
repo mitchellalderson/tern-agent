@@ -17,6 +17,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0007_schedule_limits.sql"),
     include_str!("../migrations/0008_channels.sql"),
     include_str!("../migrations/0009_taint.sql"),
+    include_str!("../migrations/0010_channel_c4.sql"),
+    include_str!("../migrations/0011_channel_moves.sql"),
+    include_str!("../migrations/0012_outbox.sql"),
+    include_str!("../migrations/0013_agents.sql"),
 ];
 
 pub const LATEST_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -116,5 +120,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(main, None);
+    }
+
+    #[test]
+    fn agents_backfill_makes_the_existing_setup_the_tern_agent() {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate_to(&mut c, 12);
+        c.execute_batch(
+            "INSERT INTO sessions (id, source, created_at, updated_at, channel_id)
+               VALUES ('a', 'api', 0, 10, 'home'), ('cron', 'cron', 0, 20, 'home');
+             INSERT INTO channels (id, slug, title, kind, created_by, created_at, updated_at)
+               VALUES ('c1', 'finances', 'Finances', 'topic', 'user', 0, 0);
+             INSERT INTO schedules (id, cron, prompt, session_id, next_run_at, channel_id)
+               VALUES ('s', '0 8 * * *', 'brief', 'cron', 0, 'home');
+             INSERT INTO memories (content, created_at) VALUES ('likes tea', 0);",
+        )
+        .unwrap();
+        migrate(&mut c).unwrap();
+        let one = |sql: &str| -> String { c.query_row(sql, [], |r| r.get(0)).unwrap() };
+        let count = |sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(one("SELECT memory FROM agents WHERE id = 'tern'"), "shared");
+        assert_eq!(count("SELECT count(*) FROM agents"), 1);
+        assert_eq!(
+            one("SELECT agent_id FROM channels WHERE id = 'home'"),
+            "tern"
+        );
+        // No backfill writes: NULL is read as tern everywhere else.
+        for sql in [
+            "SELECT count(*) FROM sessions WHERE agent_id IS NOT NULL",
+            "SELECT count(*) FROM schedules WHERE agent_id IS NOT NULL",
+            "SELECT count(*) FROM memories WHERE agent_id IS NOT NULL",
+            "SELECT count(*) FROM channels WHERE id <> 'home' AND agent_id IS NOT NULL",
+            "SELECT count(*) FROM channel_agents",
+        ] {
+            assert_eq!(count(sql), 0, "{sql}");
+        }
     }
 }

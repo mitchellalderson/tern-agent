@@ -2,9 +2,11 @@
 """Fake Telegram Bot API for tests (stdlib only). Prints its port.
 
 Bot API (token must be TEST:TOKEN):
-    getUpdates, sendMessage, editMessageText, answerCallbackQuery, sendChatAction
+    getUpdates, sendMessage, editMessageText, answerCallbackQuery, sendChatAction,
+    createForumTopic
 Control endpoints for tests:
-    POST /control/message   {"chat_id", "user_id", "text"}      a user sends a message
+    POST /control/message   {"chat_id", "user_id", "text", "forum"?, "thread"?}  a user sends a
+                            message (in a forum group's topic with "forum": true)
     POST /control/callback  {"chat_id", "user_id", "message_id", "data"}  a user taps a button
     GET  /control/messages  everything the bot sent, with current text and buttons
 """
@@ -20,6 +22,7 @@ updates = []
 messages = {}  # message_id -> {"message_id", "chat_id", "text", "buttons", "edits"}
 next_update = [1]
 next_message = [100]
+next_topic = [500]
 
 
 def add_update(u):
@@ -62,9 +65,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         b = self.body()
         if self.path == "/control/message":
-            add_update({"message": {
-                "message_id": 1, "chat": {"id": b["chat_id"], "type": "private"},
-                "from": {"id": b["user_id"]}, "text": b["text"]}})
+            msg = {
+                "message_id": 1,
+                "chat": {"id": b["chat_id"], "type": "supergroup" if b.get("forum") else "private",
+                         "is_forum": bool(b.get("forum"))},
+                "from": {"id": b["user_id"]}, "text": b["text"]}
+            if b.get("thread"):
+                msg["message_thread_id"] = b["thread"]
+            add_update({"message": msg})
             return self.reply({"ok": True})
         if self.path == "/control/callback":
             with lock:
@@ -92,6 +100,7 @@ class Handler(BaseHTTPRequestHandler):
                 mid = next_message[0]
                 next_message[0] += 1
                 messages[mid] = {"message_id": mid, "chat_id": b["chat_id"], "text": b["text"],
+                                 "thread": b.get("message_thread_id"),
                                  "buttons": buttons_of(b.get("reply_markup")), "edits": 0}
             return self.reply({"ok": True, "result": {"message_id": mid, "chat": {"id": b["chat_id"]}}})
         if method == "editMessageText":
@@ -106,6 +115,11 @@ class Handler(BaseHTTPRequestHandler):
                 m["buttons"] = buttons_of(b.get("reply_markup"))
                 m["edits"] += 1
             return self.reply({"ok": True, "result": True})
+        if method == "createForumTopic":
+            with lock:
+                tid = next_topic[0]
+                next_topic[0] += 1
+            return self.reply({"ok": True, "result": {"message_thread_id": tid, "name": b["name"]}})
         if method in ("answerCallbackQuery", "sendChatAction"):
             return self.reply({"ok": True, "result": True})
         return self.reply({"ok": False, "error_code": 404, "description": "unknown method " + method}, 404)

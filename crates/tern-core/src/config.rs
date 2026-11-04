@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::home::expand_tilde;
 
 pub mod edit;
+pub mod settings;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -46,7 +47,41 @@ pub struct Config {
     pub subagents: SubagentsConfig,
     pub schedules: SchedulesConfig,
     pub memory: crate::memory::MemoryConfig,
+    /// How main channels (Home and each agent's DM) are cut into segments.
+    /// `[main]` is accepted too (agent profiles §3).
+    #[serde(alias = "main")]
     pub home: crate::channels::HomeConfig,
+    /// Agent profiles' model chains (agent profiles §6.3), set by the
+    /// runtime from the `agents` table; never read from or written to
+    /// config.toml. They join [`Config::model_chains`] after the config's
+    /// own, so a config chain with the same head wins.
+    #[serde(skip)]
+    pub agent_chains: Vec<(String, ModelChain)>,
+    /// How much runs may do without asking (tooling spec §5.4): `readonly`,
+    /// `supervised` (the default), `autonomous` or `yolo`. A routine can set
+    /// its own; it is frozen on each run when the run starts.
+    pub autonomy: crate::approval::Autonomy,
+    pub outbox: OutboxConfig,
+}
+
+/// Deferred approvals (tooling spec §5.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutboxConfig {
+    /// How long a `write` or `destructive` approval waits for an answer
+    /// before it goes to the outbox (at once when no client is attached).
+    pub wait_secs: u64,
+    /// How long an outbox item waits for the user before it expires.
+    pub expire_hours: u64,
+}
+
+impl Default for OutboxConfig {
+    fn default() -> Self {
+        Self {
+            wait_secs: 120,
+            expire_hours: 72,
+        }
+    }
 }
 
 impl Default for Config {
@@ -66,6 +101,9 @@ impl Default for Config {
             schedules: SchedulesConfig::default(),
             memory: crate::memory::MemoryConfig::default(),
             home: crate::channels::HomeConfig::default(),
+            agent_chains: Vec::new(),
+            autonomy: crate::approval::Autonomy::default(),
+            outbox: OutboxConfig::default(),
         }
     }
 }
@@ -142,6 +180,9 @@ impl Config {
         for (alias, c) in &self.subagents.models {
             out.push((format!("subagents.models.{alias}"), c));
         }
+        for (slug, c) in &self.agent_chains {
+            out.push((format!("agents.{slug}.model"), c));
+        }
         out
     }
 
@@ -197,6 +238,23 @@ impl ModelChain {
         let mut entries = vec![model.to_owned()];
         entries.extend(self.fallbacks().iter().filter(|m| *m != model).cloned());
         Self(entries)
+    }
+
+    /// From `agents.model`: `provider:model`, or a JSON list.
+    pub fn from_stored(s: &str) -> Option<Self> {
+        if s.trim_start().starts_with('[') {
+            serde_json::from_str(s).ok()
+        } else {
+            Self::new(vec![s.trim().to_owned()]).filter(|c| !c.primary().is_empty())
+        }
+    }
+
+    /// For `agents.model`: the model, or a JSON list for a chain.
+    pub fn to_stored(&self) -> String {
+        match self.0.as_slice() {
+            [one] => one.clone(),
+            many => serde_json::to_string(many).unwrap_or_default(),
+        }
     }
 
     /// The value to write back to `config.toml`: a string for one model.
@@ -695,6 +753,22 @@ env_secrets = ["GITHUB_TOKEN"]
         let m = c.default_model_ref().unwrap().unwrap();
         assert_eq!(m.provider, "anthropic");
         assert_eq!(m.to_string(), "anthropic:claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn autonomy_and_outbox_settings() {
+        let c = Config::parse(
+            "autonomy = \"autonomous\"\n[outbox]\nwait_secs = 30\n",
+            Path::new("c"),
+        )
+        .unwrap();
+        assert_eq!(c.autonomy, crate::approval::Autonomy::Autonomous);
+        assert_eq!((c.outbox.wait_secs, c.outbox.expire_hours), (30, 72));
+        assert_eq!(
+            Config::default().autonomy,
+            crate::approval::Autonomy::Supervised
+        );
+        assert!(Config::parse("autonomy = \"reckless\"", Path::new("c")).is_err());
     }
 
     #[test]

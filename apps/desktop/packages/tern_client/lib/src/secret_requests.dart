@@ -43,6 +43,8 @@ class SecretRequest {
     this.parentRunId,
     this.agentLabel,
     this.rootSessionId,
+    this.channelId,
+    this.agentId,
   });
 
   factory SecretRequest.fromJson(Json j) => SecretRequest(
@@ -58,6 +60,8 @@ class SecretRequest {
     parentRunId: j['parent_run_id'] as String?,
     agentLabel: j['agent_label'] as String?,
     rootSessionId: j['root_session_id'] as String?,
+    channelId: j['channel_id'] as String?,
+    agentId: j['agent_id'] as String?,
   );
 
   final String id;
@@ -76,4 +80,8 @@ class SecretRequest {
   final String? parentRunId;
   final String? agentLabel;
   final String? rootSessionId;
+
+  /// As on [Approval].
+  final String? channelId;
+  final String? agentId;
 }
