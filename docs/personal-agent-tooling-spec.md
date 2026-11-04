@@ -983,6 +983,11 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 | **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` · **T6d** `tern mcp serve` · **T4c** OpenAPI-to-connector and recorded test fixtures · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
 | **6. Multiplayer** (later) | Several people with one agent: group rooms first, then members on one core, then hosted workspaces (§15) | **M0** Telegram, Slack and Discord group rooms with guests · **M1** members, per-member connections, approvals and memory · **M2** tern Cloud workspaces, invites, seats | M0 S–M, M1 L, M2 M | Stages 2–3 (taint, channels); M2 needs tern Cloud |
 
+**Sandboxed compute (PY0–PY3), alongside stage 2.** A `python` tool on Monty whose scripts call tern's tools as
+functions, each call journaled and checked like a direct one, so compute that needs many lookups doesn't go through
+`shell` and around a connector's allowlist, taint and journal. Read-only first (PY1), writes through approvals and the
+outbox later (PY2). See [python-tool-spec.md](python-tool-spec.md).
+
 Why this order:
 - **Stage 1** delivers visible quality of life immediately: quiet routines, cost caps, easy stop. It costs almost
   nothing and de-risks the effect model before anything depends on it.

@@ -50,6 +50,10 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 | 5. Ecosystem | Recipes (morning brief, follow-ups, meeting prep) and goals (T6c). Signed bundles, `import openclaw` (T4b-iii). `tern mcp serve` (T6d). Faster connector authoring (T4c). Tray on Linux (T8c). Native browser behind a feature flag (T7b). | tooling §6.5, §9, §10 |
 | 6. Multiplayer | Group rooms, then several members on one core, then hosted workspaces. | tooling §15 |
 
+**Sandboxed compute** ([python-tool-spec.md](docs/python-tool-spec.md)): a `python` tool on Monty, a Python subset in
+Rust, whose scripts call tern's tools as functions, so loops over a connector stay inside its approvals, taint and
+journal instead of going through `shell` (PY0–PY3, alongside stage 2).
+
 **Running it elsewhere** ([deployment-spec.md](docs/deployment-spec.md) §12): event replay and an async store (D0),
 container image and server guides (D2), Postgres (D3), a mobile app with push (D4), a hosted tier with export and
 leave (D5), and a relay so a home core gets phone reach without port forwarding (D6).
