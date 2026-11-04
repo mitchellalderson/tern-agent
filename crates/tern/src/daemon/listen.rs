@@ -122,11 +122,7 @@ pub struct Accepted {
 }
 
 impl Accepted {
-    pub(super) fn spawn(
-        tcp: TcpListener,
-        tls: Option<TlsAcceptor>,
-        shutdown: CancellationToken,
-    ) -> Self {
+    fn spawn(tcp: TcpListener, tls: Option<TlsAcceptor>, shutdown: CancellationToken) -> Self {
         let local = tcp
             .local_addr()
             .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));

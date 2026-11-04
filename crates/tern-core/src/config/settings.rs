@@ -293,10 +293,14 @@ fn meta(key: &str) -> Meta {
             kind: Some(Kind::Text),
             ..m
         },
-        "webhooks.max_body_kb" | "webhooks.per_minute" | "webhooks.tolerance_secs" => Meta {
+        "webhooks.max_body_kb"
+        | "webhooks.per_minute"
+        | "webhooks.tolerance_secs"
+        | "webhooks.body_timeout_secs" => Meta {
             live: true,
             ..at_least(1.0)
         },
+        "webhooks.header_timeout_secs" | "webhooks.max_connections" => at_least(1.0),
         "api.remote_mcp_stdio" => Meta {
             live: true,
             security: Some(

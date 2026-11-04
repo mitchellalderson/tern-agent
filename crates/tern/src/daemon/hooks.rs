@@ -22,6 +22,11 @@
 //! for the routine 429, the routine turned off 409. Twenty failures a
 //! minute from one address get 429 until the minute passes.
 //!
+//! Connections are held to `header_timeout_secs` for the TLS handshake and
+//! each request's headers (idle keep-alive included), `body_timeout_secs`
+//! for a body (408), and `max_connections` open at once (503, or closed
+//! under TLS): a slow or idle client can't hold the port.
+//!
 //! An accepted delivery becomes a `routine_events` row keyed by a hash of
 //! what was signed (the body, plus the timestamp for `X-Tern-Signature`),
 //! so a re-delivery or a replay inside the window starts nothing. The
@@ -31,25 +36,31 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path as UrlPath, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::{Extension, Router};
+use hyper::server::conn::http1;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::service::TowerToHyperService;
 use serde_json::{Value, json};
 use tern_core::TernHome;
-use tern_core::config::{ApiConfig, Config, TlsMode};
+use tern_core::config::{ApiConfig, Config, TlsMode, WebhooksConfig};
 use tern_store::ScheduleRow;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 
 use super::auth::{self, Peer, RateLimit};
-use super::listen::{self, Accepted};
+use super::listen::{self, Io};
 use super::manager::Manager;
 
 /// Webhook secrets start with this, so the API can tell one apart and
@@ -148,27 +159,156 @@ pub async fn serve(
         accepted: RateLimit::new(1, Duration::from_secs(60)),
     });
     let app = router(state);
+    let limits = Limits::new(&config.webhooks);
     let mut out = Vec::new();
     for addr in addrs {
         let tcp = TcpListener::bind(addr)
             .await
             .with_context(|| format!("binding webhooks listener {addr}"))?;
         let local = tcp.local_addr()?;
-        let listener = Accepted::spawn(tcp, tls.clone(), shutdown.clone());
-        let app = app.clone().into_make_service_with_connect_info::<Peer>();
-        let stop = shutdown.clone();
-        let task = tokio::spawn(async move {
-            let result = axum::serve(listener, app)
-                .with_graceful_shutdown(async move { stop.cancelled().await })
-                .await;
-            if let Err(e) = result {
-                tracing::error!(error = %e, "webhooks server stopped");
-            }
-        });
+        let task = tokio::spawn(accept_loop(
+            tcp,
+            tls.clone(),
+            app.clone(),
+            limits.clone(),
+            shutdown.clone(),
+        ));
         tracing::info!(addr = %local, tls = tls.is_some(), "webhooks listening on TCP");
         out.push((local, task));
     }
     Ok(out)
+}
+
+/// What a connection may take before the listener drops it: the slowloris
+/// guard on the one port meant for the internet.
+#[derive(Clone)]
+struct Limits {
+    /// For the TLS handshake, then for each request's headers (hyper's
+    /// timer runs from when it starts waiting for them, so an idle
+    /// keep-alive connection counts too).
+    header: Duration,
+    /// Open connections across every webhook listener, handshakes included.
+    connections: Arc<Semaphore>,
+}
+
+impl Limits {
+    fn new(c: &WebhooksConfig) -> Self {
+        Self {
+            header: Duration::from_secs(c.header_timeout_secs.max(1)),
+            connections: Arc::new(Semaphore::new(c.max_connections.max(1) as usize)),
+        }
+    }
+}
+
+/// Accept connections until `shutdown`, each in its own task holding a
+/// connection permit; then wait for the open ones to finish.
+async fn accept_loop(
+    tcp: TcpListener,
+    tls: Option<TlsAcceptor>,
+    app: Router,
+    limits: Limits,
+    shutdown: CancellationToken,
+) {
+    let mut open = JoinSet::new();
+    loop {
+        let (stream, peer) = tokio::select! {
+            r = tcp.accept() => match r {
+                Ok(x) => x,
+                Err(e) => {
+                    tracing::debug!(error = %e, "webhooks accept failed");
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+            },
+            () = shutdown.cancelled() => break,
+        };
+        while open.try_join_next().is_some() {}
+        let Ok(permit) = limits.connections.clone().try_acquire_owned() else {
+            refuse_connection(&stream, tls.is_some(), peer);
+            continue;
+        };
+        let _ = stream.set_nodelay(true);
+        open.spawn(connection(
+            stream,
+            peer,
+            tls.clone(),
+            app.clone(),
+            limits.header,
+            shutdown.clone(),
+            permit,
+        ));
+    }
+    while open.join_next().await.is_some() {}
+}
+
+/// A connection over the cap: a 503 without TLS (a proxy in front passes
+/// it on), and closed with it, where there is no session to answer in.
+fn refuse_connection(stream: &TcpStream, tls: bool, peer: SocketAddr) {
+    const BODY: &str = r#"{"error":"too many open connections; try again shortly"}"#;
+    if !tls {
+        let resp = format!(
+            "HTTP/1.1 503 Service Unavailable\r\nretry-after: 5\r\nconnection: close\r\n\
+             content-type: application/json\r\ncontent-length: {}\r\n\r\n{BODY}",
+            BODY.len()
+        );
+        // A fresh socket's send buffer takes this whole; if not, it is
+        // closed all the same.
+        let _ = stream.try_write(resp.as_bytes());
+    }
+    // One line a minute at most: a flood must not flood the log too.
+    static LAST: AtomicI64 = AtomicI64::new(0);
+    let now = tern_store::now_ms() / 1000;
+    let last = LAST.load(Ordering::Relaxed);
+    if now - last >= 60
+        && LAST
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        tracing::warn!(%peer, "webhooks listener at max_connections; refusing connections");
+    }
+}
+
+/// Serve one connection: handshake and headers within `header`, bodies
+/// within `body_timeout_secs` (in `deliver`), until it closes or shutdown.
+async fn connection(
+    stream: TcpStream,
+    peer: SocketAddr,
+    tls: Option<TlsAcceptor>,
+    app: Router,
+    header: Duration,
+    shutdown: CancellationToken,
+    _permit: OwnedSemaphorePermit,
+) {
+    let io: Box<dyn Io> = match tls {
+        None => Box::new(stream),
+        Some(acceptor) => match tokio::time::timeout(header, acceptor.accept(stream)).await {
+            Ok(Ok(s)) => Box::new(s),
+            Ok(Err(e)) => {
+                tracing::debug!(%peer, error = %e, "webhooks TLS handshake failed");
+                return;
+            }
+            Err(_) => {
+                tracing::debug!(%peer, "webhooks TLS handshake timed out");
+                return;
+            }
+        },
+    };
+    let svc = TowerToHyperService::new(app.layer(Extension(ConnectInfo(Peer(peer)))));
+    let mut builder = http1::Builder::new();
+    builder.timer(TokioTimer::new()).header_read_timeout(header);
+    let conn = builder.serve_connection(TokioIo::new(io), svc);
+    tokio::pin!(conn);
+    tokio::select! {
+        r = conn.as_mut() => {
+            if let Err(e) = r {
+                tracing::debug!(%peer, error = %e, "webhooks connection closed");
+            }
+        }
+        () = shutdown.cancelled() => {
+            conn.as_mut().graceful_shutdown();
+            let _ = conn.await;
+        }
+    }
 }
 
 fn router(state: Arc<Hooks>) -> Router {
@@ -238,8 +378,19 @@ async fn deliver(
     if declared.is_some_and(|n| n > limit) {
         return refuse(StatusCode::PAYLOAD_TOO_LARGE, "body too large");
     }
-    let Ok(bytes) = axum::body::to_bytes(body, limit).await else {
-        return refuse(StatusCode::PAYLOAD_TOO_LARGE, "body too large");
+    let read = axum::body::to_bytes(body, limit);
+    let bytes = match tokio::time::timeout(Duration::from_secs(live.body_timeout_secs.max(1)), read)
+        .await
+    {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(_)) => return refuse(StatusCode::PAYLOAD_TOO_LARGE, "body too large"),
+        Err(_) => {
+            // The rest of the body may still be on its way: close, don't drain.
+            let mut resp = fail(StatusCode::REQUEST_TIMEOUT, "the body took too long");
+            resp.headers_mut()
+                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+            return resp;
+        }
     };
     let now = tern_store::now_ms() / 1000;
     let signed = match verify(&kind, &secret, &headers, &bytes, now, live.tolerance_secs) {

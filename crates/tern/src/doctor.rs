@@ -955,6 +955,15 @@ fn check_webhooks(
         ),
         None,
     );
+    let w = &config.webhooks;
+    r.check(
+        Status::Info,
+        format!(
+            "limits: headers within {}s, bodies within {}s, at most {} open connection(s), {} KB bodies, {} deliveries a minute per routine",
+            w.header_timeout_secs, w.body_timeout_secs, w.max_connections, w.max_body_kb, w.per_minute
+        ),
+        None,
+    );
     for addr in &addrs {
         let mut local = *addr;
         if local.ip().is_unspecified() {

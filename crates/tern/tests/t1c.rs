@@ -556,3 +556,118 @@ async fn secrets_rotate_and_revoke_and_the_cli_manages_them() {
     let active: i64 = env.query("SELECT count(*) FROM routine_webhooks WHERE secret IS NOT NULL");
     assert_eq!(active, 0);
 }
+
+/// Read until the server closes the connection (or `within` passes):
+/// what it sent, and whether it closed.
+async fn read_until_closed(s: &mut tokio::net::TcpStream, within: Duration) -> (String, bool) {
+    use tokio::io::AsyncReadExt;
+    let mut got = Vec::new();
+    let mut buf = [0u8; 1024];
+    let end = tokio::time::Instant::now() + within;
+    loop {
+        match tokio::time::timeout_at(end, s.read(&mut buf)).await {
+            Ok(Ok(0) | Err(_)) => return (String::from_utf8_lossy(&got).into_owned(), true),
+            Ok(Ok(n)) => got.extend_from_slice(&buf[..n]),
+            Err(_) => return (String::from_utf8_lossy(&got).into_owned(), false),
+        }
+    }
+}
+
+async fn raw(port: u16) -> tokio::net::TcpStream {
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn slow_and_idle_clients_are_cut_off_while_deliveries_still_land() {
+    use tokio::io::AsyncWriteExt;
+    let env = Env::new(false, "header_timeout_secs = 1\nbody_timeout_secs = 1\n");
+    env.script(json!({ "turns": [] }));
+    let _daemon = env.daemon();
+    let (id, secret) = env.create(json!({ "prompt": "Note the event." })).await;
+    let path = format!("/v1/hooks/{id}");
+
+    // Half the headers, then nothing: closed after header_timeout_secs.
+    let started = Instant::now();
+    let mut slow = raw(env.hooks_port).await;
+    slow.write_all(format!("POST {path} HTTP/1.1\r\nhost: x\r\n").as_bytes())
+        .await
+        .unwrap();
+    // An idle connection, keep-alive or never used, goes the same way.
+    let mut idle = raw(env.hooks_port).await;
+    let (_, closed) = read_until_closed(&mut slow, Duration::from_secs(5)).await;
+    assert!(closed, "a client dribbling headers must be cut off");
+    let (_, closed) = read_until_closed(&mut idle, Duration::from_secs(5)).await;
+    assert!(closed, "an idle connection must be cut off");
+    assert!(started.elapsed() < Duration::from_secs(4));
+
+    // Whole headers but half the body: 408, then closed.
+    let mut slow = raw(env.hooks_port).await;
+    slow.write_all(
+        format!(
+            "POST {path} HTTP/1.1\r\nhost: x\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n{{\"half\":"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let (resp, closed) = read_until_closed(&mut slow, Duration::from_secs(5)).await;
+    assert!(resp.starts_with("HTTP/1.1 408"), "{resp}");
+    assert!(closed);
+
+    // A normal delivery is untouched.
+    let body = r#"{"ok":true}"#;
+    let (status, out) = post(
+        &format!("{}{path}", env.hooks),
+        body,
+        &[("x-tern-signature", tern_sig(&secret, now(), body))],
+    )
+    .await;
+    assert_eq!(
+        (status, out["status"].as_str()),
+        (StatusCode::ACCEPTED, Some("queued"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connections_past_the_cap_are_refused_and_deliveries_resume() {
+    let env = Env::new(false, "max_connections = 2\n");
+    env.script(json!({ "turns": [] }));
+    let _daemon = env.daemon();
+    let (id, secret) = env.create(json!({ "prompt": "Note the event." })).await;
+    let hook = format!("{}/v1/hooks/{id}", env.hooks);
+    let deliver = |n: u32| {
+        let (hook, secret) = (hook.clone(), secret.clone());
+        async move {
+            let body = format!(r#"{{"n":{n}}}"#);
+            post(
+                &hook,
+                &body,
+                &[("x-tern-signature", tern_sig(&secret, now(), &body))],
+            )
+            .await
+        }
+    };
+    // Under the cap, deliveries work (each client closes its connection).
+    assert_eq!(deliver(1).await.0, StatusCode::ACCEPTED);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Two idle connections fill it; a third is refused at once with 503.
+    let a = raw(env.hooks_port).await;
+    let _b = raw(env.hooks_port).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut c = raw(env.hooks_port).await;
+    let (resp, closed) = read_until_closed(&mut c, Duration::from_secs(3)).await;
+    assert!(resp.starts_with("HTTP/1.1 503"), "{resp}");
+    assert!(
+        resp.to_ascii_lowercase().contains("retry-after: 5"),
+        "{resp}"
+    );
+    assert!(closed);
+
+    // One closes; its slot frees and a delivery lands again.
+    drop(a);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(deliver(2).await.0, StatusCode::ACCEPTED);
+}

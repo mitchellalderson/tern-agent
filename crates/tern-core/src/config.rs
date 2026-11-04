@@ -672,6 +672,16 @@ pub struct WebhooksConfig {
     pub per_minute: u32,
     /// How far a signed timestamp (`X-Tern-Signature: t=`) may be from now.
     pub tolerance_secs: u64,
+    /// How long a sender has to send a request's headers (and the TLS
+    /// handshake before them), timed from when the connection is waiting
+    /// for them: a client that dribbles or idles longer is cut off.
+    pub header_timeout_secs: u64,
+    /// How long a sender has to send a body once its headers are in; a
+    /// slower one gets 408.
+    pub body_timeout_secs: u64,
+    /// Open connections the listener holds at once, handshakes included;
+    /// more are refused (503 without TLS, closed with it).
+    pub max_connections: u32,
 }
 
 impl Default for WebhooksConfig {
@@ -683,6 +693,9 @@ impl Default for WebhooksConfig {
             max_body_kb: 256,
             per_minute: 30,
             tolerance_secs: 300,
+            header_timeout_secs: 10,
+            body_timeout_secs: 30,
+            max_connections: 64,
         }
     }
 }
