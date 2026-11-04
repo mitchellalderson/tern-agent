@@ -114,7 +114,7 @@ impl OAuthCap {
 
 /// Where the host puts a credential. Secret names resolve through
 /// [`tern_core::Secrets`] today; T4a resolves them per connection
-/// (`conn/<target>/<slug>/<NAME>`) and adds OAuth tokens as another source.
+/// (`conn/connector:<target>/<slug>/<NAME>`) and adds OAuth tokens as another source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Inject {

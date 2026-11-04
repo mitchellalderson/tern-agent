@@ -246,7 +246,7 @@ async fn the_user_chooses_then_signs_in_twice_and_again() {
     let secrets = e.conns.tokens.secrets();
     assert_eq!(
         secrets
-            .get("conn/acme/default/oauth/access_token")
+            .get("conn/mcp:acme/default/oauth/access_token")
             .as_deref(),
         Some("AT-1-aaaa")
     );
@@ -262,7 +262,9 @@ async fn the_user_chooses_then_signs_in_twice_and_again() {
         (Some("connected"), Some("me"))
     );
     assert_eq!(
-        secrets.get("conn/acme/me/oauth/access_token").as_deref(),
+        secrets
+            .get("conn/mcp:acme/me/oauth/access_token")
+            .as_deref(),
         Some("AT-2-bbbb")
     );
     let regs = s
@@ -289,7 +291,7 @@ async fn the_user_chooses_then_signs_in_twice_and_again() {
     assert_eq!(e.conns.list(Kind::Mcp, "acme").len(), 2);
     assert_eq!(
         secrets
-            .get("conn/acme/default/oauth/access_token")
+            .get("conn/mcp:acme/default/oauth/access_token")
             .as_deref(),
         Some("AT-3-cccc")
     );
@@ -315,7 +317,7 @@ async fn a_key_is_entered_privately_per_account() {
     let u = Arc::new(User {
         choice: None,
         keys: SecretValues::from([(
-            "conn/keyed/work/API_KEY".to_owned(),
+            "conn/connector:keyed/work/API_KEY".to_owned(),
             " k-123456 ".to_owned(),
         )]),
         cards: Mutex::default(),
@@ -333,7 +335,7 @@ async fn a_key_is_entered_privately_per_account() {
         e.conns
             .tokens
             .secrets()
-            .get("conn/keyed/work/API_KEY")
+            .get("conn/connector:keyed/work/API_KEY")
             .as_deref(),
         Some("k-123456")
     );

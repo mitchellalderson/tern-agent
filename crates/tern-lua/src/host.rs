@@ -326,7 +326,7 @@ struct Net {
 
 impl Net {
     /// A credential's value, for the host to send: the call's account's
-    /// secret (`conn/<target>/<slug>/<NAME>`, the plain name for the
+    /// secret (`conn/connector:<target>/<slug>/<NAME>`, the plain name for the
     /// default), or its OAuth access token. `rejected` is a token the
     /// service just refused, to refresh past.
     async fn secret(&self, name: &str, rejected: Option<&str>) -> mlua::Result<String> {

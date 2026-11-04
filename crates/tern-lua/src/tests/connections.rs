@@ -212,7 +212,7 @@ async fn two_accounts_are_routed_and_kept_apart() {
     conns.remove(&home).await.unwrap();
     assert!(
         host.secrets
-            .get("conn/gmail/home/oauth/access_token")
+            .get("conn/connector:gmail/home/oauth/access_token")
             .is_none()
     );
     assert_eq!(host.store.kv_get("lua:gmail:home", "seen").unwrap(), None);
@@ -275,7 +275,7 @@ async fn a_refused_token_is_refreshed_once_and_a_dead_grant_asks_to_reconnect() 
     );
     assert_eq!(
         host.secrets
-            .get("conn/gmail/work/oauth/access_token")
+            .get("conn/connector:gmail/work/oauth/access_token")
             .as_deref(),
         Some("AT-work-fresh")
     );

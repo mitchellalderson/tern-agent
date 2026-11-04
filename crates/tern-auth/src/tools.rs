@@ -1022,7 +1022,7 @@ impl ConnectionAdd {
         let slug = slug
             .map(str::to_owned)
             .unwrap_or_else(|| signin::new_slug(&self.conns, target.kind, &target.name, None));
-        let key = crate::ConnKey::new(&target.name, &slug);
+        let key = crate::ConnKey::new(target.kind, &target.name, &slug);
         let secrets = self.conns.tokens.secrets();
         let asks: Vec<SecretAsk> = target
             .key_names
@@ -1093,7 +1093,7 @@ pub fn connect_key(
     label: Option<&str>,
     values: &std::collections::BTreeMap<String, String>,
 ) -> Result<Recorded, ConnectError> {
-    let key = crate::ConnKey::new(&target.name, slug);
+    let key = crate::ConnKey::new(target.kind, &target.name, slug);
     let mut clean = Vec::new();
     for name in &target.key_names {
         let Some(raw) = values.get(name) else {

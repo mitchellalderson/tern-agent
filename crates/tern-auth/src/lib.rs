@@ -3,7 +3,7 @@
 //!
 //! The flows run from a front end or the CLI, never from the model: the
 //! agent asks with a card and learns only whether it worked. Tokens live in
-//! secrets.toml under `conn/<target>/<slug>/oauth/` and reach a service
+//! secrets.toml under `conn/<kind>:<target>/<slug>/oauth/` and reach a service
 //! only through the host (`ctx.http`'s `auth`, an MCP client's header).
 
 pub mod b64;
@@ -25,7 +25,7 @@ pub use discover::{AuthPlan, ClientKind, Source};
 pub use error::AuthError;
 pub use flow::{Client, DeviceCode, OAuthConfig, PendingSignIn, TokenAuth, TokenSet};
 pub use http::Guard;
-pub use tokens::{ConnKey, Tokens};
+pub use tokens::{ClientSecret, ConnKey, Tokens};
 
 /// The account every connector and MCP server has before a second one is
 /// added; it uses plain secret names (tooling spec §6.8.1, migration).

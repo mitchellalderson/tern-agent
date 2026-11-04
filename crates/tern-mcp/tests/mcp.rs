@@ -494,7 +494,7 @@ async fn two_accounts_get_their_own_process_and_secrets() {
     use tern_auth::{ConnAuth, Connections, Guard, Kind, Tokens};
     let (secrets, _tmp) = secrets(&[
         ("FIXTURE_TOKEN", "tok-default"),
-        ("\"conn/fixture/side/FIXTURE_TOKEN\"", "tok-side"),
+        ("\"conn/mcp:fixture/side/FIXTURE_TOKEN\"", "tok-side"),
     ]);
     let tokens = Arc::new(Tokens::new((*secrets).clone(), Guard::offline()));
     let conns = Arc::new(Connections::new(
@@ -677,7 +677,9 @@ async fn an_oauth_account_signs_in_to_an_http_server_and_refreshes_on_401() {
         .expect("listed through the work account");
     assert_eq!(echo.call(&ctx(), json!({"text": "hi"})).await.content, "hi");
     assert_eq!(
-        secrets.get("conn/fx/work/oauth/access_token").as_deref(),
+        secrets
+            .get("conn/mcp:fx/work/oauth/access_token")
+            .as_deref(),
         Some("AT-fresh-1")
     );
     assert_eq!(secrets.redact("Bearer AT-fresh-1"), "Bearer [REDACTED]");

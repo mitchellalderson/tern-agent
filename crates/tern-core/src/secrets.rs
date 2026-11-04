@@ -117,6 +117,15 @@ impl Secrets {
     /// Store several values in one write, so a token set (access, refresh,
     /// expiry) is never half-saved.
     pub fn set_many(&self, pairs: &[(&str, &str)]) -> Result<(), SecretError> {
+        self.update(pairs, &[])
+    }
+
+    /// Store `pairs` and remove the connection-scoped entries `remove` in
+    /// one write, so a new grant replaces the whole token set at once (a
+    /// stale refresh token never survives next to a new access token).
+    /// Removals aren't name-checked beyond being scoped, so names an older
+    /// layout wrote can be cleaned up.
+    pub fn update(&self, pairs: &[(&str, &str)], remove: &[&str]) -> Result<(), SecretError> {
         for (name, value) in pairs {
             check_any(name)?;
             if value.trim().is_empty() {
@@ -125,7 +134,16 @@ impl Secrets {
             // Keep redacting a value this one replaces.
             self.remember_old(name);
         }
+        for name in remove {
+            if !is_scoped(name) {
+                return Err(SecretError::InvalidName((*name).to_owned()));
+            }
+            self.remember_old(name);
+        }
         self.edit(|doc| {
+            for name in remove {
+                doc.remove(name);
+            }
             for (name, value) in pairs {
                 doc.insert(name, toml_edit::value(*value));
             }
@@ -150,7 +168,7 @@ impl Secrets {
     }
 
     /// Remove every connection-scoped entry starting with `prefix` (for
-    /// example `conn/gmail/work/`). Returns how many there were.
+    /// example `conn/connector:gmail/work/`). Returns how many there were.
     pub fn remove_prefix(&self, prefix: &str) -> Result<usize, SecretError> {
         if !prefix.starts_with(SCOPED_PREFIX) || !prefix.ends_with('/') {
             return Err(SecretError::InvalidName(prefix.to_owned()));
@@ -322,21 +340,26 @@ pub fn check_name(name: &str) -> Result<(), SecretError> {
 /// Connection-scoped names start with this (tooling spec §6.8.1).
 pub const SCOPED_PREFIX: &str = "conn/";
 
-/// Whether `name` belongs to a connection (`conn/<target>/<slug>/…`).
+/// Whether `name` belongs to a connection (`conn/<kind>:<target>/<slug>/…`).
 pub fn is_scoped(name: &str) -> bool {
     name.starts_with(SCOPED_PREFIX)
 }
 
-/// A connection's credential: `conn/<target>/<slug>/<NAME>` for a key the
-/// connector names, or `conn/<target>/<slug>/oauth/<field>` for its OAuth
-/// tokens. Targets are connector or MCP server names (`[a-z0-9_.-]`, ≤ 64),
-/// slugs `[a-z0-9_-]` (≤ 16).
+/// A connection's credential: `conn/<kind>:<target>/<slug>/<NAME>` for a
+/// key the target names, or `conn/<kind>:<target>/<slug>/oauth/<field>`
+/// for its OAuth tokens. The kind (`connector` or `mcp`) keeps a connector
+/// and an MCP server of the same name apart. Targets are their names
+/// (`[a-z0-9_.-]`, ≤ 64), slugs `[a-z0-9_-]` (≤ 16).
 pub fn check_scoped(name: &str) -> Result<(), SecretError> {
     let bad = || SecretError::InvalidName(name.to_owned());
     let rest = name.strip_prefix(SCOPED_PREFIX).ok_or_else(bad)?;
     let mut parts = rest.splitn(3, '/');
     let (Some(target), Some(slug), Some(tail)) = (parts.next(), parts.next(), parts.next()) else {
         return Err(bad());
+    };
+    let target = match target.split_once(':') {
+        Some(("connector" | "mcp", t)) => t,
+        _ => return Err(bad()),
     };
     let ok_target = !target.is_empty()
         && target.len() <= 64
@@ -612,20 +635,33 @@ mod tests {
         let p = write(tmp.path(), "PLAIN = \"plain-value\"\n", 0o600);
         let s = Secrets::load(&p).unwrap();
         s.set_many(&[
-            ("conn/gmail/work/oauth/access_token", "ya29.access-work"),
-            ("conn/gmail/work/oauth/refresh_token", "1//refresh-work"),
-            ("conn/gmail/home/oauth/access_token", "ya29.access-home"),
-            ("conn/github/personal/GITHUB_TOKEN", "ghp_personal"),
+            (
+                "conn/connector:gmail/work/oauth/access_token",
+                "ya29.access-work",
+            ),
+            (
+                "conn/connector:gmail/work/oauth/refresh_token",
+                "1//refresh-work",
+            ),
+            (
+                "conn/connector:gmail/home/oauth/access_token",
+                "ya29.access-home",
+            ),
+            (
+                "conn/connector:github/personal/GITHUB_TOKEN",
+                "ghp_personal",
+            ),
         ])
         .unwrap();
         assert_eq!(
-            s.get("conn/gmail/work/oauth/access_token").as_deref(),
+            s.get("conn/connector:gmail/work/oauth/access_token")
+                .as_deref(),
             Some("ya29.access-work")
         );
         // Old binaries read the file too: every key is still a string.
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(
-            text.contains("\"conn/gmail/work/oauth/access_token\" = "),
+            text.contains("\"conn/connector:gmail/work/oauth/access_token\" = "),
             "{text}"
         );
         assert!(text.contains("PLAIN = \"plain-value\""), "{text}");
@@ -634,21 +670,27 @@ mod tests {
         // The Secrets view shows plain names only.
         let names: Vec<String> = s.statuses(&[]).into_iter().map(|st| st.name).collect();
         assert_eq!(names, ["PLAIN"]);
-        assert_eq!(s.remove_prefix("conn/gmail/work/").unwrap(), 2);
-        assert_eq!(s.get("conn/gmail/work/oauth/refresh_token"), None);
-        assert!(s.get("conn/gmail/home/oauth/access_token").is_some());
+        assert_eq!(s.remove_prefix("conn/connector:gmail/work/").unwrap(), 2);
+        assert_eq!(s.get("conn/connector:gmail/work/oauth/refresh_token"), None);
+        assert!(
+            s.get("conn/connector:gmail/home/oauth/access_token")
+                .is_some()
+        );
         assert_eq!(
             s.redact("1//refresh-work"),
             "[REDACTED]",
             "removed values stay redacted"
         );
         for bad in [
-            "conn/gmail/work",
-            "conn/Gmail/work/X",
-            "conn/gmail/a-very-long-slug-name/X",
-            "conn/gmail/work/oauth/",
-            "conn/gmail/work/bad-name",
-            "conn//work/X",
+            "conn/connector:gmail/work",
+            "conn/connector:Gmail/work/X",
+            "conn/connector:gmail/a-very-long-slug-name/X",
+            "conn/connector:gmail/work/oauth/",
+            "conn/connector:gmail/work/bad-name",
+            "conn/connector:/work/X",
+            // No kind, or an unknown one.
+            "conn/gmail/work/X",
+            "conn/other:gmail/work/X",
         ] {
             assert!(s.set(bad, "v").is_err(), "{bad}");
         }

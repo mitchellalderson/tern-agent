@@ -1,6 +1,6 @@
 //! Connections: several accounts per connector or MCP server (tooling spec
 //! §6.8). Credentials are never here; they are secrets named after the
-//! connection (`conn/<target>/<slug>/…`).
+//! connection (`conn/<kind>:<target>/<slug>/…`).
 
 use rusqlite::{OptionalExtension, Row, params};
 
