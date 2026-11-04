@@ -106,6 +106,7 @@ impl Agent {
                             id: p.id,
                             author: p.author,
                             author_kind: p.author_kind,
+                            kind: p.kind,
                             created_at: p.created_at,
                             text: p.text,
                             tainted: p.tainted,

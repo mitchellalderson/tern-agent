@@ -370,6 +370,24 @@ class TernClient {
     }),
   );
 
+  /// Move conversations into a topic channel (`channel`, an id or slug)
+  /// or a new one (`newChannelTitle`). Owner scope. Throws with 409 when
+  /// something is still running in one of them.
+  Future<MoveResult> moveToChannel(
+    List<String> sessions, {
+    String? channel,
+    String? newChannelTitle,
+  }) async => MoveResult.fromJson(
+    await _json('POST', '/v1/channels/move', {
+      'sessions': sessions,
+      'channel': ?channel,
+      if (newChannelTitle != null) 'new_channel': {'title': newChannelTitle},
+    }),
+  );
+
+  /// Mark a `needs_you` post or its pointer in Home done (both close).
+  Future<void> resolvePost(int id) => _json('POST', '/v1/posts/$id/resolve');
+
   /// A page of a main channel's stream, newest first.
   Future<StreamPage> stream(
     String channel, {

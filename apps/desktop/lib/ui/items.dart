@@ -12,6 +12,7 @@ import '../theme.dart';
 import 'agents.dart';
 import 'channel_items.dart';
 import 'inspector.dart';
+import 'move_dialog.dart';
 
 /// One transcript item.
 class ItemView extends StatelessWidget {
@@ -64,7 +65,15 @@ class ItemView extends StatelessWidget {
     final ApprovalItem a => ApprovalCard(item: a, store: store),
     final SecretRequestItem r => SecretRequestCard(item: r, store: store),
     final RunEndItem r => _RunEnd(r, store: store),
-    final CutItem c => CutDivider(item: c),
+    final CutItem c => CutDivider(
+      item: c,
+      onMove: () =>
+          showMoveDialog(context, store, [c.cut.sessionId], what: 'this topic'),
+    ),
+    PostItem(:final post) when post.kind == 'moved' => MovedMarker(
+      post: post,
+      store: store,
+    ),
     PostItem(:final post) => PostCard(post: post, store: store),
     SideChatItem(:final chat) => SideChatCard(chat: chat, store: store),
   };

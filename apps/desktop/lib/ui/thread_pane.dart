@@ -5,6 +5,7 @@ import '../state/store.dart';
 import '../theme.dart';
 import 'channel_view.dart';
 import 'items.dart';
+import 'move_dialog.dart';
 import 'widgets.dart';
 
 /// The right pane when a thread is open: a History entry, a side chat (or
@@ -59,6 +60,13 @@ class ThreadPane extends StatelessWidget {
                       ),
                     ),
                   ),
+                  if (session != null && quote == null)
+                    QuietIconButton(
+                      icon: Icons.drive_file_move_outline,
+                      tooltip: 'Move to a channel',
+                      onPressed: () =>
+                          showMoveDialog(context, store, [session]),
+                    ),
                   QuietIconButton(
                     icon: Icons.close,
                     tooltip: 'Close',

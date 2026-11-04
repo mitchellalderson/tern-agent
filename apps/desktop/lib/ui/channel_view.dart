@@ -5,7 +5,6 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../theme.dart';
 import 'conversation.dart';
-import 'items.dart';
 import 'widgets.dart';
 
 /// A topic channel's timeline (docs/channels-design.md §5.2): its posts,
@@ -39,10 +38,10 @@ class ChannelView extends StatelessWidget {
     final shown = (store.posts[ch.id] ?? const <Post>[])
         .where((p) => inTimeline(p, main))
         .toList();
-    final t = main == null ? null : store.transcripts[main];
-    final phase = t?.phase;
+    // One live line per member at work here (channels-design §5.2).
+    final lines = store.liveIn(ch.id);
     final waiting = store.waitingFrom(ch.id);
-    final extra = phase == null ? 0 : 1;
+    final extra = lines.length;
     return Column(
       children: [
         _ChannelHeader(
@@ -54,7 +53,7 @@ class ChannelView extends StatelessWidget {
         const Hairline(),
         if (waiting > 0) WaitingInHome(store: store, count: waiting),
         Expanded(
-          child: shown.isEmpty && phase == null
+          child: shown.isEmpty && lines.isEmpty
               ? _EmptyChannel(channel: ch)
               : ListView.builder(
                   reverse: true,
@@ -69,18 +68,7 @@ class ChannelView extends StatelessWidget {
                           vertical: 6,
                         ),
                         child: i < extra
-                            ? Row(
-                                children: [
-                                  const AgentAvatar(name: 'tern', size: 18),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: ActivityLine(
-                                      phase: phase!,
-                                      since: t!.runSince,
-                                    ),
-                                  ),
-                                ],
-                              )
+                            ? MemberLine(line: lines[extra - 1 - i])
                             : TimelinePost(
                                 post: shown[shown.length - 1 - (i - extra)],
                                 store: store,
@@ -96,6 +84,38 @@ class ChannelView extends StatelessWidget {
             child: Text(e, style: TextStyle(color: c.error, fontSize: 12.5)),
           ),
         Composer(store: store),
+      ],
+    );
+  }
+}
+
+/// "research-1 · Running http_fetch": a member working in the channel.
+class MemberLine extends StatelessWidget {
+  const MemberLine({super.key, required this.line});
+
+  final ({String runId, String author, String doing}) line;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Row(
+      children: [
+        AgentAvatar(name: line.author, size: 18),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 10,
+          height: 10,
+          child: CircularProgressIndicator(strokeWidth: 1.5, color: c.muted),
+        ),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            '${line.author} · ${line.doing}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12.5, color: c.muted),
+          ),
+        ),
       ],
     );
   }
@@ -328,6 +348,10 @@ class TimelinePost extends StatelessWidget {
                     relativeTime(post.createdAt),
                     style: TextStyle(fontSize: 11.5, color: c.muted),
                   ),
+                  if (post.needsYou) ...[
+                    const SizedBox(width: 8),
+                    const NeedsYouTag(),
+                  ],
                 ],
               ),
               const SizedBox(height: 3),
@@ -339,6 +363,10 @@ class TimelinePost extends StatelessWidget {
               ),
               Row(
                 children: [
+                  if (post.needsYou)
+                    _Action(label: 'Done', onTap: () => store.resolvePost(post))
+                  else if (post.kind == 'needs_you')
+                    const _Action(label: 'Done ✓', onTap: null),
                   _Action(
                     label: 'Reply in thread',
                     onTap: () => store.replyTo(post),
@@ -377,11 +405,35 @@ extension on TimelinePost {
   }
 }
 
+/// Marks a post that waits on the user.
+class NeedsYouTag extends StatelessWidget {
+  const NeedsYouTag({super.key, this.where});
+
+  /// For a pointer: the channel it came from.
+  final String? where;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: c.warn.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        where == null ? 'needs you' : 'needs you · $where',
+        style: TextStyle(fontSize: 11, color: c.warn),
+      ),
+    );
+  }
+}
+
 class _Action extends StatelessWidget {
   const _Action({required this.label, required this.onTap});
 
   final String label;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) => InkWell(

@@ -77,7 +77,9 @@ impl Tool for AgentSpawn {
                     "max_iterations": { "type": "integer", "minimum": 1,
                         "description": "Steps for this sub-agent. Default and ceiling are configured; ask for more when it must read or try a lot." },
                     "budget_tokens": { "type": "integer", "minimum": 10000,
-                        "description": "Tokens for this sub-agent (input + output + cache, counted on every step). Ask for more when it must read a lot, or when retrying one that ran out." }
+                        "description": "Tokens for this sub-agent (input + output + cache, counted on every step). Ask for more when it must read a lot, or when retrying one that ran out." },
+                    "post": { "type": "boolean",
+                        "description": "Let it post progress to this conversation's channel with channel_post, and post its report there when it finishes. For long background work the user should see as it goes. Default false: it reports only to you." }
                 }
             }),
         )

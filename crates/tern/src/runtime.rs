@@ -147,7 +147,7 @@ impl Runtime {
             store.clone(),
             Some(Arc::new(move |row| {
                 let _ = post_changes.send(Change::PostCreated {
-                    post: tern_core::channels::Post::from(row),
+                    post: Box::new(tern_core::channels::Post::from(row)),
                 });
             })),
         )));

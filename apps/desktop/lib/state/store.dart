@@ -111,6 +111,14 @@ class TernStore extends ChangeNotifier {
   /// Top-level runs in progress → their channel, for the sidebar.
   final _activeIn = <String, String>{};
 
+  /// Runs in progress in a channel, sub-agents too: who and where, and
+  /// what each is doing, for its member lines (channels-design §5.2).
+  final _live = <String, ({String channel, String author})>{};
+  final _phase = <String, String>{};
+
+  /// Sub-agent run → its label, from `subagent_spawned`.
+  final _labels = <String, String>{};
+
   /// The conversation open in the right pane: a History entry, a side
   /// chat, a post's thread.
   String? thread;
@@ -153,6 +161,81 @@ class TernStore extends ChangeNotifier {
     for (final c in channels)
       if (!c.isHome && !c.archived) c,
   ];
+
+  /// One line per member working in `channelId`: who, and what they are
+  /// doing. The main thread's own phase is richer (waiting on agents).
+  List<({String runId, String author, String doing})> liveIn(String channelId) {
+    final main = channels
+        .where((c) => c.id == channelId)
+        .firstOrNull
+        ?.mainSessionId;
+    final mainRun = main == null ? null : transcripts[main]?.activeRun;
+    return [
+      for (final MapEntry(key: run, value: w) in _live.entries)
+        if (w.channel == channelId)
+          (
+            runId: run,
+            author: w.author,
+            doing:
+                (run == mainRun ? transcripts[main]?.phase?.label : null) ??
+                _phase[run] ??
+                'Working',
+          ),
+    ];
+  }
+
+  /// Move conversations into a topic channel, or a new one titled
+  /// `newTitle`, and open it. Returns the daemon's reason on failure.
+  Future<String?> moveToChannel(
+    List<String> sessions, {
+    String? channelId,
+    String? newTitle,
+  }) async {
+    try {
+      final r = await client.moveToChannel(
+        sessions,
+        channel: channelId,
+        newChannelTitle: newTitle,
+      );
+      for (final s in sessions) {
+        _homeSessions.remove(s);
+      }
+      channels = await client.channels();
+      this.sessions = await client.sessions();
+      posts.remove(r.channel.id);
+      await openChannelView(r.channel.id);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  /// Mark a needs-you post (or its pointer in Home) done.
+  Future<void> resolvePost(Post post) async {
+    try {
+      await client.resolvePost(post.id);
+    } on TernException catch (e) {
+      // Already done elsewhere: show it closed anyway.
+      if (e.status != 404) {
+        error = e.message;
+        notifyListeners();
+        return;
+      }
+    }
+    bool pair(Post p) =>
+        p.id == post.id || p.id == post.pointsTo || p.pointsTo == post.id;
+    for (final list in posts.values) {
+      for (var i = 0; i < list.length; i++) {
+        if (pair(list[i])) list[i] = list[i].resolved();
+      }
+    }
+    for (final item
+        in transcripts[homeKey]?.items.whereType<PostItem>() ??
+            const <PostItem>[]) {
+      if (pair(item.post)) item.post = item.post.resolved();
+    }
+    await _refreshChannels();
+  }
 
   /// New posts since this device last looked.
   bool unread(Channel c) =>
@@ -319,7 +402,12 @@ class TernStore extends ChangeNotifier {
     if (thread case final id?) await _load(id);
     if (topicOpen) await _loadChannel(channel!);
     _activeIn.clear();
+    _live.clear();
     for (final r in active) {
+      if (r.channelId case final ch?) {
+        _live[r.runId] = (channel: ch, author: r.authorId ?? 'tern');
+        if (r.label case final l?) _labels[r.runId] = l;
+      }
       if (r.parentRunId != null) continue;
       transcriptOf(r.sessionId)?.activeRun = r.runId;
       final c = sessions.where((s) => s.id == r.sessionId).firstOrNull;
@@ -796,7 +884,30 @@ class TernStore extends ChangeNotifier {
         _activeIn[runId] = channelId;
       }
     }
-    if (e is RunFinished) _activeIn.remove(e.runId);
+    if (e case RunStarted(:final runId, :final channelId?)) {
+      final label = _labels[runId];
+      _live[runId] = (
+        channel: channelId,
+        author: e.parentRunId != null && label != null ? 'tern/$label' : 'tern',
+      );
+    }
+    switch (e) {
+      case SubagentSpawned(:final childRunId, :final label):
+        _labels[childRunId] = label;
+      case ToolStarted(:final runId, :final name):
+        _phase[runId] = 'Running $name';
+      case TextDelta(:final runId):
+        _phase[runId] = 'Writing';
+      case ToolFinished(:final runId) || AssistantMessage(:final runId):
+        _phase[runId] = 'Thinking';
+      default:
+        break;
+    }
+    if (e is RunFinished) {
+      _activeIn.remove(e.runId);
+      _live.remove(e.runId);
+      _phase.remove(e.runId);
+    }
     String? session;
     switch (e) {
       case ApprovalRequested(:final approval):

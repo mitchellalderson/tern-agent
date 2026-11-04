@@ -4,6 +4,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../theme.dart';
 import 'channel_items.dart';
+import 'move_dialog.dart';
 import 'widgets.dart';
 
 /// Home's History (docs/channels-design.md §5.2): earlier sessions of the
@@ -28,6 +29,9 @@ class _HistoryDialogState extends State<HistoryDialog> {
   final _search = TextEditingController();
   List<SessionItem>? _all;
   String? _error;
+
+  /// Picked to move together into a channel.
+  final _picked = <String>{};
 
   @override
   void initState() {
@@ -155,6 +159,16 @@ class _HistoryDialogState extends State<HistoryDialog> {
                                   color: c.muted,
                                 ),
                               ),
+                              trailing: Checkbox(
+                                value: _picked.contains(s.id),
+                                onChanged: s.messages == 0
+                                    ? null
+                                    : (v) => setState(
+                                        () => v == true
+                                            ? _picked.add(s.id)
+                                            : _picked.remove(s.id),
+                                      ),
+                              ),
                               onTap: () {
                                 Navigator.of(context).pop();
                                 if (s.id != head) widget.store.openThread(s.id);
@@ -163,6 +177,34 @@ class _HistoryDialogState extends State<HistoryDialog> {
                         ],
                       ),
               ),
+              if (_picked.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Row(
+                    children: [
+                      Text(
+                        '${_picked.length} picked',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const Spacer(),
+                      FilledButton.icon(
+                        icon: const Icon(
+                          Icons.drive_file_move_outline,
+                          size: 16,
+                        ),
+                        label: const Text('Move to channel…'),
+                        onPressed: () {
+                          final picked = _picked.toList();
+                          final store = widget.store;
+                          final nav = Navigator.of(context);
+                          final host = nav.context;
+                          nav.pop();
+                          showMoveDialog(host, store, picked);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
             ],
           ),
         ),

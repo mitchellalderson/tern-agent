@@ -108,6 +108,8 @@ const OWNER_ONLY: &[&str] = &[
     "/v1/secrets",
     "/v1/providers",
     "/v1/shutdown",
+    // Moving conversations between channels rearranges what everyone sees.
+    "/v1/channels/move",
 ];
 
 /// Paths a `chat` device may change. Any other non-GET route is owner-only,

@@ -7,7 +7,7 @@ mod migrations;
 mod repo;
 mod subagents_repo;
 
-pub use channels_repo::{ChannelRow, HOME, NewPost, NewThread, PostRow};
+pub use channels_repo::{ChannelRow, HOME, Moved, NewPost, NewThread, PostRow};
 pub use daemon_repo::{HeldDelivery, ScheduleRow, TokenCounts};
 pub use devices_repo::{DeviceGrant, DeviceRow};
 pub use subagents_repo::{MailRow, NewMail};
