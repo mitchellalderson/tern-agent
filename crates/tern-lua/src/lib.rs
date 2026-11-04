@@ -4,6 +4,7 @@
 mod host;
 mod spec;
 pub mod tools;
+pub mod watch;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};

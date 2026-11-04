@@ -110,6 +110,7 @@ docker_pids = 512          # 0 for no limit
 # runs_per_day = 24             # then the schedule pauses until tomorrow (unset = no cap)
 # usd_per_day = 1.0             # needs the model's price (see `prices` below)
 # tokens_per_run = 200000       # a run that uses more is stopped and fails
+# max_events_per_poll = 20      # new watch events that each start a run; the rest share one run
 #
 # Home (and each Telegram chat) is one stream cut into sessions. A message
 # starts a new one, with a summary of the last carried over, after:

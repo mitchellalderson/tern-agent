@@ -4,7 +4,7 @@
 //! | Method | Path | |
 //! |---|---|---|
 //! | GET | `/v1/schedules[?agent=]` | all schedules (or one agent's), with their last run's status |
-//! | POST | `/v1/schedules` | create `{cron | at, prompt, agent?, deliver_to?, channel?, autonomy?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
+//! | POST | `/v1/schedules` | create `{cron | at | watch (+ every, backfill, include_self), prompt, agent?, deliver_to?, channel?, autonomy?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
 //! | POST | `/v1/schedules/preview` | `{cron}` → normalized form and next 3 runs |
 //! | PATCH | `/v1/schedules/{id}` | change any of those, `enabled`, or `resume: true` (lift a budget pause); `null` returns a cap or `quiet_hours` to the default |
 //!
@@ -92,6 +92,23 @@ pub struct Schedule {
     /// The agent whose job it is.
     #[serde(default = "default_agent")]
     pub agent_id: String,
+    /// `<connector>.<watch>` for a watch trigger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<String>,
+    /// How often a watch is polled, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_secs: Option<i64>,
+    /// A watch's first poll starts runs instead of only recording.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backfill: bool,
+    /// Keeps events the watch marks as caused by tern.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_self: bool,
+    /// What the last poll or gate found ("2 new events", "gate: skipped").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_check: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_check_at: Option<i64>,
 }
 
 fn cron() -> String {
@@ -144,6 +161,12 @@ fn view(m: &Shared, s: ScheduleRow) -> Schedule {
         agent_id: s.agent_id.unwrap_or_else(default_agent),
         channel_id: s.channel_id.unwrap_or_else(home),
         autonomy: s.autonomy,
+        watch: s.watch,
+        every_secs: s.every_secs,
+        backfill: s.backfill,
+        include_self: s.include_self,
+        last_check: s.last_check,
+        last_check_at: s.last_check_at,
     }
 }
 
@@ -235,10 +258,22 @@ fn target(t: Option<&str>) -> Result<Option<String>, ApiError> {
     }
 }
 
+/// Check a trigger's watch against the active connectors.
+async fn check_trigger(m: &Shared, t: &mut TriggerArgs) -> Result<(), ApiError> {
+    if t.watch.is_some() {
+        let checks = m.rt.routine_checks().map_err(internal)?;
+        tern_tools::schedule::check_trigger(t, Some(&checks))
+            .await
+            .map_err(bad)?;
+    }
+    Ok(())
+}
+
 async fn create(
     State(m): State<Shared>,
-    Json(b): Json<CreateBody>,
+    Json(mut b): Json<CreateBody>,
 ) -> Result<(StatusCode, Json<Schedule>), ApiError> {
+    check_trigger(&m, &mut b.trigger).await?;
     let deliver_to = target(b.deliver_to.as_deref())?;
     if let Some(a) = &b.autonomy {
         autonomy(a)?;
@@ -308,8 +343,9 @@ struct UpdateBody {
 async fn update(
     State(m): State<Shared>,
     UrlPath(id): UrlPath<String>,
-    Json(b): Json<UpdateBody>,
+    Json(mut b): Json<UpdateBody>,
 ) -> ApiResult<Schedule> {
+    check_trigger(&m, &mut b.trigger).await?;
     let deliver_to = match &b.deliver_to {
         Some(t) => Some(target(Some(t))?),
         None => None,

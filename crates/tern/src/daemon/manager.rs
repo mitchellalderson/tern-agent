@@ -443,6 +443,32 @@ impl ApprovalHandler for Router {
     }
 }
 
+/// A watch run's input: the routine's prompt, then the events, wrapped as
+/// untrusted.
+pub(crate) fn watch_input(
+    prompt: &str,
+    watch: &str,
+    events: &[tern_store::RoutineEvent],
+) -> String {
+    let (what, body) = match events {
+        [one] => ("an event".to_owned(), one.payload.clone()),
+        many => (
+            format!("{} events", many.len()),
+            format!(
+                "[\n{}\n]",
+                many.iter()
+                    .map(|e| e.payload.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",\n")
+            ),
+        ),
+    };
+    format!(
+        "{prompt}\n\nThe watch {watch} reported {what}:\n{}",
+        tern_core::agent::taint::wrap(&format!("watch:{watch}"), &body)
+    )
+}
+
 pub struct Manager {
     pub rt: Arc<Runtime>,
     pub routes: Arc<Routes>,
@@ -532,6 +558,39 @@ impl Manager {
         let started = self
             .rt
             .start_run(Some(&s.session_id), None, &s.prompt, "cron", "cron")?;
+        self.drive_routine_run(s, started)
+    }
+
+    /// Start a run of watch routine `s` for `events` (one, or a batch).
+    /// The events are untrusted input: the run starts tainted (tooling spec
+    /// §3.1, §5.3), and they reach the model wrapped. Its trigger is
+    /// `cron`, like every routine's run.
+    pub async fn start_watch_run(
+        self: &Arc<Self>,
+        s: &tern_store::ScheduleRow,
+        events: &[tern_store::RoutineEvent],
+    ) -> anyhow::Result<crate::runtime::StartedRun> {
+        let watch = s.watch.as_deref().unwrap_or("watch");
+        let text = watch_input(&s.prompt, watch, events);
+        let reason = format!("started by watch {watch}");
+        let started = self.rt.start_run_tainted(
+            Some(&s.session_id),
+            None,
+            &text,
+            "cron",
+            "cron",
+            Some(&reason),
+        )?;
+        self.drive_routine_run(s, started)
+    }
+
+    /// A routine's run, just created: its delivery target, autonomy and
+    /// token cap, then drive it.
+    fn drive_routine_run(
+        self: &Arc<Self>,
+        s: &tern_store::ScheduleRow,
+        started: crate::runtime::StartedRun,
+    ) -> anyhow::Result<crate::runtime::StartedRun> {
         if let Some(t) = &s.deliver_to {
             self.rt.store.set_run_deliver_to(&started.run_id, t)?;
         }

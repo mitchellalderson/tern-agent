@@ -99,14 +99,104 @@ impl ScheduleLimits {
     }
 }
 
-/// What starts a routine (T1b). At most one of `cron` and `at`; on create,
-/// one of them is required.
+/// What starts a routine (T1b). At most one of `cron`, `at` and `watch`;
+/// on create, one of them is required.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct TriggerArgs {
     /// 5-field cron, local time.
     pub cron: Option<String>,
     /// Once, at a local `YYYY-MM-DD HH:MM` (or RFC 3339), then off.
     pub at: Option<String>,
+    /// `<connector>.<watch>`: poll it, and run once per new event.
+    pub watch: Option<String>,
+    /// How often to poll a watch: `90s`, `5m`, `1h`, `1d` (at least 1m).
+    /// [`check_trigger`] fills in the watch's own default.
+    pub every: Option<String>,
+    /// Run for what the first poll finds, instead of only recording it.
+    pub backfill: Option<bool>,
+    /// Keep events the watch marks as caused by tern itself.
+    pub include_self: Option<bool>,
+}
+
+/// The shortest watch interval (tooling spec §3.2).
+pub const MIN_EVERY_SECS: i64 = 60;
+
+/// Checks a routine's watch (and gate) against the active connectors.
+/// tern-tools runs no Luau; the runtime provides this.
+#[async_trait]
+pub trait RoutineChecks: Send + Sync {
+    /// Watch `watch` of active connector `connector`.
+    async fn watch(&self, connector: &str, watch: &str) -> Result<WatchSummary, String>;
+}
+
+/// What the user should know about a watch before it runs: how often, and
+/// where it reaches (tooling spec §3.2, "activating a watch shows its
+/// interval and hosts").
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WatchSummary {
+    pub default_every: Option<String>,
+    pub hosts: Vec<String>,
+}
+
+/// Check a trigger's watch (if any) and fill in its interval. `checks` is
+/// `None` where no connectors exist, and then a watch is refused.
+pub async fn check_trigger(
+    t: &mut TriggerArgs,
+    checks: Option<&dyn RoutineChecks>,
+) -> Result<Option<WatchSummary>, String> {
+    let Some(w) = &t.watch else {
+        return Ok(None);
+    };
+    let (connector, watch) = split_watch(w)?;
+    let checks = checks.ok_or("watches aren't available here")?;
+    let summary = checks.watch(connector, watch).await?;
+    if t.every.is_none() {
+        t.every = Some(summary.default_every.clone().unwrap_or_else(|| "5m".into()));
+    }
+    parse_every(t.every.as_deref().unwrap_or_default())?;
+    Ok(Some(summary))
+}
+
+/// `github.review_requests` → (`github`, `review_requests`).
+pub fn split_watch(w: &str) -> Result<(&str, &str), String> {
+    w.trim()
+        .split_once('.')
+        .filter(|(c, w)| !c.is_empty() && !w.is_empty())
+        .ok_or_else(|| format!("watch {w:?} must be \"<connector>.<watch>\""))
+}
+
+/// `90s`, `5m`, `1h`, `1d` or plain seconds, at least a minute.
+pub fn parse_every(s: &str) -> Result<i64, String> {
+    let s = s.trim();
+    let (n, unit) = match s.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+        Some((i, _)) => (&s[..i], s[i..].trim()),
+        None => (s, "s"),
+    };
+    let mult = match unit {
+        "s" | "sec" | "secs" => 1,
+        "m" | "min" | "mins" => 60,
+        "h" | "hr" | "hour" | "hours" => 3600,
+        "d" | "day" | "days" => 86_400,
+        _ => 0,
+    };
+    let secs = n.parse::<i64>().ok().filter(|_| mult > 0).map(|n| n * mult);
+    match secs {
+        Some(secs) if secs >= MIN_EVERY_SECS => Ok(secs),
+        Some(_) => Err(format!("`every` {s:?} is too often: at least 1m")),
+        None => Err(format!(
+            "`every` {s:?} must be like \"5m\", \"1h\" or \"1d\""
+        )),
+    }
+}
+
+/// `300` → `5m`.
+pub fn fmt_every(secs: i64) -> String {
+    match secs {
+        s if s % 86_400 == 0 => format!("{}d", s / 86_400),
+        s if s % 3600 == 0 => format!("{}h", s / 3600),
+        s if s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
 }
 
 impl TriggerArgs {
@@ -118,40 +208,66 @@ impl TriggerArgs {
     }
 
     fn is_empty(&self) -> bool {
-        self.cron.is_none() && self.at.is_none()
+        self.cron.is_none() && self.at.is_none() && self.watch.is_none()
     }
 
-    /// Check the trigger and set it on `row`, with its next run.
+    /// Check the trigger and set it on `row`, with its next run. A watch
+    /// must have been through [`check_trigger`].
     fn apply(&self, row: &mut ScheduleRow) -> Result<(), String> {
-        match (&self.cron, &self.at) {
-            (Some(_), Some(_)) => Err("give either `cron` or `at`, not both".into()),
-            (Some(c), None) => {
-                let cron: Cron = c
-                    .parse()
-                    .map_err(|e: tern_core::cron::CronError| e.to_string())?;
-                let next = cron
-                    .next_after(chrono::Local::now())
-                    .ok_or("that schedule never fires")?;
-                row.trigger = "cron".into();
-                row.cron = cron.to_string();
-                row.next_run_at = next.timestamp_millis();
-                Ok(())
-            }
-            (None, Some(at)) => {
-                let at = parse_at(at)?;
-                if at <= chrono::Local::now() {
-                    return Err(format!(
-                        "{} has already passed",
-                        at.format("%Y-%m-%d %H:%M")
-                    ));
-                }
-                row.trigger = "once".into();
-                row.cron = String::new();
-                row.next_run_at = at.timestamp_millis();
-                Ok(())
-            }
-            (None, None) => Err("give `cron` (repeating) or `at` (once)".into()),
+        if let Some(b) = self.backfill {
+            row.backfill = b;
         }
+        if let Some(i) = self.include_self {
+            row.include_self = i;
+        }
+        let given = [self.cron.is_some(), self.at.is_some(), self.watch.is_some()];
+        if given.iter().filter(|g| **g).count() > 1 {
+            return Err("give one of `cron`, `at` or `watch`".into());
+        }
+        if self.every.is_some() && self.watch.is_none() {
+            if row.trigger() != "watch" {
+                return Err("`every` is for watches".into());
+            }
+            row.every_secs = Some(parse_every(self.every.as_deref().unwrap_or_default())?);
+            return Ok(());
+        }
+        if let Some(c) = &self.cron {
+            let cron: Cron = c
+                .parse()
+                .map_err(|e: tern_core::cron::CronError| e.to_string())?;
+            let next = cron
+                .next_after(chrono::Local::now())
+                .ok_or("that schedule never fires")?;
+            row.trigger = "cron".into();
+            row.cron = cron.to_string();
+            row.watch = None;
+            row.every_secs = None;
+            row.next_run_at = next.timestamp_millis();
+        } else if let Some(at) = &self.at {
+            let at = parse_at(at)?;
+            if at <= chrono::Local::now() {
+                return Err(format!(
+                    "{} has already passed",
+                    at.format("%Y-%m-%d %H:%M")
+                ));
+            }
+            row.trigger = "once".into();
+            row.cron = String::new();
+            row.watch = None;
+            row.every_secs = None;
+            row.next_run_at = at.timestamp_millis();
+        } else if let Some(w) = &self.watch {
+            let (connector, watch) = split_watch(w)?;
+            row.trigger = "watch".into();
+            row.cron = String::new();
+            row.watch = Some(format!("{connector}.{watch}"));
+            row.every_secs = Some(parse_every(self.every.as_deref().unwrap_or("5m"))?);
+            // The first poll (a baseline) happens on the next tick.
+            row.next_run_at = tern_store::now_ms();
+        } else if row.trigger.is_empty() {
+            return Err("give `cron` (repeating), `at` (once) or `watch` (on events)".into());
+        }
+        Ok(())
     }
 }
 
@@ -190,6 +306,11 @@ pub fn describe_trigger(s: &ScheduleRow) -> String {
             };
             format!("once at {}", fmt_time(at))
         }
+        "watch" => format!(
+            "watch {} every {}",
+            s.watch.as_deref().unwrap_or("?"),
+            fmt_every(s.every_secs.unwrap_or(300))
+        ),
         _ => s.cron.clone(),
     }
 }
@@ -198,7 +319,10 @@ pub fn describe_trigger(s: &ScheduleRow) -> String {
 fn trigger_properties() -> serde_json::Map<String, Value> {
     let props = json!({
         "cron": { "type": "string", "description": "repeat on a 5-field cron (minute hour day-of-month month day-of-week, local time), e.g. \"0 8 * * 1-5\" is weekdays at 08:00" },
-        "at": { "type": "string", "description": "run once at this local time, \"YYYY-MM-DD HH:MM\" (reminders: \"tomorrow at 9\"), instead of `cron`" }
+        "at": { "type": "string", "description": "run once at this local time, \"YYYY-MM-DD HH:MM\" (reminders: \"tomorrow at 9\"), instead of `cron`" },
+        "watch": { "type": "string", "description": "\"<connector>.<watch>\": run on events from an active connector's watch instead of a clock. The watch is polled (no model call when it finds nothing); each new event starts a run with the event attached as untrusted input. The first poll only records what is already there." },
+        "every": { "type": "string", "description": "how often to poll the watch, e.g. \"5m\" (at least 1m; default: the watch's own)" },
+        "backfill": { "type": "boolean", "description": "also run for what the first poll finds. Rarely wanted." }
     });
     match props {
         Value::Object(m) => m,
@@ -329,9 +453,12 @@ pub fn update_schedule(
         return Ok(None);
     };
     let enabling = ch.enabled == Some(true) && !s.enabled;
-    let retrigger = !ch.trigger.is_empty();
+    let t = &ch.trigger;
+    let retrigger = !t.is_empty();
+    if retrigger || t.every.is_some() || t.backfill.is_some() || t.include_self.is_some() {
+        t.apply(&mut s)?;
+    }
     if retrigger {
-        ch.trigger.apply(&mut s)?;
         // A new time for a reminder that already ran turns it back on.
         if s.trigger() == "once" && ch.enabled.is_none() {
             s.enabled = true;
@@ -423,6 +550,8 @@ pub fn check_deliver_to(t: &str) -> Result<(), String> {
 
 pub struct ScheduleCreate {
     pub store: Store,
+    /// Checks watches against the active connectors; `None` refuses them.
+    pub checks: Option<std::sync::Arc<dyn RoutineChecks>>,
 }
 
 #[derive(Deserialize)]
@@ -469,9 +598,13 @@ impl Tool for ScheduleCreate {
     }
 
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
-        let a: CreateArgs = match args(raw) {
+        let mut a: CreateArgs = match args(raw) {
             Ok(a) => a,
             Err(e) => return e,
+        };
+        let watch = match check_trigger(&mut a.trigger, self.checks.as_deref()).await {
+            Ok(w) => w,
+            Err(e) => return ToolResult::error(e),
         };
         let deliver_to = resolve_target(&self.store, &ctx.session_id, a.deliver_to.as_deref());
         let row = match create_routine(
@@ -485,11 +618,21 @@ impl Tool for ScheduleCreate {
             Ok(r) => r,
             Err(e) => return ToolResult::error(e),
         };
+        let when = match &watch {
+            Some(w) => format!(
+                "it reaches {}; the first poll records what is there now without running",
+                if w.hosts.is_empty() {
+                    "no hosts".to_owned()
+                } else {
+                    w.hosts.join(", ")
+                }
+            ),
+            None => format!("next run {}", fmt_time(row.next_run_at)),
+        };
         ToolResult::ok(format!(
-            "created schedule {} ({}); next run {}; results go to {}{}",
+            "created schedule {} ({}); {when}; results go to {}{}",
             row.id,
             describe_trigger(&row),
-            fmt_time(row.next_run_at),
             deliver_to
                 .as_deref()
                 .unwrap_or("nowhere (check with `tern sessions`)"),
@@ -500,6 +643,7 @@ impl Tool for ScheduleCreate {
 
 pub struct ScheduleUpdate {
     pub store: Store,
+    pub checks: Option<std::sync::Arc<dyn RoutineChecks>>,
 }
 
 #[derive(Deserialize)]
@@ -544,10 +688,13 @@ impl Tool for ScheduleUpdate {
     }
 
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
-        let a: UpdateArgs = match args(raw) {
+        let mut a: UpdateArgs = match args(raw) {
             Ok(a) => a,
             Err(e) => return e,
         };
+        if let Err(e) = check_trigger(&mut a.trigger, self.checks.as_deref()).await {
+            return ToolResult::error(e);
+        }
         if owned(&self.store, &a.id, &caller(&self.store, ctx)).is_none() {
             return ToolResult::error(format!("no schedule {:?} of yours", a.id));
         }
@@ -688,6 +835,7 @@ mod tests {
         };
         let create = ScheduleCreate {
             store: store.clone(),
+            checks: None,
         };
         let bad = create
             .call(&ctx, json!({"cron": "0 8 * *", "prompt": "x"}))
@@ -721,6 +869,7 @@ mod tests {
         );
         let update = ScheduleUpdate {
             store: store.clone(),
+            checks: None,
         };
         let r = update
             .call(
@@ -790,6 +939,7 @@ mod tests {
         };
         let create = ScheduleCreate {
             store: store.clone(),
+            checks: None,
         };
         let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
             .format("%Y-%m-%d 09:00")
@@ -821,6 +971,7 @@ mod tests {
         store.finish_once(&s.id, tern_store::now_ms()).unwrap();
         let update = ScheduleUpdate {
             store: store.clone(),
+            checks: None,
         };
         let r = update
             .call(&ctx, json!({"id": s.id, "enabled": true}))
@@ -867,6 +1018,7 @@ mod tests {
         let (inbox, home) = (ctx("inbox-dm"), ctx("home"));
         let create = ScheduleCreate {
             store: store.clone(),
+            checks: None,
         };
         let r = create
             .call(
@@ -888,6 +1040,7 @@ mod tests {
         assert!(list.call(&inbox, json!({})).await.content.contains("sweep"));
         let update = ScheduleUpdate {
             store: store.clone(),
+            checks: None,
         };
         let r = update
             .call(&home, json!({"id": s.id, "enabled": false}))
@@ -915,5 +1068,83 @@ mod tests {
             .await;
         let s = store.schedules().unwrap().remove(0);
         assert_eq!((s.agent(), s.channel_id.as_deref()), ("tern", Some("home")));
+    }
+
+    struct FakeChecks;
+
+    #[async_trait]
+    impl RoutineChecks for FakeChecks {
+        async fn watch(&self, connector: &str, watch: &str) -> Result<WatchSummary, String> {
+            match (connector, watch) {
+                ("github", "reviews") => Ok(WatchSummary {
+                    default_every: Some("10m".into()),
+                    hosts: vec!["api.github.com".into()],
+                }),
+                _ => Err(format!("connector {connector} has no watch {watch:?}")),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_watch_routine_names_its_interval_and_hosts() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_session("s", "api", None).unwrap();
+        let ctx = ToolCtx {
+            workspace: std::env::temp_dir(),
+            run_id: "r".into(),
+            session_id: "s".into(),
+            cancel: CancellationToken::new(),
+        };
+        let checks: Option<std::sync::Arc<dyn RoutineChecks>> =
+            Some(std::sync::Arc::new(FakeChecks));
+        let create = ScheduleCreate {
+            store: store.clone(),
+            checks: checks.clone(),
+        };
+        let no_lua = ScheduleCreate {
+            store: store.clone(),
+            checks: None,
+        };
+        let pr = json!({"prompt": "Summarize the PR", "watch": "github.reviews"});
+        assert!(no_lua.call(&ctx, pr.clone()).await.is_error);
+        for bad in [
+            json!({"prompt": "x", "watch": "github.nope"}),
+            json!({"prompt": "x", "watch": "github"}),
+            json!({"prompt": "x", "watch": "github.reviews", "every": "30s"}),
+            json!({"prompt": "x", "watch": "github.reviews", "cron": "* * * * *"}),
+            json!({"prompt": "x", "cron": "* * * * *", "every": "5m"}),
+        ] {
+            let r = create.call(&ctx, bad.clone()).await;
+            assert!(r.is_error, "{bad}: {}", r.content);
+        }
+        let r = create.call(&ctx, pr).await;
+        assert!(
+            !r.is_error
+                && r.content.contains("watch github.reviews every 10m")
+                && r.content.contains("reaches api.github.com"),
+            "{}",
+            r.content
+        );
+        let s = store.schedules().unwrap().remove(0);
+        assert_eq!(
+            (s.trigger(), s.every_secs, s.backfill),
+            ("watch", Some(600), false)
+        );
+        assert!(
+            s.next_run_at <= tern_store::now_ms(),
+            "polled on the next tick"
+        );
+        let update = ScheduleUpdate {
+            store: store.clone(),
+            checks,
+        };
+        let r = update
+            .call(&ctx, json!({"id": s.id, "every": "1h", "backfill": true}))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        let s = store.schedule(&s.id).unwrap().unwrap();
+        assert_eq!((s.every_secs, s.backfill), (Some(3600), true));
+        assert_eq!(parse_every("2d"), Ok(172_800));
+        assert_eq!(fmt_every(5400), "90m");
     }
 }

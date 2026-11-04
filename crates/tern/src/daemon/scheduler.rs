@@ -9,7 +9,7 @@ use chrono::{DateTime, Local};
 use tern_core::config::SchedulesConfig;
 use tern_core::cron::Cron;
 use tern_core::quiet;
-use tern_store::{HeldDelivery, ScheduleRow};
+use tern_store::{HeldDelivery, NewEvent, ScheduleRow};
 use tokio_util::sync::CancellationToken;
 
 use super::manager::Manager;
@@ -54,26 +54,18 @@ async fn run_due(manager: &Arc<Manager>) -> anyhow::Result<()> {
                 continue;
             }
         };
-        if let Some(until) = s.paused_until {
-            if until > now.timestamp_millis() {
-                store.advance_schedule(&s.id, next)?;
-                continue;
-            }
-            store.unpause_schedule(&s.id, false)?;
-        }
-        if let Some(why) = cap_reached(manager, &s, &defaults, now)? {
+        if still_paused(manager, &s, now)? {
             store.advance_schedule(&s.id, next)?;
-            let until = quiet::next_day(now).timestamp_millis();
-            // Only the first slot after the cap notifies.
-            if store.pause_schedule(&s.id, until, why.key)? {
-                tracing::info!(schedule = %s.id, cap = why.key, "schedule paused until tomorrow");
-                let text = format!(
-                    "⏸ Paused “{}” until tomorrow: {}. It resumes on its own then; to resume it now, use the app or ask me.",
-                    title(&s),
-                    why.detail
-                );
-                manager.deliver_for_schedule(&s, None, &text).await;
-            }
+            continue;
+        }
+        if s.trigger() == "watch" {
+            // Polling costs no tokens; caps apply to the runs events start.
+            store.advance_schedule(&s.id, next)?;
+            poll(manager, &s, &defaults).await;
+            continue;
+        }
+        if pause_for_cap(manager, &s, &defaults, now).await? {
+            store.advance_schedule(&s.id, next)?;
             continue;
         }
         // Advance first, so a crash mid-run doesn't start it twice.
@@ -87,14 +79,175 @@ async fn run_due(manager: &Arc<Manager>) -> anyhow::Result<()> {
             tracing::error!(schedule = %s.id, error = %e, "scheduled run failed to start");
         }
     }
+    start_waiting(manager, &defaults, now).await
+}
+
+/// Whether a budget pause still holds `s`; lifts one that has ended.
+fn still_paused(manager: &Manager, s: &ScheduleRow, now: DateTime<Local>) -> anyhow::Result<bool> {
+    if let Some(until) = s.paused_until {
+        if until > now.timestamp_millis() {
+            return Ok(true);
+        }
+        manager.rt.store.unpause_schedule(&s.id, false)?;
+    }
+    Ok(false)
+}
+
+/// Pause `s` until tomorrow if a daily cap stops it, notifying once.
+async fn pause_for_cap(
+    manager: &Manager,
+    s: &ScheduleRow,
+    defaults: &SchedulesConfig,
+    now: DateTime<Local>,
+) -> anyhow::Result<bool> {
+    let Some(why) = cap_reached(manager, s, defaults, now)? else {
+        return Ok(false);
+    };
+    let until = quiet::next_day(now).timestamp_millis();
+    // Only the first slot after the cap notifies.
+    if manager.rt.store.pause_schedule(&s.id, until, why.key)? {
+        tracing::info!(schedule = %s.id, cap = why.key, "schedule paused until tomorrow");
+        let text = format!(
+            "⏸ Paused “{}” until tomorrow: {}. It resumes on its own then; to resume it now, use the app or ask me.",
+            title(s),
+            why.detail
+        );
+        manager.deliver_for_schedule(s, None, &text).await;
+    }
+    Ok(true)
+}
+
+/// Poll a watch routine (tooling spec §3.2) and record what it found. No
+/// model is called here: new events wait for [`start_waiting`].
+async fn poll(manager: &Manager, s: &ScheduleRow, defaults: &SchedulesConfig) {
+    let store = &manager.rt.store;
+    let watch = s.watch.as_deref().unwrap_or_default();
+    let check = match poll_once(manager, s, defaults).await {
+        Ok(check) => check,
+        Err(e) => {
+            tracing::warn!(schedule = %s.id, watch, error = %e, "watch poll failed");
+            format!("watch failed: {e}")
+        }
+    };
+    tracing::debug!(schedule = %s.id, watch, check, "polled");
+    if let Err(e) = store.set_routine_check(&s.id, &check) {
+        tracing::warn!(schedule = %s.id, error = %e, "recording a poll failed");
+    }
+}
+
+async fn poll_once(
+    manager: &Manager,
+    s: &ScheduleRow,
+    defaults: &SchedulesConfig,
+) -> anyhow::Result<String> {
+    let store = &manager.rt.store;
+    let (connector, watch) =
+        tern_tools::schedule::split_watch(s.watch.as_deref().unwrap_or_default())
+            .map_err(anyhow::Error::msg)?;
+    let cursor = store.watch_cursor(&s.id)?;
+    // The first poll is a baseline: what is already there doesn't run.
+    let baseline = cursor.is_none() && !s.backfill;
+    let cursor = cursor
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let host = manager.rt.lua_host()?;
+    let found = tern_lua::watch::poll(
+        &host,
+        &manager.rt.home.connectors_dir(),
+        connector,
+        watch,
+        &cursor,
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+    let events: Vec<NewEvent> = found
+        .events
+        .into_iter()
+        .map(|e| NewEvent {
+            state: if baseline {
+                "baseline"
+            } else if e.from_self && !s.include_self {
+                "self"
+            } else {
+                "pending"
+            },
+            key: e.key,
+            payload: e.payload,
+        })
+        .collect();
+    let dropped = events.iter().filter(|e| e.state == "self").count();
+    let rec = store.record_poll(
+        &s.id,
+        &events,
+        &found.cursor.to_string(),
+        "polled",
+        defaults.max_events_per_poll.max(1),
+    )?;
+    if rec.to_run > 0 {
+        tracing::info!(schedule = %s.id, events = rec.to_run, "watch found new events");
+    }
+    Ok(match (baseline, rec.new, dropped) {
+        (true, n, _) => format!("first poll: {n} existing events recorded, not run"),
+        (false, 0, _) => "no new events".into(),
+        (false, n, 0) => format!("{n} new events"),
+        (false, n, d) => format!("{n} new events ({d} from tern itself, skipped)"),
+    })
+}
+
+/// Start a run for routines with events waiting: one at a time per
+/// routine, since its runs share a session. Caps apply as for cron runs.
+async fn start_waiting(
+    manager: &Arc<Manager>,
+    defaults: &SchedulesConfig,
+    now: DateTime<Local>,
+) -> anyhow::Result<()> {
+    let store = &manager.rt.store;
+    let busy: HashSet<String> = manager
+        .active_runs()
+        .into_iter()
+        .map(|(session, _)| session)
+        .collect();
+    for id in store.routines_with_waiting_events()? {
+        let Some(s) = store.schedule(&id)? else {
+            continue;
+        };
+        if !s.enabled
+            || busy.contains(&s.session_id)
+            || still_paused(manager, &s, now)?
+            || pause_for_cap(manager, &s, defaults, now).await?
+        {
+            continue;
+        }
+        let events = store.next_routine_events(&id)?;
+        if events.is_empty() {
+            continue;
+        }
+        match manager.start_watch_run(&s, &events).await {
+            Ok(started) => {
+                // A crash before this line starts these events again: twice
+                // at worst, never lost.
+                let keys: Vec<String> = events.into_iter().map(|e| e.key).collect();
+                store.mark_events_started(&id, &keys, &started.run_id)?;
+                tracing::info!(schedule = %id, events = keys.len(), run = %started.run_id, "watch run started");
+            }
+            Err(e) => {
+                tracing::error!(schedule = %id, error = %e, "watch run failed to start");
+            }
+        }
+    }
     Ok(())
 }
 
-/// When a due routine is due next: its cron's next slot after `now`, never
-/// for a `once` routine.
+/// When a due routine is due next: its cron's next slot after `now`, a
+/// watch's next poll, never for a `once` routine.
 fn next_slot(s: &ScheduleRow, now: DateTime<Local>) -> Result<i64, String> {
     match s.trigger() {
         "once" => Ok(i64::MAX),
+        "watch" => Ok(now.timestamp_millis()
+            + 1000
+                * s.every_secs
+                    .unwrap_or(300)
+                    .max(tern_tools::schedule::MIN_EVERY_SECS)),
         "cron" => Ok(s
             .cron
             .parse::<Cron>()

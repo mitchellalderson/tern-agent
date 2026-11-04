@@ -208,6 +208,10 @@ fn meta(key: &str) -> Meta {
             live: true,
             ..at_least(1.0)
         },
+        "schedules.max_events_per_poll" => Meta {
+            live: true,
+            ..at_least(1.0)
+        },
         "schedules.usd_per_day" => Meta {
             kind: Some(Kind::Float),
             live: true,

@@ -19,6 +19,7 @@ mod providers_cmd;
 mod remote;
 mod report_cmd;
 mod reset_cmd;
+mod routines;
 mod run_cmd;
 mod runtime;
 mod service;
