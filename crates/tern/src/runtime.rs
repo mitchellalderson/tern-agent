@@ -702,6 +702,28 @@ pub(crate) fn host_policy(config: &Config, home: &TernHome) -> tern_sandbox::Hos
     }
 }
 
+/// The `python` tool, its scripts run by `tern __monty-exec` under the
+/// host sandbox with no network and nothing writable outside the usual
+/// temp dirs and workspace (docs/python-tool-spec.md §5.2), whichever
+/// backend `shell` uses.
+#[cfg(feature = "python")]
+fn python_tool(config: &Config, home: &TernHome) -> tern_python::Python {
+    let limits = tern_python::Limits::default();
+    let Ok(program) = std::env::current_exe() else {
+        tracing::warn!("python: can't find tern's own binary; scripts run in-process");
+        return tern_python::Python::new(limits);
+    };
+    let mut policy = host_policy(config, home);
+    policy.network = false;
+    policy.write_paths.clear();
+    if let Some(dir) = program.parent() {
+        policy.read_paths.push(dir.to_path_buf());
+    }
+    let sandbox = (policy.confine != tern_sandbox::Confine::Off)
+        .then(|| Arc::new(tern_sandbox::HostBackend::new(policy)));
+    tern_python::Python::with_helper(limits, tern_python::Helper { program, sandbox })
+}
+
 fn docker_settings(config: &Config) -> tern_sandbox::DockerSettings {
     let sb = &config.sandbox;
     tern_sandbox::DockerSettings {
@@ -755,7 +777,7 @@ fn build_tools(
         tern_tools::agents::register(&mut registry, subagents.clone());
     }
     #[cfg(feature = "python")]
-    registry.register(Arc::new(tern_python::Python::default()));
+    registry.register(Arc::new(python_tool(config, home)));
 
     let lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
     let dirs = tern_lua::tools::Dirs {

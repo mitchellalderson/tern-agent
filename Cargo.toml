@@ -45,6 +45,8 @@ qrcode = { version = "0.14.1", default-features = false }
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 # Monty (docs/python-tool-spec.md): pinned exactly; it releases weekly.
 monty = "=1.4.0"
+# The helper's memory ceiling; `exit-code` reports it as exit 65, not an abort.
+monty-alloc = { version = "=1.4.0", features = ["exit-code"] }
 monty-fs = "=1.4.0"
 monty-types = "=1.4.0"
 mlua = { version = "0.12.2", features = ["luau", "async", "serialize", "send"] }
