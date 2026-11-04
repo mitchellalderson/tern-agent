@@ -18,6 +18,7 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
     let rt = Runtime::open(home, Arc::new(AutoDeny))?;
     match command.unwrap_or(AgentsCommand::List { all: false }) {
         AgentsCommand::List { all } => list(&rt, all)?,
+        AgentsCommand::Templates => templates(),
         AgentsCommand::New {
             name,
             slug,
@@ -70,6 +71,24 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The starter catalog, grouped by category.
+fn templates() {
+    let all = tern_core::agents::templates();
+    let mut seen: Vec<&str> = Vec::new();
+    for t in &all {
+        if !seen.contains(&t.category.as_str()) {
+            seen.push(&t.category);
+        }
+    }
+    for category in seen {
+        println!("{category}");
+        for t in all.iter().filter(|t| t.category == category) {
+            println!("  {:<18} {}", t.id, t.description);
+        }
+    }
+    println!("\ntern agents new <name> --template <id>");
 }
 
 fn find(rt: &Runtime, agent: &str) -> anyhow::Result<tern_store::AgentRow> {

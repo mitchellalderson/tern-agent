@@ -87,6 +87,7 @@ class _AgentSheetState extends State<AgentSheet> {
   String? _system;
   List<AgentTemplate> _templates = [];
   String? _template;
+  var _starterFilter = '';
   ({String cron, String prompt})? _routine;
   var _addRoutine = true;
   late String _glyph =
@@ -243,6 +244,62 @@ class _AgentSheetState extends State<AgentSheet> {
     }
   }
 
+  /// The starter picker: chips grouped by category, with a search box once
+  /// the catalog is long enough to need one.
+  List<Widget> _starters(InputDecoration input) {
+    final q = _starterFilter.trim().toLowerCase();
+    final shown = [
+      for (final t in _templates)
+        if (q.isEmpty || t.searchText.contains(q) || t.id == _template) t,
+    ];
+    final categories = <String>[];
+    for (final t in shown) {
+      if (!categories.contains(t.category)) categories.add(t.category);
+    }
+    return [
+      if (_templates.length > 8)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: TextField(
+            key: const Key('starter-search'),
+            onChanged: (v) => setState(() => _starterFilter = v),
+            decoration: input.copyWith(
+              hintText: 'Search ${_templates.length} starters',
+              prefixIcon: const Icon(Icons.search, size: 18),
+              isDense: true,
+            ),
+          ),
+        ),
+      for (final category in categories) ...[
+        if (category.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 8, bottom: 4),
+            child: Text(
+              category,
+              key: Key('starter-category-$category'),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final t in shown.where((t) => t.category == category))
+              Tooltip(
+                message: t.description,
+                child: ChoiceChip(
+                  key: Key('starter-${t.id}'),
+                  label: Text(t.name.isEmpty ? 'Blank' : t.name),
+                  selected: _template == t.id,
+                  onSelected: (_) => _apply(t),
+                ),
+              ),
+          ],
+        ),
+      ],
+    ];
+  }
+
   Widget _section(String label) => Padding(
     padding: const EdgeInsets.only(top: 16, bottom: 6),
     child: Text(label, style: Theme.of(context).textTheme.labelSmall),
@@ -311,21 +368,7 @@ class _AgentSheetState extends State<AgentSheet> {
                   children: [
                     if (_creating && _templates.isNotEmpty) ...[
                       _section('START FROM'),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: [
-                          for (final t in _templates)
-                            Tooltip(
-                              message: t.description,
-                              child: ChoiceChip(
-                                label: Text(t.name.isEmpty ? 'Blank' : t.name),
-                                selected: _template == t.id,
-                                onSelected: (_) => _apply(t),
-                              ),
-                            ),
-                        ],
-                      ),
+                      ..._starters(input),
                     ],
                     _section('NAME'),
                     TextField(
