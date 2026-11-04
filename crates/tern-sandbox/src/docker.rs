@@ -225,6 +225,25 @@ fn owner(_path: &Path) -> Option<String> {
 /// on timeout or cancellation (killing `docker exec` alone leaves it running).
 const WRAPPER: &str = r#"echo $$ > "/tmp/tern-$TERN_EXEC_ID.pid"; exec sh -c "$1""#;
 
+/// Kills the process [`WRAPPER`] recorded (exec id in `$1`) and everything
+/// under it. Killing only the shell would leave its children running,
+/// reparented to the container's init. The whole tree is collected from
+/// `/proc` before anything is killed, while the parent links still hold;
+/// plain `sh`, so it works in any image.
+const KILL_TREE: &str = r#"f="/tmp/tern-$1.pid"; root=$(cat "$f" 2>/dev/null); rm -f "$f"
+[ -n "$root" ] || exit 0
+all=$root; new=$root
+while [ -n "$new" ]; do
+  next=
+  for s in /proc/[0-9]*/stat; do
+    read -r st 2>/dev/null < "$s" || continue
+    set -- ${st##*) }
+    for p in $new; do [ "$2" = "$p" ] && next="$next ${st%% *}"; done
+  done
+  all="$all$next"; new=$next
+done
+kill -KILL $all 2>/dev/null; true"#;
+
 #[async_trait]
 impl SandboxBackend for DockerBackend {
     async fn exec(
@@ -266,9 +285,9 @@ impl SandboxBackend for DockerBackend {
             self.container.clone(),
             "sh".to_owned(),
             "-c".to_owned(),
-            format!(
-                r#"kill -KILL "$(cat /tmp/tern-{id}.pid)" 2>/dev/null; rm -f /tmp/tern-{id}.pid"#
-            ),
+            KILL_TREE.to_owned(),
+            "tern-kill".to_owned(),
+            id.clone(),
         ];
         let docker = self.docker.clone();
         let result = run_captured(command, &opts, &cancel, move || async move {
@@ -409,6 +428,46 @@ esac
         assert!(runs[0].contains(backend.container()));
     }
 
+    /// [`KILL_TREE`] against real processes (it reads `/proc`, so Linux only).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kill_tree_kills_children_and_grandchildren() {
+        let id = format!("test{:016x}", fastrand_u64());
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", WRAPPER, "tern-sh", "sleep 71 & sleep 70; true"])
+            .env("TERN_EXEC_ID", &id)
+            .spawn()
+            .unwrap();
+        let pidfile = format!("/tmp/tern-{id}.pid");
+        let alive = |pattern: &str| {
+            std::fs::read_dir("/proc").unwrap().flatten().any(|e| {
+                std::fs::read(e.path().join("cmdline")).is_ok_and(|c| {
+                    c.split(|b| *b == 0).next() == Some(b"sleep")
+                        && c.ends_with(format!("{pattern}\0").as_bytes())
+                })
+            })
+        };
+        for _ in 0..50 {
+            if Path::new(&pidfile).exists() && alive("71") && alive("70") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            alive("70") && alive("71"),
+            "the test processes didn't start"
+        );
+        let status = std::process::Command::new("sh")
+            .args(["-c", KILL_TREE, "tern-kill", &id])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let _ = child.wait();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!alive("70") && !alive("71"), "a sleep survived KILL_TREE");
+        assert!(!Path::new(&pidfile).exists());
+    }
+
     #[tokio::test]
     async fn timeouts_kill_the_process_inside_the_container() {
         let tmp = tempfile::tempdir().unwrap();
@@ -423,8 +482,7 @@ esac
         assert!(out.timed_out);
         let log = std::fs::read_to_string(tmp.path().join("log")).unwrap();
         assert!(
-            log.lines()
-                .any(|l| l.starts_with("exec ") && l.contains("kill -KILL")),
+            log.contains(&format!("sh -c {KILL_TREE} tern-kill ")),
             "{log}"
         );
     }
@@ -501,17 +559,26 @@ esac
                 .trim(),
             "inside"
         );
+        // A child the shell waits on and a background grandchild.
         let timed = backend
-            .exec("sleep 60", opts(tmp.path(), 2), CancellationToken::new())
+            .exec(
+                "sleep 61 & sleep 60; true",
+                opts(tmp.path(), 2),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert!(timed.timed_out);
-        // The killed `sleep` is gone from the container.
+        // Every process the command started is gone from the container.
         let left = backend
-            .exec("for p in /proc/[0-9]*; do cat $p/cmdline 2>/dev/null | tr '\\0' ' '; echo; done | grep -c '^sleep 60' || true", opts(tmp.path(), 30), CancellationToken::new())
+            .exec(
+                "for p in /proc/[0-9]*; do c=$(tr '\\0' ' ' < $p/cmdline 2>/dev/null); case \"$c\" in 'sleep 6'*) echo \"${p#/proc/} $c\" ;; esac; done",
+                opts(tmp.path(), 30),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
-        assert_eq!(left.stdout.trim(), "0", "{left:?}");
+        assert_eq!(left.stdout.trim(), "", "still running: {left:?}");
         let _ = std::process::Command::new("docker")
             .args(["rm", "-f", backend.container()])
             .output();
