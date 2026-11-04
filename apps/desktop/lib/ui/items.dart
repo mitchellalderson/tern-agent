@@ -21,7 +21,6 @@ class ItemView extends StatelessWidget {
     required this.item,
     required this.store,
     this.session,
-    this.branchable = false,
   });
 
   final Item item;
@@ -31,22 +30,12 @@ class ItemView extends StatelessWidget {
   /// (the right pane).
   final String? session;
 
-  /// Messages offer "Branch into side chat" (Home's stream).
-  final bool branchable;
-
   @override
   Widget build(BuildContext context) => switch (item) {
-    UserItem(:final text, :final queued, :final messageId) => _branch(
+    UserItem(:final text, :final queued) => _UserMessage(text, queued: queued),
+    AssistantItem(:final text, :final streaming) => _AssistantMessage(
       text,
-      messageId,
-      _UserMessage(text, queued: queued),
-      alignEnd: true,
-    ),
-    AssistantItem(:final text, :final streaming, :final messageId) => _branch(
-      text,
-      messageId,
-      _AssistantMessage(text, streaming: streaming),
-      enabled: !streaming,
+      streaming: streaming,
     ),
     final WorkItem w => WorkCard(
       work: w,
@@ -75,24 +64,7 @@ class ItemView extends StatelessWidget {
       store: store,
     ),
     PostItem(:final post) => PostCard(post: post, store: store),
-    SideChatItem(:final chat) => SideChatCard(chat: chat, store: store),
   };
-
-  Widget _branch(
-    String text,
-    int? messageId,
-    Widget child, {
-    bool alignEnd = false,
-    bool enabled = true,
-  }) => branchable && enabled
-      ? Branchable(
-          text: text,
-          messageId: messageId,
-          store: store,
-          alignEnd: alignEnd,
-          child: child,
-        )
-      : child;
 }
 
 class _UserMessage extends StatelessWidget {

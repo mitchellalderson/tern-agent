@@ -351,25 +351,6 @@ impl Store {
         )?)
     }
 
-    /// Side threads of a channel created in `[from, to)` (unix ms), oldest
-    /// first.
-    pub fn side_threads_between(
-        &self,
-        channel_id: &str,
-        from: i64,
-        to: i64,
-    ) -> Result<Vec<SessionRow>> {
-        let sql = format!(
-            "SELECT {SESSION_COLS} FROM sessions
-             WHERE channel_id = ?1 AND branched_from IS NOT NULL AND created_at >= ?2 AND created_at < ?3
-             ORDER BY created_at"
-        );
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![channel_id, from, to], session_row)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
     /// When the session last had a message (its input or a step's), or
     /// when it was created. Posts from elsewhere don't count.
     pub fn session_last_activity(&self, session_id: &str) -> Result<i64> {
@@ -722,22 +703,6 @@ impl Store {
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![channel_id, from, to], post_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// `(post id, replies)` for the posts in `ids` that have replies other
-    /// than the agent's answer to them (a side thread).
-    pub fn reply_counts(&self, ids: &[i64]) -> Result<Vec<(i64, i64)>> {
-        let conn = self.conn()?;
-        let mut stmt =
-            conn.prepare("SELECT count(*) FROM posts WHERE reply_to = ?1 AND kind <> 'answer'")?;
-        let mut out = Vec::new();
-        for id in ids {
-            let n: i64 = stmt.query_row([id], |r| r.get(0))?;
-            if n > 0 {
-                out.push((*id, n));
-            }
-        }
-        Ok(out)
     }
 
     pub fn last_post_id(&self, channel_id: &str) -> Result<Option<i64>> {

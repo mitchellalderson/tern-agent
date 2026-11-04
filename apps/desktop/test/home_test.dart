@@ -35,12 +35,6 @@ StreamMessage _msg(
 /// Newest first, as the daemon sends it.
 final _page = StreamPage(
   items: [
-    StreamSideChat(
-      sessionId: 'side',
-      title: '> Northwind is 310 EUR\n\nWhy so much?',
-      branchedFrom: 'message:1',
-      createdAt: _t0.add(const Duration(minutes: 30)),
-    ),
     _msg('s2', 21, 'assistant', 'Launch plan drafted.'),
     _msg('s2', 20, 'user', 'and the venue', queued: true),
     _msg('s2', 19, 'user', 'Plan the launch'),
@@ -91,7 +85,6 @@ class _FakeClient extends TernClient {
   _FakeClient() : super(const Endpoint.unix('/nonexistent'));
 
   final sends = <({String text, bool newTopic})>[];
-  final threadSends = <({String text, String? channel, String? from})>[];
   var head = 's2';
 
   @override
@@ -179,18 +172,6 @@ class _FakeClient extends TernClient {
       queued: text.startsWith('also'),
     );
   }
-
-  @override
-  Future<Started> send(
-    String text, {
-    String? session,
-    String? model,
-    String? channel,
-    String? branchedFrom,
-  }) async {
-    threadSends.add((text: text, channel: channel, from: branchedFrom));
-    return const Started(sessionId: 'side2', runId: 'r-side', model: 'm');
-  }
 }
 
 Future<(TernStore, _FakeClient)> _home() async {
@@ -229,7 +210,6 @@ void main() {
       UserItem,
       UserItem,
       AssistantItem,
-      SideChatItem,
     ]);
     // A tool call and its result pair up across messages.
     final work = t.items.whereType<WorkItem>().single;
@@ -298,7 +278,7 @@ void main() {
     expect(store.selected, 's3');
   });
 
-  testWidgets('Home shows the stream, History and a side chat pane', (
+  testWidgets('Home shows the stream, and History opens to read', (
     tester,
   ) async {
     final (store, client) = await _home();
@@ -311,7 +291,7 @@ void main() {
     );
     expect(find.text('Morning brief'), findsOneWidget);
     expect(find.text('Two meetings today.'), findsOneWidget);
-    expect(find.text('Side chat · Why so much?'), findsOneWidget);
+    expect(find.textContaining('Side chat'), findsNothing);
     expect(
       find.text('Sent while tern was working · read at its next step'),
       findsOneWidget,
@@ -331,44 +311,29 @@ void main() {
       findsOneWidget,
     );
 
-    // History lists the stream's sessions and side chats.
+    // History lists the stream's sessions (an old side chat among them, as
+    // an earlier conversation), to read in the right pane.
     await tester.tap(find.text('History'));
     // The title bar also listens for double clicks.
     await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     expect(find.text('Current session · 0m ago'), findsNothing);
-    expect(find.textContaining('Earlier conversation'), findsOneWidget);
-    expect(find.textContaining('Side chat ·'), findsWidgets);
+    expect(find.textContaining('Earlier conversation'), findsNWidgets(2));
+    expect(find.textContaining('Side chat'), findsNothing);
     await tester.tap(find.text('Northwind is 310 EUR').last);
     await tester.pumpAndSettle();
     expect(store.thread, 's1');
     expect(find.byType(ThreadPane), findsOneWidget);
 
-    // Branching a message opens a new side chat beside the stream.
-    store.branchFrom('Launch plan drafted.', messageId: 21);
-    await tester.pump();
-    expect(find.text('New side chat'), findsOneWidget);
-    await tester.enterText(
+    // It's for reading: no composer, and no way to branch the stream.
+    expect(
       find.descendant(
         of: find.byType(ThreadPane),
         matching: find.byType(TextField),
       ),
-      'Which venue?',
+      findsNothing,
     );
-    await tester.pump();
-    await tester.tap(
-      find.descendant(
-        of: find.byType(ThreadPane),
-        matching: find.byTooltip('Send (⏎)'),
-      ),
-    );
-    await tester.pump();
-    expect(client.threadSends.single, (
-      text: '> Launch plan drafted.\n\nWhich venue?',
-      channel: 'home',
-      from: 'message:21',
-    ));
-    expect(store.thread, 'side2');
+    expect(find.byTooltip('Branch into side chat'), findsNothing);
     debugDefaultTargetPlatformOverride = null;
   });
 }

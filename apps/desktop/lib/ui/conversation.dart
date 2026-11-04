@@ -112,7 +112,6 @@ class _ConversationViewState extends State<ConversationView> {
                                 : ItemView(
                                     item: item,
                                     store: store,
-                                    branchable: store.streamOpen,
                                   ),
                           ),
                         ),

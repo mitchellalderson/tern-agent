@@ -22,23 +22,22 @@ class ChannelView extends StatelessWidget {
   final bool panelOpen;
   final VoidCallback onTogglePanel;
 
-  /// Shown in the main timeline: the main thread, routines, and the roots
-  /// of side threads (their replies live in the thread).
-  static bool inTimeline(Post p, String? mainSession) =>
-      p.replyTo == null ||
-      p.sessionId == null ||
-      p.sessionId == mainSession ||
-      p.authorKind == 'routine';
+  /// The post [p] replies to, to quote above it: unless it's the one
+  /// right before it in the timeline (DECISIONS.md "Flat conversations
+  /// everywhere": replies are posts, quoted, never threads).
+  static Post? quoted(Post p, Post? before, List<Post> all) {
+    final to = p.replyTo;
+    if (to == null || before?.id == to) return null;
+    return all.where((x) => x.id == to).firstOrNull;
+  }
 
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
     final ch = store.openChannel;
     if (ch == null) return const SizedBox.shrink();
-    final main = ch.mainSessionId;
-    final shown = (store.posts[ch.id] ?? const <Post>[])
-        .where((p) => inTimeline(p, main))
-        .toList();
+    // One flat timeline: every post, in order.
+    final shown = store.posts[ch.id] ?? const <Post>[];
     // One live line per member at work here (channels-design §5.2).
     final lines = store.liveIn(ch.id);
     final waiting = store.waitingFrom(ch.id);
@@ -73,10 +72,7 @@ class ChannelView extends StatelessWidget {
                                 line: lines[extra - 1 - i],
                                 store: store,
                               )
-                            : TimelinePost(
-                                post: shown[shown.length - 1 - (i - extra)],
-                                store: store,
-                              ),
+                            : _timelinePost(shown, shown.length - 1 - (i - extra)),
                       ),
                     ),
                   ),
@@ -91,6 +87,14 @@ class ChannelView extends StatelessWidget {
       ],
     );
   }
+}
+
+extension on ChannelView {
+  Widget _timelinePost(List<Post> shown, int i) => TimelinePost(
+    post: shown[i],
+    store: store,
+    quote: ChannelView.quoted(shown[i], i > 0 ? shown[i - 1] : null, shown),
+  );
 }
 
 /// "research-1 · Running http_fetch": a member working in the channel.
@@ -476,10 +480,18 @@ class _EmptyChannel extends StatelessWidget {
 
 /// One post in a channel's timeline.
 class TimelinePost extends StatelessWidget {
-  const TimelinePost({super.key, required this.post, required this.store});
+  const TimelinePost({
+    super.key,
+    required this.post,
+    required this.store,
+    this.quote,
+  });
 
   final Post post;
   final TernStore store;
+
+  /// The post it replies to, when that isn't right above it.
+  final Post? quote;
 
   @override
   Widget build(BuildContext context) {
@@ -547,6 +559,10 @@ class TimelinePost extends StatelessWidget {
                   ],
                 ],
               ),
+              if (quote case final q?) ...[
+                const SizedBox(height: 2),
+                QuoteLine(post: q, store: store),
+              ],
               const SizedBox(height: 3),
               MarkdownBody(
                 data: markMentions(post.text, slugs),
@@ -578,20 +594,16 @@ class TimelinePost extends StatelessWidget {
                     _Action(label: 'Done', onTap: () => store.resolvePost(post))
                   else if (post.kind == 'needs_you')
                     const _Action(label: 'Done ✓', onTap: null),
-                  _Action(
-                    label: 'Reply in thread',
-                    onTap: () => store.replyTo(post),
-                  ),
-                  if (_sideThread() case final side? when post.replies > 0)
+                  // To read beside the timeline: the run behind an agent's
+                  // post (tool steps and all), or a moved-in conversation.
+                  if (session != null && post.kind == 'moved')
                     _Action(
-                      label:
-                          '${post.replies} repl${post.replies == 1 ? 'y' : 'ies'}',
-                      onTap: () => store.openThread(side),
-                    ),
-                  // Its run, tool steps and all.
-                  if (session != null && !post.mine)
+                      label: 'Read conversation',
+                      onTap: () => store.openThread(session),
+                    )
+                  else if (session != null && !post.mine)
                     _Action(
-                      label: 'Open thread',
+                      label: 'See work',
                       onTap: () => store.openThread(session),
                     ),
                 ],
@@ -604,15 +616,35 @@ class TimelinePost extends StatelessWidget {
   }
 }
 
-extension on TimelinePost {
-  /// The side thread replying to this post, from the replies loaded.
-  String? _sideThread() {
-    final main = store.openChannel?.mainSessionId;
-    return (store.posts[post.channelId] ?? const <Post>[])
-        .where((p) => p.replyTo == post.id && p.sessionId != main)
-        .map((p) => p.sessionId)
-        .nonNulls
-        .firstOrNull;
+/// "↪ replying to you: …": the post a reply answers, one line, when it
+/// isn't right above.
+class QuoteLine extends StatelessWidget {
+  const QuoteLine({super.key, required this.post, required this.store});
+
+  final Post post;
+  final TernStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final who = post.mine
+        ? 'you'
+        : store.authorName(post.authorId, post.author);
+    final text = post.text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return Row(
+      children: [
+        Icon(Icons.subdirectory_arrow_right, size: 13, color: c.muted),
+        const SizedBox(width: 4),
+        Flexible(
+          child: Text(
+            'replying to $who: “$text”',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12, color: c.muted),
+          ),
+        ),
+      ],
+    );
   }
 }
 

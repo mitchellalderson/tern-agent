@@ -148,11 +148,9 @@ class _HomeState extends State<Home> {
                             onTogglePanel: _togglePanel,
                           ),
                   ),
-                  // A thread (History, a side chat, a post's) takes the
-                  // panel's place while it's open.
-                  if (store.thread != null ||
-                      store.branch != null ||
-                      store.replying != null) ...[
+                  // A conversation to read (a History entry, a moved one, a
+                  // post's run) takes the panel's place while it's open.
+                  if (store.thread != null) ...[
                     const Hairline(vertical: true),
                     SizedBox(width: 380, child: ThreadPane(store: store)),
                   ] else if (panel) ...[

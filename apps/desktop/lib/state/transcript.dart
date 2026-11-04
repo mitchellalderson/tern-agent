@@ -11,8 +11,7 @@ class UserItem extends Item {
   UserItem(this.text, {this.messageId, this.queued = false});
   final String text;
 
-  /// The stored message, when it came from history (side chats branch
-  /// from it).
+  /// The stored message's id, when it came from history.
   final int? messageId;
 
   /// Sent while a run was working: it reads it at its next step.
@@ -40,12 +39,6 @@ class CutItem extends Item {
 class PostItem extends Item {
   PostItem(this.post);
   Post post;
-}
-
-/// A side chat branched off the stream; it opens beside it.
-class SideChatItem extends Item {
-  SideChatItem(this.chat);
-  final StreamSideChat chat;
 }
 
 enum StepStatus { running, ok, error }
@@ -276,8 +269,7 @@ class Transcript {
   }
 
   /// Rebuild a main channel's stream (oldest first): its segments'
-  /// messages with a divider at each cut, and posts and side chats where
-  /// they happened.
+  /// messages with a divider at each cut, and posts where they happened.
   static Transcript fromStream(Iterable<StreamItem> oldestFirst) {
     final t = Transcript();
     final b = _Builder(t);
@@ -289,8 +281,6 @@ class Transcript {
           t.items.add(CutItem(i));
         case StreamPost(:final post):
           t.items.add(PostItem(post));
-        case StreamSideChat():
-          t.items.add(SideChatItem(i));
         case StreamUnknown():
           break;
       }

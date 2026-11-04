@@ -21,7 +21,6 @@ Post _post(
   String author = 'tern',
   String session = 'main',
   int? replyTo,
-  int replies = 0,
 }) => Post(
   id: id,
   channelId: 'fin',
@@ -33,7 +32,6 @@ Post _post(
   kind: kind,
   text: text,
   replyTo: replyTo,
-  replies: replies,
   createdAt: _t0.add(Duration(minutes: id)),
 );
 
@@ -72,7 +70,8 @@ class _FakeClient extends TernClient {
   }) async => channel != 'fin'
       ? []
       : [
-          // Newest first; 5 and 6 are a side thread off post 2.
+          // Newest first; 5 and 6 were a side thread off post 2 (from
+          // before channels were flat): now they're in the timeline.
           _post(6, 'Mostly card fees.', session: 'side', replyTo: 5),
           _post(
             5,
@@ -90,7 +89,7 @@ class _FakeClient extends TernClient {
             author: 'reply-sweep',
             session: 'cron-1',
           ),
-          _post(2, 'About 1,240 EUR.', replyTo: 1, replies: 1),
+          _post(2, 'About 1,240 EUR.', replyTo: 1),
           _post(
             1,
             'How much did we spend?',
@@ -225,11 +224,15 @@ void main() {
     await store.openChannelView('fin');
     expect(store.lastSeen['fin'], 6);
     expect(saves, 1);
-    // The timeline keeps side-thread replies out.
-    final shown = store.posts['fin']!
-        .where((p) => ChannelView.inTimeline(p, 'main'))
-        .map((p) => p.id);
-    expect(shown, [1, 2, 3]);
+    // One flat timeline: an old side thread's posts are in it, and a
+    // reply quotes what it answers when that isn't right above it.
+    final posts = store.posts['fin']!;
+    expect(posts.map((p) => p.id), [1, 2, 3, 5, 6]);
+    Post? quoted(int i) =>
+        ChannelView.quoted(posts[i], i > 0 ? posts[i - 1] : null, posts);
+    expect(quoted(1), isNull, reason: 'the answer is right below its post');
+    expect(quoted(3)?.id, 2, reason: "the routine's post is in between");
+    expect(quoted(4), isNull);
   });
 
   test('approvals from a channel are answered in Home', () async {
@@ -272,7 +275,7 @@ void main() {
     expect(store.waitingFrom('fin'), 0);
   });
 
-  testWidgets('sidebar, timeline, posting, threads and a new channel', (
+  testWidgets('sidebar, a flat timeline, posting and a new channel', (
     tester,
   ) async {
     final (store, client) = await _store();
@@ -289,12 +292,11 @@ void main() {
     expect(find.text('How much did we spend?'), findsOneWidget);
     expect(find.text('About 1,240 EUR.'), findsOneWidget);
     expect(find.text('reply-sweep'), findsOneWidget);
-    expect(
-      find.text('Mostly card fees.'),
-      findsNothing,
-      reason: 'in its thread',
-    );
-    expect(find.text('1 reply'), findsOneWidget);
+    // No threads: everything is in the timeline, replies quote.
+    expect(find.text('Mostly card fees.'), findsOneWidget);
+    expect(find.textContaining('replying to tern: “About 1,240 EUR.”'), findsOneWidget);
+    expect(find.text('Reply in thread'), findsNothing);
+    expect(find.textContaining('replies'), findsNothing);
     expect(find.byTooltip('New posts'), findsNothing);
 
     // Posting from the composer.
@@ -312,41 +314,28 @@ void main() {
     ));
     expect(find.text('And Northwind?'), findsOneWidget);
 
-    // A thread's replies open beside the timeline.
-    await tester.tap(find.text('1 reply'));
-    await _settle(tester);
-    expect(store.thread, 'side');
-    expect(find.byType(ThreadPane), findsOneWidget);
-
-    // Reply in thread on the routine's post.
+    // An agent's post opens its work beside the timeline, to read.
     await tester.tap(
       find.descendant(
         of: find.ancestor(
-          of: find.text('reply-sweep'),
+          of: find.text('About 1,240 EUR.'),
           matching: find.byType(TimelinePost),
         ),
-        matching: find.text('Reply in thread'),
+        matching: find.text('See work'),
       ),
     );
     await _settle(tester);
-    expect(find.text('Reply to reply-sweep'), findsOneWidget);
-    await tester.enterText(
+    expect(store.thread, 'main');
+    expect(find.byType(ThreadPane), findsOneWidget);
+    expect(
       find.descendant(
         of: find.byType(ThreadPane),
         matching: find.byType(TextField),
       ),
-      'Hold Northwind',
+      findsNothing,
     );
-    await tester.pump();
-    await tester.tap(
-      find.descendant(
-        of: find.byType(ThreadPane),
-        matching: find.byTooltip('Send (⏎)'),
-      ),
-    );
+    await tester.tap(find.byTooltip('Close'));
     await _settle(tester);
-    expect(client.sent.last.replyTo, 3);
-    expect(store.thread, 'side2');
 
     // A new channel.
     await tester.tap(find.byTooltip('New channel'));

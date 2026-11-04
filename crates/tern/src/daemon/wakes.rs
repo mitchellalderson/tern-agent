@@ -57,7 +57,8 @@ impl Manager {
     }
 
     /// Who answers a reply to post `to` that mentions no one: the agent
-    /// whose thread the post is in (a routine's: its agent), else the lead.
+    /// that wrote it (a routine's: its agent), else the lead. The answer
+    /// is in that agent's conversation in the channel, like any other.
     fn replier(&self, channel: &ChannelRow, to: i64) -> anyhow::Result<String> {
         let store = &self.rt.store;
         let thread = store
@@ -156,9 +157,10 @@ impl Manager {
     }
 
     /// The user posts `text` in topic channel `channel` (§5.2): with no
-    /// mentions the lead answers (in a reply, whoever's thread it is);
-    /// otherwise each agent mentioned does, in parallel, each in its own
-    /// thread. Mentioning an agent that isn't a member adds it.
+    /// mentions the lead answers (a reply: whoever wrote the post it
+    /// replies to); otherwise each agent mentioned does, in parallel, each
+    /// in its own conversation there. Mentioning an agent that isn't a
+    /// member adds it. The timeline is flat: `reply_to` only quotes.
     pub(super) async fn send_to_topic(
         self: &Arc<Self>,
         channel: &ChannelRow,
@@ -179,12 +181,11 @@ impl Manager {
         } else {
             mentioned.into_iter().map(|a| a.id).collect()
         };
+        // Each agent answers in its own conversation in the channel, a
+        // reply as much as a new post: `reply_to` only quotes.
         let mut threads = Vec::with_capacity(agents.len());
         for agent in agents {
-            let session = match reply_to {
-                Some(to) => self.reply_thread(channel, to, &agent)?,
-                None => self.agent_thread(channel, &agent)?,
-            };
+            let session = self.agent_thread(channel, &agent)?;
             threads.push((agent, session));
         }
         // The post first, so each run is started knowing which post woke

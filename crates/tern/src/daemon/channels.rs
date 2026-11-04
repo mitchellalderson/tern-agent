@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use tern_core::channels::{CutReason, Post, author};
 use tern_core::models::Change;
 use tern_core::types::ContentBlock;
@@ -49,20 +49,14 @@ pub fn final_text(store: &Store, run: &RunRow) -> anyhow::Result<String> {
         .unwrap_or_default())
 }
 
-/// A post with its reply count filled in.
+/// A post as clients see it, with a pointer's target channel.
 pub fn view(store: &Store, row: tern_store::PostRow) -> Post {
-    let replies = store
-        .reply_counts(&[row.id])
-        .ok()
-        .and_then(|c| c.first().map(|(_, n)| *n))
-        .unwrap_or(0);
     let points_to_channel = row
         .points_to
         .and_then(|id| store.post(id).ok().flatten())
         .map(|p| p.channel_id);
     let outbox_id = super::outbox::outbox_of_post(store, &row);
     Post {
-        replies,
         points_to_channel,
         outbox_id,
         ..Post::from(row)
@@ -95,41 +89,6 @@ impl Manager {
         })?;
         self.rt.store.set_main_session(&channel.id, &s.id)?;
         self.channels_changed();
-        Ok(s.id)
-    }
-
-    /// The side thread `agent`'s reply to post `to` goes to: the thread
-    /// the post is in if that's `agent`'s side thread, else a new one of
-    /// its branched from the post.
-    pub(super) fn reply_thread(
-        &self,
-        channel: &ChannelRow,
-        to: i64,
-        agent: &str,
-    ) -> anyhow::Result<String> {
-        let post = self
-            .rt
-            .store
-            .post(to)?
-            .filter(|p| p.channel_id == channel.id)
-            .with_context(|| format!("post {to} is not in #{}", channel.slug))?;
-        if let Some(s) = &post.session_id
-            && Some(s) != channel.main_session_id.as_ref()
-            && let Some(row) = self.rt.store.session(s)?
-            && row.channel_id.as_deref() == Some(channel.id.as_str())
-            && row.source != "cron"
-            && row.agent() == agent
-        {
-            return Ok(row.id);
-        }
-        let s = self.rt.store.create_thread(&NewThread {
-            id: &tern_core::agent::new_id(),
-            source: "api",
-            channel_id: &channel.id,
-            branched_from: Some(&format!("post:{to}")),
-            agent_id: Some(agent),
-            ..NewThread::default()
-        })?;
         Ok(s.id)
     }
 
@@ -478,6 +437,30 @@ pub struct MovedThread {
     pub fresh_session_id: Option<String>,
 }
 
+impl Manager {
+    /// Make `session`, just moved into topic channel `channel_id`,
+    /// `agent`'s conversation there if it has none yet: the main thread
+    /// for the lead, its member thread otherwise.
+    fn adopt_thread(&self, channel_id: &str, agent: &str, session: &str) -> anyhow::Result<()> {
+        let store = &self.rt.store;
+        let Some(c) = store.channel(channel_id)? else {
+            return Ok(());
+        };
+        if agent == c.lead() {
+            let has_main = match &c.main_session_id {
+                Some(m) => store.session(m)?.is_some(),
+                None => false,
+            };
+            if !has_main {
+                store.set_main_session(channel_id, session)?;
+            }
+        } else if store.member_thread(channel_id, agent)?.is_none() {
+            store.set_member_thread(channel_id, agent, session)?;
+        }
+        Ok(())
+    }
+}
+
 /// How a channel is named in move notes.
 fn place(c: &ChannelRow) -> String {
     if c.kind == "main" {
@@ -608,9 +591,14 @@ impl Manager {
                 .channel(&moved.from)
                 .map_err(MoveError::internal)?
                 .ok_or_else(|| MoveError::internal("source channel gone"))?;
-            // The thread keeps its agent, which joins the channel.
+            // The thread keeps its agent, which joins the channel. If that
+            // agent has no conversation there yet, this becomes it, so the
+            // channel carries on from it with its history (the timeline is
+            // flat: there are no threads to continue it in).
             if let Some(a) = store.agent(s.agent()).map_err(MoveError::internal)? {
                 self.join(target, &a).map_err(MoveError::internal)?;
+                self.adopt_thread(&target.id, &a.id, &s.id)
+                    .map_err(MoveError::internal)?;
             }
             let mut text = format!("Moved here from {}: {title}", place(&from));
             if let Some(r) = reply {

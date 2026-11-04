@@ -137,16 +137,9 @@ class TernStore extends ChangeNotifier {
   /// Sub-agent run → its label, from `subagent_spawned`.
   final _labels = <String, String>{};
 
-  /// The conversation open in the right pane: a History entry, a side
-  /// chat, a post's thread.
+  /// The conversation open (to read) in the right pane: a History entry,
+  /// a moved conversation, the run behind a post.
   String? thread;
-
-  /// A post about to get a reply in its side thread (the right pane).
-  Post? replying;
-
-  /// A side chat about to start from a message: what it quotes, and the
-  /// message it branched from.
-  ({String quote, String? from})? branch;
 
   /// The model a new conversation will use, when chosen before sending.
   String? draftModel;
@@ -868,10 +861,6 @@ class TernStore extends ChangeNotifier {
       final list = posts[post.channelId];
       if (list != null && !list.any((p) => p.id == post.id)) {
         list.add(post);
-        // A reply in a side thread changes its root's count.
-        if (post.replyTo != null && post.kind == 'message') {
-          unawaited(_loadChannel(post.channelId));
-        }
       }
       if (post.channelId == channel) _markRead(post.channelId, post.id);
       notifyListeners();
@@ -1060,14 +1049,6 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Answer `post` in its side thread, from the right pane.
-  void replyTo(Post post) {
-    thread = null;
-    branch = null;
-    replying = post;
-    notifyListeners();
-  }
-
   /// Send into the open topic channel: a post and a run in its main
   /// thread, or queued for the run already working there.
   Future<void> _sendChannel(String text) async {
@@ -1095,11 +1076,11 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Open a conversation in the right pane (History, a side chat).
+  /// Open a conversation to read in the right pane (a History entry, a
+  /// moved conversation, the run behind a post). It has no composer:
+  /// conversations go on in their stream or channel.
   Future<void> openThread(String session) async {
     thread = session;
-    branch = null;
-    replying = null;
     notifyListeners();
     try {
       await _load(session);
@@ -1111,92 +1092,7 @@ class TernStore extends ChangeNotifier {
 
   void closeThread() {
     thread = null;
-    branch = null;
-    replying = null;
     notifyListeners();
-  }
-
-  /// Start a side chat about `text` in the right pane (sent with its
-  /// first message).
-  void branchFrom(String text, {int? messageId}) {
-    thread = null;
-    replying = null;
-    branch = (
-      quote: text,
-      from: messageId == null ? null : 'message:$messageId',
-    );
-    notifyListeners();
-  }
-
-  /// Send in the right pane: the side chat's first message, or the next
-  /// one in the open conversation (which stops a run in progress there).
-  Future<void> sendThread(String text) async {
-    error = null;
-    try {
-      if (replying case final post?) {
-        final sent = await client.sendToChannel(
-          post.channelId,
-          text,
-          replyTo: post.id,
-        );
-        _runSession[sent.runId] = sent.sessionId;
-        _runChannel[sent.runId] = post.channelId;
-        replying = null;
-        thread = sent.sessionId;
-        await _load(sent.sessionId);
-        transcripts[sent.sessionId]?.activeRun ??= sent.runId;
-      } else if (branch case final b?) {
-        final quoted = '${_quote(b.quote)}\n\n$text';
-        final started = await client.send(
-          quoted,
-          channel: streamOpen ? streamChannel : homeId,
-          branchedFrom: b.from,
-        );
-        _runSession[started.runId] = started.sessionId;
-        branch = null;
-        thread = started.sessionId;
-        final t = transcripts.putIfAbsent(started.sessionId, Transcript.new);
-        t.items.insert(0, UserItem(quoted));
-        t.activeRun ??= started.runId;
-        // Its card in the stream.
-        if (streamOpen) {
-          if (transcripts[streamKey]?.activeRun == null) {
-            await _loadHome();
-          } else {
-            _streamDirty = true;
-          }
-        }
-      } else if (thread case final s?) {
-        // Continuing an earlier segment: its run shows here, not in Home.
-        if (s != stream?.mainSessionId) _streamSessions.remove(s);
-        final t = transcripts.putIfAbsent(s, Transcript.new);
-        t.items.add(UserItem(text));
-        notifyListeners();
-        final started = await client.send(text, session: s);
-        _runSession[started.runId] = s;
-        t.activeRun ??= started.runId;
-      }
-    } on TernException catch (e) {
-      error = e.message;
-    }
-    notifyListeners();
-  }
-
-  Future<void> stopThread() async {
-    if (threadTranscript?.activeRun case final run?) {
-      try {
-        await client.cancel(run);
-      } on TernException catch (e) {
-        error = e.message;
-        notifyListeners();
-      }
-    }
-  }
-
-  static String _quote(String text) {
-    final lines = text.trim().split('\n');
-    final kept = lines.take(6).map((l) => '> $l').join('\n');
-    return lines.length > 6 ? '$kept\n> …' : kept;
   }
 
   /// Load a sub-agent's conversation, to show inside its parent's.

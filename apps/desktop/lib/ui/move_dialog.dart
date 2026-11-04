@@ -4,8 +4,8 @@ import '../state/store.dart';
 import '../theme.dart';
 import 'channel_view.dart' show slugFor;
 
-/// "Move to channel…": take conversations (a topic from Home, side chats,
-/// threads, History entries) into a topic channel, existing or new
+/// "Move to channel…": take conversations (a topic from Home, History
+/// entries, another channel's) into a topic channel, existing or new
 /// (DECISIONS.md "T2 moves").
 Future<void> showMoveDialog(
   BuildContext context,
@@ -101,8 +101,8 @@ class _MoveDialogState extends State<MoveDialog> {
               ),
               const SizedBox(height: 4),
               Text(
-                'Moves $what, history and all, into a channel as '
-                '${n == 1 ? 'a thread' : 'threads'}. Where '
+                'Moves $what, history and all, into a channel, where the '
+                'conversation carries on. Where '
                 '${n == 1 ? 'it was' : 'they were'}, a note says where '
                 '${n == 1 ? 'it' : 'they'} went.',
                 style: Theme.of(context).textTheme.bodySmall,

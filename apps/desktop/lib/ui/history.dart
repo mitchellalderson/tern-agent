@@ -8,8 +8,9 @@ import 'move_dialog.dart';
 import 'widgets.dart';
 
 /// Home's History (docs/channels-design.md §5.2): earlier sessions of the
-/// stream, side chats, Telegram chats and conversations from before
-/// channels. Each opens in the right pane.
+/// stream, Telegram chats, and conversations from before channels (old
+/// side chats among them, as plain past conversations). Each opens in the
+/// right pane to read; the stream itself is where conversation goes on.
 Future<void> showHistory(BuildContext context, TernStore store) =>
     showDialog<void>(
       context: context,
@@ -60,7 +61,8 @@ class _HistoryDialogState extends State<HistoryDialog> {
   /// What kind of entry it is, in words.
   static String kind(SessionItem s, String? head) {
     if (s.id == head) return 'Current session';
-    if (s.branchedFrom != null) return 'Side chat';
+    // Side chats were removed; old ones are earlier conversations.
+    if (s.branchedFrom != null) return 'Earlier conversation';
     if (s.source == 'telegram') return 'Telegram';
     if (s.segmentReason == 'migrated') return 'Earlier conversation';
     if (s.segmentReason case final r?) {
@@ -139,9 +141,7 @@ class _HistoryDialogState extends State<HistoryDialog> {
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               leading: Icon(
-                                s.branchedFrom != null
-                                    ? Icons.call_split
-                                    : s.source == 'telegram'
+                                s.source == 'telegram'
                                     ? Icons.send_outlined
                                     : Icons.chat_bubble_outline,
                                 size: 16,
