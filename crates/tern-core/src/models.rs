@@ -94,6 +94,8 @@ pub enum Change {
     },
     /// A channel was created, renamed, archived, or got a new main thread.
     ChannelsChanged {},
+    /// An agent profile was created, edited or archived.
+    AgentsChanged {},
 }
 
 /// What a client fills in to add or change a provider.

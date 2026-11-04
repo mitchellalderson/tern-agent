@@ -291,6 +291,7 @@ mod tests {
                     max_iterations: Some(3),
                     queued,
                     taint: None,
+                    memory_scope: None,
                 },
                 &msg(),
             )

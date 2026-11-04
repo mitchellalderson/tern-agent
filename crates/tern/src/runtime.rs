@@ -58,9 +58,18 @@ impl PromptMaker {
     }
 
     /// The prompt for a run at `depth` (0 = the user's), frozen on its row.
-    pub fn build(&self, role: AgentRole<'_>, depth: u32) -> String {
+    /// `agent` is the run's profile (`None`: the default agent's files);
+    /// `skills` limits which skills it lists.
+    pub fn build(
+        &self,
+        role: AgentRole<'_>,
+        depth: u32,
+        agent: Option<&tern_core::prompt::AgentPrompt>,
+        skills: Option<&tern_core::agents::ToolScope>,
+    ) -> String {
         let skills: Vec<(String, String)> = tern_core::skills::discover(&self.home.skills_dir())
             .into_iter()
+            .filter(|s| skills.is_none_or(|scope| scope.allows_skill(&s.name)))
             .map(|s| (s.name, s.description))
             .collect();
         let integrations = self
@@ -78,6 +87,7 @@ impl PromptMaker {
             skills: &skills,
             integrations: &integrations,
             memory: &self.memory,
+            agent,
         })
     }
 }
@@ -212,8 +222,20 @@ impl Runtime {
             ));
             host.set_driver(Arc::new(LocalDriver::new(&agent)));
             let p = prompts.clone();
-            host.set_prompt(Box::new(move |label, depth| {
-                p.build(AgentRole::Subagent { label }, depth)
+            let st = store.clone();
+            let h = home.clone();
+            host.set_prompt(Box::new(move |label, depth, parent_session| {
+                // A helper works under its parent agent's persona and memory.
+                let frame = st
+                    .session_agent(parent_session)
+                    .ok()
+                    .and_then(|a| st.agent(&a).ok().flatten())
+                    .map(|a| agent_frame(&h, &st, &a));
+                let (prompt, scope) = match &frame {
+                    Some((prompt, scope)) => (prompt.as_ref(), scope.as_ref()),
+                    None => (None, None),
+                };
+                p.build(AgentRole::Subagent { label }, depth, prompt, scope)
             }));
             slot.set(host.clone());
             host
@@ -223,7 +245,7 @@ impl Runtime {
         {
             tracing::warn!(error = %e, "reconciling sub-agent reports failed");
         }
-        Ok(Self {
+        let rt = Self {
             home: home.clone(),
             config,
             live,
@@ -237,7 +259,117 @@ impl Runtime {
             connectors,
             mcp_admin,
             mock,
-        })
+        };
+        rt.refresh_agent_chains();
+        Ok(rt)
+    }
+
+    /// Create an agent profile with its persona file and DM. Fields left
+    /// out come from `template` (if any), else the defaults: private
+    /// memory, the narrow tool scope, the blank persona.
+    pub fn create_agent(&self, a: NewAgent) -> anyhow::Result<tern_store::AgentRow> {
+        use tern_core::agents;
+        let template = match a.template.as_deref() {
+            Some(t) => Some(agents::template(t).with_context(|| format!("no template {t:?}"))?),
+            None => None,
+        };
+        let name = a.name.trim().to_owned();
+        if name.is_empty() {
+            bail!("name is empty");
+        }
+        let slug = match a.slug.as_deref().map(|s| s.trim().trim_start_matches('@')) {
+            Some(s) if !s.is_empty() => s.to_owned(),
+            _ => agents::slug_for(&name),
+        };
+        agents::check_slug(&slug).map_err(anyhow::Error::msg)?;
+        if self.store.agent(&slug)?.is_some() {
+            bail!("there is already an agent @{slug}");
+        }
+        if self.store.channel(&tern_store::dm_slug(&slug))?.is_some() {
+            bail!("the channel #{} is taken", tern_store::dm_slug(&slug));
+        }
+        let id = agents::id_for(&slug);
+        if self.store.agent(&id)?.is_some() {
+            bail!("an archived agent already has the id {id}; unarchive it or pick another name");
+        }
+        let memory = a
+            .memory
+            .or_else(|| template.as_ref().map(|t| t.memory.to_owned()))
+            .unwrap_or_else(|| "private".into());
+        if !matches!(memory.as_str(), "shared" | "private") {
+            bail!("memory must be \"shared\" or \"private\", not {memory:?}");
+        }
+        let tools = a
+            .tools
+            .or_else(|| template.as_ref().and_then(|t| t.tools.clone()))
+            .unwrap_or_else(|| agents::ToolScope::narrow(&self.agent.tools().builtin_names()));
+        let avatar = a.avatar.or_else(|| {
+            template.as_ref().map(|t| {
+                serde_json::json!({ "glyph": t.avatar.0, "color": t.avatar.1 }).to_string()
+            })
+        });
+        let persona = a
+            .persona
+            .filter(|p| !p.trim().is_empty())
+            .or_else(|| template.as_ref().map(|t| t.persona.to_owned()))
+            .or_else(|| agents::template("blank").map(|t| t.persona.to_owned()))
+            .unwrap_or_default()
+            .replace("{name}", &name);
+        self.write_persona(&id, &persona)?;
+        let (row, _) = self.store.create_agent(&tern_store::AgentRow {
+            id,
+            slug,
+            name,
+            avatar,
+            model: a.model,
+            subagent_model: a.subagent_model,
+            tools: Some(serde_json::to_string(&tools)?),
+            memory,
+            ..tern_store::AgentRow::default()
+        })?;
+        self.refresh_agent_chains();
+        Ok(row)
+    }
+
+    /// Write an agent's `persona.md`, atomically.
+    pub fn write_persona(&self, id: &str, text: &str) -> anyhow::Result<()> {
+        let path = tern_core::agents::persona_path(&self.home, id);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        let tmp = path.with_extension("md.tmp");
+        std::fs::write(&tmp, format!("{}\n", text.trim()))
+            .and_then(|()| std::fs::rename(&tmp, &path))
+            .with_context(|| format!("writing {}", path.display()))
+    }
+
+    /// What tern adds under `agent`'s persona in a run's prompt: everything
+    /// after the persona, for the editor's read-only preview.
+    pub fn system_sections(&self, agent: &tern_store::AgentRow) -> String {
+        let (prompt, scope) = agent_frame(&self.home, &self.store, agent);
+        let full = self
+            .prompts
+            .build(AgentRole::Main, 0, prompt.as_ref(), scope.as_ref());
+        let persona =
+            std::fs::read_to_string(tern_core::agents::persona_path(&self.home, &agent.id))
+                .ok()
+                .map(|t| tern_core::memory::injectable(&t))
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| tern_core::defaults::PERSONA_MD.trim().to_owned());
+        full.strip_prefix(persona.as_str())
+            .unwrap_or(&full)
+            .trim_start()
+            .to_owned()
+    }
+
+    /// Put the agents' model chains into the live config, so a run on an
+    /// agent's model gets that agent's fallbacks (T6a's head-model rule).
+    pub fn refresh_agent_chains(&self) {
+        let chains = agent_chains(&self.store);
+        match self.live.write() {
+            Ok(mut g) => g.agent_chains = chains,
+            Err(poisoned) => poisoned.into_inner().agent_chains = chains,
+        }
     }
 
     /// Every secret in `secrets.toml` or referred to by config or an active
@@ -260,7 +392,8 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn set_live(&self, config: Config) {
+    pub(crate) fn set_live(&self, mut config: Config) {
+        config.agent_chains = agent_chains(&self.store);
         match self.live.write() {
             Ok(mut g) => *g = config,
             Err(poisoned) => *poisoned.into_inner() = config,
@@ -279,10 +412,23 @@ impl Runtime {
         flag: Option<&str>,
         session_model: Option<&str>,
     ) -> anyhow::Result<ModelRef> {
+        self.pick_model_for(flag, session_model, None)
+    }
+
+    /// [`Runtime::pick_model`] with the agent's model before `default_model`.
+    fn pick_model_for(
+        &self,
+        flag: Option<&str>,
+        session_model: Option<&str>,
+        agent_model: Option<&str>,
+    ) -> anyhow::Result<ModelRef> {
         if let Some(m) = flag {
             return Ok(self.resolve_model(m)?.model.parse()?);
         }
         if let Some(m) = session_model {
+            return Ok(m.parse()?);
+        }
+        if let Some(m) = agent_model {
             return Ok(m.parse()?);
         }
         match self.live().default_model_ref() {
@@ -318,8 +464,27 @@ impl Runtime {
                 .store
                 .create_session(&tern_core::agent::new_id(), source, None)?,
         };
-        let model = self.pick_model(model, session.model.as_deref())?;
-        if session.model.as_deref() != Some(&model.to_string()) {
+        // The session's agent, read once: persona, model, tool scope and
+        // memory scope are frozen on this run (agent profiles §2).
+        let agent = self
+            .store
+            .agent(session.agent())?
+            .with_context(|| format!("agent {} not found", session.agent()))?;
+        if agent.archived_at.is_some() {
+            bail!("{} is archived", agent.name);
+        }
+        let agent_model = agent
+            .model
+            .as_deref()
+            .and_then(tern_core::config::ModelChain::from_stored)
+            .map(|c| c.primary().to_owned());
+        let model = self.pick_model_for(model, session.model.as_deref(), agent_model.as_deref())?;
+        // An agent's own model isn't pinned on the session, so editing the
+        // agent reaches its DM's next run; a chosen one (`--model`, `/model`)
+        // or the default is, as before.
+        let from_agent =
+            session.model.is_none() && agent_model.as_deref() == Some(model.to_string().as_str());
+        if !from_agent && session.model.as_deref() != Some(&model.to_string()) {
             self.store
                 .set_session_model(&session.id, &model.to_string())?;
         }
@@ -328,7 +493,8 @@ impl Runtime {
         } else {
             AgentRole::Main
         };
-        let mut system = self.prompts.build(role, 0);
+        let (prompt, scope) = agent_frame(&self.home, &self.store, &agent);
+        let mut system = self.prompts.build(role, 0, prompt.as_ref(), scope.as_ref());
         if let Some(c) = self.store.session_channel(&session.id)?
             && let Some(section) = c
                 .instructions
@@ -337,9 +503,19 @@ impl Runtime {
         {
             system.push_str(&section);
         }
-        let run = self
-            .agent
-            .start_run(&session.id, text, &model, &system, trigger)?;
+        let tool_scope = scope
+            .map(|s| s.freeze(&self.agent.tools().builtin_names()))
+            .map(|names| serde_json::to_string(&names))
+            .transpose()?;
+        let run = self.agent.start_run_as(
+            &session.id,
+            text,
+            &model,
+            &system,
+            trigger,
+            tool_scope.as_deref(),
+            agent.private_memory().then_some("private"),
+        )?;
         Ok(StartedRun {
             session_id: session.id,
             run_id: run.id,
@@ -348,10 +524,100 @@ impl Runtime {
     }
 }
 
+/// A new agent profile ([`Runtime::create_agent`]). `model` and
+/// `subagent_model` are already checked and in stored form.
+#[derive(Debug, Default)]
+pub struct NewAgent {
+    pub name: String,
+    pub slug: Option<String>,
+    /// JSON `{glyph, color}`.
+    pub avatar: Option<String>,
+    pub persona: Option<String>,
+    pub model: Option<String>,
+    pub subagent_model: Option<String>,
+    pub tools: Option<tern_core::agents::ToolScope>,
+    pub memory: Option<String>,
+    pub template: Option<String>,
+}
+
 pub struct StartedRun {
     pub session_id: String,
     pub run_id: String,
     pub model: ModelRef,
+}
+
+/// What the prompt and the tool scope take from `agent`: `None` for the
+/// default agent with everything, so its runs are what they were before
+/// profiles.
+pub(crate) fn agent_frame(
+    home: &TernHome,
+    store: &Store,
+    agent: &tern_store::AgentRow,
+) -> (
+    Option<tern_core::prompt::AgentPrompt>,
+    Option<tern_core::agents::ToolScope>,
+) {
+    let scope = agent
+        .tools
+        .as_deref()
+        .map(|t| match tern_core::agents::ToolScope::parse(t) {
+            Ok(s) => s,
+            Err(e) => {
+                // Fail closed: read-only built-ins, nothing else.
+                tracing::warn!(agent = %agent.id, error = %e, "ignoring a bad tool scope; using read-only tools");
+                tern_core::agents::ToolScope {
+                    builtins: tern_core::agents::Pick::ReadOnly,
+                    connectors: tern_core::agents::Pick::Names(Vec::new()),
+                    mcp: tern_core::agents::Pick::Names(Vec::new()),
+                    skills: tern_core::agents::Pick::Names(Vec::new()),
+                }
+            }
+        });
+    let others = other_agents(home, store, &agent.id);
+    if agent.is_default() && others.is_empty() {
+        return (None, scope);
+    }
+    let prompt = tern_core::prompt::AgentPrompt {
+        persona_path: tern_core::agents::persona_path(home, &agent.id),
+        memory_path: tern_core::agents::memory_path(home, &agent.id, agent.private_memory()),
+        others,
+    };
+    (Some(prompt), scope)
+}
+
+/// One line per other active agent: `@slug · Name · first line of its persona`.
+fn other_agents(home: &TernHome, store: &Store, me: &str) -> Vec<String> {
+    store
+        .agents(false)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.id != me)
+        .map(|a| {
+            let first = std::fs::read_to_string(tern_core::agents::persona_path(home, &a.id))
+                .ok()
+                .and_then(|t| {
+                    t.lines()
+                        .map(str::trim)
+                        .find(|l| !l.is_empty() && !l.starts_with("<!--"))
+                        .map(|l| l.chars().take(120).collect::<String>())
+                })
+                .unwrap_or_default();
+            format!("@{} · {} · {first}", a.slug, a.name)
+        })
+        .collect()
+}
+
+/// `(slug, chain)` for every active agent that sets a model.
+fn agent_chains(store: &Store) -> Vec<(String, tern_core::config::ModelChain)> {
+    store
+        .agents(false)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|a| {
+            let chain = tern_core::config::ModelChain::from_stored(a.model.as_deref()?)?;
+            Some((a.slug, chain))
+        })
+        .collect()
 }
 
 fn canonical(p: PathBuf) -> PathBuf {
@@ -465,10 +731,10 @@ fn build_tools(
         },
     )
     .map_err(anyhow::Error::msg)?;
-    registry.register(Arc::new(tern_tools::memory::ProfileEdit::new(
-        home.clone(),
-        config.memory.clone(),
-    )));
+    registry.register(Arc::new(
+        tern_tools::memory::ProfileEdit::new(home.clone(), config.memory.clone())
+            .with_store(store.clone()),
+    ));
     if config.subagents.enabled && config.subagents.max_depth >= 1 {
         tern_tools::agents::register(&mut registry, subagents.clone());
     }

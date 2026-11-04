@@ -14,7 +14,7 @@ use tern_core::subagent::ChildRun;
 use tern_core::types::{ContentBlock, Role, Usage};
 use tern_core::{SecretStatus, TernHome};
 use tern_store::SessionSummary;
-use tern_tui::{Backend, BackendResult, HistoryMessage, SessionInfo, Started};
+use tern_tui::{AgentInfo, Backend, BackendResult, HistoryMessage, SessionInfo, Started};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -305,6 +305,60 @@ impl Backend for TuiBackend {
             Some(h) => h.message_run(run_id, text).map_err(chain),
             None => Err("sub-agents are disabled ([subagents] enabled = false)".into()),
         }
+    }
+
+    fn agents(&self) -> BackendResult<Vec<AgentInfo>> {
+        let rows = self.rt().store.agents(false).map_err(err)?;
+        Ok(rows
+            .into_iter()
+            .map(|a| AgentInfo {
+                is_default: a.is_default(),
+                id: a.id,
+                slug: a.slug,
+                name: a.name,
+                needs_you: 0,
+                active_runs: 0,
+            })
+            .collect())
+    }
+
+    /// Without the daemon there is no queueing or idle cut: the DM's
+    /// current thread, or a new one on `new_topic`.
+    fn send_to_agent(
+        &self,
+        id: &str,
+        text: &str,
+        model: Option<&str>,
+        new_topic: bool,
+    ) -> BackendResult<Started> {
+        let rt = self.rt();
+        let store = &rt.store;
+        let dm = store
+            .agent_channel(id)
+            .map_err(err)?
+            .ok_or_else(|| format!("agent {id} has no DM"))?;
+        let head = match &dm.main_session_id {
+            Some(s) => store.session(s).map_err(err)?,
+            None => None,
+        };
+        let session = match head {
+            Some(h) if !new_topic => h.id,
+            head => {
+                let s = store
+                    .create_thread(&tern_store::NewThread {
+                        id: &tern_core::agent::new_id(),
+                        source: "api",
+                        channel_id: &dm.id,
+                        prev_session_id: head.as_ref().map(|h| h.id.as_str()),
+                        segment_reason: head.as_ref().map(|_| "new_topic"),
+                        ..Default::default()
+                    })
+                    .map_err(err)?;
+                store.set_main_session(&dm.id, &s.id).map_err(err)?;
+                s.id
+            }
+        };
+        self.start_run(Some(&session), model, text)
     }
 }
 

@@ -132,7 +132,12 @@ pub fn statuses(home: &TernHome, cfg: &MemoryConfig) -> Vec<FileStatus> {
 /// `None` when it is missing or empty. An over-cap file is cut at a line
 /// boundary and ends with a note asking for consolidation.
 pub fn read_capped(home: &TernHome, file: ProfileFile, cap: u64) -> Option<String> {
-    let raw = std::fs::read_to_string(file.path(home)).ok()?;
+    read_capped_at(&file.path(home), file, cap)
+}
+
+/// [`read_capped`] for `file` at `path` (an agent's own `memory.md`).
+pub fn read_capped_at(path: &std::path::Path, file: ProfileFile, cap: u64) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
     let text = injectable(&raw);
     (!text.is_empty()).then(|| capped(&text, file, cap))
 }
@@ -349,6 +354,7 @@ mod tests {
             quiet: false,
             input_taint: None,
             taint: None,
+            memory_scope: None,
         }
     }
 

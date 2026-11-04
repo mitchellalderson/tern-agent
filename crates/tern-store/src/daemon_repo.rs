@@ -30,11 +30,20 @@ pub struct ScheduleRow {
     pub budget_since: Option<i64>,
     /// The channel its results are posted to; `None` = Home.
     pub channel_id: Option<String>,
+    /// The agent whose job it is; `None` = the default agent (agent
+    /// profiles §4). Its session belongs to the same agent.
+    pub agent_id: Option<String>,
+}
+
+impl ScheduleRow {
+    pub fn agent(&self) -> &str {
+        self.agent_id.as_deref().unwrap_or(crate::DEFAULT_AGENT)
+    }
 }
 
 const SCHEDULE_COLS: &str = "id, cron, prompt, session_id, deliver_to, enabled, next_run_at, last_run_at, \
     quiet_hours, urgent, runs_per_day, usd_per_day, tokens_per_run, paused_until, paused_reason, budget_since, \
-    channel_id";
+    channel_id, agent_id";
 
 fn schedule_row(r: &Row<'_>) -> rusqlite::Result<ScheduleRow> {
     Ok(ScheduleRow {
@@ -55,6 +64,7 @@ fn schedule_row(r: &Row<'_>) -> rusqlite::Result<ScheduleRow> {
         paused_reason: r.get(14)?,
         budget_since: r.get(15)?,
         channel_id: r.get(16)?,
+        agent_id: r.get(17)?,
     })
 }
 
@@ -85,7 +95,7 @@ impl Store {
             &format!(
                 "INSERT INTO schedules ({SCHEDULE_COLS})
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                   COALESCE(?17, 'home'))"
+                   COALESCE(?17, 'home'), NULLIF(?18, 'tern'))"
             ),
             params![
                 s.id,
@@ -104,7 +114,8 @@ impl Store {
                 s.paused_until,
                 s.paused_reason,
                 s.budget_since,
-                s.channel_id
+                s.channel_id,
+                s.agent_id
             ],
         )?;
         Ok(())

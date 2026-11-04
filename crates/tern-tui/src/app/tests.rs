@@ -38,6 +38,8 @@ struct Fake {
     mcp_patches: Mutex<Vec<(String, McpPatch)>>,
     /// (name, remove_secrets) passed to `remove_mcp`.
     mcp_removed: Mutex<Vec<(String, bool)>>,
+    /// (agent, text, new_topic) passed to `send_to_agent`.
+    agent_sends: Mutex<Vec<(String, String, bool)>>,
 }
 
 #[async_trait]
@@ -224,6 +226,36 @@ impl Backend for Fake {
             .unwrap()
             .push((run_id.into(), text.into()));
         Ok(())
+    }
+    fn agents(&self) -> BackendResult<Vec<AgentInfo>> {
+        let a = |id: &str, slug: &str, name: &str, needs_you| AgentInfo {
+            id: id.into(),
+            slug: slug.into(),
+            name: name.into(),
+            needs_you,
+            active_runs: 0,
+            is_default: id == "tern",
+        };
+        Ok(vec![
+            a("tern", "tern", "tern", 0),
+            a("tern:inbox", "inbox", "Inbox", 2),
+            a("tern:research", "research", "Research", 0),
+        ])
+    }
+    fn send_to_agent(
+        &self,
+        id: &str,
+        text: &str,
+        _: Option<&str>,
+        new_topic: bool,
+    ) -> BackendResult<Started> {
+        let mut s = self.agent_sends.lock().unwrap();
+        s.push((id.into(), text.into(), new_topic));
+        Ok(Started {
+            session_id: format!("dm-{id}-{}", s.len()),
+            run_id: format!("ra{}", s.len()),
+            model: "mock:default".into(),
+        })
     }
 }
 
@@ -1413,4 +1445,57 @@ fn mcp_shortcuts() {
     assert!(notices(&app).contains("usage: /mcp restart <name>"));
     submit(&mut app, "/tools");
     assert!(notices(&app).contains("MCP servers (/mcp to manage)"));
+}
+
+#[test]
+fn agent_switches_to_a_profiles_dm_and_back() {
+    let (mut app, fake) = new_app();
+    submit(&mut app, "/agents");
+    assert!(
+        notices(&app).contains("@inbox  Inbox  (2 need you)"),
+        "{}",
+        notices(&app)
+    );
+    submit(&mut app, "/agent inbox");
+    assert_eq!(
+        app.profile.as_ref().map(|p| p.id.as_str()),
+        Some("tern:inbox")
+    );
+    let fx = submit(&mut app, "anything urgent?");
+    assert!(matches!(&fx[..], [Effect::Drive { run_id, .. }] if run_id == "ra1"));
+    app.running = None;
+    assert_eq!(
+        fake.agent_sends.lock().unwrap()[0],
+        ("tern:inbox".into(), "anything urgent?".into(), false)
+    );
+    assert!(fake.started.lock().unwrap().is_empty());
+    // /new starts a new topic in the DM.
+    submit(&mut app, "/new");
+    submit(&mut app, "next thing");
+    app.running = None;
+    assert!(fake.agent_sends.lock().unwrap()[1].2);
+    assert!(
+        screen(&mut app, 80, 12).contains(" Inbox · "),
+        "the status line names the agent"
+    );
+    // Back to tern: its own sessions again.
+    submit(&mut app, "/agent tern");
+    assert!(app.profile.is_none());
+    submit(&mut app, "hello");
+    assert_eq!(fake.started.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_sub_agent_label_wins_over_an_agent_name() {
+    let (mut app, fake) = new_app();
+    submit(&mut app, "start");
+    app.running = None;
+    // The last run (r1) has a sub-agent labelled "research".
+    submit(&mut app, "/agent research keep going");
+    assert!(app.profile.is_none());
+    assert_eq!(fake.messaged.lock().unwrap().len(), 1);
+    // With /agent <name> <message>, a profile gets the message in its DM.
+    submit(&mut app, "/agent inbox what came in?");
+    assert_eq!(app.profile.as_ref().map(|p| p.slug.as_str()), Some("inbox"));
+    assert_eq!(fake.agent_sends.lock().unwrap()[0].1, "what came in?");
 }

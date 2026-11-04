@@ -62,6 +62,12 @@ pub enum Command {
         #[command(subcommand)]
         command: GatewayCommand,
     },
+    /// List, create, edit and archive your agents: each has its own
+    /// persona, model, tools, memory, routines and DM.
+    Agents {
+        #[command(subcommand)]
+        command: Option<AgentsCommand>,
+    },
     /// List or show conversation sessions.
     Sessions {
         #[command(subcommand)]
@@ -299,6 +305,39 @@ pub enum DevicesCommand {
         /// Name to show on the core (default: this host's name).
         #[arg(long)]
         name: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AgentsCommand {
+    /// List agents (the default, `tern`, first).
+    List {
+        /// Include archived agents.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Create an agent and its DM.
+    New {
+        /// Display name, e.g. "Research".
+        name: String,
+        /// Its @name (default: from the name).
+        #[arg(long)]
+        slug: Option<String>,
+        /// Start from a template: research, inbox, marketing or blank.
+        #[arg(long)]
+        template: Option<String>,
+        /// `private` (default) or `shared`.
+        #[arg(long)]
+        memory: Option<String>,
+    },
+    /// Open an agent's persona in $EDITOR.
+    Edit { agent: String },
+    /// Archive an agent: hide it and pause its routines. Nothing is deleted.
+    Archive {
+        agent: String,
+        /// Unarchive it instead.
+        #[arg(long)]
+        undo: bool,
     },
 }
 

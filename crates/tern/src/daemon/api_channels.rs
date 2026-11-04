@@ -51,6 +51,10 @@ pub struct Channel {
     pub active_runs: usize,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
+    /// A main channel: whose DM it is (`tern` for Home); a topic channel:
+    /// its lead, when not the default agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     pub updated_at: i64,
 }
 
@@ -64,8 +68,24 @@ pub(super) fn channel_view(m: &Shared, c: ChannelRow) -> Channel {
             })
         })
         .count();
-    let needs_you = if c.kind == "main" {
+    // Home counts every approval and secret request (they all land there);
+    // an agent's DM the ones from its own runs, which it mirrors.
+    let needs_you = if c.id == tern_store::HOME {
         m.routes.api.pending().len() + m.routes.secrets.pending().len()
+    } else if c.kind == "main" {
+        let mine = |a: Option<&str>| a.is_some() && a == c.agent_id.as_deref();
+        m.routes
+            .api
+            .pending()
+            .iter()
+            .filter(|p| mine(p.agent_id.as_deref()))
+            .count()
+            + m.routes
+                .secrets
+                .pending()
+                .iter()
+                .filter(|p| mine(p.agent_id.as_deref()))
+                .count()
     } else {
         0
     };
@@ -80,6 +100,7 @@ pub(super) fn channel_view(m: &Shared, c: ChannelRow) -> Channel {
         kind: c.kind,
         instructions: c.instructions,
         main_session_id: c.main_session_id,
+        agent_id: c.agent_id,
         updated_at: c.updated_at,
     }
 }
@@ -170,7 +191,11 @@ async fn update(
 ) -> ApiResult<Channel> {
     let c = find(&m, &id)?;
     if c.kind == "main" && b.archived == Some(true) {
-        return Err(bad("Home can't be archived"));
+        return Err(bad(if c.id == tern_store::HOME {
+            "Home can't be archived".to_owned()
+        } else {
+            "an agent's DM is archived with its agent".to_owned()
+        }));
     }
     let title = b.title.as_deref().map(str::trim);
     if title == Some("") {

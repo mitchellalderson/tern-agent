@@ -35,7 +35,9 @@
 //! `subagent_message` (docs/subagents-design.md §3.1). Approvals of a
 //! sub-agent's calls carry `parent_run_id`, `agent_label` and
 //! `root_session_id`.
-//! Agent events also carry `channel_id`, the channel of the run's session.
+//! Agent events also carry `channel_id`, the channel of the run's session,
+//! and `agent_id`, its agent (`tern` by default). Agent profiles are in
+//! `api_agents.rs`.
 //! Channels and posts are in `api_channels.rs`; schedules in `api_schedules.rs`; session runs and journal steps in
 //! `api_runs.rs`; sub-agent runs and messages in `api_subagents.rs`;
 //! secrets in `api_secrets.rs`; providers, model lists and the default model
@@ -173,6 +175,7 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/approvals", get(pending_approvals))
         .route("/v1/approvals/{id}", post(approve))
         .merge(super::api_channels::routes())
+        .merge(super::api_agents::routes())
         .merge(super::api_schedules::routes())
         .merge(super::api_runs::routes())
         .merge(super::api_subagents::routes())
@@ -445,6 +448,9 @@ pub struct SessionItem {
     /// A side thread: `message:<id>` or `post:<id>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branched_from: Option<String>,
+    /// Its agent, when not the default one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 impl SessionItem {
@@ -461,6 +467,7 @@ impl SessionItem {
             prev_session_id: s.prev_session_id,
             segment_reason: s.segment_reason,
             branched_from: s.branched_from,
+            agent_id: s.agent_id,
         }
     }
 }
@@ -679,6 +686,8 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
 struct RunPlace {
     session_id: String,
     channel_id: Option<String>,
+    /// The session's agent (agent profiles §7.1).
+    agent_id: String,
     /// Sub-agents only: their parent run and the session at the top of
     /// their tree.
     parent: Option<(String, String)>,
@@ -695,10 +704,11 @@ fn run_place(m: &Shared, run_id: &str) -> Option<RunPlace> {
         }
         None => None,
     };
-    let channel_id = store.session(&r.session_id).ok()??.channel_id;
+    let session = store.session(&r.session_id).ok()??;
     Some(RunPlace {
+        agent_id: session.agent().to_owned(),
+        channel_id: session.channel_id,
         session_id: r.session_id,
-        channel_id,
         parent,
     })
 }
@@ -730,6 +740,8 @@ fn with_session(m: &Shared, cache: &mut HashMap<String, RunPlace>, data: &mut Va
     if let Some(c) = place.channel_id {
         obj.entry("channel_id").or_insert_with(|| Value::String(c));
     }
+    obj.entry("agent_id")
+        .or_insert_with(|| Value::String(place.agent_id));
     if let Some((parent, root_session)) = place.parent {
         obj.entry("parent_run_id")
             .or_insert_with(|| Value::String(parent));

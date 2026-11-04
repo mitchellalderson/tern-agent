@@ -22,6 +22,9 @@ pub struct ChannelRow {
     pub archived_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// A main channel: whose DM it is (`None` = the default agent). A topic
+    /// channel: its lead.
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -82,7 +85,7 @@ pub struct NewThread<'a> {
 }
 
 const CHANNEL_COLS: &str = "id, slug, title, kind, instructions, main_session_id, created_by, \
-    archived_at, created_at, updated_at";
+    archived_at, created_at, updated_at, agent_id";
 const POST_COLS: &str = "id, channel_id, session_id, run_id, author_kind, author_id, author, kind, \
     text, reply_to, points_to, tainted, dedupe_key, created_at";
 
@@ -98,6 +101,7 @@ fn channel_row(r: &Row<'_>) -> rusqlite::Result<ChannelRow> {
         archived_at: r.get(7)?,
         created_at: r.get(8)?,
         updated_at: r.get(9)?,
+        agent_id: r.get(10)?,
     })
 }
 
@@ -126,9 +130,10 @@ impl Store {
     pub fn create_channel(&self, c: &ChannelRow) -> Result<ChannelRow> {
         let now = now_ms();
         self.conn()?.execute(
-            "INSERT INTO channels (id, slug, title, kind, instructions, created_by, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-            params![c.id, c.slug, c.title, c.kind, c.instructions, c.created_by, now],
+            "INSERT INTO channels (id, slug, title, kind, instructions, created_by, created_at, updated_at,
+               agent_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)",
+            params![c.id, c.slug, c.title, c.kind, c.instructions, c.created_by, now, c.agent_id],
         )?;
         Ok(ChannelRow {
             created_at: now,
@@ -229,8 +234,9 @@ impl Store {
         let now = now_ms();
         self.conn()?.execute(
             "INSERT INTO sessions (id, source, model, external_ref, channel_id, prev_session_id,
-               segment_reason, branched_from, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+               segment_reason, branched_from, created_at, updated_at, agent_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9,
+               (SELECT NULLIF(agent_id, 'tern') FROM channels WHERE id = ?5))",
             params![
                 t.id,
                 t.source,
@@ -263,6 +269,10 @@ impl Store {
             segment_reason: t.segment_reason.map(Into::into),
             branched_from: t.branched_from.map(Into::into),
             title: None,
+            agent_id: self
+                .channel(t.channel_id)?
+                .and_then(|c| c.agent_id)
+                .filter(|a| a != crate::DEFAULT_AGENT),
         })
     }
 

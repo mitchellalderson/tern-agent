@@ -221,6 +221,30 @@ impl Agent {
         system_prompt: &str,
         trigger: &str,
     ) -> Result<RunRow, AgentError> {
+        self.start_run_as(
+            session_id,
+            user_text,
+            model,
+            system_prompt,
+            trigger,
+            None,
+            None,
+        )
+    }
+
+    /// [`Agent::start_run`] for an agent profile: its tool scope (JSON tool
+    /// names and `*` patterns) and memory scope, frozen on the run.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_run_as(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        model: &ModelRef,
+        system_prompt: &str,
+        trigger: &str,
+        tool_scope: Option<&str>,
+        memory_scope: Option<&str>,
+    ) -> Result<RunRow, AgentError> {
         let run_id = new_id();
         let input = self
             .journal
@@ -233,6 +257,8 @@ impl Agent {
                 trigger,
                 model: &model.to_string(),
                 system_prompt,
+                tool_scope,
+                memory_scope,
                 ..tern_store::NewRun::default()
             },
             &input,

@@ -59,6 +59,7 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern service`](#tern-service) | Start tern at login (launchd on macOS, systemd on Linux). |
 | [`tern tray`](#tern-tray) | The menu-bar icon (macOS): is tern running, Open, Start/Quit, Start at login. |
 | [`tern gateway pair`](#tern-gateway-pair) | Pair a Telegram account with the bot. |
+| [`tern agents`](#tern-agents) | List, create, edit or archive your agents. |
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
 | [`tern connectors`](#tern-connectors) | List or validate Luau connectors. |
@@ -169,6 +170,17 @@ tern gateway pair
 ```
 
 Prints an 8-character one-time code on stdout. Send it to your Telegram bot within 10 minutes to pair that Telegram account. Only paired accounts can talk to the bot or answer its approval buttons. Works whether or not the daemon is running, but the bot only answers while the daemon runs.
+
+### `tern agents`
+
+```sh
+tern agents [list] [--all]                    # each agent: @name, name, memory, model, routines (--all: archived too)
+tern agents new <name> [--slug s] [--template research|inbox|marketing|blank] [--memory private|shared]
+tern agents edit <name>                       # open its persona.md in $VISUAL / $EDITOR
+tern agents archive <name> [--undo]           # hide it and pause its routines; nothing is deleted
+```
+
+Works without the daemon; a running one picks changes up at the agent's next run. See [Agents](#agents).
 
 ### `tern sessions`
 
@@ -385,6 +397,20 @@ tern remembers in two places:
 
 **Flush before compaction.** When a long conversation is about to be summarized, the agent first gets one silent model call over the part being summarized, with only `memory_save`, to keep durable facts (preferences, decisions, people, commitments). It's journaled, so a resumed run doesn't repeat it, and its tokens count toward the run's budget. If it fails, compaction goes ahead. Sub-agents and scheduled runs don't flush, nor does a run whose token budget can't cover it. `memory.flush = false` turns it off.
 
+## Agents
+
+You can have several agents, each with its own job: a name and avatar, a **persona** (who it is, its job, its tone), a model (or a fallback chain), the **tools** it may use, its **memory**, and its own **routines**. Each has a **DM**, a main channel like Home: one continuous chat with the same cuts, carry-over, History, side chats and queued sends. See [agent-profiles-design.md](agent-profiles-design.md).
+
+- **The agent you already had is `tern`**, the default agent. Its persona is `~/.tern/persona.md`, its memory the shared memory, and its DM is Home. It can be renamed and given an avatar (its id stays `tern`); its model is `default_model`. It can't be archived.
+- **Persona**: `~/.tern/agents/<name at creation>/persona.md`, editable in an editor or through the API. A new agent starts from a template (Research, Inbox, Marketing, Blank), never a blank page. tern always adds its own sections under every persona (memory, time, workspace, secrets, untrusted content, sub-agents, and, with more than one agent, who the others are): a persona can change who the agent is, not those rules.
+- **Tools**: `{"builtins": "all" | "read_only" | [names], "connectors": "all" | [names], "mcp": "all" | [servers], "skills": "all" | [names]}`; a missing key means all. A new agent gets every built-in tool except `shell`, no connectors, no MCP servers, all skills. Tools out of scope aren't offered to the model and are refused if called. Every agent keeps `channel_read`, `channel_post`, `history_search`, `secret_request` and its memory tools. Its sub-agents get no more than it has.
+- **Memory**: `private` (the default for new agents) or `shared`. `user.md` is always shared: who you are is the same for every agent. A private agent has its own `memory.md` (next to its persona) and its own long-term memories: `memory_save` keeps them its own unless `shared: true`, and `memory_search` finds its own and the shared ones. `session_search` only ever searches the agent's own conversations, never another agent's DM.
+- **Routines belong to an agent.** A schedule an agent creates (`schedule_create` in its DM) is its own: it runs as that agent and posts to its DM. The `schedule_*` tools see and change only the calling agent's schedules. Archiving an agent pauses its routines.
+- **Approvals still land in Home**, whichever agent asks; an agent's DM also shows its own (one request, answered in either place).
+- **Edits apply to the next run.** A run freezes its agent's persona, model, tool scope and memory scope when it starts.
+- **TUI**: `/agent <name>` talks to that agent in its DM (`/new` starts a new topic there, `/agent tern` goes back), `/agents` lists them with what's working and waiting. A sub-agent of the current run with the same label wins.
+- **API** (`agents` in `/v1/health`): `GET/POST /v1/agents`, `PATCH /v1/agents/{id}` (any field, `archived: true`), `GET/PUT /v1/agents/{id}/persona` (GET adds `system_sections`), `GET /v1/agents/templates`, `GET /v1/memories?agent=shared|<agent>&q=`, `GET /v1/schedules?agent=` and `agent` on schedule create/update. `/v1/events` adds `{"agents_changed": {}}`; run events, approvals and secret requests carry `agent_id`, and sessions their `agent_id` when not `tern`.
+
 ## Schedules
 
 The agent creates schedules with `schedule_create` and changes them with `schedule_update`; the desktop app calls them routines. Each one runs its prompt in a session of its own and delivers the final answer to its `deliver_to` (a Telegram chat, or nowhere: the result stays in the session).
@@ -396,7 +422,7 @@ The agent creates schedules with `schedule_create` and changes them with `schedu
   - `usd_per_day` needs the model's price, from `providers.<name>.prices` or the provider's model list. Without one the USD cap is ignored; the log says so once, and `tern doctor` lists it.
   - A run that uses more than `tokens_per_run` is stopped and fails with the reason ("stopped: this run used N tokens, over its cap of M"), which is delivered like any failure.
 - `tern doctor` reports schedules paused by a cap, USD caps that can't apply, and deliveries waiting for quiet hours to end.
-- **Results are posted to a channel** (Home unless the schedule's `channel` says otherwise; `POST`/`PATCH /v1/schedules` take `channel`, a slug or id). A `NO_REPLY` run posts nothing. `deliver_to` stays the push to Telegram.
+- **Results are posted to a channel** (its agent's DM, Home for `tern`, unless the schedule's `channel` says otherwise; `POST`/`PATCH /v1/schedules` take `channel`, a slug or id). A `NO_REPLY` run posts nothing. `deliver_to` stays the push to Telegram.
 
 ## Channels
 
@@ -405,7 +431,7 @@ Channels are topic timelines (`#finances`, `#launch`) over one shared memory; se
 - A channel's timeline is its **posts**: what you send there, the agent's answers, and routine results. Each post has an `author` to show and a stable `author_id` (`owner` for you, `tern` for the agent, `routine:<schedule id>`), which becomes a member or agent id later. Tool calls stay in the thread's session.
 - Sending into a topic channel (`POST /v1/channels/{id}/posts` `{text}`) writes your post and starts a run in the channel's **main thread**; its answer is posted as a reply to yours. With `reply_to` it goes to a **side thread** branched from that post. A channel's `instructions` are added to the system prompt of its runs.
 - Home's conversation is its messages, so sending there writes no post; Home's posts are what comes from elsewhere, such as routine results.
-- **Home is one continuous chat** cut into sessions behind the scenes, so no context grows forever. A message starts a new session after `[home] idle_hours` (default 6) without one, or once a new day has begun (`day_starts`, default 04:00 local) and the last message is an hour old, or when you ask for a **New topic** (the desktop's button or ⌘N, `new_topic: true` on the API, `/new` in Telegram). Never in the middle of a run. The new session's first run starts with a summary of the last one, what's still open there, and its last two exchanges verbatim; the agent can look further back with `history_search`. The desktop shows the stream as one scroll with a divider at each cut (click it for what was carried over), and **History** lists earlier sessions, side chats and conversations from before channels. Telegram chats follow the same rules, each as its own stream.
+- **Home is one continuous chat** cut into sessions behind the scenes, so no context grows forever. A message starts a new session after `[home] idle_hours` (default 6; `[main]` works too, and the same rules cut every agent's DM) without one, or once a new day has begun (`day_starts`, default 04:00 local) and the last message is an hour old, or when you ask for a **New topic** (the desktop's button or ⌘N, `new_topic: true` on the API, `/new` in Telegram). Never in the middle of a run. The new session's first run starts with a summary of the last one, what's still open there, and its last two exchanges verbatim; the agent can look further back with `history_search`. The desktop shows the stream as one scroll with a divider at each cut (click it for what was carried over), and **History** lists earlier sessions, side chats and conversations from before channels. Telegram chats follow the same rules, each as its own stream.
 - **Agents see what others posted.** Before each model call, a run in a channel (Home included) is shown the posts that came in from other threads, routines and agents since its conversation last looked: up to 20, newest kept, as one note that calls them information, not instructions. Posts written by a tainted run are framed as untrusted and taint the run that reads them. The agent can page or search posts with `channel_read` and post an update with `channel_post` (`needs_you` marks one that needs you; at most 10 per run; a tainted run's posts are tainted). Sub-agents and routines don't get the catch-up, and sub-agents can't post yet.
 - **Sending while tern is working doesn't stop it.** In Home, a channel, or a Telegram chat, the message goes to the run in progress, which reads it at its next step (Stop still stops). `POST /v1/runs` with a `session_id` still replaces the run, as before.
 - **Side chats**: "Branch into side chat" on a message in Home opens a conversation beside the stream that quotes it; it shows as a card in the stream and in History, and its context stays separate. API: `POST /v1/runs` with `channel` and `branched_from: "message:<id>"`.
@@ -512,4 +538,4 @@ If tern hits an internal error it writes `~/.tern/logs/crash-<time>.txt` (messag
 
 ## Data
 
-Everything lives in `~/.tern` (`TERN_HOME` to move it): `config.toml`, `secrets.toml`, `tern.db` (SQLite, WAL), `persona.md`, `user.md` and `memory.md` (included in the system prompt; see [Memory](#memory)), `skills/`, `connectors/`, `logs/` (daily rotated; set `TERN_LOG=debug` for more).
+Everything lives in `~/.tern` (`TERN_HOME` to move it): `config.toml`, `secrets.toml`, `tern.db` (SQLite, WAL), `persona.md`, `user.md` and `memory.md` (included in the system prompt; see [Memory](#memory)), `agents/` (other agents' personas and private `memory.md`; see [Agents](#agents)), `skills/`, `connectors/`, `logs/` (daily rotated; set `TERN_LOG=debug` for more).

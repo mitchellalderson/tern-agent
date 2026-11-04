@@ -232,13 +232,22 @@ impl Tool for ChannelPost {
                 _ => {}
             }
         }
+        // Written by the run's agent (agent profiles §2): its id and name.
+        let me = self
+            .store
+            .session_agent(&ctx.session_id)
+            .ok()
+            .and_then(|a| self.store.agent(&a).ok().flatten());
+        let (author_id, author_name) = me
+            .map(|a| (a.id, a.name))
+            .unwrap_or_else(|| (author::AGENT.into(), author::AGENT.into()));
         let written = self.store.add_post(&NewPost {
             channel_id: &channel.id,
             session_id: Some(&ctx.session_id),
             run_id: Some(&run.id),
             author_kind: "agent",
-            author_id: author::AGENT,
-            author: author::AGENT,
+            author_id: &author_id,
+            author: &author_name,
             kind: if a.needs_you { "needs_you" } else { "update" },
             text,
             dedupe_key: Some(&key),

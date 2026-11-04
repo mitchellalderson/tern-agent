@@ -303,6 +303,12 @@ impl ToolRegistry {
         self.all().into_keys().collect()
     }
 
+    /// Names of the tools registered directly (not from a source such as
+    /// an MCP server or the connectors).
+    pub fn builtin_names(&self) -> Vec<String> {
+        self.tools.keys().cloned().collect()
+    }
+
     /// Specs sorted by name, so requests (and their journal hashes) are stable.
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.all().values().map(|t| t.spec()).collect()
@@ -377,11 +383,16 @@ impl ToolRegistry {
 }
 
 /// Whether `name` is allowed by `scope` (`None` = every tool except the
-/// ones only sub-agents get, such as `agent_ask_parent`).
+/// ones only sub-agents get, such as `agent_ask_parent`). An entry ending
+/// in `*` allows names it is a prefix of: an agent profile's scope names a
+/// connector's or MCP server's tools that way (`mcp__browser__*`).
 pub fn in_scope(scope: Option<&[String]>, name: &str) -> bool {
     match scope {
         None => !crate::subagent::CHILD_ONLY_TOOLS.contains(&name),
-        Some(s) => s.iter().any(|n| n == name),
+        Some(s) => s.iter().any(|n| match n.strip_suffix('*') {
+            Some(prefix) => name.starts_with(prefix),
+            None => n == name,
+        }),
     }
 }
 

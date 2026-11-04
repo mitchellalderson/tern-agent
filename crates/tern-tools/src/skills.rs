@@ -13,11 +13,20 @@ use crate::{args, spec};
 
 pub struct SkillRead {
     root: PathBuf,
+    /// To check the run's frozen scope: an agent profile may name its skills.
+    store: Option<tern_store::Store>,
 }
 
 impl SkillRead {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self { root, store: None }
+    }
+
+    pub fn with_store(self, store: tern_store::Store) -> Self {
+        Self {
+            store: Some(store),
+            ..self
+        }
     }
 }
 
@@ -44,12 +53,21 @@ impl Tool for SkillRead {
         ToolPolicy::new(Effect::Read, true)
     }
 
-    async fn call(&self, _: &ToolCtx, raw: Value) -> ToolResult {
+    async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
         let a: ReadArgs = match args(raw) {
             Ok(a) => a,
             Err(e) => return e,
         };
-        let all = skills::discover(&self.root);
+        let scope: Option<Vec<String>> = self
+            .store
+            .as_ref()
+            .and_then(|s| s.run(&ctx.run_id).ok().flatten())
+            .and_then(|r| r.tool_scope)
+            .and_then(|t| serde_json::from_str(&t).ok());
+        let all: Vec<_> = skills::discover(&self.root)
+            .into_iter()
+            .filter(|s| tern_core::agents::scope_allows_skill(scope.as_deref(), &s.name))
+            .collect();
         let Some(skill) = all.iter().find(|s| s.name == a.name) else {
             let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
             return ToolResult::error(format!(

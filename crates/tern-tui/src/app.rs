@@ -18,7 +18,9 @@ use crate::models::{ModelPicker, PickerAction};
 use crate::secret_prompt::{Done, SecretPrompt};
 use crate::secrets::SecretsPanel;
 use crate::setup::{SetupAction, SetupPanel, Task, TaskDone};
-use crate::{Backend, BackendResult, PendingApproval, PendingSecret, SessionInfo, UserPrompt};
+use crate::{
+    AgentInfo, Backend, BackendResult, PendingApproval, PendingSecret, SessionInfo, UserPrompt,
+};
 
 /// Two Ctrl+C presses within this window quit.
 pub const DOUBLE_CTRL_C: Duration = Duration::from_secs(1);
@@ -158,6 +160,11 @@ pub struct App {
     last_run: Option<String>,
     queued: Option<String>,
     last_ctrl_c: Option<Instant>,
+    /// The agent profile the composer talks to (`/agent <name>`); `None` is
+    /// the default agent, in sessions of the TUI's own.
+    pub profile: Option<AgentInfo>,
+    /// The next send to `profile` starts a new thread in its DM (`/new`).
+    new_topic: bool,
 }
 
 const HELP: &str = "\
@@ -174,7 +181,8 @@ Commands:
   /mcp              add, test and manage MCP servers (/mcp add, /mcp paste,
                     /mcp restart|enable|disable <name>)
   /usage            token usage for this session
-  /agents           list the last run's sub-agents
+  /agents           list your agents and the last run's sub-agents
+  /agent <name>     talk to one of your agents in its DM (/agent tern: back)
   /agent <label>    show a sub-agent's transcript (Esc closes)
   /agent <label> <message>  send a running sub-agent a message
   /quit             exit
@@ -216,6 +224,8 @@ impl App {
             last_run: None,
             queued: None,
             last_ctrl_c: None,
+            profile: None,
+            new_topic: false,
         }
     }
 
@@ -500,13 +510,29 @@ impl App {
 
     fn send(&mut self, text: String) -> Vec<Effect> {
         let session = self.session.as_ref().map(|s| s.id.clone());
-        match self
-            .backend
-            .start_run(session.as_deref(), self.model.as_deref(), &text)
-        {
+        let started = match &self.profile {
+            Some(p) => {
+                let new_topic = std::mem::take(&mut self.new_topic);
+                let r = self
+                    .backend
+                    .send_to_agent(&p.id, &text, self.model.as_deref(), new_topic);
+                if r.is_err() {
+                    self.new_topic = new_topic;
+                }
+                r
+            }
+            None => self
+                .backend
+                .start_run(session.as_deref(), self.model.as_deref(), &text),
+        };
+        match started {
             Ok(started) => {
                 self.entries.push(Entry::User(text.trim_end().to_owned()));
-                if self.session.is_none() {
+                if self
+                    .session
+                    .as_ref()
+                    .is_none_or(|s| s.id != started.session_id)
+                {
                     let title = text.trim().chars().take(80).collect();
                     self.session = Some(SessionInfo {
                         id: started.session_id,
@@ -558,7 +584,13 @@ impl App {
                 self.session = None;
                 self.model = self.backend.default_model();
                 self.last_usage = None;
-                self.notice("new session");
+                if let Some(p) = &self.profile {
+                    self.new_topic = true;
+                    let name = p.name.clone();
+                    self.notice(format!("new topic with {name}"));
+                } else {
+                    self.notice("new session");
+                }
             }
             "model" if arg.is_empty() => {
                 self.picker = Some(ModelPicker::new(self.model.clone()));
@@ -660,19 +692,111 @@ impl App {
                     Err(e) => self.error(e),
                 },
             },
-            "agents" => self.list_agents(),
-            "agent" if arg.is_empty() => self
-                .error("usage: /agent <label> to show it, /agent <label> <message> to message it"),
+            "agents" => {
+                self.list_profiles();
+                self.list_agents();
+            }
+            "agent" if arg.is_empty() => self.error(
+                "usage: /agent <name> to talk to one of your agents; /agent <label> to show a \
+                 sub-agent, /agent <label> <message> to message it",
+            ),
             "agent" => {
                 let (label, message) = match arg.split_once(char::is_whitespace) {
                     Some((l, m)) => (l, m.trim()),
                     None => (arg, ""),
                 };
+                // A sub-agent of the current tree wins: it's what the user
+                // is looking at. Otherwise an agent profile.
+                if !self.is_subagent(label)
+                    && let Some(p) = self.find_profile(label)
+                {
+                    if self.running.is_some() {
+                        return busy(self);
+                    }
+                    self.switch_profile(p);
+                    if !message.is_empty() {
+                        return self.send(message.to_owned());
+                    }
+                    return vec![];
+                }
                 self.agent_command(label, message);
             }
             other => self.error(format!("unknown command /{other}; try /help")),
         }
         vec![]
+    }
+
+    fn is_subagent(&self, label: &str) -> bool {
+        self.last_run.as_ref().is_some_and(|run| {
+            self.backend
+                .children(run)
+                .is_ok_and(|l| l.iter().any(|c| c.label == label))
+        })
+    }
+
+    fn find_profile(&self, name: &str) -> Option<AgentInfo> {
+        let name = name.trim_start_matches('@');
+        self.backend
+            .agents()
+            .ok()?
+            .into_iter()
+            .find(|a| a.slug == name || a.id == name || a.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Talk to `p` from now on: its DM (the default agent: the TUI's own
+    /// sessions, as before).
+    fn switch_profile(&mut self, p: AgentInfo) {
+        self.entries.clear();
+        self.session = None;
+        self.last_usage = None;
+        self.new_topic = false;
+        self.model = self.backend.default_model();
+        let name = p.name.clone();
+        if p.is_default {
+            self.profile = None;
+            self.notice(format!("talking to {name}"));
+        } else {
+            self.profile = Some(p);
+            self.notice(format!(
+                "talking to {name} in its DM; /new starts a new topic there, /agent tern goes back"
+            ));
+        }
+    }
+
+    fn list_profiles(&mut self) {
+        let list = match self.backend.agents() {
+            Ok(l) if l.len() > 1 => l,
+            _ => return,
+        };
+        let current = self.profile.as_ref().map(|p| p.id.as_str());
+        let lines: Vec<String> = list
+            .iter()
+            .map(|a| {
+                let here = if current == Some(a.id.as_str()) || (current.is_none() && a.is_default)
+                {
+                    "▸"
+                } else {
+                    " "
+                };
+                let mut extra = Vec::new();
+                if a.active_runs > 0 {
+                    extra.push("working".to_owned());
+                }
+                if a.needs_you > 0 {
+                    extra.push(format!("{} need you", a.needs_you));
+                }
+                let extra = if extra.is_empty() {
+                    String::new()
+                } else {
+                    format!("  ({})", extra.join(", "))
+                };
+                format!("{here} @{}  {}{extra}", a.slug, a.name)
+            })
+            .collect();
+        self.notice(format!(
+            "your agents (talk to one with /agent <name>):\n{}",
+            lines.join("\n")
+        ));
     }
 
     /// A new top-level run: forget the previous run's sub-agents.

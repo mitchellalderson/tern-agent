@@ -54,6 +54,9 @@ pub const FEATURES: &[&str] = &[
     "mcp",
     // `/v1/channels` and Home's stream (docs/channels-design.md).
     "channels",
+    // `/v1/agents`: agent profiles, each with its own DM
+    // (docs/agent-profiles-design.md).
+    "agents",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";

@@ -46,7 +46,16 @@ pub struct Config {
     pub subagents: SubagentsConfig,
     pub schedules: SchedulesConfig,
     pub memory: crate::memory::MemoryConfig,
+    /// How main channels (Home and each agent's DM) are cut into segments.
+    /// `[main]` is accepted too (agent profiles §3).
+    #[serde(alias = "main")]
     pub home: crate::channels::HomeConfig,
+    /// Agent profiles' model chains (agent profiles §6.3), set by the
+    /// runtime from the `agents` table; never read from or written to
+    /// config.toml. They join [`Config::model_chains`] after the config's
+    /// own, so a config chain with the same head wins.
+    #[serde(skip)]
+    pub agent_chains: Vec<(String, ModelChain)>,
 }
 
 impl Default for Config {
@@ -66,6 +75,7 @@ impl Default for Config {
             schedules: SchedulesConfig::default(),
             memory: crate::memory::MemoryConfig::default(),
             home: crate::channels::HomeConfig::default(),
+            agent_chains: Vec::new(),
         }
     }
 }
@@ -142,6 +152,9 @@ impl Config {
         for (alias, c) in &self.subagents.models {
             out.push((format!("subagents.models.{alias}"), c));
         }
+        for (slug, c) in &self.agent_chains {
+            out.push((format!("agents.{slug}.model"), c));
+        }
         out
     }
 
@@ -197,6 +210,23 @@ impl ModelChain {
         let mut entries = vec![model.to_owned()];
         entries.extend(self.fallbacks().iter().filter(|m| *m != model).cloned());
         Self(entries)
+    }
+
+    /// From `agents.model`: `provider:model`, or a JSON list.
+    pub fn from_stored(s: &str) -> Option<Self> {
+        if s.trim_start().starts_with('[') {
+            serde_json::from_str(s).ok()
+        } else {
+            Self::new(vec![s.trim().to_owned()]).filter(|c| !c.primary().is_empty())
+        }
+    }
+
+    /// For `agents.model`: the model, or a JSON list for a chain.
+    pub fn to_stored(&self) -> String {
+        match self.0.as_slice() {
+            [one] => one.clone(),
+            many => serde_json::to_string(many).unwrap_or_default(),
+        }
     }
 
     /// The value to write back to `config.toml`: a string for one model.

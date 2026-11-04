@@ -1,3 +1,4 @@
+mod agents_cmd;
 mod cli;
 mod config_cmd;
 mod connectors_cmd;
@@ -155,6 +156,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Gateway {
             command: cli::GatewayCommand::Pair,
         }) => gateway_cmd::pair(&home),
+        Some(Command::Agents { command }) => agents_cmd::run(&home, command),
         Some(Command::Sessions { command }) => {
             match command.unwrap_or(SessionsCommand::List) {
                 SessionsCommand::List => inspect::sessions_list(&home)?,

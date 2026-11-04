@@ -133,8 +133,9 @@ pub struct Subagents {
     gate: Mutex<()>,
 }
 
-/// A sub-agent's system prompt, from its label and depth.
-pub type PromptFn = Box<dyn Fn(&str, u32) -> String + Send + Sync>;
+/// A sub-agent's system prompt, from its label, depth and its parent's
+/// session (whose agent's persona it works under).
+pub type PromptFn = Box<dyn Fn(&str, u32, &str) -> String + Send + Sync>;
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -385,6 +386,12 @@ impl Subagents {
                     .get(m)
                     .map_or_else(|| m.to_owned(), |c| c.primary().to_owned())
             })
+            // The parent agent's `subagent_model` (agent profiles §6.3).
+            .or_else(|| {
+                let agent = self.store.session_agent(&parent.session_id).ok()?;
+                let m = self.store.agent(&agent).ok()??.subagent_model?;
+                tern_core::config::ModelChain::from_stored(&m).map(|c| c.primary().to_owned())
+            })
             .or_else(|| self.config.default_model.as_deref().map(str::to_owned))
             .or_else(|| parent.model.clone())
             .ok_or("no model to run the sub-agent with")?;
@@ -418,10 +425,29 @@ impl Subagents {
         Ok(m.to_string())
     }
 
-    /// The tool names a child at `depth` may use.
-    fn scope_for(&self, tools: Option<&ToolsArg>, depth: u32) -> Result<Vec<String>, String> {
+    /// The tool names a child at `depth` may use: never more than its
+    /// parent's scope (an agent profile's, or a sub-agent's).
+    fn scope_for(
+        &self,
+        tools: Option<&ToolsArg>,
+        depth: u32,
+        parent: &RunRow,
+    ) -> Result<Vec<String>, String> {
         let registry = self.tools.upgrade().ok_or("tools are gone")?;
-        let all = registry.names();
+        let parent_scope: Option<Vec<String>> = parent
+            .tool_scope
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
+        let all: Vec<String> = registry
+            .names()
+            .into_iter()
+            .filter(|n| {
+                parent_scope.is_none()
+                    || tern_core::tool::in_scope(parent_scope.as_deref(), n)
+                    || CHILD_ONLY_TOOLS.contains(&n.as_str())
+                    || AGENT_TOOLS.contains(&n.as_str())
+            })
+            .collect();
         let mut names: Vec<String> = match tools {
             None => all.clone(),
             Some(ToolsArg::Preset(p)) if p == "all" => all.clone(),
@@ -598,7 +624,7 @@ impl Subagents {
             .pick_model(req.model.as_deref(), &parent)
             .map_err(anyhow::Error::msg)?;
         let scope = self
-            .scope_for(req.tools.as_ref(), depth)
+            .scope_for(req.tools.as_ref(), depth, &parent)
             .map_err(anyhow::Error::msg)?;
         let limits = child_limits(&self.limits, &req);
         let (max_iterations, budget) = (limits.max_iterations, limits.budget_tokens);
@@ -606,7 +632,7 @@ impl Subagents {
         let session_id = new_id();
         let run_id = new_id();
         let system = match self.prompt.get() {
-            Some(build) => build(&req.label, depth),
+            Some(build) => build(&req.label, depth, &parent.session_id),
             None => parent.system_prompt.clone().unwrap_or_default(),
         };
         let system = format!("{system}\n\n{}", limits_section(max_iterations, budget));
@@ -640,8 +666,10 @@ impl Subagents {
                     budget_tokens: budget,
                     max_iterations: Some(max_iterations),
                     queued,
-                    // Inherited from a tainted parent by the store.
+                    // Inherited from a tainted parent by the store, as are
+                    // its agent and memory scope.
                     taint: None,
+                    memory_scope: None,
                 },
                 &input,
             )?;

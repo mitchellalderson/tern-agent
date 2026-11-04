@@ -49,6 +49,12 @@ pub struct ApiApproval {
     /// content (…)"; grants don't apply and "always" isn't offered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub taint: Option<String>,
+    /// The channel of the session at the top of the run's tree, and its
+    /// agent (agent profiles §3): an agent's DM mirrors the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     /// Only a client on this host (the Unix socket) may answer: the call
     /// would run a command here outside the sandbox.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -73,7 +79,12 @@ impl ApiApprovals {
 
     /// Ask attached clients; deny at once if none is listening.
     /// `root_session_id` is the session at the top of a sub-agent's tree.
-    async fn ask(&self, req: &ApprovalRequest, root_session_id: Option<String>) -> Decision {
+    async fn ask(
+        &self,
+        req: &ApprovalRequest,
+        root_session_id: Option<String>,
+        at: Where,
+    ) -> Decision {
         let (tx, rx) = oneshot::channel();
         let msg = ApiApproval {
             id: req.id.clone(),
@@ -89,6 +100,8 @@ impl ApiApprovals {
             root_session_id: root_session_id.filter(|_| req.parent_run_id.is_some()),
             taint: req.taint.clone(),
             local_only: req.local_only,
+            channel_id: at.0,
+            agent_id: at.1,
         };
         if let Ok(mut p) = self.pending.lock() {
             p.insert(req.id.clone(), (msg.clone(), tx));
@@ -144,6 +157,11 @@ pub struct ApiSecretRequest {
     pub agent_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session_id: Option<String>,
+    /// As on [`ApiApproval`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 type PendingSecrets = Mutex<HashMap<String, (ApiSecretRequest, oneshot::Sender<SecretValues>)>>;
@@ -177,7 +195,12 @@ impl ApiSecretRequests {
         self.tx().subscribe()
     }
 
-    async fn ask(&self, req: &SecretRequest, root_session_id: Option<String>) -> SecretValues {
+    async fn ask(
+        &self,
+        req: &SecretRequest,
+        root_session_id: Option<String>,
+        at: Where,
+    ) -> SecretValues {
         let (tx, rx) = oneshot::channel();
         let msg = ApiSecretRequest {
             id: req.id.clone(),
@@ -190,6 +213,8 @@ impl ApiSecretRequests {
             parent_run_id: req.parent_run_id.clone(),
             agent_label: req.agent_label.clone(),
             root_session_id: root_session_id.filter(|_| req.parent_run_id.is_some()),
+            channel_id: at.0,
+            agent_id: at.1,
         };
         if let Ok(mut p) = self.pending.lock() {
             p.insert(req.id.clone(), (msg.clone(), tx));
@@ -272,6 +297,9 @@ pub struct Router(pub Arc<Routes>);
 /// A gateway and the chat on it a run tree reports to.
 type ChatTarget = (Arc<dyn Gateway>, String);
 
+/// The channel and agent of a run tree's root session.
+type Where = (Option<String>, Option<String>);
+
 impl Router {
     /// The session at the top of `run_id`'s tree, and the gateway chat that
     /// tree reports to, if any.
@@ -291,6 +319,19 @@ impl Router {
             Some((g, chat.to_owned()))
         });
         (root.map(|r| r.session_id), chat)
+    }
+
+    fn at(&self, root_session: Option<&str>) -> Where {
+        let (Some(store), Some(id)) = (self.0.store.get(), root_session) else {
+            return (None, None);
+        };
+        match store.session(id) {
+            Ok(Some(s)) => {
+                let agent = s.agent().to_owned();
+                (s.channel_id, Some(agent))
+            }
+            _ => (None, None),
+        }
     }
 }
 
@@ -322,7 +363,10 @@ impl ApprovalHandler for Router {
     async fn ask(&self, req: &ApprovalRequest) -> Decision {
         match self.place(&req.run_id) {
             (_, Some((g, chat))) if !req.local_only => g.ask_approval(&chat, req).await,
-            (root, _) => self.0.api.ask(req, root).await,
+            (root, _) => {
+                let at = self.at(root.as_deref());
+                self.0.api.ask(req, root, at).await
+            }
         }
     }
 
@@ -341,7 +385,8 @@ impl ApprovalHandler for Router {
                 text: None,
             });
         }
-        let values = self.0.secrets.ask(req, root).await;
+        let at = self.at(root.as_deref());
+        let values = self.0.secrets.ask(req, root, at).await;
         if let Some(n) = &mut notice {
             // What the tool will save: a value that cleans up to nothing
             // (`""`, a bare `Bearer `) counts as skipped there too.
