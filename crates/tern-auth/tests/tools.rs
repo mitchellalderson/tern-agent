@@ -463,3 +463,95 @@ async fn researched_plans_are_egress_and_capped() {
     let v = parse(&propose.call(&other, json!({"plan_id": id})).await);
     assert_eq!(v["choice"], "oauth");
 }
+
+/// Security fix 2: the user's OAuth app for a provider goes only to that
+/// provider's endpoints. A server whose name happens to match (a
+/// `slack.pages.dev` site, or a plan the agent names "slack") never gets
+/// its client ID or secret.
+#[tokio::test]
+async fn a_configured_app_is_bound_to_its_issuer() {
+    use tern_core::config::OAuthClientConfig;
+    let mut cfg = AuthConfig::default();
+    cfg.clients.insert(
+        "slack".into(),
+        OAuthClientConfig {
+            client_id: "slack-app".into(),
+            client_secret_secret: Some("SLACK_CLIENT_SECRET".into()),
+            issuer: None,
+        },
+    );
+    cfg.clients.insert(
+        "acme_example".into(),
+        OAuthClientConfig {
+            client_id: "acme-app".into(),
+            client_secret_secret: Some("ACME_CLIENT_SECRET".into()),
+            issuer: Some("https://login.acme.example".into()),
+        },
+    );
+    let host = AuthHost::new(&cfg);
+    let config = |provider: &str, base: &str| {
+        AuthPlan {
+            method: "oauth2".into(),
+            provider: provider.into(),
+            authorize_url: Some(format!("{base}/authorize")),
+            token_url: Some(format!("{base}/token")),
+            ..AuthPlan::default()
+        }
+        .oauth_config("", vec![])
+        .unwrap()
+    };
+
+    // Named "slack", on someone's pages.dev site: refused, nothing filled.
+    let mut evil = config("slack", "https://slack.pages.dev");
+    let err = host.client(&mut evil, None).unwrap_err();
+    assert!(err.contains("bound to"), "{err}");
+    assert!(evil.client_id.is_empty() && evil.client_secret_secret.is_none());
+    // Slack's own endpoints (the built-in profile's) get it.
+    let p = tern_auth::profiles::by_id("slack").unwrap();
+    let mut real = AuthPlan {
+        method: "oauth2".into(),
+        provider: "slack".into(),
+        authorize_url: Some(p.authorize_url.into()),
+        token_url: Some(p.token_url.into()),
+        revocation_url: p.revocation_url.map(Into::into),
+        ..AuthPlan::default()
+    }
+    .oauth_config("", vec![])
+    .unwrap();
+    host.client(&mut real, None).unwrap();
+    assert_eq!(real.client_id, "slack-app");
+    assert_eq!(
+        real.client_secret_secret.as_deref(),
+        Some("SLACK_CLIENT_SECRET")
+    );
+    // A token endpoint elsewhere, with a real authorize page, is refused too.
+    let mut split = real.clone();
+    split.client_id.clear();
+    split.client_secret_secret = None;
+    split.token_url = "https://slack.pages.dev/token".into();
+    assert!(host.client(&mut split, None).is_err());
+    assert!(split.client_secret_secret.is_none());
+
+    // A non-built-in app is bound to the issuer it names.
+    let mut ok = config("acme_example", "https://login.acme.example");
+    host.client(&mut ok, None).unwrap();
+    assert_eq!(ok.client_id, "acme-app");
+    let mut lookalike = config("acme_example", "https://login.acme.example.attacker.net");
+    assert!(host.client(&mut lookalike, None).is_err());
+
+    // Metadata from slack.pages.dev is its own provider, not "slack", and
+    // isn't treated as having the user's app.
+    let plan = tern_auth::discover::plan_from_metadata(
+        "Slack",
+        &json!({
+            "issuer": "https://slack.pages.dev",
+            "authorization_endpoint": "https://slack.pages.dev/authorize",
+            "token_endpoint": "https://slack.pages.dev/token",
+        }),
+        &host.clients,
+        Source::WellKnown,
+    )
+    .unwrap();
+    assert_eq!(plan.provider, "slack_pages_dev");
+    assert!(!plan.client_ready);
+}

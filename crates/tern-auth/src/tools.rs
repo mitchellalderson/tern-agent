@@ -121,10 +121,7 @@ impl AuthHost {
     pub fn new(cfg: &AuthConfig) -> Self {
         Self {
             guard: Guard::new(&cfg.local_issuers),
-            clients: Clients {
-                configured: cfg.clients.keys().cloned().collect(),
-                cimd: !cfg.client_metadata_url.is_empty(),
-            },
+            clients: Clients::new(cfg),
             plans: Plans::default(),
             config: cfg.clone(),
             proposals: Mutex::default(),
@@ -141,7 +138,11 @@ impl AuthHost {
         if !cfg.client_id.is_empty() {
             return Ok(ClientSource::Ready);
         }
-        if let Some(c) = self.config.clients.get(&cfg.provider) {
+        let configured = self.config.clients.get(&cfg.provider);
+        let bound = self
+            .clients
+            .bound(&cfg.provider, discover::client_endpoints(cfg));
+        if let Some(c) = configured.filter(|_| bound) {
             cfg.client_id = c.client_id.clone();
             cfg.client_secret_secret = c.client_secret_secret.clone();
             if cfg.client_secret_secret.is_some() && cfg.token_auth == crate::TokenAuth::None {
@@ -155,6 +156,19 @@ impl AuthHost {
         }
         if let Some(r) = &cfg.registration_url {
             return Ok(ClientSource::Register(r.clone()));
+        }
+        if configured.is_some() {
+            return Err(format!(
+                "[auth.clients] {p} is bound to {}, and this sign-in's endpoints ({}) aren't all there; tern won't send that app's ID or secret elsewhere. If the service really moved, set issuer = \"…\" on the entry",
+                self.clients
+                    .configured
+                    .get(&cfg.provider)
+                    .filter(|o| !o.is_empty())
+                    .map(|o| o.join(", "))
+                    .unwrap_or_else(|| "no issuer (add issuer = \"https://…\")".into()),
+                discover::client_endpoints(cfg).join(", "),
+                p = cfg.provider
+            ));
         }
         let setup = crate::profiles::by_id(&cfg.provider)
             .map(|p| format!(" (register one at {})", p.setup_url))
@@ -494,7 +508,7 @@ impl Tool for AuthPropose {
                 ));
             }
             plan.client = Some(ClientKind::UserSupplied);
-            plan.client_ready = self.host.clients.configured.contains(&plan.provider);
+            plan.client_ready = plan.client_bound(&self.host.clients);
             (self.host.plans.keep(plan.clone()), plan)
         } else {
             return ToolResult::error("pass plan_id (from auth_discover) or a researched plan");
@@ -831,15 +845,21 @@ pub async fn connect_oauth(
         .iter()
         .filter(|c| Some(c.slug.as_str()) != slug)
         .any(|c| c.auth.oauth().is_some_and(|o| o.client_id == cfg.client_id));
-    if reusing && cfg.registration_url.is_some() && !host.config.clients.contains_key(&cfg.provider)
+    if reusing
+        && cfg.registration_url.is_some()
+        && !host
+            .clients
+            .bound(&cfg.provider, discover::client_endpoints(&cfg))
     {
         cfg.client_id.clear();
         cfg.redirect_uri = None;
     }
-    // Signing in again keeps that account's own registered client.
+    // Signing in again keeps that account's own registered client, when
+    // it is for the same token endpoint (its secret goes nowhere else).
     if let Some(own) = slug
         .and_then(|s| conns.get(target.kind, &target.name, s))
         .and_then(|c| c.auth.oauth().cloned())
+        .filter(|own| own.token_url == cfg.token_url)
     {
         cfg.client_id = own.client_id;
         cfg.redirect_uri = own.redirect_uri;

@@ -265,7 +265,7 @@ With two or more accounts, every tool of that connector or server takes a `conne
 
 In the TUI, `/connections` lists the accounts. The desktop app has a Connections view.
 
-**Connector code** declares OAuth with `capabilities.oauth = { google = { scopes = { "https://www.googleapis.com/auth/gmail.readonly" } } }` (one provider: a built-in profile, `google`, `microsoft`, `github`, `slack`, `notion`, `linear`, `atlassian`, `dropbox`, or a provider the agent discovered). tern sends the account's access token as `Authorization: Bearer …` to every declared host (or where `auth = "oauth"` entries say), refreshes it when it expires or the service answers 401, and the script sees only `ctx.connection` (`{ slug, label, account }`). OAuth apps you registered yourself go in `[auth.clients]` (see [Configuration](#configuration)).
+**Connector code** declares OAuth with `capabilities.oauth = { google = { scopes = { "https://www.googleapis.com/auth/gmail.readonly" } } }` (one provider: a built-in profile, `google`, `microsoft`, `github`, `slack`, `notion`, `linear`, `atlassian`, `dropbox`, or a provider the agent discovered, named by its whole domain like `acme_com`). tern sends the account's access token as `Authorization: Bearer …` to every declared host (or where `auth = "oauth"` entries say), refreshes it when it expires or the service answers 401, and the script sees only `ctx.connection` (`{ slug, label, account }`). OAuth apps you registered yourself go in `[auth.clients]` (see [Configuration](#configuration)).
 
 ### `tern setup`
 
@@ -409,7 +409,7 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `outbox.expire_hours` | `72` | How long an outbox item waits for you. |
 | `taint.egress` | `"ask"` | In a tainted run, a read from a site it hasn't reached asks first (`ask`) or doesn't (`allow`). An agent can set its own ([New sites in a tainted run](#new-sites-in-a-tainted-run)). |
 | `connectors.rate` | `"120/min"` | HTTP requests per Luau connector for those that declare no `rate`, shared by every caller ([`tern connectors`](#tern-connectors)). Read at start. |
-| `auth.clients` | `{}` | OAuth apps you registered, by provider: `google = { client_id = "…", client_secret_secret = "GOOGLE_CLIENT_SECRET" }` (the secret's name, not its value). Needed for built-in profiles (Google wants a "Desktop app" client); servers that register clients themselves need none. |
+| `auth.clients` | `{}` | OAuth apps you registered, by provider: `google = { client_id = "…", client_secret_secret = "GOOGLE_CLIENT_SECRET" }` (the secret's name, not its value). Needed for built-in profiles (Google wants a "Desktop app" client); servers that register clients themselves need none. An app is only sent to its provider's endpoints: a built-in profile's, or the origin in its `issuer = "https://…"`, which any other provider needs (discovered providers are named by their whole domain, `notion_com`). |
 | `auth.local_issuers` | `[]` | OAuth servers allowed on private or loopback addresses (`"http://127.0.0.1:8080"`), for a self-hosted identity provider. Every other token, metadata or registration endpoint must be public https. |
 | `auth.sign_in_timeout_secs` | `300` | How long a sign-in waits for the browser or a device code. |
 | `auth.max_connections` | `10` | Accounts per connector or MCP server ([`tern connections`](#tern-connections)). |

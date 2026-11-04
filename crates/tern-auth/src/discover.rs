@@ -145,14 +145,112 @@ impl AuthPlan {
 /// What the configuration offers discovery.
 #[derive(Debug, Clone, Default)]
 pub struct Clients {
-    /// Providers with an `[auth.clients]` entry.
-    pub configured: Vec<String>,
+    /// Providers with an `[auth.clients]` entry, and the origins that app
+    /// may be sent to ([`client_origins`]).
+    pub configured: std::collections::BTreeMap<String, Vec<String>>,
     /// `[auth] client_metadata_url` is set.
     pub cimd: bool,
 }
 
+impl Clients {
+    pub fn new(cfg: &tern_core::config::AuthConfig) -> Self {
+        Self {
+            configured: cfg
+                .clients
+                .iter()
+                .map(|(p, c)| (p.clone(), client_origins(p, c)))
+                .collect(),
+            cimd: !cfg.client_metadata_url.is_empty(),
+        }
+    }
+
+    /// Whether the user's app for `provider` may be used with these
+    /// endpoints: every one is on an origin the app is bound to. A plan
+    /// only *named* like a configured provider (`slack.pages.dev`) never
+    /// gets its client ID or secret.
+    pub fn bound<'a>(&self, provider: &str, endpoints: impl IntoIterator<Item = &'a str>) -> bool {
+        let Some(origins) = self.configured.get(provider) else {
+            return false;
+        };
+        !origins.is_empty()
+            && endpoints.into_iter().all(|e| {
+                Url::parse(e)
+                    .ok()
+                    .is_some_and(|u| origins.contains(&origin(&u)))
+            })
+    }
+}
+
+/// The origins a configured app may be sent to: its `issuer`'s, else its
+/// built-in profile's endpoints'; none for an unbound app.
+pub fn client_origins(provider: &str, c: &tern_core::config::OAuthClientConfig) -> Vec<String> {
+    let urls: Vec<&str> = match (&c.issuer, crate::profiles::by_id(provider)) {
+        (Some(i), _) => vec![i.as_str()],
+        (None, Some(p)) => [
+            Some(p.authorize_url),
+            Some(p.token_url),
+            p.device_url,
+            p.revocation_url,
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        (None, None) => Vec::new(),
+    };
+    let mut out: Vec<String> = urls
+        .into_iter()
+        .filter_map(|u| Url::parse(u).ok())
+        .map(|u| origin(&u))
+        .collect();
+    out.dedup();
+    out
+}
+
+/// The endpoints a client authenticates to or is named at.
+pub fn client_endpoints(cfg: &OAuthConfig) -> Vec<&str> {
+    [
+        Some(cfg.authorize_url.as_str()),
+        Some(cfg.token_url.as_str()),
+        cfg.device_url.as_deref(),
+        cfg.revocation_url.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+impl AuthPlan {
+    fn endpoints(&self) -> Vec<&str> {
+        [
+            self.authorize_url.as_deref(),
+            self.token_url.as_deref(),
+            self.device_url.as_deref(),
+            self.revocation_url.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// Whether the user's configured app for this plan's provider may be
+    /// used with its endpoints.
+    pub fn client_bound(&self, clients: &Clients) -> bool {
+        clients.bound(&self.provider, self.endpoints())
+    }
+}
+
 pub fn from_profile(p: &Profile, clients: &Clients, api_hosts: Vec<String>) -> AuthPlan {
-    let ready = clients.configured.iter().any(|c| c == p.id);
+    let ready = clients.bound(
+        p.id,
+        [
+            Some(p.authorize_url),
+            Some(p.token_url),
+            p.device_url,
+            p.revocation_url,
+        ]
+        .into_iter()
+        .flatten(),
+    );
     AuthPlan {
         method: "oauth2".into(),
         service: p.name.to_owned(),
@@ -387,8 +485,10 @@ fn strings(a: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// A provider name from an issuer: its registrable domain's first label
-/// (`auth.notion.com` → `notion`).
+/// A provider name from an issuer: its whole registrable domain, in the
+/// `[a-z][a-z0-9_]*` form `capabilities.oauth` takes (`auth.notion.com` →
+/// `notion_com`, `slack.pages.dev` → `slack_pages_dev`), so a discovered
+/// server is never named like a built-in profile or another site.
 pub fn provider_name(issuer: &str) -> String {
     let host = Url::parse(issuer)
         .ok()
@@ -396,18 +496,15 @@ pub fn provider_name(issuer: &str) -> String {
         .unwrap_or_default();
     let site = crate::domain::registrable(&host).unwrap_or(host);
     let name: String = site
-        .split('.')
-        .next()
-        .unwrap_or_default()
+        .to_ascii_lowercase()
         .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .take(32)
-        .collect::<String>()
-        .to_ascii_lowercase();
-    if name.is_empty() {
-        "oauth".into()
-    } else {
-        name
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .take(64)
+        .collect();
+    match name.chars().next() {
+        None => "oauth".into(),
+        Some(c) if c.is_ascii_alphabetic() => name,
+        Some(_) => format!("p_{name}"),
     }
 }
 
@@ -455,7 +552,17 @@ pub fn plan_from_metadata(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let provider = provider_name(&issuer);
-    let configured = clients.configured.contains(&provider);
+    let mut endpoints = vec![authorize.as_str(), token.as_str()];
+    if let Some(d) = meta
+        .get("device_authorization_endpoint")
+        .and_then(Value::as_str)
+    {
+        endpoints.push(d);
+    }
+    if let Some(r) = meta.get("revocation_endpoint").and_then(Value::as_str) {
+        endpoints.push(r);
+    }
+    let configured = clients.bound(&provider, endpoints);
     let (client, ready) = if configured {
         (ClientKind::UserSupplied, true)
     } else if cimd && clients.cimd {
@@ -593,10 +700,20 @@ mod tests {
             Some("https://mcp.x.com/.well-known/oauth-protected-resource")
         );
         assert_eq!(param("Bearer realm=x", "realm").as_deref(), Some("x"));
-        assert_eq!(provider_name("https://auth.notion.com"), "notion");
+        assert_eq!(provider_name("https://auth.notion.com"), "notion_com");
         assert_eq!(
             provider_name("https://login.example.co.uk/tenant"),
-            "example"
+            "example_co_uk"
+        );
+        // A private suffix's sites, and lookalike names, aren't "slack".
+        assert_eq!(provider_name("https://slack.pages.dev"), "slack_pages_dev");
+        assert_eq!(
+            provider_name("https://auth.slack.attacker.net"),
+            "attacker_net"
+        );
+        assert_eq!(
+            provider_name("https://login.1password.com"),
+            "p_1password_com"
         );
     }
 }

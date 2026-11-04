@@ -34,6 +34,8 @@ Some providers (Google, Microsoft, GitHub, Linear, Dropbox) need the user to reg
 google = { client_id = "1234-abc.apps.googleusercontent.com", client_secret_secret = "GOOGLE_CLIENT_SECRET" }
 ```
 
+For a provider without a built-in profile (the plan's `provider` is its domain, like `acme_com`), the entry also names its issuer, `issuer = "https://login.acme.com"`: tern only sends the app to endpoints there.
+
 For Google: in Google Cloud Console, create a project, enable the API (Gmail, Calendar, Drive…), set up the OAuth consent screen (External; add themselves as a test user, or publish the app to avoid sign-ins expiring after 7 days), then create credentials of type **Desktop app**. The client secret goes in tern's secrets under the name they chose (ask with `secret_request`), never in the chat or the config file. A key or personal access token, where the service has one, is the quicker alternative: offer it.
 
 ## Never

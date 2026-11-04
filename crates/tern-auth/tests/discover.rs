@@ -154,7 +154,7 @@ async fn an_api_host_with_rfc8414_metadata() {
     assert!(!plan.client_ready && !plan.no_setup());
     // With the user's own app configured for it, it is ready.
     let clients = Clients {
-        configured: vec![plan.provider.clone()],
+        configured: [(plan.provider.clone(), vec![uri.clone()])].into(),
         cimd: false,
     };
     let plan = discover::discover(&guard, &clients, "Acme", Some(&format!("{uri}/v1")), false)
