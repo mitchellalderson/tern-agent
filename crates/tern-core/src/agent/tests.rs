@@ -1423,3 +1423,91 @@ async fn a_run_with_live_children_waits_for_them_before_finishing() {
         inbox.input_json
     );
 }
+
+// ---- scheduled runs (T1a) ----
+
+fn start_cron(h: &Harness, agent: &Agent, id: &str, budget: Option<u64>) -> String {
+    let input = agent.journal.to_row(&Message::user_text("check")).unwrap();
+    h.store
+        .create_run(
+            &tern_store::NewRun {
+                id,
+                session_id: &h.session,
+                trigger: "cron",
+                model: "script:m",
+                system_prompt: "system",
+                budget_tokens: budget,
+                ..tern_store::NewRun::default()
+            },
+            &input,
+        )
+        .unwrap()
+        .id
+}
+
+#[tokio::test]
+async fn a_scheduled_run_over_its_token_cap_fails_and_replays_the_same() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", true, false));
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("count", json!({})),
+        Reply::Text("done"),
+    ]));
+    let agent = h.agent(script.clone(), vec![tool], Arc::new(AutoApprove));
+    let run = start_cron(&h, &agent, "capped", Some(1));
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Failed);
+    let err = out.error.unwrap();
+    assert!(
+        err.contains("tokens_per_run") && err.contains("cap of 1"),
+        "{err}"
+    );
+    assert_eq!(h.store.run(&run).unwrap().unwrap().status, "failed");
+
+    h.store.set_run_status(&run, "running", None).unwrap();
+    let calls = script.seen.lock().unwrap().len();
+    let again = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(again.status, RunStatus::Failed);
+    assert_eq!(script.seen.lock().unwrap().len(), calls);
+}
+
+#[tokio::test]
+async fn no_reply_marks_a_scheduled_run_quiet_and_a_replay_agrees() {
+    let h = Harness::new();
+    let script = Arc::new(Script::new(vec![Reply::Text("  NO_REPLY\n")]));
+    let agent = h.agent(script.clone(), vec![], Arc::new(AutoApprove));
+    let mut events = agent.subscribe();
+    let run = start_cron(&h, &agent, "quiet", None);
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    assert!(out.quiet);
+    assert!(h.store.run(&run).unwrap().unwrap().quiet);
+    let mut finished = None;
+    while let Ok(ev) = events.try_recv() {
+        if let AgentEvent::RunFinished { quiet, .. } = ev {
+            finished = Some(quiet);
+        }
+    }
+    assert_eq!(finished, Some(true));
+
+    h.store.set_run_status(&run, "running", None).unwrap();
+    assert!(
+        agent
+            .drive(&run, CancellationToken::new())
+            .await
+            .unwrap()
+            .quiet
+    );
+
+    // The same answer in a chat is just text.
+    let script = Arc::new(Script::new(vec![Reply::Text("NO_REPLY")]));
+    let agent = h.agent(script, vec![], Arc::new(AutoApprove));
+    let chat = start_limited(&h, &agent, None, None, None);
+    assert!(
+        !agent
+            .drive(&chat, CancellationToken::new())
+            .await
+            .unwrap()
+            .quiet
+    );
+}

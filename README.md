@@ -69,7 +69,7 @@ tern           # chat
 | **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
 | **Telegram** | Chat from your phone, approve tool calls with buttons, get scheduled results. |
-| **Schedules** | "Every weekday at 8am, summarize my unread GitHub notifications" becomes a cron schedule whose results are delivered to the chat that asked. |
+| **Schedules** | "Every weekday at 8am, summarize my unread GitHub notifications" becomes a cron schedule whose results are delivered to the chat that asked. Runs with nothing to say stay silent, results wait out your quiet hours, and each schedule can be capped per day. See [Schedules](#schedules). |
 | **Durability** | Kill tern mid-run and `tern resume <run>` (or the daemon, automatically) continues it without re-running completed tools. `tern runs show <run>` prints the step journal. |
 
 ## Commands
@@ -143,7 +143,7 @@ tern daemon
 
 Runs in the foreground until SIGINT or SIGTERM, and provides:
 
-- **Scheduler**: checks for due schedules every 30 seconds. A schedule missed while the daemon was down runs once on the next start, then continues from now (no backfill).
+- **Scheduler**: checks for due schedules every 30 seconds. A schedule missed while the daemon was down runs once on the next start, then continues from now (no backfill). It also enforces each schedule's caps and sends results held for quiet hours (see [Schedules](#schedules)).
 - **Gateways**: Telegram, if `[gateway.telegram]` is enabled (see [Telegram](#telegram)). The daemon refuses to start if the bot token secret isn't set.
 - **Local API** on `~/.tern/tern.sock` (mode 0600), which `tern` and the desktop app attach to.
 - **Crash recovery**: runs in progress when the daemon stops are left `running` and resume on the next start, exactly as after a crash.
@@ -243,7 +243,7 @@ tern config set mcp.servers.github.args '["stdio"]'
 tern doctor [--offline]
 ```
 
-Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; the database's schema version and integrity; whether the daemon is running; the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each MCP server's command or URL and secrets. Each problem comes with a hint for fixing it.
+Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; the database's schema version and integrity; whether the daemon is running; schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each MCP server's command or URL and secrets. Each problem comes with a hint for fixing it.
 
 It exits `1` if anything failed, `0` otherwise (warnings are things not set up yet). It is read-only and doesn't create `~/.tern`.
 
@@ -269,6 +269,11 @@ See [Troubleshooting](#troubleshooting).
 | `providers.<name>.base_url` | | Required for `openai_compat`; defaults to `https://api.anthropic.com` for `anthropic`. |
 | `providers.<name>.api_key_secret` | | Name of the secret holding the key (omit for keyless local servers). |
 | `providers.<name>.context_window` | | Overrides `context_window` for this provider. |
+| `providers.<name>.prices` | `{}` | USD per million tokens per model, for `usd_per_day`: `{ "claude-sonnet-4-5" = { input = 3.0, output = 15.0, cache_read = 0.3, cache_write = 3.75 } }` (cache prices default to `input`). Wins over prices the model list gives (OpenRouter's does). |
+| `schedules.quiet_hours` | `"22:00-07:30"` | Local time; a scheduled result finishing inside waits until the window ends. `"none"` turns it off. |
+| `schedules.runs_per_day` | none | Default cap on runs per schedule per local day. |
+| `schedules.usd_per_day` | none | Default cap on a schedule's spend per local day (sub-agents included), where prices are known. |
+| `schedules.tokens_per_run` | none | Default cap on one scheduled run's tokens (input + output + cache). |
 | `sandbox.backend` | `host` | `host` or `docker`. |
 | `sandbox.shell_timeout_secs` | `120` | Per shell command. |
 | `sandbox.network` | `true` | IP networking for shell commands (both backends). |
@@ -313,6 +318,18 @@ Both create `secrets.toml` with mode 0600 if needed, keep its comments, and take
 **The agent can ask you for a secret.** When a connector it wrote (or anything else) needs a key that isn't set, the agent calls `secret_request` with the name and a reason. You get a private prompt: inline in the TUI, as a card in the desktop app, or in Telegram as a pointer to the app (a chat never takes the value). The prompt shows what would read the secret, for example `connector weather (draft) · reaches api.weather.com`. The value goes straight into `secrets.toml`; the agent only learns whether each name was `set`, `already_set`, `skipped` or `timed_out`. Values that are already set aren't asked for again unless the agent asks to replace them. A prompt waits up to `secret_request_timeout_secs` (default 900); runs with nobody to ask (`tern run --yes`) skip it. API clients see prompts on `/v1/events` as `{"secret_requested": …}`, list them with `GET /v1/secret-requests`, and answer with `POST /v1/secret-requests/{id}` `{"values": {"NAME": "…"}}` (names left out are skipped; only names the request asked for are accepted; owner scope).
 
 Environment variables: `TERN_HOME` (data directory, default `~/.tern`) and `TERN_LOG` (log level, e.g. `debug`).
+
+## Schedules
+
+The agent creates schedules with `schedule_create` and changes them with `schedule_update`; the desktop app calls them routines. Each one runs its prompt in a session of its own and delivers the final answer to its `deliver_to` (a Telegram chat, or nowhere: the result stays in the session).
+
+- **Nothing to say, nothing sent.** A scheduled run is told it may answer exactly `NO_REPLY`. Then nothing is delivered (no Telegram message, no desktop notification), and the run is recorded as completed and *quiet*: `GET /v1/sessions/{id}/runs` has `quiet: true`, `run_finished` events carry `quiet: true`, and the app shows "Last run quiet".
+- **Quiet hours.** A result that finishes inside quiet hours (`[schedules] quiet_hours`, default 22:00–07:30 local; per schedule `quiet_hours = "HH:MM-HH:MM"`, `"none"` or `"default"`) is held, not the run: the run happens on time. Held results are kept in the database (a restart keeps them) and sent when the window ends, as one message per chat if there are several. A schedule marked `urgent` delivers at once.
+- **Caps.** Per schedule, or as defaults under `[schedules]`: `runs_per_day`, `usd_per_day` and `tokens_per_run`.
+  - Daily caps count from local midnight. When a run is due and a cap is reached, the schedule **pauses until the next day** and posts one notice to its delivery target. Resume it sooner from the app (the routine's menu), with `schedule_update` `resume: true`, or `PATCH /v1/schedules/{id}` `{"resume": true}`; counting then starts again from that moment. "Run now" isn't capped.
+  - `usd_per_day` needs the model's price, from `providers.<name>.prices` or the provider's model list. Without one the USD cap is ignored; the log says so once, and `tern doctor` lists it.
+  - A run that uses more than `tokens_per_run` is stopped and fails with the reason ("stopped: this run used N tokens, over its cap of M"), which is delivered like any failure.
+- `tern doctor` reports schedules paused by a cap, USD caps that can't apply, and deliveries waiting for quiet hours to end.
 
 ## Telegram
 

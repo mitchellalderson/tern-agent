@@ -221,6 +221,7 @@ api_key_secret = \"ANTHROPIC_API_KEY\"
                 base_url: Some("http://localhost:11434/v1".into()),
                 api_key_secret: None,
                 context_window: None,
+                prices: Default::default(),
             },
         )
         .unwrap();
@@ -247,6 +248,7 @@ api_key_secret = \"ANTHROPIC_API_KEY\"
                 base_url: Some("https://proxy.example.com".into()),
                 api_key_secret: Some("OTHER_KEY".into()),
                 context_window: None,
+                prices: Default::default(),
             },
         )
         .unwrap();

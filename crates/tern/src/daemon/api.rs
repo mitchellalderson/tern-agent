@@ -364,6 +364,7 @@ async fn wait_run(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiR
                 final_text,
                 error: run.error,
                 usage: Usage::default(),
+                quiet: run.quiet,
             }));
         }
         // Wake on this run finishing, or re-check every second.

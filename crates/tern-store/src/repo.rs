@@ -50,6 +50,8 @@ pub struct RunRow {
     pub budget_tokens: Option<u64>,
     /// Overrides the configured `max_iterations`.
     pub max_iterations: Option<u32>,
+    /// A scheduled run that answered `NO_REPLY`: nothing was delivered.
+    pub quiet: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,7 +139,7 @@ pub struct NewRun<'a> {
 const SESSION_COLS: &str = "id, title, source, external_ref, model, created_at, updated_at";
 pub(crate) const RUN_COLS: &str = "id, session_id, status, trigger, model, system_prompt, \
     input_message_id, started_at, updated_at, finished_at, error, parent_run_id, parent_call_id, \
-    label, depth, tool_scope, budget_tokens, max_iterations";
+    label, depth, tool_scope, budget_tokens, max_iterations, quiet";
 const STEP_COLS: &str = "run_id, idx, kind, input_hash, input_json, output_json, status, \
                          usage_json, error, started_at, finished_at";
 const MESSAGE_COLS: &str =
@@ -175,6 +177,7 @@ pub(crate) fn run_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         tool_scope: r.get(15)?,
         budget_tokens: r.get::<_, Option<i64>>(16)?.map(|v| v.max(0) as u64),
         max_iterations: r.get(17)?,
+        quiet: r.get::<_, i64>(18)? != 0,
     })
 }
 

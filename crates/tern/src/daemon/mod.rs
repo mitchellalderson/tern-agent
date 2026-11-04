@@ -10,6 +10,7 @@ mod api_subagents;
 pub mod auth;
 pub mod listen;
 pub mod manager;
+pub mod scheduler;
 pub mod tls;
 pub mod uploads;
 
@@ -22,17 +23,12 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use tern_core::TernHome;
 use tern_core::agent::{RESUME_MAX_AGE, triage_running_runs};
-use tern_core::cron::Cron;
 use tern_gateway::Gateway;
 use tern_gateway::telegram::{TelegramGateway, api::DEFAULT_API_URL};
 use tokio_util::sync::CancellationToken;
 
 use crate::runtime::Runtime;
 use manager::{Manager, Router, Routes};
-
-/// Env var overriding the scheduler tick (milliseconds), for tests.
-pub const TICK_ENV: &str = "TERN_SCHEDULER_TICK_MS";
-const DEFAULT_TICK: Duration = Duration::from_secs(30);
 
 /// Holds the PID file lock for the daemon's lifetime.
 struct PidLock {
@@ -119,7 +115,7 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
         let host: Arc<dyn tern_gateway::ChatHost> = Arc::new(manager::Chats(manager.clone()));
         tokio::spawn(g.run(host, shutdown.clone()));
     }
-    tokio::spawn(scheduler(manager.clone(), shutdown.clone()));
+    tokio::spawn(scheduler::run(manager.clone(), shutdown.clone()));
 
     let socket = home.socket_path();
     let bind = home.socket_bind_path();
@@ -177,59 +173,4 @@ async fn wait_for_signal() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
-}
-
-/// Run due schedules every tick (spec §12.5). A schedule missed while the
-/// daemon was down runs once, then continues from now: no backfill.
-async fn scheduler(manager: Arc<Manager>, shutdown: CancellationToken) {
-    let tick = std::env::var(TICK_ENV)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_TICK);
-    let mut interval = tokio::time::interval(tick);
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {}
-            () = shutdown.cancelled() => return,
-        }
-        if let Err(e) = run_due(&manager).await {
-            tracing::error!(error = %e, "scheduler tick failed");
-        }
-    }
-}
-
-async fn run_due(manager: &Arc<Manager>) -> anyhow::Result<()> {
-    let store = &manager.rt.store;
-    let now = chrono::Local::now();
-    for s in store.due_schedules(now.timestamp_millis())? {
-        let cron = match s.cron.parse::<Cron>() {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(schedule = %s.id, error = %e, "invalid cron; parking schedule");
-                store.mark_schedule_ran(&s.id, now.timestamp_millis(), i64::MAX)?;
-                continue;
-            }
-        };
-        let next = cron
-            .next_after(now)
-            .map_or(i64::MAX, |t| t.timestamp_millis());
-        // Advance first, so a crash mid-run doesn't start it twice.
-        store.mark_schedule_ran(&s.id, now.timestamp_millis(), next)?;
-        tracing::info!(schedule = %s.id, "running scheduled prompt");
-        if let Err(e) = manager
-            .start(
-                Some(&s.session_id),
-                None,
-                &s.prompt,
-                "cron",
-                "cron",
-                s.deliver_to.as_deref(),
-            )
-            .await
-        {
-            tracing::error!(schedule = %s.id, error = %e, "scheduled run failed to start");
-        }
-    }
-    Ok(())
 }

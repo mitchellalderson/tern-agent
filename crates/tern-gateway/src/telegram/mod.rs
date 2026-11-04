@@ -218,6 +218,7 @@ impl TelegramGateway {
                 run_id,
                 status,
                 error,
+                ..
             } if status != "completed" => {
                 // Completed runs are finalized by `deliver`.
                 if let Some(s) = streams.remove(&run_id) {

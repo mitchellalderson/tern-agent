@@ -63,3 +63,15 @@ docker_pids = 512          # 0 for no limit
 # max_concurrent_global = 8   # running across tern; more are queued
 # max_iterations = 30         # per sub-agent
 # budget_tokens = 400000      # per sub-agent: input + output + cache tokens
+
+# Scheduled prompts (schedule_create, the app's routines). Each schedule can
+# override these.
+# [schedules]
+# quiet_hours = "22:00-07:30"   # local; results finishing inside wait until the end. "none" = off
+# runs_per_day = 24             # then the schedule pauses until tomorrow (unset = no cap)
+# usd_per_day = 1.0             # needs the model's price (see `prices` below)
+# tokens_per_run = 200000       # a run that uses more is stopped and fails
+#
+# Prices (USD per million tokens) for models whose list doesn't give them:
+# [providers.anthropic.prices]
+# "claude-sonnet-4-5" = { input = 3.0, output = 15.0, cache_read = 0.3, cache_write = 3.75 }

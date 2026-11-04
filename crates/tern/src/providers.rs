@@ -10,7 +10,7 @@ use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use tern_core::Config;
 use tern_core::config::edit::ConfigFile;
-use tern_core::config::{ModelRef, ProviderConfig, ProviderKind};
+use tern_core::config::{ModelRef, Pricing, ProviderConfig, ProviderKind};
 use tern_core::models::{
     Change, ListError, ModelInfo, ProviderDraft, ProviderModels, ProviderStatus, Resolved,
     Verified, describe, host_of,
@@ -86,6 +86,17 @@ impl ModelCache {
         let entries = self.lock();
         let e = entries.get(provider).filter(|e| !e.models.is_empty())?;
         Some(e.models.iter().map(|m| m.id.clone()).collect())
+    }
+
+    /// The price the cached list gives for `provider:model`, if any.
+    pub fn pricing(&self, provider: &str, model: &str) -> Option<Pricing> {
+        let entries = self.lock();
+        entries
+            .get(provider)?
+            .models
+            .iter()
+            .find(|m| m.id == model)?
+            .pricing
     }
 
     fn put(&self, provider: &str, fingerprint: &str, result: &Result<Listing, ListError>) {
@@ -216,7 +227,26 @@ struct Plan {
     warnings: Vec<String>,
 }
 
+/// `provider:model`'s price: `[providers.<name>.prices]` first, then the
+/// provider's model list. `None` when neither knows it.
+pub fn price_of(config: &Config, cache: &ModelCache, model: &str) -> Option<Pricing> {
+    let m: ModelRef = model.parse().ok()?;
+    if let Some(p) = config
+        .providers
+        .get(&m.provider)
+        .and_then(|p| p.prices.get(&m.model))
+    {
+        return Some(*p);
+    }
+    cache.pricing(&m.provider, &m.model)
+}
+
 impl Runtime {
+    /// `model`'s price (`provider:model`), if known.
+    pub fn price_of(&self, model: &str) -> Option<Pricing> {
+        price_of(&self.live(), &self.models, model)
+    }
+
     /// Whether there is no usable model: no default, its provider isn't
     /// configured, or that provider's key is missing.
     pub fn setup_needed(&self) -> bool {
@@ -444,6 +474,7 @@ impl Runtime {
                     base_url: None,
                     api_key_secret: None,
                     context_window: None,
+                    prices: Default::default(),
                 };
                 (name, cfg)
             }

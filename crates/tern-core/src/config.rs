@@ -43,6 +43,7 @@ pub struct Config {
     pub mcp: McpConfig,
     pub api: ApiConfig,
     pub subagents: SubagentsConfig,
+    pub schedules: SchedulesConfig,
 }
 
 impl Default for Config {
@@ -59,6 +60,7 @@ impl Default for Config {
             mcp: McpConfig::default(),
             api: ApiConfig::default(),
             subagents: SubagentsConfig::default(),
+            schedules: SchedulesConfig::default(),
         }
     }
 }
@@ -132,6 +134,34 @@ pub struct ProviderConfig {
     pub api_key_secret: Option<String>,
     /// Context window in tokens for this provider's models.
     pub context_window: Option<u64>,
+    /// Prices per model id, for budgets. They win over prices the model
+    /// list gives.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prices: BTreeMap<String, Pricing>,
+}
+
+/// A model's price in USD per million tokens. Cache reads and writes cost
+/// the input price unless given.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pricing {
+    pub input: f64,
+    pub output: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
+}
+
+impl Pricing {
+    /// USD for `usage` tokens: (input, output, cache read, cache write).
+    pub fn cost(&self, (input, output, cache_read, cache_write): (u64, u64, u64, u64)) -> f64 {
+        let per = |tokens: u64, price: f64| tokens as f64 * price / 1_000_000.0;
+        per(input, self.input)
+            + per(output, self.output)
+            + per(cache_read, self.cache_read.unwrap_or(self.input))
+            + per(cache_write, self.cache_write.unwrap_or(self.input))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -331,6 +361,21 @@ impl Default for SubagentsConfig {
             ask_parent_timeout_secs: 900,
         }
     }
+}
+
+/// `[schedules]`: defaults for every schedule; each can override them
+/// (docs/personal-agent-tooling-spec.md §4.1, §8.3).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SchedulesConfig {
+    /// Deliveries finishing inside this window wait for its end.
+    pub quiet_hours: crate::quiet::QuietHours,
+    /// Runs a schedule may start per local day; then it pauses.
+    pub runs_per_day: Option<u32>,
+    /// USD a schedule may spend per local day (where prices are known).
+    pub usd_per_day: Option<f64>,
+    /// Tokens (input + output + cache) one run may use before it is stopped.
+    pub tokens_per_run: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

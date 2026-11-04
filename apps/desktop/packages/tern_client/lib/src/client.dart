@@ -258,27 +258,34 @@ class TernClient {
     required String cron,
     required String prompt,
     String? deliverTo,
+    ScheduleLimits? limits,
   }) async => Schedule.fromJson(
     await _json('POST', '/v1/schedules', {
       'cron': cron,
       'prompt': prompt,
       'deliver_to': ?deliverTo,
+      ...?limits?.toJson(),
     }),
   );
 
-  /// Pass `deliverTo: 'none'` to stop delivering.
+  /// Pass `deliverTo: 'none'` to stop delivering. `limits` replaces all of
+  /// them (nulls put the defaults back); `resume` lifts a budget pause.
   Future<Schedule> updateSchedule(
     String id, {
     String? cron,
     String? prompt,
     bool? enabled,
     String? deliverTo,
+    ScheduleLimits? limits,
+    bool resume = false,
   }) async => Schedule.fromJson(
     await _json('PATCH', '/v1/schedules/$id', {
       'cron': ?cron,
       'prompt': ?prompt,
       'enabled': ?enabled,
       'deliver_to': ?deliverTo,
+      ...?limits?.toJson(),
+      if (resume) 'resume': true,
     }),
   );
 

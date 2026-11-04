@@ -11,6 +11,7 @@ pub mod journal;
 pub mod models;
 pub mod net;
 pub mod prompt;
+pub mod quiet;
 pub mod secrets;
 pub mod skills;
 pub mod subagent;
