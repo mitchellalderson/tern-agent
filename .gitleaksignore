@@ -1,2 +1,4 @@
 # Test fixture of public documentation example tokens (redact_patterns test).
 b30c3c417584bf170181246a68e4b8bf28bdb423:crates/tern/src/report_cmd.rs:generic-api-key:274
+# Help text for the bearer-token field in the /mcp form, not a key.
+608bc7b74c103a99b27df019eb7fc4c54dafd548:crates/tern-tui/src/mcp.rs:generic-api-key:69

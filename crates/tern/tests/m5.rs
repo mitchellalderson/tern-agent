@@ -123,7 +123,9 @@ impl Env {
             std::fs::write(
                 tern_home.join("config.toml"),
                 format!(
-                    "[gateway.telegram]\nenabled = true\nbot_token_secret = \"TELEGRAM_BOT_TOKEN\"\napi_url = \"{}\"\n",
+                    // No quiet hours: the default window would hold the
+                    // scheduled delivery when the tests run at night.
+                    "[gateway.telegram]\nenabled = true\nbot_token_secret = \"TELEGRAM_BOT_TOKEN\"\napi_url = \"{}\"\n\n[schedules]\nquiet_hours = \"none\"\n",
                     t.url
                 ),
             )
