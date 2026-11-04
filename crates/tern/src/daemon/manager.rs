@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use tern_core::agent::{RunOutcome, RunStatus};
 use tern_core::approval::{
-    ApprovalHandler, ApprovalRequest, Decision, SecretAsk, SecretRequest, SecretValues,
+    ApprovalHandler, ApprovalRequest, AuthPrompt, Decision, SecretAsk, SecretRequest, SecretValues,
 };
 use tern_core::events::AgentEvent;
 use tern_gateway::{ChatHost, Gateway};
@@ -270,6 +270,105 @@ impl ApiSecretRequests {
     }
 }
 
+/// A sign-in card waiting for an API client (tooling spec §6.7.3–6.7.4).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ApiAuthPrompt {
+    #[serde(flatten)]
+    pub prompt: AuthPrompt,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+}
+
+/// What `/v1/events` carries about sign-in cards.
+#[derive(Clone)]
+pub enum AuthPromptEvent {
+    Open(Box<ApiAuthPrompt>),
+    /// Answered, or the sign-in finished without an answer: close it.
+    Closed(String),
+}
+
+type PendingAuth = Mutex<HashMap<String, (ApiAuthPrompt, oneshot::Sender<String>)>>;
+
+/// Sign-in cards for API clients. Like secret requests they wait when no
+/// client is attached, until the tool's own timeout.
+#[derive(Default)]
+pub struct ApiAuthPrompts {
+    pending: Arc<PendingAuth>,
+    tx: OnceLock<broadcast::Sender<AuthPromptEvent>>,
+}
+
+/// Drops a card from the pending list, and tells clients to close it, when
+/// its asker stops waiting.
+struct UnlistAuth(Arc<PendingAuth>, String, broadcast::Sender<AuthPromptEvent>);
+
+impl Drop for UnlistAuth {
+    fn drop(&mut self) {
+        if let Ok(mut p) = self.0.lock() {
+            p.remove(&self.1);
+        }
+        let _ = self.2.send(AuthPromptEvent::Closed(self.1.clone()));
+    }
+}
+
+impl ApiAuthPrompts {
+    fn tx(&self) -> &broadcast::Sender<AuthPromptEvent> {
+        self.tx.get_or_init(|| broadcast::channel(64).0)
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<AuthPromptEvent> {
+        self.tx().subscribe()
+    }
+
+    /// Show `req` and wait for an answer it accepts.
+    pub async fn ask(
+        &self,
+        req: &AuthPrompt,
+        root_session_id: Option<String>,
+        at: Where,
+    ) -> Option<String> {
+        let (tx, rx) = oneshot::channel();
+        let msg = ApiAuthPrompt {
+            prompt: req.clone(),
+            root_session_id: root_session_id.filter(|_| req.parent_run_id.is_some()),
+            channel_id: at.0,
+            agent_id: at.1,
+        };
+        if let Ok(mut p) = self.pending.lock() {
+            p.insert(req.id.clone(), (msg.clone(), tx));
+        }
+        let _unlist = UnlistAuth(self.pending.clone(), req.id.clone(), self.tx().clone());
+        let _ = self.tx().send(AuthPromptEvent::Open(Box::new(msg)));
+        rx.await.ok()
+    }
+
+    /// Answer card `id`. Only an answer the card offers is taken.
+    pub fn answer(&self, id: &str, answer: &str) -> Result<(), AnswerError> {
+        let mut p = self.pending.lock().map_err(|_| AnswerError::NotFound)?;
+        let Some((req, _)) = p.get(id) else {
+            return Err(AnswerError::NotFound);
+        };
+        if !req.prompt.accepts(answer) {
+            return Err(AnswerError::NotAsked(answer.to_owned()));
+        }
+        let Some((_, tx)) = p.remove(id) else {
+            return Err(AnswerError::NotFound);
+        };
+        tx.send(answer.to_owned())
+            .map_err(|_| AnswerError::NotFound)
+    }
+
+    pub fn pending(&self) -> Vec<ApiAuthPrompt> {
+        self.pending
+            .lock()
+            .map(|p| p.values().map(|(r, _)| r.clone()).collect())
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug)]
 pub enum AnswerError {
     NotFound,
@@ -285,6 +384,7 @@ pub struct Routes {
     pub gateways: OnceLock<HashMap<String, Arc<dyn Gateway>>>,
     pub api: ApiApprovals,
     pub secrets: ApiSecretRequests,
+    pub auth: ApiAuthPrompts,
     pub lifecycle: Lifecycle,
     /// Set once the daemon's manager exists, to announce outbox items.
     pub manager: OnceLock<Weak<Manager>>,
@@ -318,7 +418,7 @@ pub struct Router(pub Arc<Routes>);
 type ChatTarget = (Arc<dyn Gateway>, String);
 
 /// The channel and agent of a run tree's root session.
-type Where = (Option<String>, Option<String>);
+pub(crate) type Where = (Option<String>, Option<String>);
 
 impl Router {
     /// The session at the top of `run_id`'s tree, and the gateway chat that
@@ -446,6 +546,32 @@ impl ApprovalHandler for Router {
             n.text = Some(text.trim_end().to_owned());
         }
         Some(values)
+    }
+
+    /// API clients get the card; a chat gets a pointer to them.
+    async fn ask_auth(&self, req: &AuthPrompt) -> Option<String> {
+        let (root, chat) = self.place(&req.run_id);
+        let mut notice = None;
+        if let Some((g, chat)) = chat
+            && let Some(handle) = g.auth_prompt_notice(&chat, req).await
+        {
+            notice = Some(Notice {
+                gateway: g,
+                chat,
+                handle,
+                text: None,
+            });
+        }
+        let at = self.at(root.as_deref());
+        let answer = self.0.auth.ask(req, root, at).await;
+        if let Some(n) = &mut notice {
+            n.text = Some(match answer.as_deref() {
+                Some("cancel") => "🔐 Cancelled.".into(),
+                Some(other) => format!("🔐 Chose: {other}."),
+                None => "🔐 Done.".into(),
+            });
+        }
+        answer
     }
 }
 

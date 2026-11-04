@@ -63,6 +63,9 @@ pub struct OAuthConfig {
     /// The loopback redirect URI a registered client was registered with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redirect_uri: Option<String>,
+    /// Where to register again if that port is taken (RFC 7591).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_url: Option<String>,
 }
 
 /// Tokens from one grant. `Debug` never shows them.
@@ -475,16 +478,30 @@ pub async fn begin(
     guard: &Guard,
     port: Option<u16>,
 ) -> Result<PendingSignIn, AuthError> {
-    let listener = match port {
-        Some(p) => TcpListener::bind(("127.0.0.1", p)).await,
-        None => TcpListener::bind(("127.0.0.1", 0)).await,
-    }
-    .map_err(|e| AuthError::Http(format!("opening the sign-in listener: {e}")))?;
+    let (listener, redirect_uri) = bind(port).await?;
+    begin_on(cfg, guard, listener, redirect_uri)
+}
+
+/// The loopback listener and its redirect URI, before a client exists
+/// (registration needs the URI first).
+pub async fn bind(port: Option<u16>) -> Result<(TcpListener, String), AuthError> {
+    let listener = TcpListener::bind(("127.0.0.1", port.unwrap_or(0)))
+        .await
+        .map_err(|e| AuthError::Http(format!("opening the sign-in listener: {e}")))?;
     let port = listener
         .local_addr()
         .map_err(|e| AuthError::Http(e.to_string()))?
         .port();
-    let redirect_uri = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
+    Ok((listener, format!("http://127.0.0.1:{port}{CALLBACK_PATH}")))
+}
+
+/// [`begin`] on a listener from [`bind`].
+pub fn begin_on(
+    cfg: &OAuthConfig,
+    guard: &Guard,
+    listener: TcpListener,
+    redirect_uri: String,
+) -> Result<PendingSignIn, AuthError> {
     let mut url = parse_url("authorize endpoint", &cfg.authorize_url)?;
     if url.scheme() != "https" && !guard.is_local(&url) {
         return Err(AuthError::Refused(format!(

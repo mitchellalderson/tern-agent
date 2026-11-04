@@ -52,7 +52,7 @@ pub mod chat_agents {
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tern_core::approval::{ApprovalRequest, Decision, SecretRequest};
+use tern_core::approval::{ApprovalRequest, AuthPrompt, Decision, SecretRequest};
 use tern_core::events::AgentEvent;
 use tern_core::outbox::OutboxItem;
 use tokio::sync::broadcast;
@@ -101,6 +101,13 @@ pub trait Gateway: Send + Sync {
     }
     /// Replace the notice with how the request ended.
     async fn secret_request_done(&self, _target: &str, _handle: &str, _text: &str) {}
+    /// Tell the user in `target` that the agent wants them to choose how to
+    /// connect a service or to sign in, which happens in the app or TUI
+    /// (a chat can't open a browser on this machine). Same handle as
+    /// [`Gateway::secret_request_notice`]; ended with `secret_request_done`.
+    async fn auth_prompt_notice(&self, _target: &str, _req: &AuthPrompt) -> Option<String> {
+        None
+    }
     /// Show a new outbox item (a call nobody approved in time) in `target`,
     /// with Approve and Reject buttons unless only this host may decide it.
     async fn outbox_notice(&self, _target: &str, _item: &OutboxItem) {}

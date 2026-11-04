@@ -59,6 +59,9 @@ pub const FEATURES: &[&str] = &[
     "agents",
     // `/v1/outbox` and `outbox_changed` events (tooling spec §5.2).
     "outbox",
+    // `/v1/connections`, `/v1/auth-prompts` and their events (tooling spec
+    // §6.7–6.8).
+    "connections",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";
@@ -111,6 +114,9 @@ const OWNER_ONLY: &[&str] = &[
     "/v1/devices",
     "/v1/config",
     "/v1/secrets",
+    // Accounts and sign-in cards: credentials, like secrets.
+    "/v1/connections",
+    "/v1/auth-prompts",
     "/v1/providers",
     "/v1/shutdown",
     // Moving conversations between channels rearranges what everyone sees.

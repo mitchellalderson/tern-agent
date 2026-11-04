@@ -1,6 +1,7 @@
 mod agents_cmd;
 mod cli;
 mod config_cmd;
+mod connections_cmd;
 mod connectors_cmd;
 mod crash;
 mod daemon;
@@ -188,6 +189,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 RunsCommand::Show { run_id } => inspect::runs_show(&home, &run_id)?,
             }
             Ok(ExitCode::SUCCESS)
+        }
+        Some(Command::Connections { command }) => {
+            home.ensure_layout()?;
+            connections_cmd::run(&home, command)
         }
         Some(Command::Connectors { command }) => match command.unwrap_or(ConnectorsCommand::List) {
             ConnectorsCommand::List => connectors_cmd::list(&home),

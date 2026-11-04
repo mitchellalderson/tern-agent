@@ -232,6 +232,8 @@ pub struct Connections {
     /// a query per tool.
     cache: RwLock<BTreeMap<(Kind, String), Vec<Conn>>>,
     pub max_per_target: usize,
+    /// Told after every change this process makes.
+    on_change: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl Connections {
@@ -241,6 +243,7 @@ impl Connections {
             tokens,
             cache: RwLock::default(),
             max_per_target: max_per_target.max(1),
+            on_change: std::sync::OnceLock::new(),
         };
         c.reload();
         c
@@ -248,6 +251,18 @@ impl Connections {
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    /// Call `f` after every change (for the API's events).
+    pub fn on_change(&self, f: impl Fn() + Send + Sync + 'static) {
+        let _ = self.on_change.set(Box::new(f));
+    }
+
+    fn changed(&self) {
+        self.reload();
+        if let Some(f) = self.on_change.get() {
+            f();
+        }
     }
 
     /// Re-read every connection (after a change from anywhere).
@@ -379,7 +394,7 @@ impl Connections {
                 {
                     tracing::warn!(error = %e, "marking a connection for sign-in failed");
                 }
-                self.reload();
+                self.changed();
                 tracing::warn!(target = %r.conn.target, connection = %r.conn.slug, "connection needs sign-in again");
                 Err(format!(
                     "{} needs signing in again ({why}): ask the user to reconnect it",
@@ -460,7 +475,7 @@ impl Connections {
                 auth: serde_json::to_string(auth).ok(),
             })
             .map_err(|e| e.to_string())?;
-        self.reload();
+        self.changed();
         Conn::from_row(row).ok_or_else(|| "bad connection row".into())
     }
 
@@ -475,7 +490,7 @@ impl Connections {
         self.store
             .update_connection_auth(&c.id, account, auth.as_deref())
             .map_err(|e| e.to_string())?;
-        self.reload();
+        self.changed();
         Ok(())
     }
 
@@ -493,7 +508,7 @@ impl Connections {
         self.store
             .set_default_connection(&c.id)
             .map_err(|e| e.to_string())?;
-        self.reload();
+        self.changed();
         Ok(())
     }
 
@@ -502,7 +517,7 @@ impl Connections {
         self.store
             .rename_connection(&c.id, &label)
             .map_err(|e| e.to_string())?;
-        self.reload();
+        self.changed();
         Ok(())
     }
 
@@ -526,7 +541,7 @@ impl Connections {
         self.store
             .remove_connection(&c.id)
             .map_err(|e| e.to_string())?;
-        self.reload();
+        self.changed();
         Ok(())
     }
 }

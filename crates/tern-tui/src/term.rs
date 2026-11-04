@@ -84,6 +84,7 @@ async fn event_loop(
                     }
                 }
                 Effect::Resubscribe => agent_rx = backend.subscribe(),
+                Effect::OpenUrl(url) => open_url(&url),
                 Effect::Task(task) => {
                     let (backend, tx) = (backend.clone(), task_tx.clone());
                     tokio::spawn(async move {
@@ -130,4 +131,27 @@ async fn event_loop(
             _ = tick.tick(), if app.is_running() || app.is_busy() => app.on_tick(),
         }
     }
+}
+
+/// Open `url` in the user's browser. Only http(s) URLs a sign-in card
+/// carries get here; they go to the OS opener as one argument, never
+/// through a shell.
+fn open_url(url: &str) {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return;
+    }
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(windows) {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    // Best effort: the card shows the URL to copy if this fails.
+    let _ = std::process::Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }

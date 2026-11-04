@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tern_core::approval::{ApprovalRequest, Decision, SecretRequest};
+use tern_core::approval::{ApprovalRequest, AuthCard, AuthPrompt, Decision, SecretRequest};
 use tern_core::events::AgentEvent;
 use tern_core::outbox::OutboxItem;
 use tern_store::Store;
@@ -720,6 +720,26 @@ impl Gateway for TelegramGateway {
         }
     }
 
+    async fn auth_prompt_notice(&self, target: &str, req: &AuthPrompt) -> Option<String> {
+        let (chat, thread) = place(target)?;
+        match self
+            .api
+            .send_message_in(
+                chat,
+                thread,
+                &auth_notice(req, &self.chat_agent_name(target)),
+                None,
+            )
+            .await
+        {
+            Ok(id) => Some(id.to_string()),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not send sign-in notice");
+                None
+            }
+        }
+    }
+
     async fn secret_request_done(&self, target: &str, handle: &str, text: &str) {
         let (Some((chat, _)), Ok(id)) = (place(target), handle.parse::<i64>()) else {
             return;
@@ -747,6 +767,23 @@ fn secret_notice(req: &SecretRequest, agent: &str) -> String {
          It's waiting in the conversation, or set it with /secrets in the TUI.",
     );
     text
+}
+
+/// Points the user at the app or TUI, where the card is: a sign-in opens a
+/// browser on tern's machine, and a choice belongs with it.
+fn auth_notice(req: &AuthPrompt, agent: &str) -> String {
+    let who = match &req.agent_label {
+        Some(l) => format!("Sub-agent {l}"),
+        None => agent.to_owned(),
+    };
+    match &req.card {
+        AuthCard::Choose { title, .. } => format!(
+            "🔐 {who} wants you to choose how to connect: {title}.\nIt's waiting in the tern app or the TUI."
+        ),
+        AuthCard::SignIn { title, .. } => format!(
+            "🔐 {who} needs you to sign in: {title}.\nFinish it in the tern app or the TUI; the sign-in page opens there, not in this chat."
+        ),
+    }
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tern_core::agent::{RunOutcome, RunStatus};
-use tern_core::approval::{ApprovalOutcome, Decision};
+use tern_core::approval::{ApprovalOutcome, AuthCard, Decision};
 use tern_core::events::AgentEvent;
 use tern_core::types::Usage;
 
@@ -19,7 +19,8 @@ use crate::secret_prompt::{Done, SecretPrompt};
 use crate::secrets::SecretsPanel;
 use crate::setup::{SetupAction, SetupPanel, Task, TaskDone};
 use crate::{
-    AgentInfo, Backend, BackendResult, PendingApproval, PendingSecret, SessionInfo, UserPrompt,
+    AgentInfo, Backend, BackendResult, PendingApproval, PendingAuth, PendingSecret, SessionInfo,
+    UserPrompt,
 };
 
 /// Two Ctrl+C presses within this window quit.
@@ -115,6 +116,8 @@ pub enum Effect {
     /// Backend work to run in the background; its result comes back
     /// through [`App::on_task_done`].
     Task(Task),
+    /// Open a sign-in page in the user's browser.
+    OpenUrl(String),
 }
 
 pub struct Running {
@@ -141,6 +144,11 @@ pub struct App {
     /// transcript; it takes every key while open.
     pub secret_prompt: Option<SecretPrompt>,
     secret_queue: VecDeque<PendingSecret>,
+    /// A sign-in card (`auth_propose`, `connection_add`): it takes the
+    /// keys while open. `auth_pick` is the highlighted option.
+    pub auth_prompt: Option<PendingAuth>,
+    pub auth_pick: usize,
+    auth_queue: VecDeque<PendingAuth>,
     pub last_usage: Option<Usage>,
     pub hint: Option<String>,
     /// The `/secrets` panel, drawn over the transcript while open.
@@ -180,6 +188,8 @@ Commands:
   /secrets [NAME]   manage API keys and tokens in secrets.toml
   /mcp              add, test and manage MCP servers (/mcp add, /mcp paste,
                     /mcp restart|enable|disable <name>)
+  /connections      accounts of connectors and MCP servers (tern connections
+                    adds, removes and reconnects them)
   /usage            token usage for this session
   /agents           list your agents and the last run's sub-agents
   /agent <name>     talk to one of your agents in its DM (/agent tern: back)
@@ -213,6 +223,9 @@ impl App {
             approval_queue: VecDeque::new(),
             secret_prompt: None,
             secret_queue: VecDeque::new(),
+            auth_prompt: None,
+            auth_pick: 0,
+            auth_queue: VecDeque::new(),
             last_usage: None,
             hint: None,
             secrets: None,
@@ -304,6 +317,10 @@ impl App {
                 self.answer_secret(done);
             }
             return vec![];
+        }
+
+        if self.auth_prompt.is_some() {
+            return self.auth_key(key.code);
         }
 
         if let Some(o) = &mut self.overlay {
@@ -425,6 +442,8 @@ impl App {
             }
         } else if self.secret_prompt.is_some() {
             self.answer_secret(Done::Skip);
+        } else if self.auth_prompt.is_some() {
+            self.answer_auth("cancel");
         } else if self.approval.is_some() {
             self.answer_approval(Decision::Deny);
         }
@@ -454,6 +473,106 @@ impl App {
         while self.approval.is_some() {
             self.answer_approval(Decision::Deny);
         }
+    }
+
+    /// Keys on a sign-in card. A choice: ↑/↓ or a number, Enter; a sign-in:
+    /// Enter or `o` opens the page, `d` switches to a code; Esc cancels.
+    fn auth_key(&mut self, code: KeyCode) -> Vec<Effect> {
+        let Some(p) = &self.auth_prompt else {
+            return vec![];
+        };
+        match &p.request.card {
+            AuthCard::Choose { options, .. } => match code {
+                KeyCode::Up => self.auth_pick = self.auth_pick.saturating_sub(1),
+                KeyCode::Down => {
+                    self.auth_pick = (self.auth_pick + 1).min(options.len().saturating_sub(1))
+                }
+                KeyCode::Char(c @ '1'..='9') => {
+                    let i = c as usize - '1' as usize;
+                    if let Some(o) = options.get(i) {
+                        let id = o.id.clone();
+                        self.answer_auth(&id);
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(o) = options.get(self.auth_pick) {
+                        let id = o.id.clone();
+                        self.answer_auth(&id);
+                    }
+                }
+                KeyCode::Esc => self.answer_auth("cancel"),
+                _ => {}
+            },
+            AuthCard::SignIn {
+                url,
+                device_available,
+                ..
+            } => match code {
+                KeyCode::Enter | KeyCode::Char('o') => {
+                    if let Some(u) = url.clone() {
+                        self.hint = Some("opened the sign-in page in your browser".into());
+                        return vec![Effect::OpenUrl(u)];
+                    }
+                }
+                KeyCode::Char('d') if *device_available => self.answer_auth("device"),
+                KeyCode::Esc => self.answer_auth("cancel"),
+                _ => {}
+            },
+        }
+        vec![]
+    }
+
+    fn answer_auth(&mut self, answer: &str) {
+        if let Some(p) = self.auth_prompt.take() {
+            let _ = p.reply.send(answer.to_owned());
+        }
+        self.next_auth();
+    }
+
+    fn next_auth(&mut self) {
+        self.auth_pick = 0;
+        self.auth_prompt = self.auth_queue.pop_front();
+        if let Some(p) = &self.auth_prompt
+            && let AuthCard::Choose { options, .. } = &p.request.card
+        {
+            self.auth_pick = options.iter().position(|o| o.recommended).unwrap_or(0);
+        }
+    }
+
+    /// Close sign-in cards of `call_id` (it finished) or with `id`.
+    fn close_auth(&mut self, call_id: Option<&str>, id: Option<&str>) {
+        let gone = |p: &PendingAuth| {
+            (call_id.is_some() && p.request.call_id.as_deref() == call_id)
+                || id.is_some_and(|i| p.request.id == i)
+        };
+        self.auth_queue.retain(|p| !gone(p));
+        if self.auth_prompt.as_ref().is_some_and(gone) {
+            self.auth_prompt = None;
+            self.next_auth();
+        }
+    }
+
+    pub fn on_auth(&mut self, pending: PendingAuth) {
+        let id = pending.request.id.clone();
+        if self
+            .auth_prompt
+            .as_ref()
+            .is_some_and(|p| p.request.id == id)
+            || self.auth_queue.iter().any(|p| p.request.id == id)
+        {
+            return;
+        }
+        // A later card of the same call (a device code after the browser
+        // page) replaces the earlier one.
+        if let Some(call) = pending.request.call_id.clone() {
+            self.close_auth(Some(&call), None);
+        }
+        self.auth_queue.push_back(pending);
+        if self.auth_prompt.is_none() {
+            self.next_auth();
+        }
+        self.overlay = None;
+        self.scroll = 0;
     }
 
     fn answer_secret(&mut self, done: Done) {
@@ -665,6 +784,18 @@ impl App {
                 }
                 self.notice(text);
             }
+            "connections" => match self.backend.connections() {
+                Ok(lines) if lines.is_empty() => self.notice(
+                    "No accounts yet: every connector and MCP server uses its default one. \
+                     Ask the agent to connect another, or run `tern connections add <name>`."
+                        .to_owned(),
+                ),
+                Ok(lines) => self.notice(format!(
+                    "connections:\n{}\n(`tern connections default|rename|remove|reconnect` changes them)",
+                    lines.join("\n")
+                )),
+                Err(e) => self.error(e),
+            },
             "stop" => {
                 if self.running.is_some() {
                     self.queued = None;
@@ -946,6 +1077,7 @@ impl App {
     pub fn on_agent_event(&mut self, ev: AgentEvent) {
         if let AgentEvent::ToolFinished { id, .. } = &ev {
             self.close_secret(id);
+            self.close_auth(Some(id), None);
         }
         // Children run concurrently with their parent: their events update
         // their own line, never the transcript. Events of other runs (another
@@ -1214,6 +1346,8 @@ impl App {
         match prompt {
             UserPrompt::Approval(p) => self.on_approval(p),
             UserPrompt::Secret(p) => self.on_secret(p),
+            UserPrompt::Auth(p) => self.on_auth(p),
+            UserPrompt::AuthClosed(id) => self.close_auth(None, Some(&id)),
         }
     }
 

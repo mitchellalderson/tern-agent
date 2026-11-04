@@ -69,7 +69,7 @@ use tern_core::types::{ContentBlock, Usage};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
-use super::manager::{ApiApproval, ApiSecretRequest, Manager};
+use super::manager::{ApiApproval, ApiAuthPrompt, ApiSecretRequest, AuthPromptEvent, Manager};
 
 pub(super) type Shared = Arc<Manager>;
 
@@ -184,6 +184,7 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_runs::routes())
         .merge(super::api_subagents::routes())
         .merge(super::api_secrets::routes())
+        .merge(super::api_connections::routes())
         .merge(super::api_providers::routes())
         .merge(super::api_mcp::routes())
         .merge(super::api_lifecycle::routes())
@@ -651,6 +652,8 @@ async fn usage(
 pub enum ApiEvent {
     Approval { approval_requested: ApiApproval },
     SecretRequest { secret_requested: ApiSecretRequest },
+    AuthPrompt { auth_prompt: Box<ApiAuthPrompt> },
+    AuthPromptClosed { auth_prompt_closed: String },
     Change(tern_core::models::Change),
     Agent(tern_core::events::AgentEvent),
 }
@@ -659,17 +662,18 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
     let agent = m.rt.agent.subscribe();
     let approvals = m.routes.api.subscribe();
     let secrets = m.routes.secrets.subscribe();
+    let auth = m.routes.auth.subscribe();
     let changes = m.rt.subscribe_changes();
     let stream = futures::stream::unfold(
         (
             agent,
             approvals,
-            secrets,
+            (secrets, auth),
             changes,
             m,
             HashMap::<String, RunPlace>::new(),
         ),
-        |(mut agent, mut approvals, mut secrets, mut changes, m, mut sessions)| async move {
+        |(mut agent, mut approvals, (mut secrets, mut auth), mut changes, m, mut sessions)| async move {
             loop {
                 let ev = tokio::select! {
                     e = agent.recv() => match e {
@@ -687,6 +691,12 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
                         Err(RecvError::Lagged(_)) => continue,
                         Err(RecvError::Closed) => return None,
                     },
+                    a = auth.recv() => match a {
+                        Ok(AuthPromptEvent::Open(p)) => ApiEvent::AuthPrompt { auth_prompt: p },
+                        Ok(AuthPromptEvent::Closed(id)) => ApiEvent::AuthPromptClosed { auth_prompt_closed: id },
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => return None,
+                    },
                     c = changes.recv() => match c {
                         Ok(c) => ApiEvent::Change(c),
                         Err(RecvError::Lagged(_)) => continue,
@@ -700,7 +710,7 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
                 let data = serde_json::to_string(&data).unwrap_or_default();
                 return Some((
                     Ok(Event::default().data(data)),
-                    (agent, approvals, secrets, changes, m, sessions),
+                    (agent, approvals, (secrets, auth), changes, m, sessions),
                 ));
             }
         },

@@ -43,7 +43,9 @@ pub enum ClientKind {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AuthPlan {
     /// `oauth2`, or `unknown` (go to research, then keys).
+    #[serde(default)]
     pub method: String,
+    #[serde(default)]
     pub service: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,
@@ -135,6 +137,7 @@ impl AuthPlan {
             extra_params: self.extra_params.clone(),
             resource: self.resource.clone(),
             redirect_uri: None,
+            registration_url: self.registration_url.clone(),
         })
     }
 }

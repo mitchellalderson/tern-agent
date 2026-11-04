@@ -16,6 +16,7 @@ pub mod http;
 pub mod pkce;
 pub mod profiles;
 pub mod register;
+pub mod signin;
 pub mod tokens;
 pub mod tools;
 

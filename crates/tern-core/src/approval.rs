@@ -345,6 +345,88 @@ pub struct SecretRequest {
 /// straight to `secrets.toml`; they never reach the model or the journal.
 pub type SecretValues = std::collections::BTreeMap<String, String>;
 
+/// One choice on an [`AuthCard::Choose`] card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthOption {
+    /// What the answer says: `oauth` or `key`.
+    pub id: String,
+    /// "Sign in with Notion".
+    pub label: String,
+    /// One line under it ("No keys to copy").
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub recommended: bool,
+}
+
+/// What a sign-in card shows (tooling spec §6.7.3–6.7.4). The options,
+/// notes and addresses come from the host (a built-in profile, metadata the
+/// host checked, fixed text); only the service's name is the agent's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuthCard {
+    /// `auth_propose`: how to connect. The answer is an option's `id` or
+    /// `cancel`.
+    Choose {
+        /// "Connect Notion".
+        title: String,
+        options: Vec<AuthOption>,
+        /// Where the plan came from and how sure tern is ("Found via
+        /// auth.notion.com metadata (verified)"), scopes, caveats.
+        #[serde(default)]
+        notes: Vec<String>,
+    },
+    /// `connection_add`: the browser leg (`url`, opened on this machine)
+    /// or a device code (`user_code` at `verification_uri`). It closes on
+    /// its own when the sign-in finishes; the answer is `cancel`, or
+    /// `device` to switch to a code.
+    SignIn {
+        /// "Sign in to Gmail · work".
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_code: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verification_uri: Option<String>,
+        /// A code can be used instead of the browser on this machine.
+        #[serde(default)]
+        device_available: bool,
+        #[serde(default)]
+        notes: Vec<String>,
+    },
+}
+
+/// A sign-in card for the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthPrompt {
+    pub id: String,
+    pub run_id: String,
+    pub session_id: String,
+    /// The tool call, so front ends can place the card and close it on that
+    /// call's `tool_finished`. A later card of the same call replaces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_label: Option<String>,
+    pub card: AuthCard,
+}
+
+impl AuthPrompt {
+    /// The answers this card accepts.
+    pub fn accepts(&self, answer: &str) -> bool {
+        answer == "cancel"
+            || match &self.card {
+                AuthCard::Choose { options, .. } => options.iter().any(|o| o.id == answer),
+                AuthCard::SignIn {
+                    device_available, ..
+                } => answer == "device" && *device_available,
+            }
+    }
+}
+
 #[async_trait]
 pub trait ApprovalHandler: Send + Sync {
     async fn ask(&self, req: &ApprovalRequest) -> Decision;
@@ -363,6 +445,13 @@ pub trait ApprovalHandler: Send + Sync {
     /// Ask the user to enter secrets. `None` means nobody can be asked
     /// (non-interactive runs), which the tool reports as skipped.
     async fn ask_secrets(&self, _req: &SecretRequest) -> Option<SecretValues> {
+        None
+    }
+
+    /// Show a sign-in card and wait for the user's answer ([`AuthPrompt::accepts`]).
+    /// `None` means nobody can be asked. A sign-in card's asker may stop
+    /// waiting (the browser came back), which drops this future.
+    async fn ask_auth(&self, _req: &AuthPrompt) -> Option<String> {
         None
     }
 }

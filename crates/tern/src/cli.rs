@@ -93,6 +93,12 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<ConnectorsCommand>,
     },
+    /// Accounts of connectors and MCP servers: list, add (sign in), and
+    /// remove them, or pick the default.
+    Connections {
+        #[command(subcommand)]
+        command: Option<ConnectionsCommand>,
+    },
     /// Write a redacted bug report: environment, doctor, config, the last
     /// problem run, crashes, and recent logs.
     Report {
@@ -401,6 +407,63 @@ pub enum OutboxCommand {
 pub enum ConnectorsCommand {
     List,
     Test { name: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConnectionsCommand {
+    /// Every account.
+    List,
+    /// Sign in to another account (OAuth in your browser, or a key).
+    Add {
+        /// The connector or MCP server.
+        target: String,
+        /// The account's short name ([a-z0-9_-], up to 16); made from the
+        /// account's email when left out.
+        #[arg(long)]
+        connection: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        /// `connector` or `mcp`, when both have this name.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Enter a key instead of signing in.
+        #[arg(long)]
+        key: bool,
+        /// Sign in with a code on any device instead of a browser here.
+        #[arg(long)]
+        device: bool,
+    },
+    /// Sign in again (after a revoked or expired grant).
+    Reconnect {
+        target: String,
+        connection: String,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long)]
+        device: bool,
+    },
+    /// Make an account the default for reads.
+    Default {
+        target: String,
+        connection: String,
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    Rename {
+        target: String,
+        connection: String,
+        label: String,
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Revoke at the provider (where it allows), and delete the account's
+    /// tokens, keys, cache and grants.
+    Remove {
+        target: String,
+        connection: String,
+        #[arg(long)]
+        kind: Option<String>,
+    },
 }
 
 #[derive(Debug, Args)]

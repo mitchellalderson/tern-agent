@@ -344,10 +344,17 @@ impl Net {
         }
         let scoped = Connections::secret_name(self.conn.as_ref(), name);
         self.secrets.get(&scoped).ok_or_else(|| {
-            let help = SECRETS_HELP.replace("{key}", &scoped);
             mlua::Error::runtime(match &self.conn {
-                Some(c) => format!("secret {name:?} is not set for {}. {help}", c.conn.title()),
-                None => format!("secret {name:?} is not set. {help}"),
+                Some(c) if c.conn.slug != tern_auth::DEFAULT_SLUG => format!(
+                    "secret {name:?} is not set for {}: call connection_add with target {:?}, connection {:?} and method \"key\" so the user can enter it",
+                    c.conn.title(),
+                    c.conn.target,
+                    c.conn.slug
+                ),
+                _ => format!(
+                    "secret {name:?} is not set. {}",
+                    SECRETS_HELP.replace("{key}", name)
+                ),
             })
         })
     }

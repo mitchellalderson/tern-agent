@@ -193,14 +193,15 @@ impl Tool for ConnectorTest {
         ToolSpec {
             name: "connector_test".into(),
             description:
-                "Run one tool of a draft connector with the given arguments and return its result."
+                "Run one tool of a draft connector with the given arguments and return its result. With several accounts connected, `connection` picks one (else the default)."
                     .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "name": { "type": "string" },
                     "tool": { "type": "string" },
-                    "args": { "type": "object" }
+                    "args": { "type": "object" },
+                    "connection": { "type": "string", "description": "The account to test under" }
                 },
                 "required": ["name", "tool"]
             }),
@@ -262,7 +263,21 @@ impl Tool for ConnectorTest {
             Err(e) => return ToolResult::error(e),
         };
         let tool_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
-        match vm.call(tool, &tool_args).await {
+        // A test only reads what its account allows; it runs under the
+        // account asked for, else the default.
+        let conn = match &self.host.connections {
+            Some(c) => match c.resolve(
+                tern_auth::Kind::Connector,
+                name,
+                args.get("connection").and_then(Value::as_str),
+                Effect::Read,
+            ) {
+                Ok(r) => r,
+                Err(e) => return ToolResult::error(e),
+            },
+            None => None,
+        };
+        match vm.call_as(tool, &tool_args, conn).await {
             Ok(out) => ToolResult::ok(out),
             Err(e) => ToolResult::error(format!("{name}.{tool}: {e}")),
         }
