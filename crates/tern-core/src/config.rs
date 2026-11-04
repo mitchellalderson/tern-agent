@@ -495,6 +495,49 @@ pub enum SandboxBackendKind {
 #[serde(default, deny_unknown_fields)]
 pub struct GatewayConfig {
     pub telegram: Option<TelegramConfig>,
+    /// Gateway connectors by connector name (tooling spec §6.4): Luau
+    /// connectors with a `gateway` table, such as ntfy or Slack.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub connectors: BTreeMap<String, GatewayConnectorConfig>,
+}
+
+/// `[gateway.connectors.<name>]`: run active connector `<name>` as a chat
+/// transport. Delivery targets are `<name>:<chat>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GatewayConnectorConfig {
+    pub enabled: bool,
+    /// How often to poll for messages, in seconds (when the connector can
+    /// receive).
+    pub poll_secs: u64,
+    /// Messages from senders who haven't paired (`tern gateway pair`):
+    /// `reply` with a fixed note, `ignore` them, or start a `taint`ed run
+    /// that can't write without an approval.
+    pub strangers: Strangers,
+    /// Handed to the connector (`opts.settings` on send, the third argument
+    /// of `poll`): topics, channel ids. Never secret values; those go in
+    /// `capabilities.auth`.
+    pub settings: BTreeMap<String, toml::Value>,
+}
+
+impl Default for GatewayConnectorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_secs: 30,
+            strangers: Strangers::Reply,
+            settings: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Strangers {
+    #[default]
+    Reply,
+    Ignore,
+    Taint,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -795,6 +838,11 @@ docker_image = "debian:stable-slim"
 enabled = true
 bot_token_secret = "TELEGRAM_BOT_TOKEN"
 
+[gateway.connectors.ntfy]
+poll_secs = 15
+strangers = "taint"
+settings = { topic = "tern-abc", reply_topic = "tern-abc-reply" }
+
 [mcp.servers.github]
 transport = "stdio"
 command = "github-mcp-server"
@@ -812,6 +860,10 @@ env_secrets = ["GITHUB_TOKEN"]
             Some(ProviderConfig::ANTHROPIC_BASE_URL)
         );
         assert!(c.gateway.telegram.as_ref().unwrap().enabled);
+        let ntfy = &c.gateway.connectors["ntfy"];
+        assert!(ntfy.enabled);
+        assert_eq!((ntfy.poll_secs, ntfy.strangers), (15, Strangers::Taint));
+        assert_eq!(ntfy.settings["topic"].as_str(), Some("tern-abc"));
         assert_eq!(c.mcp.servers["github"].env_secrets, ["GITHUB_TOKEN"]);
         let m = c.default_model_ref().unwrap().unwrap();
         assert_eq!(m.provider, "anthropic");

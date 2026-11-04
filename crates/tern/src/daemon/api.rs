@@ -202,10 +202,36 @@ pub struct Info {
     #[serde(default)]
     pub setup_needed: bool,
     pub tools: Vec<(String, String)>,
+    /// Gateways routines can deliver to (`<name>:<chat>`), Telegram and
+    /// gateway connectors alike, by name.
+    #[serde(default)]
+    pub gateways: Vec<InfoGateway>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct InfoGateway {
+    pub name: String,
+    /// `telegram`, `ntfy`, `slack`, … (a connector's `gateway.kind`).
+    pub kind: String,
 }
 
 async fn info(State(m): State<Shared>) -> Json<Info> {
+    let mut gateways: Vec<InfoGateway> = m
+        .routes
+        .gateways
+        .get()
+        .map(|g| {
+            g.values()
+                .map(|g| InfoGateway {
+                    name: g.name().to_owned(),
+                    kind: g.kind().to_owned(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    gateways.sort_by(|a, b| a.name.cmp(&b.name));
     Json(Info {
+        gateways,
         default_model: m.rt.pick_model(None, None).ok().map(|x| x.to_string()),
         setup_needed: m.rt.setup_needed(),
         tools: m

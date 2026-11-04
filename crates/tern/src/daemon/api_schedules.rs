@@ -215,7 +215,7 @@ struct CreateBody {
     #[serde(flatten)]
     trigger: TriggerArgs,
     prompt: String,
-    /// `none` (default) or `telegram:<chat_id>`.
+    /// `none` (default), `telegram:<chat_id>` or `<gateway>:<chat>`.
     deliver_to: Option<String>,
     channel: Option<String>,
     agent: Option<String>,
@@ -259,11 +259,19 @@ fn set_autonomy(m: &Shared, s: &mut ScheduleRow, a: Option<&str>) -> Result<(), 
     Ok(())
 }
 
-fn target(t: Option<&str>) -> Result<Option<String>, ApiError> {
+/// A delivery target: Telegram (as before, whether or not it is enabled),
+/// or a gateway connector this daemon runs.
+fn target(m: &Shared, t: Option<&str>) -> Result<Option<String>, ApiError> {
     match t.map(str::trim) {
         None | Some("") | Some("none") => Ok(None),
         Some(t) => {
             tern_tools::schedule::check_deliver_to(t).map_err(bad)?;
+            let gateway = t.split(':').next().unwrap_or_default();
+            if gateway != tern_gateway::telegram::SOURCE && m.gateway(gateway).is_none() {
+                return Err(bad(format!(
+                    "no gateway {gateway:?}: add it with `tern gateway add {gateway}` (or [gateway.connectors.{gateway}] in config.toml) and restart tern"
+                )));
+            }
             Ok(Some(t.to_owned()))
         }
     }
@@ -290,7 +298,7 @@ async fn create(
     Json(mut b): Json<CreateBody>,
 ) -> Result<(StatusCode, Json<Schedule>), ApiError> {
     check_trigger(&m, &mut b.trigger, &b.limits, None).await?;
-    let deliver_to = target(b.deliver_to.as_deref())?;
+    let deliver_to = target(&m, b.deliver_to.as_deref())?;
     if let Some(a) = &b.autonomy {
         autonomy(a)?;
     }
@@ -382,7 +390,7 @@ async fn update(
     let old = m.rt.store.schedule(&id).map_err(internal)?;
     check_trigger(&m, &mut b.trigger, &b.limits, old.as_ref()).await?;
     let deliver_to = match &b.deliver_to {
-        Some(t) => Some(target(Some(t))?),
+        Some(t) => Some(target(&m, Some(t))?),
         None => None,
     };
     if let Some(a) = &b.autonomy {

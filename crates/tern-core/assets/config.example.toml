@@ -60,6 +60,17 @@ docker_pids = 512          # 0 for no limit
 # enabled = true
 # bot_token_secret = "TELEGRAM_BOT_TOKEN"
 
+# Gateway connectors: Luau connectors with a `gateway` table that tern runs as
+# chat transports, so routine results, approvals and outbox cards reach you
+# there too. `tern gateway add ntfy` (or `slack`) installs one and adds this
+# table; delivery targets are then `ntfy:<topic>` or `slack:<channel id>`.
+# [gateway.connectors.ntfy]
+# enabled = true
+# poll_secs = 30             # how often to check for replies
+# strangers = "reply"        # unpaired senders: "reply" (a fixed note), "ignore",
+#                            # or "taint" (a run that asks before any write)
+# settings = { topic = "tern-x7…", reply_topic = "tern-x7…-in" }   # handed to the connector
+
 # [mcp.servers.github]
 # transport = "stdio"
 # command = "github-mcp-server"

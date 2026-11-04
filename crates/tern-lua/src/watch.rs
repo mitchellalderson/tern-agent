@@ -62,7 +62,7 @@ pub struct Poll {
 
 /// The source of active connector `name`, checked against what the user
 /// approved, and unchanged while it was checked.
-fn active_source(host: &Host, dir: &Path, name: &str) -> Result<String, String> {
+pub(crate) fn active_source(host: &Host, dir: &Path, name: &str) -> Result<String, String> {
     if !valid_ident(name) {
         return Err(format!("{name:?} is not a connector name"));
     }
@@ -79,7 +79,7 @@ fn active_source(host: &Host, dir: &Path, name: &str) -> Result<String, String> 
 }
 
 /// The connector's table, evaluated in a function so its `return` is ours.
-fn connector_prelude(source: &str) -> String {
+pub(crate) fn connector_prelude(source: &str) -> String {
     format!("local __c = (function() {source}\nend)()\n")
 }
 
@@ -120,7 +120,7 @@ fn watch_vm(host: &Host, dir: &Path, connector: &str) -> Result<Vm, String> {
     Vm::load(host, &format!("{connector}.{EXTENSION}"), &wrapped).map_err(|e| e.to_string())
 }
 
-fn parse_json(out: &str) -> Result<Value, String> {
+pub(crate) fn parse_json(out: &str) -> Result<Value, String> {
     serde_json::from_str(out).map_err(|e| format!("unexpected result {out:?}: {e}"))
 }
 

@@ -33,6 +33,7 @@ use anyhow::{Context, bail};
 use tern_core::TernHome;
 use tern_core::agent::{RESUME_MAX_AGE, triage_running_runs};
 use tern_gateway::Gateway;
+use tern_gateway::lua::LuaGateway;
 use tern_gateway::telegram::{TelegramGateway, api::DEFAULT_API_URL};
 use tokio_util::sync::CancellationToken;
 
@@ -115,6 +116,10 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
         gateways.insert(g.name().to_owned(), g.clone());
         telegram = Some(g);
     }
+    let lua = lua_gateways(&rt).await;
+    for g in &lua {
+        gateways.insert(g.name().to_owned(), g.clone());
+    }
     let _ = routes.gateways.set(gateways);
 
     let manager = Manager::new(rt.clone(), routes.clone());
@@ -143,7 +148,11 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
         h.kick();
     }
 
-    if let Some(g) = telegram {
+    let running = telegram
+        .map(|g| g as Arc<dyn Gateway>)
+        .into_iter()
+        .chain(lua.into_iter().map(|g| g as Arc<dyn Gateway>));
+    for g in running {
         let host: Arc<dyn tern_gateway::ChatHost> = Arc::new(manager::Chats(manager.clone()));
         let name = g.name().to_owned();
         let task = tokio::spawn(g.run(host, shutdown.clone()));
@@ -188,6 +197,40 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(&bind);
     Ok(ExitCode::SUCCESS)
+}
+
+/// The gateway connectors `[gateway.connectors]` enables (tooling spec
+/// §6.4). One that won't load is left out with a warning, so the daemon
+/// and its other gateways still start; `tern doctor` says why.
+async fn lua_gateways(rt: &Runtime) -> Vec<Arc<LuaGateway>> {
+    let mut out = Vec::new();
+    for (name, cfg) in rt
+        .config
+        .gateway
+        .connectors
+        .iter()
+        .filter(|(_, c)| c.enabled)
+    {
+        if name == tern_gateway::telegram::SOURCE {
+            tracing::warn!("a gateway connector can't be called telegram; skipped");
+            continue;
+        }
+        let opened = match rt.lua_host() {
+            Ok(mut host) => {
+                host.default_rate = rt.config.connectors.rate;
+                LuaGateway::open(name, host, rt.home.connectors_dir(), cfg.clone()).await
+            }
+            Err(e) => Err(format!("{e:#}")),
+        };
+        match opened {
+            Ok(g) => {
+                tracing::info!(gateway = %name, kind = %g.info().kind, "gateway connector started");
+                out.push(g);
+            }
+            Err(e) => tracing::warn!(gateway = %name, error = %e, "gateway connector not started"),
+        }
+    }
+    out
 }
 
 async fn wait_for_signal() {

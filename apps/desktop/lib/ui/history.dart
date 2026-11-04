@@ -61,7 +61,7 @@ class _HistoryDialogState extends State<HistoryDialog> {
   static String kind(SessionItem s, String? head) {
     if (s.id == head) return 'Current session';
     if (s.branchedFrom != null) return 'Side chat';
-    if (s.source == 'telegram') return 'Telegram';
+    if (gatewaySource(s.source) case final g?) return g.label;
     if (s.segmentReason == 'migrated') return 'Earlier conversation';
     if (s.segmentReason case final r?) {
       return 'Session · ${CutDivider.reason(r)}';
@@ -141,9 +141,8 @@ class _HistoryDialogState extends State<HistoryDialog> {
                               leading: Icon(
                                 s.branchedFrom != null
                                     ? Icons.call_split
-                                    : s.source == 'telegram'
-                                    ? Icons.send_outlined
-                                    : Icons.chat_bubble_outline,
+                                    : gatewaySource(s.source)?.icon ??
+                                          Icons.chat_bubble_outline,
                                 size: 16,
                                 color: c.muted,
                               ),
