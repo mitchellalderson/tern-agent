@@ -10,8 +10,9 @@ use tern_core::types::ToolSpec;
 /// Message prefix for the host-call cap.
 pub const HOST_CALL_LIMIT: &str = "stopped: too many tool calls in one script; the limit is";
 
-pub const NO_ASYNC: &str = "tool calls in tern's python are synchronous: call them directly, \
-without await or asyncio.gather";
+/// A future the script awaits that isn't a tool call (nothing to run).
+pub const NOT_A_TOOL_CALL: &str = "awaited something that is not a tool call: only tool \
+calls can be awaited in tern's python";
 
 /// Modules people reach for that only real CPython has.
 const PACKAGES: &[&str] = &[
@@ -28,7 +29,8 @@ const PACKAGES: &[&str] = &[
 ];
 
 const AVAILABLE: &str = "json, re, csv, math, datetime, collections, itertools, functools, \
-decimal, random, hashlib, base64, bisect, tomllib, pathlib, copy, fnmatch, unicodedata, typing";
+decimal, random, hashlib, base64, bisect, tomllib, pathlib, copy, fnmatch, unicodedata, typing, \
+statistics, string";
 
 /// One-line hints keyed on Monty's messages (docs/python-tool-spec.md
 /// §6.2). The tests run each case through Monty, so a release that adds the
@@ -47,21 +49,17 @@ const FEATURE_HINTS: &[(&str, &str)] = &[
         "`del` isn't supported: use d.pop(key) for dicts, or build a new list or dict without the item",
     ),
     (
+        "gather() does not yet support keyword arguments",
+        "asyncio.gather has no return_exceptions here: await a small async function that catches its own errors (try/except around the tool call) and returns None or the error text",
+    ),
+    (
         "decorator",
         "method decorators (@property, @classmethod, @staticmethod) aren't supported: use plain methods or functions",
     ),
 ];
 
 const MODULE_HINTS: &[(&str, &str)] = &[
-    (
-        "statistics",
-        "use math and sorted(): mean = sum(xs) / len(xs); median = sorted(xs)[len(xs) // 2]",
-    ),
     ("enum", "use plain constants or a dict of names to values"),
-    (
-        "string",
-        "use str methods and literals, e.g. 'abc'.upper() or 'abcdefghijklmnopqrstuvwxyz'",
-    ),
     (
         "uuid",
         "there is no uuid; use hashlib on the data for a stable id",

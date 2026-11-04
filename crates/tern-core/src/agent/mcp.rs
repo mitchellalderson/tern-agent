@@ -115,7 +115,16 @@ impl Agent {
                 let mut asked = None;
                 if approval::needs_check(&call.name, &policy, gate) {
                     let (decision, why) = self
-                        .decide(run, &call, &policy, gate, taint.reason(), egress, cancel)
+                        .decide(
+                            run,
+                            &call,
+                            &policy,
+                            gate,
+                            taint.reason(),
+                            egress,
+                            None,
+                            cancel,
+                        )
                         .await?;
                     asked = Some(decision);
                     if !matches!(

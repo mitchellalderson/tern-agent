@@ -299,12 +299,34 @@ pub struct ApprovalRequest {
     /// ([`Decision::AllowRun`]) and "Always allow <host>"
     /// ([`Decision::AlwaysAllowHost`]).
     pub egress_host: Option<String>,
+    /// Set when a `python` script's own tool call asks: one line saying so
+    /// ("from a python script (call 7 of this script)"), then the script,
+    /// cut to a screenful, for a front end's detail view
+    /// ([`ApprovalRequest::script_note`], [`ApprovalRequest::script_text`]).
+    pub script: Option<String>,
 }
 
 impl ApprovalRequest {
+    /// "from a python script (call 7 of this script)", for front ends to
+    /// show under the headline.
+    pub fn script_note(&self) -> Option<&str> {
+        self.script.as_deref().and_then(|s| s.lines().next())
+    }
+
+    /// The script that made the call, for a detail view.
+    pub fn script_text(&self) -> Option<&str> {
+        self.script
+            .as_deref()
+            .and_then(|s| s.split_once('\n'))
+            .map(|(_, code)| code)
+    }
+
     /// `write · gmail_send to bob@…`: the effect, then the summary.
     pub fn headline(&self) -> String {
-        format!("{} · {}", self.effect, self.summary)
+        match self.script_note() {
+            Some(note) => format!("{} · {} ({note})", self.effect, self.summary),
+            None => format!("{} · {}", self.effect, self.summary),
+        }
     }
 
     /// Why this prompt is stricter than usual: "this run read untrusted

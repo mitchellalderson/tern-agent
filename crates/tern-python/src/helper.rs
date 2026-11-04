@@ -5,8 +5,9 @@
 //!
 //! ```text
 //! daemon → helper  a Job (code, inputs, clock and seed, tools, limits)
-//! helper → daemon  {"Call": {"name": …, "input": …}}   a tool call
-//! daemon → helper  {"Done": {…}} | {"Refused": "…"}     its answer
+//! helper → daemon  {"Calls": [{"name": …, "input": …}, …]}  tool calls
+//! daemon → helper  [{"Done": {…}} | {"Refused": "…"} | {"Abort": "…"}, …]
+//!                  one answer per call, in order
 //! helper → daemon  {"Finished": Outcome}                 the end
 //! ```
 //!
@@ -22,10 +23,10 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tern_core::script::{HostReply, ScriptHost};
+use tern_core::script::ScriptHost;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-use crate::{Job, Outcome, Reply, ask_host, interpret};
+use crate::{Job, Outcome, Reply, ask_host, interpret, replies};
 
 /// The argument `main` checks before parsing the command line.
 pub const HELPER_ARG: &str = "__monty-exec";
@@ -40,8 +41,15 @@ const OOM_EXIT: i32 = monty_types::OOM_EXIT_CODE;
 
 #[derive(Serialize, Deserialize)]
 enum FromHelper {
-    Call { name: String, input: Value },
+    /// One call, or several the script awaits together (`gather`).
+    Calls(Vec<CallRequest>),
     Finished(Outcome),
+}
+
+#[derive(Serialize, Deserialize)]
+struct CallRequest {
+    name: String,
+    input: Value,
 }
 
 /// How the daemon starts helpers.
@@ -109,13 +117,11 @@ impl Helper {
                 Ok(None) | Err(_) => break None,
             };
             match serde_json::from_str::<FromHelper>(&line) {
-                Ok(FromHelper::Call { name, input }) => {
-                    let reply = ask_host(host, &name, input).await;
-                    if let HostReply::Done(r) = &reply {
-                        untrusted |= r.untrusted;
-                    }
+                Ok(FromHelper::Calls(calls)) => {
+                    let calls = calls.into_iter().map(|c| (c.name, c.input)).collect();
+                    let answers = ask_host(host, calls).await;
                     // A helper that died mid-call shows up as EOF next.
-                    let _ = send(&mut stdin, &Reply::from(&reply)).await;
+                    let _ = send(&mut stdin, &replies(&answers, &mut untrusted)).await;
                 }
                 Ok(FromHelper::Finished(o)) => break Some(o),
                 Err(e) => return Err(format!("the interpreter sent something unreadable: {e}")),
@@ -230,19 +236,26 @@ fn helper_main() -> ExitCode {
             // Stdin buffers internally, so what follows the job line is kept.
             let mut reader = std::io::stdin().lock();
             let mut out = stdout.lock();
-            let mut bridge = |name: &str, input: Value| -> Reply {
-                let call = FromHelper::Call {
-                    name: name.to_owned(),
-                    input,
-                };
-                if write_line(&mut out, &call).is_err() {
-                    return Reply::Refused("the run stopped".into());
+            let mut bridge = |calls: Vec<(String, Value)>| -> Vec<Reply> {
+                let n = calls.len();
+                let refused = |why: String| vec![Reply::Refused(why); n];
+                let msg = FromHelper::Calls(
+                    calls
+                        .into_iter()
+                        .map(|(name, input)| CallRequest { name, input })
+                        .collect(),
+                );
+                if write_line(&mut out, &msg).is_err() {
+                    return refused("the run stopped".into());
                 }
                 let mut line = String::new();
                 match reader.read_line(&mut line) {
-                    Ok(n) if n > 0 => serde_json::from_str(&line)
-                        .unwrap_or_else(|e| Reply::Refused(format!("bad answer: {e}"))),
-                    _ => Reply::Refused("the run stopped".into()),
+                    Ok(len) if len > 0 => match serde_json::from_str::<Vec<Reply>>(&line) {
+                        Ok(r) if r.len() == n => r,
+                        Ok(_) => refused("bad answer: wrong number of replies".into()),
+                        Err(e) => refused(format!("bad answer: {e}")),
+                    },
+                    _ => refused("the run stopped".into()),
                 }
             };
             let outcome = interpret(&job, &mut bridge);

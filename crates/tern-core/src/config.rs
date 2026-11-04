@@ -70,6 +70,7 @@ pub struct Config {
     pub connectors: ConnectorsConfig,
     pub auth: AuthConfig,
     pub bundles: BundlesConfig,
+    pub python: PythonConfig,
 }
 
 /// Installing bundles (tooling spec §6.5).
@@ -171,6 +172,63 @@ pub struct OAuthClientConfig {
     pub issuer: Option<String>,
 }
 
+/// The `python` tool (docs/python-tool-spec.md §8). Read when tern starts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PythonConfig {
+    /// Offer the tool (when the binary has the `python` feature).
+    pub enabled: bool,
+    /// Interpreter time per script, tool calls excluded.
+    pub max_seconds: u64,
+    /// Interpreter time between two tool calls.
+    pub max_turn_seconds: u64,
+    /// Wall time per script, tool calls included, approval waits excluded.
+    pub max_wall_seconds: u64,
+    /// Memory the interpreter may use, in MB.
+    pub max_memory_mb: u64,
+    /// Tool calls one script may make.
+    pub max_host_calls: u64,
+    /// Tool calls run at once when a script awaits several (`gather`).
+    pub max_parallel: u64,
+    /// Approval prompts one script may cause; the next call that would ask
+    /// is refused.
+    pub max_asks: u64,
+    /// Write calls one script may make.
+    pub max_writes: u64,
+    /// Scripts may call `write` tools (`destructive` ones never). Each call
+    /// is checked like a direct one: grants, taint, autonomy, the outbox.
+    pub allow_writes: bool,
+}
+
+impl Default for PythonConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_seconds: 30,
+            max_turn_seconds: 10,
+            max_wall_seconds: 600,
+            max_memory_mb: 256,
+            max_host_calls: 200,
+            max_parallel: 4,
+            max_asks: 3,
+            max_writes: 10,
+            allow_writes: false,
+        }
+    }
+}
+
+impl PythonConfig {
+    /// What the agent loop enforces on each script's tool calls.
+    pub fn script_limits(&self) -> crate::script::ScriptLimits {
+        crate::script::ScriptLimits {
+            allow_writes: self.allow_writes,
+            max_asks: self.max_asks.min(u32::MAX.into()) as u32,
+            max_writes: self.max_writes.min(u32::MAX.into()) as u32,
+            max_parallel: self.max_parallel.clamp(1, 64) as usize,
+        }
+    }
+}
+
 /// Deferred approvals (tooling spec §5.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -216,6 +274,7 @@ impl Default for Config {
             connectors: ConnectorsConfig::default(),
             auth: AuthConfig::default(),
             bundles: BundlesConfig::default(),
+            python: PythonConfig::default(),
         }
     }
 }

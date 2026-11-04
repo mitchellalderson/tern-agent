@@ -565,6 +565,7 @@ fn approvals_are_answered_inline() {
             taint: None,
             local_only: false,
             egress_host: None,
+            script: None,
         },
         reply: tx,
     });
@@ -626,6 +627,7 @@ fn ctrl_c_denies_a_pending_approval() {
             taint: None,
             local_only: false,
             egress_host: None,
+            script: None,
         },
         reply: tx,
     });
@@ -1164,6 +1166,7 @@ fn approval(
                 taint: None,
                 local_only: false,
                 egress_host: None,
+                script: None,
             },
             reply: tx,
         },

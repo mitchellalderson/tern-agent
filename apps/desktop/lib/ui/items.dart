@@ -504,7 +504,11 @@ class _ApprovalCardState extends State<ApprovalCard> {
                 border: Border.all(color: c.hairline),
               ),
               child: SelectableText(
-                _showInput ? input : a.headline,
+                _showInput
+                    ? (a.scriptText case final code?
+                          ? '$input\n\nscript:\n$code'
+                          : input)
+                    : a.headline,
                 style: mono.copyWith(color: c.text),
               ),
             ),
