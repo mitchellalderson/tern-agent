@@ -58,6 +58,18 @@ void main() {
     expect((old as ApprovalRequested).approval.effect, 'write');
   });
 
+  test('decodes the host-limit prompt and its answers', () {
+    final e = ev(
+      '{"approval_requested":{"id":"a","run_id":"r",'
+      '"session_id":"s","tool":"http_fetch","input":{},'
+      '"summary":"http_fetch https://b.example","effect":"read","pattern":null,'
+      '"taint":"result of http_fetch","egress_host":"b.example"}}',
+    );
+    expect((e as ApprovalRequested).approval.egressHost, 'b.example');
+    expect(Decision.run.wire, 'run');
+    expect(Decision.host.wire, 'host');
+  });
+
   test('decodes taint on approvals and runs', () {
     final e = ev(
       '{"approval_requested":{"id":"a","run_id":"r",'

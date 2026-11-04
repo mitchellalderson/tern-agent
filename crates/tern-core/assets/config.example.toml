@@ -103,6 +103,12 @@ docker_pids = 512          # 0 for no limit
 # wait_secs = 120              # at once when no app, TUI or tray is attached
 # expire_hours = 72           # how long an item waits for you before it expires
 
+# Taint: once a run has read untrusted content (a web page, an email), a
+# network read to a site it hasn't reached yet asks first, so injected text
+# can't send what the agent knows somewhere new.
+# [taint]
+# egress = "ask"               # "allow" for runs meant to browse; an agent can set its own
+
 # Scheduled prompts (schedule_create, the app's routines). Each schedule can
 # override these.
 # [schedules]

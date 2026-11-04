@@ -11,7 +11,7 @@
 
 use tern_store::{RunRow, Store, StoreError};
 
-use crate::tool::ToolPolicy;
+use crate::approval::Egress;
 
 /// Reason for mail from a tainted run.
 pub const TAINTED_MAIL: &str = "a message from a tainted run";
@@ -25,32 +25,54 @@ pub const PROMPT_NOTE: &str = "Text inside <untrusted source=\"…\">…</untrus
 /// A run's taint as of the step being driven.
 pub(super) struct Taint {
     reason: Option<String>,
-    /// Hosts the run's network reads have reached so far (tainted or
-    /// not), rebuilt on replay like the bit.
-    hosts: std::collections::BTreeSet<String>,
+    pub(super) egress: EgressState,
+}
+
+/// What the tainted host limit knows about a run so far.
+#[derive(Debug, Clone, Default)]
+pub(super) struct EgressState {
+    /// Hosts the run's network reads (its scripts' included) have reached
+    /// so far, tainted or not, rebuilt on replay like the bit.
+    pub(super) hosts: std::collections::BTreeSet<String>,
+    /// The limit is off: `egress = "allow"` frozen on the run, or the user
+    /// chose "Allow all sites for this run" (a journaled approval).
+    pub(super) allow_all: bool,
+}
+
+impl EgressState {
+    /// Whether a read from `host` must ask, in a run `tainted` or not.
+    pub(super) fn limits(&self, tainted: bool, host: Option<&str>) -> bool {
+        host.is_some_and(|h| tainted && !self.allow_all && !self.hosts.contains(h))
+    }
 }
 
 impl Taint {
     /// The taint a run starts with.
     pub(super) fn at_start(run: &RunRow) -> Self {
+        let allow = run.egress.as_deref().and_then(Egress::parse) == Some(Egress::Allow);
         Self {
             reason: run.input_taint.clone(),
-            hosts: Default::default(),
+            egress: EgressState {
+                hosts: Default::default(),
+                allow_all: allow,
+            },
         }
     }
 
     /// In a tainted run, a network read to a host the run hasn't reached
     /// yet must ask (tooling spec §5.3).
-    pub(super) fn limit_egress(&self, policy: ToolPolicy, host: Option<&str>) -> ToolPolicy {
-        match host {
-            Some(h) if self.is_set() && !self.hosts.contains(h) => policy.forced(true),
-            _ => policy,
-        }
+    pub(super) fn limits(&self, host: Option<&str>) -> bool {
+        self.egress.limits(self.is_set(), host)
     }
 
     /// A network read reached `host`.
     pub(super) fn contacted(&mut self, host: Option<String>) {
-        self.hosts.extend(host);
+        self.egress.hosts.extend(host);
+    }
+
+    /// "Allow all sites for this run".
+    pub(super) fn allow_all_egress(&mut self) {
+        self.egress.allow_all = true;
     }
 
     pub(super) fn reason(&self) -> Option<&str> {

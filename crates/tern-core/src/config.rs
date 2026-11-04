@@ -62,6 +62,17 @@ pub struct Config {
     /// its own; it is frozen on each run when the run starts.
     pub autonomy: crate::approval::Autonomy,
     pub outbox: OutboxConfig,
+    pub taint: TaintConfig,
+}
+
+/// Taint settings (tooling spec §5.3).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TaintConfig {
+    /// In a tainted run, ask before a network read reaches a host the run
+    /// hasn't contacted (`ask`), or don't (`allow`). An agent can set its
+    /// own.
+    pub egress: crate::approval::Egress,
 }
 
 /// Deferred approvals (tooling spec §5.2).
@@ -104,6 +115,7 @@ impl Default for Config {
             agent_chains: Vec::new(),
             autonomy: crate::approval::Autonomy::default(),
             outbox: OutboxConfig::default(),
+            taint: TaintConfig::default(),
         }
     }
 }
@@ -769,6 +781,10 @@ env_secrets = ["GITHUB_TOKEN"]
             crate::approval::Autonomy::Supervised
         );
         assert!(Config::parse("autonomy = \"reckless\"", Path::new("c")).is_err());
+        let c = Config::parse("[taint]\negress = \"allow\"\n", Path::new("c")).unwrap();
+        assert_eq!(c.taint.egress, crate::approval::Egress::Allow);
+        assert_eq!(Config::default().taint.egress, crate::approval::Egress::Ask);
+        assert!(Config::parse("[taint]\negress = \"maybe\"\n", Path::new("c")).is_err());
     }
 
     #[test]

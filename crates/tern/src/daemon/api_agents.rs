@@ -4,7 +4,7 @@
 //! | Method | Path | |
 //! |---|---|---|
 //! | GET | `/v1/agents[?archived=1]` | `[Agent]`: the default first, with `main_channel_id`, `last_activity`, `needs_you`, `active_runs` |
-//! | POST | `/v1/agents` | create `{name, slug?, avatar?, persona?, model?, subagent_model?, tools?, memory?, template?}`, with its DM channel |
+//! | POST | `/v1/agents` | create `{name, slug?, avatar?, persona?, model?, subagent_model?, tools?, memory?, egress?, template?}`, with its DM channel |
 //! | PATCH | `/v1/agents/{id}` | any of those but `template` and `persona`; `archived: true` archives (not the default agent) |
 //! | GET / PUT | `/v1/agents/{id}/persona` | `{persona}`; GET adds `system_sections`, what tern adds to every persona |
 //! | GET | `/v1/agents/templates` | `[Template]` for the create sheet |
@@ -22,6 +22,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use tern_core::agents::{self, ToolScope};
+use tern_core::approval::Egress;
 use tern_core::config::ModelChain;
 use tern_core::models::Change;
 use tern_store::{AgentChange, AgentRow, DEFAULT_AGENT};
@@ -62,6 +63,10 @@ pub struct Agent {
     pub memory: String,
     #[serde(default)]
     pub delegates: Vec<String>,
+    /// The tainted host limit for its runs (`ask` or `allow`); absent = the
+    /// configured `[taint] egress`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<Egress>,
     /// Its DM: `home` for the default agent.
     pub main_channel_id: Option<String>,
     #[serde(default)]
@@ -137,6 +142,7 @@ pub(super) fn agent_view(m: &Shared, a: AgentRow) -> Agent {
             .as_deref()
             .and_then(|d| serde_json::from_str(d).ok())
             .unwrap_or_default(),
+        egress: a.egress.as_deref().and_then(Egress::parse),
         archived: a.archived_at.is_some(),
         is_default: a.is_default(),
         id: a.id,
@@ -193,6 +199,7 @@ struct CreateBody {
     subagent_model: Option<ModelChain>,
     tools: Option<ToolScope>,
     memory: Option<String>,
+    egress: Option<Egress>,
     template: Option<String>,
 }
 
@@ -270,6 +277,7 @@ async fn create(
                 .transpose()?,
             tools: b.tools,
             memory: b.memory,
+            egress: b.egress,
             template: b.template,
         })
         .map_err(bad)?;
@@ -293,6 +301,9 @@ struct UpdateBody {
     memory: Option<String>,
     #[serde(default, deserialize_with = "double")]
     delegates: Option<Option<Vec<String>>>,
+    /// `null` goes back to the configured `[taint] egress`.
+    #[serde(default, deserialize_with = "double")]
+    egress: Option<Option<Egress>>,
     archived: Option<bool>,
 }
 
@@ -347,6 +358,7 @@ async fn update(
             .map(|v| v.map(|d| serde_json::to_string(&d)).transpose())
             .transpose()
             .map_err(internal)?,
+        egress: b.egress.map(|v| v.map(|e| e.as_str().to_owned())),
         archived: b.archived,
         ..AgentChange::default()
     };

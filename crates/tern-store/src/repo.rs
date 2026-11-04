@@ -83,6 +83,9 @@ pub struct RunRow {
     /// Its autonomy profile (`readonly`, `supervised`, `autonomous`,
     /// `yolo`), frozen at start; `None` = supervised.
     pub autonomy: Option<String>,
+    /// The tainted host limit's setting, frozen at start: `allow` turns it
+    /// off for this run; `None` = `ask`.
+    pub egress: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,7 +186,7 @@ pub(crate) const SESSION_COLS: &str = "id, title, source, external_ref, model, c
 pub(crate) const RUN_COLS: &str = "id, session_id, status, trigger, model, system_prompt, \
     input_message_id, started_at, updated_at, finished_at, error, parent_run_id, parent_call_id, \
     label, depth, tool_scope, budget_tokens, max_iterations, quiet, input_taint, taint, autonomy, \
-    memory_scope";
+    memory_scope, egress";
 const STEP_COLS: &str = "run_id, idx, kind, input_hash, input_json, output_json, status, \
                          usage_json, error, started_at, finished_at";
 const MESSAGE_COLS: &str =
@@ -232,6 +235,7 @@ pub(crate) fn run_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         taint: r.get(20)?,
         autonomy: r.get(21)?,
         memory_scope: r.get(22)?,
+        egress: r.get(23)?,
     })
 }
 
@@ -353,9 +357,11 @@ impl Store {
             )?;
         }
         if let Some(parent) = run.parent_run_id {
-            // A sub-agent runs under its parent's autonomy profile.
+            // A sub-agent runs under its parent's autonomy profile and
+            // host-limit setting.
             tx.execute(
-                "UPDATE runs SET autonomy = (SELECT autonomy FROM runs WHERE id = ?2) WHERE id = ?1",
+                "UPDATE runs SET (autonomy, egress) = (SELECT autonomy, egress FROM runs WHERE id = ?2)
+                 WHERE id = ?1",
                 params![run.id, parent],
             )?;
             // A sub-agent of a tainted run starts tainted: its brief may
@@ -576,6 +582,22 @@ impl Store {
             conn.prepare("SELECT pattern FROM approval_allowlist WHERE tool = ?1 ORDER BY id")?;
         let rows = stmt.query_map([tool], |r| r.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Every standing grant, as `(tool, pattern)`, oldest first.
+    pub fn allowlist_all(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT tool, pattern FROM approval_allowlist ORDER BY id")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Remove a grant. Returns whether it existed.
+    pub fn remove_allowlist(&self, tool: &str, pattern: &str) -> Result<bool> {
+        Ok(self.conn()?.execute(
+            "DELETE FROM approval_allowlist WHERE tool = ?1 AND pattern = ?2",
+            params![tool, pattern],
+        )? > 0)
     }
 
     pub fn add_allowlist(&self, tool: &str, pattern: &str) -> Result<()> {

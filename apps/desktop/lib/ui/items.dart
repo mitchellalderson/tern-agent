@@ -430,7 +430,13 @@ class _ApprovalCardState extends State<ApprovalCard> {
     final a = widget.item.approval;
     final outcome = widget.item.outcome;
     if (outcome != null) {
-      final ok = outcome == 'approved' || outcome == 'always allowed';
+      final ok = const {
+        'approved',
+        'always allowed',
+        'approved_for_run',
+        'allowed all sites for this run',
+        'site always allowed',
+      }.contains(outcome);
       return Row(
         children: [
           Icon(
@@ -557,6 +563,27 @@ class _ApprovalCardState extends State<ApprovalCard> {
                 ),
               ],
             ),
+            // The tainted host limit: say yes once for many sites.
+            if (a.egressHost case final host?) ...[
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                children: [
+                  TextButton(
+                    onPressed: _busy ? null : () => _answer(Decision.run),
+                    child: const Text('Allow all sites for this run'),
+                  ),
+                  Tooltip(
+                    message:
+                        'Reads from $host won\'t ask again; remove it with `tern grants`',
+                    child: TextButton(
+                      onPressed: _busy ? null : () => _answer(Decision.host),
+                      child: Text('Always allow $host'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
       ),

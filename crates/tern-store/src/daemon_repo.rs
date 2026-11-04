@@ -290,6 +290,15 @@ impl Store {
         )? > 0)
     }
 
+    /// Freeze the run's host-limit setting (before it is driven).
+    pub fn set_run_egress(&self, run_id: &str, egress: &str) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE runs SET egress = ?2 WHERE id = ?1",
+            params![run_id, egress],
+        )?;
+        Ok(())
+    }
+
     /// Freeze the run's autonomy profile (before it is driven).
     pub fn set_run_autonomy(&self, run_id: &str, autonomy: &str) -> Result<()> {
         self.conn()?.execute(

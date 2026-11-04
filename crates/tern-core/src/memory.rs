@@ -356,6 +356,7 @@ mod tests {
             taint: None,
             memory_scope: None,
             autonomy: None,
+            egress: None,
         }
     }
 

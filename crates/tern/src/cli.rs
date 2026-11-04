@@ -78,6 +78,11 @@ pub enum Command {
         #[command(subcommand)]
         command: RunsCommand,
     },
+    /// The "always" grants approvals have recorded, and removing them.
+    Grants {
+        #[command(subcommand)]
+        command: Option<GrantsCommand>,
+    },
     /// Writes waiting for your approval (deferred because nobody answered).
     Outbox {
         #[command(subcommand)]
@@ -358,6 +363,14 @@ pub enum RunsCommand {
     List,
     /// Print a run's step journal.
     Show { run_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GrantsCommand {
+    /// Every grant: tool and pattern.
+    List,
+    /// Remove one, e.g. `tern grants remove http_fetch host:example.com`.
+    Remove { tool: String, pattern: String },
 }
 
 #[derive(Debug, Subcommand)]

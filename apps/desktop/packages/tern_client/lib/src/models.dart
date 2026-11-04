@@ -414,6 +414,7 @@ class Approval {
     this.taint,
     this.channelId,
     this.agentId,
+    this.egressHost,
   });
 
   factory Approval.fromJson(Json j) => Approval(
@@ -431,6 +432,7 @@ class Approval {
     taint: j['taint'] as String?,
     channelId: j['channel_id'] as String?,
     agentId: j['agent_id'] as String?,
+    egressHost: j['egress_host'] as String?,
   );
 
   /// The channel of the conversation the user started (agent profiles):
@@ -468,11 +470,22 @@ class Approval {
   /// "this run read untrusted content (…)", for the card.
   String? get taintNote =>
       taint == null ? null : 'this run read untrusted content ($taint)';
+
+  /// Set when it asks only because a tainted run wants a site it hasn't
+  /// reached yet: that site. Then [Decision.run] and [Decision.host] can
+  /// answer it too.
+  final String? egressHost;
 }
 
 enum Decision {
   once,
   always,
+
+  /// The tainted host limit: no more site prompts in this run.
+  run,
+
+  /// The tainted host limit: always allow reads from this site.
+  host,
   deny;
 
   String get wire => name;

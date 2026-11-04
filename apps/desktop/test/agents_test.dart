@@ -106,9 +106,11 @@ class _FakeClient extends TernClient {
     List<String>? model,
     ToolScope? tools,
     String? memory,
+    String? egress,
     String? template,
   }) async {
     created.add({
+      'egress': ?egress,
       'name': name,
       'persona': persona,
       'tools': tools?.toJson(),

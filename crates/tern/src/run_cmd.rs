@@ -285,7 +285,14 @@ impl ApprovalHandler for TerminalApprover {
             .taint_note()
             .map(|n| format!("⚠ {n}\n"))
             .unwrap_or_default();
-        let prompt = format!("{why}{who}Allow {}? [y]es{always} / [N]o: ", req.headline());
+        let egress = match &req.egress_host {
+            Some(h) => format!(" / all sites this [r]un / always [h]ost {h}"),
+            None => String::new(),
+        };
+        let prompt = format!(
+            "{why}{who}Allow {}? [y]es{always}{egress} / [N]o: ",
+            req.headline()
+        );
         tokio::task::spawn_blocking(move || {
             let mut stderr = std::io::stderr();
             let _ = write!(stderr, "{prompt}");
@@ -297,6 +304,8 @@ impl ApprovalHandler for TerminalApprover {
             match line.trim().to_ascii_lowercase().as_str() {
                 "y" | "yes" => Decision::AllowOnce,
                 "a" | "always" => Decision::AlwaysAllow,
+                "r" | "run" => Decision::AllowRun,
+                "h" | "host" => Decision::AlwaysAllowHost,
                 _ => Decision::Deny,
             }
         })

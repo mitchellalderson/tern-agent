@@ -49,6 +49,11 @@ pub struct ApiApproval {
     /// content (…)"; grants don't apply and "always" isn't offered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub taint: Option<String>,
+    /// Set when it asks only because of the tainted host limit: the new
+    /// host. Answers may then also be `run` (all sites for this run) or
+    /// `host` (always allow this host).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_host: Option<String>,
     /// The channel of the session at the top of the run's tree, and its
     /// agent (agent profiles §3): an agent's DM mirrors the card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,6 +106,7 @@ impl ApiApprovals {
             agent_label: req.agent_label.clone(),
             root_session_id: root_session_id.filter(|_| req.parent_run_id.is_some()),
             taint: req.taint.clone(),
+            egress_host: req.egress_host.clone(),
             local_only: req.local_only,
             channel_id: at.0,
             agent_id: at.1,
