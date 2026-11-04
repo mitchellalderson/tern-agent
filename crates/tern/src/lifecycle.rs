@@ -256,7 +256,7 @@ pub fn start(home: &TernHome) -> anyhow::Result<ExitCode> {
 
 /// `tern daemon` in its own process group, so it outlives this command and
 /// the terminal's Ctrl-C; its output goes to `logs/daemon.log`.
-fn spawn_detached(home: &TernHome) -> anyhow::Result<()> {
+pub fn spawn_detached(home: &TernHome) -> anyhow::Result<()> {
     let exe = std::env::current_exe().context("finding the tern binary")?;
     let log = std::fs::OpenOptions::new()
         .create(true)

@@ -34,7 +34,7 @@ Not yet: agent profiles, channels, connectors/MCP/skills/memory views, menu bar 
 
 ## Release build
 
-`scripts/package-macos-app.sh <tern-binary> <out-dir>` builds the release app, puts the binary in `tern.app/Contents/Helpers/tern` (which **Start tern** prefers over `PATH`), signs it and writes `tern-desktop-macos.dmg`. The release workflow passes a universal `tern`; with `MACOS_SIGN_IDENTITY` and the `APPLE_*` variables set it signs with a Developer ID and notarizes, otherwise it ad-hoc signs.
+`scripts/package-macos-app.sh <tern-binary> <out-dir>` builds the release app, puts the binary in `tern.app/Contents/Library/LoginItems/tern Tray.app/Contents/MacOS/tern-tray` (the menu-bar icon when run with no arguments, the CLI otherwise; **Start tern** prefers it over `PATH`), signs it and writes `tern-desktop-macos.dmg`. The release workflow passes a universal `tern`; with `MACOS_SIGN_IDENTITY` and the `APPLE_*` variables set it signs with a Developer ID and notarizes, otherwise it ad-hoc signs.
 
 ```sh
 cargo build --release -p tern

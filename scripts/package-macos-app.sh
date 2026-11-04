@@ -3,10 +3,18 @@
 #
 #   scripts/package-macos-app.sh <tern-binary> <out-dir>
 #
-# The binary goes to tern.app/Contents/Helpers/tern, which the app's
-# "Start tern" uses before anything on PATH (apps/desktop/lib/state/daemon.dart).
-# Pass a universal binary (lipo) for a universal app. Writes
-# <out-dir>/tern-desktop-macos.dmg.
+# The binary goes into the menu-bar helper, once:
+#
+#   tern.app/Contents/Library/LoginItems/tern Tray.app     (LSUIElement)
+#     Contents/MacOS/tern-tray                             this binary; with no
+#                                                          arguments it's `tern tray`
+#     Contents/Library/LaunchAgents/ai.tern.daemon.plist   the daemon, for SMAppService
+#
+# The app runs that binary as its `tern` (before anything on PATH; see
+# apps/desktop/lib/state/daemon.dart), and `tern service install --tray` run
+# from it registers both login items with SMAppService
+# (docs/personal-agent-tooling-spec.md §11.5). Pass a universal binary
+# (lipo) for a universal app. Writes <out-dir>/tern-desktop-macos.dmg.
 #
 # Signing, all optional (without them the app is ad-hoc signed and users
 # have to allow it once in System Settings > Privacy & Security):
@@ -25,16 +33,48 @@ cd "$root/apps/desktop"
 flutter build macos --release
 app="$root/apps/desktop/build/macos/Build/Products/Release/tern.app"
 
-mkdir -p "$app/Contents/Helpers"
-install -m 755 "$bin" "$app/Contents/Helpers/tern"
+tray="$app/Contents/Library/LoginItems/tern Tray.app"
+version="$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")"
+rm -rf "$app/Contents/Helpers" "$tray"
+mkdir -p "$tray/Contents/MacOS" "$tray/Contents/Library/LaunchAgents"
+install -m 755 "$bin" "$tray/Contents/MacOS/tern-tray"
+"$bin" service bundle-plist > "$tray/Contents/Library/LaunchAgents/ai.tern.daemon.plist"
+cat > "$tray/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.tern.ternDesktop.tray</string>
+	<key>CFBundleName</key>
+	<string>tern Tray</string>
+	<key>CFBundleDisplayName</key>
+	<string>tern</string>
+	<key>CFBundleExecutable</key>
+	<string>tern-tray</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$version</string>
+	<key>CFBundleVersion</key>
+	<string>$version</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>
+PLIST
+plutil -lint -s "$tray/Contents/Info.plist" "$tray/Contents/Library/LaunchAgents/ai.tern.daemon.plist"
 
-# Adding a file breaks the bundle's seal, so sign again: the helper first,
-# then the app (an unsealed app on Apple Silicon reports as "damaged").
+# Adding files breaks the bundle's seal, so sign again, inside out: the
+# tray bundle, then the app (an unsealed app on Apple Silicon reports as
+# "damaged").
 if [ "$identity" = - ]; then
-  codesign --force --sign - "$app/Contents/Helpers/tern"
+  codesign --force --sign - "$tray"
   codesign --force --deep --sign - "$app"
 else
-  codesign --force --options runtime --timestamp --sign "$identity" "$app/Contents/Helpers/tern"
+  codesign --force --options runtime --timestamp --sign "$identity" "$tray"
   codesign --force --deep --options runtime --timestamp \
     --entitlements macos/Runner/Release.entitlements --sign "$identity" "$app"
 fi

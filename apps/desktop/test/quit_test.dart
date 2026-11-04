@@ -198,13 +198,15 @@ void main() {
     expect(tester.widget<Switch>(toggle).value, isFalse);
     await tester.tap(toggle);
     await tester.pumpAndSettle();
-    expect(runs, [
-      ['service', 'install'],
+    // The dialog asks tern how it starts, before and after each change.
+    expect(runs.where((r) => r[1] != 'status'), [
+      ['service', 'install', if (Platform.isMacOS) '--tray'],
     ]);
+    expect(runs.first, ['service', 'status', '--json']);
     expect(tester.widget<Switch>(toggle).value, isTrue);
     await tester.tap(toggle);
     await tester.pumpAndSettle();
-    expect(runs.last, ['service', 'uninstall']);
+    expect(runs.where((r) => r[1] != 'status').last, ['service', 'uninstall']);
     expect(tester.widget<Switch>(toggle).value, isFalse);
 
     await tester.runAsync(() async {
@@ -239,5 +241,29 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('error: writing the plist: denied'), findsOneWidget);
     expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+  });
+
+  testWidgets('the settings switch follows what tern reports', (tester) async {
+    final control = TernControl(
+      bin: '/fake/tern',
+      env: const {'HOME': '/nonexistent'},
+      run: (bin, args) async => ProcessResult(
+        0,
+        0,
+        '{"method":"app_service","at_login":false,"needs_approval":true}',
+        '',
+      ),
+    );
+    await tester.pumpWidget(
+      _app(
+        (_) => SettingsDialog(
+          control: control,
+          prefs: AppPrefs(File('/nonexistent/desktop.json')),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+    expect(find.textContaining('macOS needs your OK'), findsOneWidget);
   });
 }

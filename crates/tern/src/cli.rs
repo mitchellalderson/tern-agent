@@ -44,6 +44,9 @@ pub enum Command {
     Start,
     /// Stop tern. Tasks in progress pick up where they left off next start.
     Stop,
+    /// Show tern in the menu bar: its state, Open, Start/Quit and Start at
+    /// login (macOS).
+    Tray,
     /// Start tern at login through launchd (macOS) or systemd (Linux).
     Service {
         #[command(subcommand)]
@@ -133,13 +136,24 @@ pub enum ServiceCommand {
     /// Install the service. A crash restarts tern; `tern stop` doesn't.
     Install {
         /// Install without starting tern at login.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "tray")]
         no_login: bool,
+        /// Also start the menu-bar icon (`tern tray`) at login.
+        #[arg(long)]
+        tray: bool,
     },
-    /// Remove the service (tern keeps running until stopped).
+    /// Remove the service and the menu-bar icon's (tern keeps running
+    /// until stopped).
     Uninstall,
     /// Whether the service is installed, loaded and running.
-    Status,
+    Status {
+        /// Print JSON (for the desktop app).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the daemon plist bundled in `tern Tray.app` (for packaging).
+    #[command(hide = true)]
+    BundlePlist,
 }
 
 #[derive(Debug, Subcommand)]

@@ -9,6 +9,20 @@ description = "A personal AI agent in one static binary"
 [lints]
 workspace = true
 
+[features]
+# `tern tray`, the menu-bar icon, and SMAppService login items
+# (personal-agent-tooling-spec §11.3). Its dependencies are macOS-only, so
+# Linux and musl server builds are unchanged with it on.
+default = ["tray"]
+tray = [
+    "dep:tray-icon",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-foundation",
+    "dep:dispatch2",
+    "dep:smappservice-rs",
+]
+
 [dependencies]
 tern-core.workspace = true
 tern-gateway.workspace = true
@@ -48,6 +62,14 @@ uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = { workspace = true, optional = true }
+objc2 = { workspace = true, optional = true }
+objc2-app-kit = { workspace = true, optional = true }
+objc2-foundation = { workspace = true, optional = true }
+smappservice-rs = { workspace = true, optional = true }
+tray-icon = { workspace = true, optional = true }
 
 [dev-dependencies]
 rusqlite.workspace = true
