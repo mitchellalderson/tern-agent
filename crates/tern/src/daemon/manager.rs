@@ -537,10 +537,29 @@ impl Manager {
         trigger: &str,
         deliver_to: Option<&str>,
     ) -> anyhow::Result<crate::runtime::StartedRun> {
+        self.start_tainted(session, model, text, source, trigger, deliver_to, None)
+            .await
+    }
+
+    /// [`Manager::start`] for untrusted input: the run starts tainted for
+    /// `taint` (tooling spec §5.3).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_tainted(
+        self: &Arc<Self>,
+        session: Option<&str>,
+        model: Option<&str>,
+        text: &str,
+        source: &str,
+        trigger: &str,
+        deliver_to: Option<&str>,
+        taint: Option<&str>,
+    ) -> anyhow::Result<crate::runtime::StartedRun> {
         if let Some(s) = session {
             self.stop_session(s, true).await;
         }
-        let started = self.rt.start_run(session, model, text, source, trigger)?;
+        let started = self
+            .rt
+            .start_run_tainted(session, model, text, source, trigger, taint)?;
         if let Some(t) = deliver_to {
             self.rt.store.set_run_deliver_to(&started.run_id, t)?;
         }
@@ -1098,6 +1117,45 @@ impl ChatHost for Chats {
         let started = self
             .0
             .start(Some(&session.id), None, text, source, "user", Some(&target))
+            .await
+            .map_err(err)?;
+        Ok(started.run_id)
+    }
+
+    /// A stranger in a gateway chat (`strangers = "taint"`): a tainted run
+    /// in the chat's guest session, never the owner's, with the message
+    /// wrapped as untrusted. Its answer goes back to the chat.
+    async fn send_untrusted(
+        &self,
+        source: &str,
+        chat: &str,
+        text: &str,
+        taint: &str,
+    ) -> Result<String, String> {
+        let key = format!("{chat}|untrusted");
+        let store = &self.0.rt.store;
+        let session = match store.latest_session_for(source, &key).map_err(err)? {
+            Some(s) => s,
+            None => store
+                .create_session_with_ref(&tern_core::agent::new_id(), source, &key, None)
+                .map_err(err)?,
+        };
+        let input = format!(
+            "A {taint} (not the owner of this chat):\n{}",
+            tern_core::agent::taint::wrap(&format!("{source}:{chat}"), text)
+        );
+        let target = format!("{source}:{chat}");
+        let started = self
+            .0
+            .start_tainted(
+                Some(&session.id),
+                None,
+                &input,
+                source,
+                "user",
+                Some(&target),
+                Some(taint),
+            )
             .await
             .map_err(err)?;
         Ok(started.run_id)

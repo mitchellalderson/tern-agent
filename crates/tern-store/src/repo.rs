@@ -740,6 +740,17 @@ impl Store {
         Ok(())
     }
 
+    /// Every `(key, value)` in `namespace`, by key.
+    pub fn kv_list(&self, namespace: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn()?;
+        let mut stmt =
+            conn.prepare("SELECT key, value FROM kv WHERE namespace = ?1 ORDER BY key")?;
+        let rows = stmt
+            .query_map([namespace], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     // ---- memories ----
 
     pub fn save_memory(&self, content: &str, tags: &[String]) -> Result<i64> {

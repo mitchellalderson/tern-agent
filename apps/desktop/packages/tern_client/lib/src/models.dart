@@ -131,6 +131,7 @@ class Info {
     this.defaultModel,
     required this.tools,
     this.setupNeeded = false,
+    this.gateways = const [],
   });
 
   factory Info.fromJson(Json j) => Info(
@@ -140,10 +141,21 @@ class Info {
       for (final t in j['tools'] as List)
         (name: (t as List)[0] as String, description: t[1] as String),
     ],
+    gateways: [
+      for (final g in (j['gateways'] as List?) ?? const [])
+        (
+          name: (g as Json)['name'] as String,
+          kind: g['kind'] as String? ?? g['name'] as String,
+        ),
+    ],
   );
 
   final String? defaultModel;
   final List<({String name, String description})> tools;
+
+  /// Where routines can deliver (`<name>:<chat>`): Telegram and gateway
+  /// connectors such as ntfy or Slack. Empty from older daemons.
+  final List<({String name, String kind})> gateways;
 
   /// No usable model yet: offer provider setup.
   final bool setupNeeded;

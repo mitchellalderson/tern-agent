@@ -10,6 +10,17 @@ import '../theme.dart';
 
 const _window = MethodChannel('tern/window');
 
+/// A chat gateway's name and icon for a session that came from it
+/// (Telegram, or a gateway connector such as ntfy or Slack); null for
+/// tern's own sessions.
+({String label, IconData icon})? gatewaySource(String source) =>
+    switch (source) {
+      'telegram' => (label: 'Telegram', icon: Icons.send_outlined),
+      'ntfy' => (label: 'ntfy', icon: Icons.notifications_outlined),
+      'slack' => (label: 'Slack', icon: Icons.tag),
+      _ => null,
+    };
+
 /// Open `url` in the default browser.
 Future<void> openUrl(String url) async {
   final opener = Platform.isMacOS ? 'open' : 'xdg-open';

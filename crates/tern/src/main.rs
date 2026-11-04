@@ -170,9 +170,16 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Report { output, run }) => {
             report_cmd::run(&home, output.as_deref(), run.as_deref())
         }
-        Some(Command::Gateway {
-            command: cli::GatewayCommand::Pair,
-        }) => gateway_cmd::pair(&home),
+        Some(Command::Gateway { command }) => match command {
+            cli::GatewayCommand::Pair => gateway_cmd::pair(&home),
+            cli::GatewayCommand::Add {
+                kind,
+                server,
+                channel,
+                force,
+            } => gateway_cmd::add(&home, &kind, server.as_deref(), channel.as_deref(), force),
+            cli::GatewayCommand::List => gateway_cmd::list(&home),
+        },
         Some(Command::Agents { command }) => agents_cmd::run(&home, command),
         Some(Command::Sessions { command }) => {
             match command.unwrap_or(SessionsCommand::List) {

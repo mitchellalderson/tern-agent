@@ -269,6 +269,37 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
         }
         _ => r.check(Status::Info, "telegram disabled", None),
     }
+    for c in crate::gateway_cmd::check_connectors(home, &config) {
+        if !c.enabled {
+            r.check(Status::Info, format!("{}: disabled", c.name), None);
+            continue;
+        }
+        match &c.state {
+            Ok(what) if c.missing.is_empty() && c.paired == 0 => r.check(
+                Status::Warn,
+                format!("{}: {what}; nobody has paired", c.name),
+                Some("run `tern gateway pair` and send the code as your first message"),
+            ),
+            Ok(what) if c.missing.is_empty() => r.check(
+                Status::Ok,
+                format!("{}: {what}; {} paired", c.name, c.paired),
+                None,
+            ),
+            Ok(what) => r.check(
+                Status::Fail,
+                format!("{}: {what}; secret {} is not set", c.name, c.missing.join(", ")),
+                Some("set it in the TUI with /secrets, or in secrets.toml (chmod 600)"),
+            ),
+            Err(e) => r.check(
+                Status::Fail,
+                format!("{}: can't run: {e}", c.name),
+                Some(&format!(
+                    "`tern gateway add {}` installs the built-in one, or fix ~/.tern/connectors/{}.luau",
+                    c.name, c.name
+                )),
+            ),
+        }
+    }
 
     r.section("Connectors");
     check_connectors(&mut r, home);

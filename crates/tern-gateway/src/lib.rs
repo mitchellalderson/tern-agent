@@ -1,6 +1,8 @@
 //! Messaging gateways (spec §12.4). A [`Gateway`] connects a platform to the
 //! daemon's [`ChatHost`]; Telegram is the first implementation.
 
+pub mod builtin;
+pub mod lua;
 pub mod telegram;
 
 /// Which agent profile a chat talks to (agent profiles §6.4): `/agent` in
@@ -75,6 +77,19 @@ pub trait ChatHost: Send + Sync {
     async fn stop(&self, source: &str, chat: &str) -> bool;
     async fn status(&self, source: &str, chat: &str) -> String;
     fn events(&self) -> broadcast::Receiver<AgentEvent>;
+    /// A message from someone who isn't the paired owner, in a chat that
+    /// lets strangers in (tooling spec §5.3, §6.4): it starts a run that is
+    /// tainted for `taint` ("message from Ann on slack"), in a session of
+    /// its own so it never joins the owner's run. Returns the run id.
+    async fn send_untrusted(
+        &self,
+        _source: &str,
+        _chat: &str,
+        _text: &str,
+        _taint: &str,
+    ) -> Result<String, String> {
+        Err("this tern doesn't take messages from strangers".into())
+    }
     /// Approve (run it, exactly once) or reject a pending outbox item from
     /// a chat button. Returns how it ended, in a few words.
     async fn decide_outbox(&self, _id: i64, _approve: bool) -> Result<String, String> {
@@ -90,6 +105,10 @@ pub trait ChatHost: Send + Sync {
 pub trait Gateway: Send + Sync {
     /// Target prefix this gateway owns, e.g. `telegram` for `telegram:<chat>`.
     fn name(&self) -> &str;
+    /// What platform it is (`telegram`, `ntfy`, `slack`), for front ends.
+    fn kind(&self) -> &str {
+        self.name()
+    }
     /// Poll the platform and handle messages until cancelled.
     async fn run(self: Arc<Self>, host: Arc<dyn ChatHost>, cancel: CancellationToken);
     /// Send a run's final answer to `target` (the part after `name:`). If the

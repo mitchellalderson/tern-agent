@@ -32,9 +32,14 @@ fn fmt_time(ms: i64) -> String {
 /// attached to, if any.
 fn here(store: &Store, session_id: &str) -> Option<String> {
     let s = store.session(session_id).ok().flatten()?;
+    // Telegram's and gateway connectors' chats; `<chat>|<agent>` is an
+    // agent's stream in the same chat.
     match (s.source.as_str(), s.external_ref) {
-        ("telegram", Some(chat)) => Some(format!("telegram:{chat}")),
-        _ => None,
+        (tern_core::subagent::SESSION_SOURCE, _) | (_, None) => None,
+        (source, Some(chat)) => {
+            let chat = chat.split('|').next().unwrap_or(&chat);
+            Some(format!("{source}:{chat}"))
+        }
     }
 }
 
@@ -654,13 +659,27 @@ pub fn describe_limits(s: &ScheduleRow) -> String {
     }
 }
 
-/// A concrete delivery target: `telegram:<chat_id>`.
+/// A concrete delivery target: `telegram:<chat_id>`, or `<gateway>:<chat>`
+/// for a gateway connector (`ntfy:<topic>`, `slack:<channel id>`).
 pub fn check_deliver_to(t: &str) -> Result<(), String> {
-    match t.strip_prefix("telegram:") {
-        Some(chat) if chat.parse::<i64>().is_ok() => Ok(()),
-        _ => Err(format!(
-            "deliver_to {t:?} must be \"here\", \"none\", or \"telegram:<chat_id>\""
-        )),
+    let ok = match t.split_once(':') {
+        Some(("telegram", chat)) => chat.parse::<i64>().is_ok(),
+        Some((gateway, chat)) => {
+            let mut g = gateway.chars();
+            gateway.len() <= 32
+                && g.next().is_some_and(|c| c.is_ascii_lowercase())
+                && g.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && !chat.is_empty()
+                && !chat.chars().any(char::is_whitespace)
+        }
+        None => false,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "deliver_to {t:?} must be \"here\", \"none\", \"telegram:<chat_id>\" or \"<gateway>:<chat>\" (e.g. \"ntfy:<topic>\")"
+        ))
     }
 }
 
@@ -698,7 +717,7 @@ impl Tool for ScheduleCreate {
     fn spec(&self) -> ToolSpec {
         spec(
             "schedule_create",
-            "Schedule a prompt (a routine) to run repeatedly on a `cron`, or once `at` a time (reminders). Each run happens in its own session and its final answer is delivered to `deliver_to`: \"here\" (default: this chat, if it's a messaging chat), \"none\", or \"telegram:<chat_id>\". A run with nothing to report answers NO_REPLY and sends nothing. Results finishing in quiet hours wait until they end, unless `urgent`. Scheduled runs only happen while `tern daemon` is running.",
+            "Schedule a prompt (a routine) to run repeatedly on a `cron`, or once `at` a time (reminders). Each run happens in its own session and its final answer is delivered to `deliver_to`: \"here\" (default: this chat, if it's a messaging chat), \"none\", \"telegram:<chat_id>\", or \"<gateway>:<chat>\" for a gateway connector such as ntfy or slack. A run with nothing to report answers NO_REPLY and sends nothing. Results finishing in quiet hours wait until they end, unless `urgent`. Scheduled runs only happen while `tern daemon` is running.",
             {
                 let mut props = limit_properties();
                 props.extend(trigger_properties());

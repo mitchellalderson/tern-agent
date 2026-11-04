@@ -342,10 +342,58 @@ class _RoutineSheetState extends State<RoutineSheet> {
   late final _cron = TextEditingController(
     text: widget.editing?.cron ?? _presets.first.cron,
   );
+
+  /// `<gateway>:<chat>`: Telegram or a gateway connector (ntfy, Slack).
   late final _chat = TextEditingController(
-    text: widget.editing?.deliverTo?.replaceFirst('telegram:', ''),
+    text: switch (widget.editing?.deliverTo?.indexOf(':')) {
+      final i? when i > 0 => widget.editing!.deliverTo!.substring(i + 1),
+      _ => null,
+    },
   );
-  late var _telegram = widget.editing?.deliverTo != null;
+  late var _push = widget.editing?.deliverTo != null;
+  late var _gateway = switch (widget.editing?.deliverTo?.indexOf(':')) {
+    final i? when i > 0 => widget.editing!.deliverTo!.substring(0, i),
+    _ => _gateways.first.name,
+  };
+
+  /// The daemon's gateways, Telegram alone for an older daemon. A routine
+  /// that delivers somewhere no longer configured keeps showing it.
+  List<({String name, String kind})> get _gateways {
+    final known = widget.store.info?.gateways ?? const [];
+    final list = known.isEmpty
+        ? [(name: 'telegram', kind: 'telegram')]
+        : [...known];
+    final current = widget.editing?.deliverTo?.split(':').first;
+    if (current != null &&
+        current.isNotEmpty &&
+        !list.any((g) => g.name == current)) {
+      list.add((name: current, kind: current));
+    }
+    return list;
+  }
+
+  String get _kind =>
+      _gateways.where((g) => g.name == _gateway).firstOrNull?.kind ?? _gateway;
+
+  static String _title(String kind) => switch (kind) {
+    'telegram' => 'Telegram',
+    'ntfy' => 'ntfy',
+    'slack' => 'Slack',
+    final k => k,
+  };
+
+  String get _chatHint => switch (_kind) {
+    'telegram' => 'Telegram chat id',
+    'ntfy' => 'ntfy topic',
+    'slack' => 'Slack channel id (C0123…)',
+    final k => '${_title(k)} chat',
+  };
+
+  bool get _chatValid {
+    final chat = _chat.text.trim();
+    if (_kind == 'telegram') return int.tryParse(chat) != null;
+    return chat.isNotEmpty && !chat.contains(RegExp(r'\s'));
+  }
 
   /// `cron`, `once`, `watch` or `webhook`.
   late var _trigger = widget.editing?.trigger ?? 'cron';
@@ -581,7 +629,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
   bool get _valid =>
       _prompt.text.trim().isNotEmpty &&
       _triggerValid &&
-      (!_telegram || int.tryParse(_chat.text.trim()) != null) &&
+      (!_push || _chatValid) &&
       _limitsValid;
 
   Future<void> _save() async {
@@ -615,7 +663,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
       id: widget.editing?.id,
       cron: _trigger == 'cron' ? _cron.text.trim() : '',
       prompt: _prompt.text.trim(),
-      deliverTo: _telegram ? 'telegram:${_chat.text.trim()}' : null,
+      deliverTo: _push ? '$_gateway:${_chat.text.trim()}' : null,
       limits: _newLimits,
       channel: widget.store.hasChannels ? _channel : null,
       agent: widget.store.hasAgents ? _agent : null,
@@ -1017,23 +1065,53 @@ class _RoutineSheetState extends State<RoutineSheet> {
                 const SizedBox(height: 8),
               ],
               SegmentedButton<bool>(
-                segments: const [
-                  ButtonSegment(value: false, label: Text('Keep in tern')),
+                segments: [
+                  const ButtonSegment(
+                    value: false,
+                    label: Text('Keep in tern'),
+                  ),
                   ButtonSegment(
                     value: true,
-                    label: Text('Also send to Telegram'),
+                    label: Text(
+                      _gateways.length == 1
+                          ? 'Also send to ${_title(_gateways.first.kind)}'
+                          : 'Also send to…',
+                    ),
                   ),
                 ],
-                selected: {_telegram},
+                selected: {_push},
                 showSelectedIcon: false,
-                onSelectionChanged: (v) => setState(() => _telegram = v.first),
+                onSelectionChanged: (v) => setState(() => _push = v.first),
               ),
-              if (_telegram) ...[
+              if (_push) ...[
                 const SizedBox(height: 8),
+                if (_gateways.length > 1) ...[
+                  DropdownButtonFormField<String>(
+                    key: const Key('routine-gateway'),
+                    initialValue: _gateway,
+                    isDense: true,
+                    isExpanded: true,
+                    decoration: _box(context),
+                    items: [
+                      for (final g in _gateways)
+                        DropdownMenuItem(
+                          value: g.name,
+                          child: Text(
+                            g.name == g.kind
+                                ? _title(g.kind)
+                                : '${g.name} (${_title(g.kind)})',
+                          ),
+                        ),
+                    ],
+                    onChanged: (v) => setState(() => _gateway = v ?? _gateway),
+                  ),
+                  const SizedBox(height: 8),
+                ],
                 TextField(
+                  key: const Key('routine-chat'),
                   controller: _chat,
                   onChanged: (_) => setState(() {}),
-                  decoration: _box(context, hint: 'Telegram chat id'),
+                  decoration: _box(context, hint: _chatHint),
                 ),
               ],
               const SizedBox(height: 8),

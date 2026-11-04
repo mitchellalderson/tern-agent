@@ -650,8 +650,7 @@ class _SessionRow extends StatelessWidget {
     final running = transcript?.activeRun != null;
     final icon = switch (session.source) {
       'cron' => Icons.schedule,
-      'telegram' => Icons.send_outlined,
-      _ => null,
+      final s => gatewaySource(s)?.icon,
     };
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 1),

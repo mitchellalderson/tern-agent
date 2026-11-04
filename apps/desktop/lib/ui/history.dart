@@ -63,7 +63,7 @@ class _HistoryDialogState extends State<HistoryDialog> {
     if (s.id == head) return 'Current session';
     // Side chats were removed; old ones are earlier conversations.
     if (s.branchedFrom != null) return 'Earlier conversation';
-    if (s.source == 'telegram') return 'Telegram';
+    if (gatewaySource(s.source) case final g?) return g.label;
     if (s.segmentReason == 'migrated') return 'Earlier conversation';
     if (s.segmentReason case final r?) {
       return 'Session · ${CutDivider.reason(r)}';
@@ -141,9 +141,8 @@ class _HistoryDialogState extends State<HistoryDialog> {
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               leading: Icon(
-                                s.source == 'telegram'
-                                    ? Icons.send_outlined
-                                    : Icons.chat_bubble_outline,
+                                gatewaySource(s.source)?.icon ??
+                                    Icons.chat_bubble_outline,
                                 size: 16,
                                 color: c.muted,
                               ),

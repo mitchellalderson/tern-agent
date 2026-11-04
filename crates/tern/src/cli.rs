@@ -288,8 +288,26 @@ pub enum ProviderKindArg {
 
 #[derive(Debug, Subcommand)]
 pub enum GatewayCommand {
-    /// Print a one-time pairing code to send to the Telegram bot.
+    /// Print a one-time pairing code to send to the Telegram bot or a
+    /// gateway connector.
     Pair,
+    /// Install a built-in gateway connector (`ntfy` or `slack`) and enable
+    /// it in config.toml.
+    Add {
+        /// `ntfy` or `slack`.
+        kind: String,
+        /// A self-hosted ntfy server, e.g. https://ntfy.example.com.
+        #[arg(long)]
+        server: Option<String>,
+        /// The Slack channel id to talk in (C0123456789).
+        #[arg(long)]
+        channel: Option<String>,
+        /// Replace the connector file if it differs from the built-in one.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Gateways in config.toml and whether each can run.
+    List,
 }
 
 #[derive(Debug, Subcommand)]

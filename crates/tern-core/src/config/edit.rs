@@ -144,13 +144,33 @@ impl ConfigFile {
         name: &str,
         cfg: &McpServerConfig,
     ) -> Result<(), EditError> {
-        let key = format!("mcp.servers.{name}");
+        self.upsert_table(&["mcp", "servers"], name, cfg)
+    }
+
+    /// Add or replace `[gateway.connectors.<name>]`, like
+    /// [`ConfigFile::upsert_mcp_server`].
+    pub fn upsert_gateway_connector(
+        &mut self,
+        name: &str,
+        cfg: &super::GatewayConnectorConfig,
+    ) -> Result<(), EditError> {
+        self.upsert_table(&["gateway", "connectors"], name, cfg)
+    }
+
+    /// Add or replace `[<parents…>.<name>]` with `cfg`'s fields.
+    fn upsert_table(
+        &mut self,
+        parents: &[&str],
+        name: &str,
+        cfg: &impl serde::Serialize,
+    ) -> Result<(), EditError> {
+        let key = format!("{}.{name}", parents.join("."));
         let not_table = |part: &str| EditError::NotTable {
             part: part.into(),
             key: key.clone(),
         };
         let mut table = self.doc.as_table_mut();
-        for part in ["mcp", "servers"] {
+        for part in parents.iter().copied() {
             table = table
                 .entry(part)
                 .or_insert_with(|| {

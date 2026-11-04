@@ -2,6 +2,7 @@
 //! `~/.tern/connectors/*.luau`, each in its own VM with declared capabilities.
 
 mod allow;
+pub mod gateway;
 mod host;
 mod limit;
 mod spec;

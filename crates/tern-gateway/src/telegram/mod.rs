@@ -519,7 +519,7 @@ fn place(target: &str) -> Option<(i64, Option<i64>)> {
 /// What a still-streaming reply shows: the tail, if it's over the limit.
 /// "Allow destructive · shell git push?", prefixed with a sub-agent's label when one asks,
 /// and followed by why a tainted run asks.
-fn approval_prompt(req: &ApprovalRequest) -> String {
+pub(crate) fn approval_prompt(req: &ApprovalRequest) -> String {
     let ask = match &req.agent_label {
         Some(l) => format!("[{l}] Allow {}?", req.headline()),
         None => format!("Allow {}?", req.headline()),
@@ -571,7 +571,7 @@ impl TelegramGateway {
 }
 
 /// "1 action waiting" for the user, with what it is and why it waits.
-fn outbox_prompt(item: &OutboxItem, agent: &str) -> String {
+pub(crate) fn outbox_prompt(item: &OutboxItem, agent: &str) -> String {
     let mut text = format!(
         "📬 Waiting for you (outbox #{}): {}\nNobody was here to approve it, so {agent} carried on without it.",
         item.id,
@@ -799,7 +799,7 @@ impl Gateway for TelegramGateway {
 }
 
 /// Points the user at an app that can take the value: never this chat.
-fn secret_notice(req: &SecretRequest, agent: &str) -> String {
+pub(crate) fn secret_notice(req: &SecretRequest, agent: &str) -> String {
     let names: Vec<&str> = req.asks.iter().map(|a| a.name.as_str()).collect();
     let who = match &req.agent_label {
         Some(l) => format!("Sub-agent {l}"),

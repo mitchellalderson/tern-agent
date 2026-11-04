@@ -4636,10 +4636,13 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tern-core",
+ "tern-lua",
  "tern-store",
  "tokio",
  "tokio-util",
+ "toml",
  "tracing",
  "wiremock",
 ]

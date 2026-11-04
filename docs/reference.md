@@ -58,7 +58,9 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern start` / `tern stop`](#tern-start-and-tern-stop) | Start tern in the background, or stop it. |
 | [`tern service`](#tern-service) | Start tern at login (launchd on macOS, systemd on Linux). |
 | [`tern tray`](#tern-tray) | The menu-bar icon (macOS): is tern running, Open, Start/Quit, Start at login. |
-| [`tern gateway pair`](#tern-gateway-pair) | Pair a Telegram account with the bot. |
+| [`tern gateway pair`](#tern-gateway-pair) | Pair a Telegram account, or a sender on a gateway connector. |
+| [`tern gateway add`](#gateway-connectors-ntfy-slack) | Install the ntfy or Slack gateway and enable it. |
+| [`tern gateway list`](#gateway-connectors-ntfy-slack) | Gateways in `config.toml` and whether each can run. |
 | [`tern agents`](#tern-agents) | List, create, edit or archive your agents. |
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
@@ -129,7 +131,7 @@ tern daemon
 Runs in the foreground until SIGINT or SIGTERM, and provides:
 
 - **Scheduler**: checks for due schedules every 30 seconds, polls routines' watches, and starts runs for new watch events. A schedule missed while the daemon was down runs once on the next start, then continues from now (no backfill). It also enforces each schedule's caps and sends results held for quiet hours (see [Schedules](#schedules)).
-- **Gateways**: Telegram, if `[gateway.telegram]` is enabled (see [Telegram](#telegram)). The daemon refuses to start if the bot token secret isn't set.
+- **Gateways**: Telegram, if `[gateway.telegram]` is enabled (see [Telegram](#telegram)). The daemon refuses to start if the bot token secret isn't set. And each enabled [gateway connector](#gateway-connectors-ntfy-slack); one that can't load is skipped with a warning in the log.
 - **Local API** on `~/.tern/tern.sock` (mode 0600), which `tern` and the desktop app attach to.
 - **Crash recovery**: runs in progress when the daemon stops are left `running` and resume on the next start, exactly as after a crash.
 
@@ -172,7 +174,7 @@ A menu-bar icon for tern on macOS, in its own small process: ● running (with a
 tern gateway pair
 ```
 
-Prints an 8-character one-time code on stdout. Send it to your Telegram bot within 10 minutes to pair that Telegram account. Only paired accounts can talk to the bot or answer its approval buttons. Works whether or not the daemon is running, but the bot only answers while the daemon runs.
+Prints an 8-character one-time code on stdout. Send it to your Telegram bot within 10 minutes to pair that Telegram account, or send it as your first message on a [gateway connector](#gateway-connectors-ntfy-slack) to pair yourself there. Only paired accounts can talk to the bot or answer its approval buttons. Works whether or not the daemon is running, but the bot only answers while the daemon runs.
 
 ### `tern agents`
 
@@ -303,7 +305,7 @@ tern config set mcp.servers.github.args '["stdio"]'
 tern doctor [--offline]
 ```
 
-Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; every model in each fallback chain (configured provider, and listed by it when online); the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; the [webhook](#webhooks) listener and whether senders can reach it; each active Luau connector (a warning for one that reads secret values itself with `ctx.secret`); and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
+Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; every model in each fallback chain (configured provider, and listed by it when online); the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway and each gateway connector (that it loads and can send, its secrets, and whether anyone has paired); the [webhook](#webhooks) listener and whether senders can reach it; each active Luau connector (a warning for one that reads secret values itself with `ctx.secret`); and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
 
 It exits `1` if anything failed, `0` otherwise (warnings are things not set up yet). It is read-only and doesn't create `~/.tern`.
 
@@ -360,6 +362,10 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `sandbox.docker_memory` / `docker_cpus` / `docker_pids` | `2g` / `2.0` / `512` | Container limits; empty or 0 for none. |
 | `gateway.telegram.enabled` | `false` | |
 | `gateway.telegram.bot_token_secret` | | Name of the secret holding the bot token. |
+| `gateway.connectors.<name>.enabled` | `true` | Run active connector `<name>` as a gateway. |
+| `gateway.connectors.<name>.poll_secs` | `30` | How often to check it for messages. |
+| `gateway.connectors.<name>.strangers` | `"reply"` | Unpaired senders: `reply` (a fixed note), `ignore`, or `taint` (a tainted run of their own). |
+| `gateway.connectors.<name>.settings` | `{}` | Handed to the connector: topics, channel ids. Never secret values. |
 | `mcp.servers.<name>.transport` | | `stdio` or `http` (streamable HTTP). |
 | `mcp.servers.<name>.command` / `args` | | Executable and arguments, for `stdio`. |
 | `mcp.servers.<name>.enabled` | `true` | `false` keeps the server configured but doesn't start it or offer its tools. |
@@ -458,7 +464,7 @@ You can have several agents, each with its own job: a name and avatar, a **perso
 
 ## Schedules
 
-The agent creates schedules with `schedule_create` and changes them with `schedule_update`; the desktop app calls them routines. Each one runs its prompt in a session of its own and delivers the final answer to its `deliver_to` (a Telegram chat, or nowhere: the result stays in the session).
+The agent creates schedules with `schedule_create` and changes them with `schedule_update`; the desktop app calls them routines. Each one runs its prompt in a session of its own and delivers the final answer to its `deliver_to` (a Telegram chat, a [gateway connector](#gateway-connectors-ntfy-slack) chat such as `ntfy:<topic>` or `slack:<channel id>`, or nowhere: the result stays in the session).
 
 - **Nothing to say, nothing sent.** A scheduled run is told it may answer exactly `NO_REPLY`. Then nothing is delivered (no Telegram message, no desktop notification), and the run is recorded as completed and *quiet*: `GET /v1/sessions/{id}/runs` has `quiet: true`, `run_finished` events carry `quiet: true`, and the app shows "Last run quiet".
 - **Quiet hours.** A result that finishes inside quiet hours (`[schedules] quiet_hours`, default 22:00–07:30 local; per schedule `quiet_hours = "HH:MM-HH:MM"`, `"none"` or `"default"`) is held, not the run: the run happens on time. Held results are kept in the database (a restart keeps them) and sent when the window ends, as one message per chat if there are several. A schedule marked `urgent` delivers at once.
@@ -568,6 +574,36 @@ Channels are topic timelines (`#finances`, `#launch`) over one shared memory; se
 Only paired Telegram accounts can talk to the bot or answer its approval buttons.
 
 **Agents in Telegram.** `/agents` lists your [agents](#agents); `/agent research` switches the chat to Research's DM (its replies start `Research · `), and `/agent tern` goes back. Each agent keeps its own stream in the chat, cut by the same rules (`/new` is a new topic with the agent you're talking to). In a group with **topics** enabled, where the bot is an admin that may manage topics, `/agent research` opens a topic named Research instead: everything written there goes to Research. Approvals for a run go to the chat or topic that started it.
+
+## Gateway connectors (ntfy, Slack)
+
+A gateway connector is a [Luau connector](#tern-connectors) with a `gateway` table, which tern runs as a chat transport beside Telegram. Routine results (after quiet hours, initiative and digests), approvals, outbox cards and secret notices reach it like Telegram, and messages written there start or continue runs. Two are built in:
+
+```bash
+tern gateway add ntfy                          # or --server https://ntfy.example.com
+tern gateway add slack --channel C0123456789   # asks for SLACK_BOT_TOKEN
+tern gateway pair                              # then send the code as your first message
+```
+
+`add` installs `~/.tern/connectors/<name>.luau` (yours to read and edit) and adds `[gateway.connectors.<name>]` to `config.toml`; restart the daemon to start it. Routines then deliver to `<name>:<chat>`; the desktop's routine sheet offers every gateway the daemon runs.
+
+- **ntfy** needs no account or bot: subscribe in the ntfy app to the push topic `add` printed, and write to the reply topic to talk to tern. Approval and outbox notifications carry buttons that answer from the phone. ntfy has no users, so anyone who knows a topic name can read or write it: keep the names private, or use a server with access control and uncomment `auth = "NTFY_TOKEN"` in the file.
+- **Slack** uses a bot token, no OAuth: create an app in your workspace with the bot scopes `chat:write` and `channels:history` (`groups:history` for a private channel), install it, save the `xoxb-…` token as `SLACK_BOT_TOKEN`, and invite the bot to the channel. Targets are `slack:<channel id>` or `slack:<channel id>/<thread ts>`. tern reads the channel's messages, not replies inside threads, and approvals ask for a numbered reply (Slack's buttons need a public URL).
+- **Pairing** works as in Telegram: only paired senders are the owner. On ntfy, which names no sender, the reply topic pairs. Others get one fixed reply, or with `strangers = "ignore"` nothing; with `strangers = "taint"` their message starts a [tainted](#taint) run in a session of its own, which asks before any write.
+- **Without buttons**, approvals list numbered choices (`1 · Allow once, 0 · Deny`): reply with the number. Outbox cards say `approve 12` or `reject 12`. `/new`, `/stop`, `/status` and `/outbox` work as in Telegram.
+- **Writing one**:
+  ```lua
+  gateway = {
+    kind = "mychat",
+    threads = false,
+    send = function(ctx, to, text, opts) ... end,                -- opts: thread, kind, run_id, settings
+    buttons = function(ctx, to, text, buttons, opts) ... end,    -- optional; buttons: { label, data }
+    poll = function(ctx, cursor, settings)                       -- optional
+      return { messages = { { id = "…", chat = "…", from = "…", text = "…" } }, cursor = … }
+    end,
+  }
+  ```
+  A tap is a message with `action` set to the button's `data`. `send` and `buttons` may POST; `poll` is GET-only unless the gateway sets `read_via_post = true`. The connector's hosts, `auth` and rate apply. `tern gateway list` and `tern doctor` show whether it loads.
 
 ### Remote access
 

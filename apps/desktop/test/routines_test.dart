@@ -15,6 +15,7 @@ class _FakeClient extends TernClient {
       <({String id, ScheduleLimits? limits, bool? enabled, bool resume})>[];
   var list = <Schedule>[];
   final sentOptions = <RoutineOptions?>[];
+  final sentTargets = <String?>[];
 
   @override
   Future<List<Schedule>> schedules() async => list;
@@ -37,6 +38,7 @@ class _FakeClient extends TernClient {
     RoutineOptions? options,
   }) async {
     sentOptions.add(options);
+    sentTargets.add(deliverTo);
     updates.add((id: id, limits: limits, enabled: enabled, resume: resume));
     return list.firstWhere((s) => s.id == id, orElse: () => list.first);
   }
@@ -358,5 +360,54 @@ void main() {
     expect(client.revoked, 1);
     expect(find.textContaining('Revoked: the URL answers 404'), findsOneWidget);
     expect(find.text('New secret…'), findsOneWidget);
+  });
+
+  testWidgets('results can go to a gateway connector such as ntfy', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(700, 1500) * 2;
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final client = _FakeClient();
+    const editing = Schedule(
+      id: 'a',
+      cron: '0 8 * * *',
+      prompt: 'Inbox sweep',
+      sessionId: 's',
+      enabled: true,
+      deliverTo: 'telegram:42',
+    );
+    client.list = [editing];
+    final store = TernStore(client)
+      ..info = const Info(
+        tools: [],
+        gateways: [
+          (name: 'ntfy', kind: 'ntfy'),
+          (name: 'telegram', kind: 'telegram'),
+        ],
+      );
+    await tester.pumpWidget(_app(RoutineSheet(store: store, editing: editing)));
+    await tester.pumpAndSettle();
+    expect(find.text('Also send to…'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '42'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('routine-gateway')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ntfy').last);
+    await tester.pumpAndSettle();
+    final chat = find.byKey(const Key('routine-chat'));
+    await tester.enterText(chat, 'my topic');
+    await tester.pump();
+    final save = find.widgetWithText(FilledButton, 'Save');
+    expect(
+      tester.widget<FilledButton>(save).onPressed,
+      isNull,
+      reason: 'no spaces',
+    );
+    await tester.enterText(chat, 'tern-x7');
+    await tester.pump();
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+    expect(client.sentTargets.single, 'ntfy:tern-x7');
   });
 }
