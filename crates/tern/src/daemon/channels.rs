@@ -153,9 +153,63 @@ impl Manager {
             bail!("#{} is archived", channel.slug);
         }
         if channel.kind == "main" {
+            if let Some(to) = reply_to {
+                return self.reply_in_main(channel, to, text, model).await;
+            }
             return self.send_home(channel, text, new_topic, model).await;
         }
         self.send_to_topic(channel, text, reply_to, model).await
+    }
+
+    /// A reply under a post in Home or an agent's DM: a side thread
+    /// branched from it, the channel's agent's, continued by later replies.
+    /// Under a `delegated` post its first message says what the work was
+    /// and what came back (agent profiles §6.1).
+    async fn reply_in_main(
+        self: &Arc<Self>,
+        channel: &ChannelRow,
+        to: i64,
+        text: &str,
+        model: Option<&str>,
+    ) -> anyhow::Result<Sent> {
+        let store = &self.rt.store;
+        let post = store
+            .post(to)?
+            .filter(|p| p.channel_id == channel.id)
+            .with_context(|| format!("post {to} is not in #{}", channel.slug))?;
+        let agent = channel.agent_id.as_deref().unwrap_or(author::AGENT);
+        let existing = store.thread_branched_from(&channel.id, &format!("post:{to}"))?;
+        let session = match existing {
+            Some(s) => s.id,
+            None => self.reply_thread(channel, to, agent)?,
+        };
+        if let Some((run_id, _)) = self.queue_message(&session, text)? {
+            return Ok(Sent {
+                post: None,
+                run_id,
+                session_id: session,
+                queued: true,
+                new_segment: false,
+                woke: Vec::new(),
+            });
+        }
+        let first = store.session_counts(&session)?.1 == 0;
+        let input = if first && post.kind == super::delegations::KIND {
+            self.delegation_context(&post, text)
+        } else {
+            text.to_owned()
+        };
+        let started = self
+            .start(Some(&session), model, &input, "api", "user", None)
+            .await?;
+        Ok(Sent {
+            post: None,
+            run_id: started.run_id,
+            session_id: started.session_id,
+            queued: false,
+            new_segment: false,
+            woke: Vec::new(),
+        })
     }
 
     /// A send into Home (§2.6, §4).

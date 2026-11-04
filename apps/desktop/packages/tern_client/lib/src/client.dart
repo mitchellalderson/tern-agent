@@ -354,6 +354,14 @@ class TernClient {
   Future<Agent> updateAgent(String id, Json fields) async =>
       Agent.fromJson(await _json('PATCH', '/v1/agents/${_seg(id)}', fields));
 
+  /// What `id` did lately: delegated batches and routine runs.
+  Future<List<AgentWork>> agentWork(String id, {int limit = 10}) async => [
+    for (final w
+        in await _json('GET', '/v1/agents/${_seg(id)}/work?limit=$limit')
+            as List)
+      AgentWork.fromJson(w as Json),
+  ];
+
   Future<Persona> persona(String id) async =>
       Persona.fromJson(await _json('GET', '/v1/agents/${_seg(id)}/persona'));
 

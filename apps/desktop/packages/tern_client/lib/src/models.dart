@@ -512,6 +512,9 @@ sealed class TernEvent {
         m['state'] is Json ? McpState.fromJson(m['state'] as Json) : null,
       );
     }
+    if (j['post_updated'] case final Json p) {
+      return PostUpdated(Post.fromJson(p['post'] as Json));
+    }
     if (j['post_created'] case final Json p) {
       return PostCreated(Post.fromJson(p['post'] as Json));
     }
@@ -837,6 +840,12 @@ class McpChanged extends TernEvent {
 /// A post was written to a channel.
 class PostCreated extends TernEvent {
   const PostCreated(this.post);
+  final Post post;
+}
+
+/// A post the daemon keeps current was rewritten (a delegation's pointer).
+class PostUpdated extends TernEvent {
+  const PostUpdated(this.post);
   final Post post;
 }
 

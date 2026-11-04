@@ -15,6 +15,7 @@ mod api_secrets;
 mod api_subagents;
 pub mod auth;
 pub mod channels;
+pub mod delegations;
 pub mod listen;
 pub mod manager;
 pub mod outbox;

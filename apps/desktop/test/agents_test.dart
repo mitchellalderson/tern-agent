@@ -133,6 +133,23 @@ class _FakeClient extends TernClient {
   }
 
   @override
+  Future<List<AgentWork>> agentWork(String id, {int limit = 10}) async => [
+    if (id == 'tern:research')
+      AgentWork(
+        kind: 'delegated',
+        title: 'Size the demand for home services',
+        caller: 'Home',
+        status: 'done',
+        sessionId: 'h1',
+        runId: 'rp',
+        tasks: 4,
+        startedAt: _t0,
+        finishedAt: _t0.add(const Duration(minutes: 6)),
+        postId: 9,
+      ),
+  ];
+
+  @override
   Future<List<ProviderModels>> models({
     String? provider,
     bool refresh = false,
@@ -848,6 +865,86 @@ void main() {
       await tester.pumpAndSettle();
       final fields = await save(tester, client);
       expect(fields['model'], 'anthropic:claude-haiku-5-5');
+    });
+  });
+
+  group('delegated work', () {
+    Post pointer(String text, {bool tainted = false}) => Post(
+      id: 9,
+      channelId: 'dm:research',
+      sessionId: 'h1',
+      runId: 'rp',
+      authorKind: 'agent',
+      authorId: 'tern:research',
+      author: 'Research',
+      kind: 'delegated',
+      text: text,
+      tainted: tainted,
+      createdAt: _t0,
+    );
+
+    testWidgets('a pointer in the DM opens tern\'s thread and takes replies', (
+      tester,
+    ) async {
+      final (store, _) = await _store();
+      await store.openAgent(_research);
+      store.onEventForTest(
+        PostCreated(
+          pointer('Working for Home · "Size the demand" · 4 tasks · 4 running'),
+        ),
+      );
+      await _pump(tester, store);
+      expect(find.textContaining('Working for Home'), findsOneWidget);
+      // Live: the daemon rewrites it as the work finishes.
+      store.onEventForTest(
+        PostUpdated(
+          pointer(
+            'Worked for Home · "Size the demand" · 4 tasks · 6m',
+            tainted: true,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.textContaining('Worked for Home'), findsOneWidget);
+      expect(find.textContaining('Working for Home'), findsNothing);
+      expect(find.byType(TaintMark), findsWidgets);
+      // Its side panel lists it too.
+      expect(find.text('RECENT WORK'), findsOneWidget);
+      expect(find.text('Size the demand for home services'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Open').first);
+      await tester.pump();
+      expect(store.thread, 'h1', reason: 'the sub-runs live in tern\'s thread');
+      store.closeThread();
+      await tester.pump();
+      await tester.tap(find.widgetWithText(TextButton, 'Reply'));
+      await tester.pump();
+      expect(store.replying?.id, 9);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    test('an agent working for another one shows as busy', () async {
+      final (store, _) = await _store();
+      expect(store.agentBusy(_research), isFalse);
+      store.onEventForTest(
+        TernEvent.fromJson({
+          'type': 'run_started',
+          'run_id': 'kid',
+          'session_id': 'ks',
+          'parent_run_id': 'rp',
+          'channel_id': 'home',
+          'agent_id': 'tern:research',
+        }),
+      );
+      expect(store.agentBusy(_research), isTrue);
+      store.onEventForTest(
+        TernEvent.fromJson({
+          'type': 'run_finished',
+          'run_id': 'kid',
+          'status': 'completed',
+          'agent_id': 'tern:research',
+        }),
+      );
+      expect(store.agentBusy(_research), isFalse);
     });
   });
 

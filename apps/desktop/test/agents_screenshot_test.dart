@@ -99,6 +99,29 @@ class _Client extends TernClient {
   ];
 
   @override
+  Future<List<AgentWork>> agentWork(String id, {int limit = 10}) async => [
+    AgentWork(
+      kind: 'delegated',
+      title: 'Size the demand for home-services software',
+      caller: 'Home',
+      status: 'done',
+      sessionId: 'home-main',
+      runId: 'rp',
+      tasks: 4,
+      startedAt: _now.subtract(const Duration(minutes: 76)),
+      finishedAt: _now.subtract(const Duration(minutes: 70)),
+    ),
+    AgentWork(
+      kind: 'routine',
+      title: 'Weekly digest of what changed at Acme',
+      status: 'done',
+      sessionId: 'cron-1',
+      runId: 'rr',
+      startedAt: _now.subtract(const Duration(days: 2)),
+    ),
+  ];
+
+  @override
   Future<List<ProviderModels>> models({
     String? provider,
     bool refresh = false,
@@ -256,6 +279,24 @@ TernStore _store() {
     ),
     _m('dm:research-main', 3, 'user', 'Save that to my notes.', ago: 3),
   ]);
+  // Work Research did for tern in Home, pointed at from its DM.
+  dm.items.insert(
+    0,
+    PostItem(
+      Post(
+        id: 21,
+        channelId: 'dm:research',
+        sessionId: 'home-main',
+        runId: 'rp',
+        authorKind: 'agent',
+        authorId: 'tern:research',
+        author: 'Research',
+        kind: 'delegated',
+        text: 'Worked for Home · "Size the demand for home-services software" · 4 tasks · 6m',
+        createdAt: _now.subtract(const Duration(minutes: 70)),
+      ),
+    ),
+  );
   store.transcripts[TernStore.streamKeyOf('dm:research')] = dm;
   final approval = ApprovalItem(
     const Approval(
