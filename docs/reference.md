@@ -58,7 +58,7 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern daemon`](#tern-daemon) | Run the scheduler, gateways, and local API in the foreground. |
 | [`tern start` / `tern stop`](#tern-start-and-tern-stop) | Start tern in the background, or stop it. |
 | [`tern service`](#tern-service) | Start tern at login (launchd on macOS, systemd on Linux). |
-| [`tern tray`](#tern-tray) | The menu-bar icon (macOS): is tern running, Open, Start/Quit, Start at login. |
+| [`tern tray`](#tern-tray) | The menu-bar icon (macOS) or tray icon (Linux): is tern running, Open, Start/Quit, Start at login. |
 | [`tern gateway pair`](#tern-gateway-pair) | Pair a Telegram account, or a sender on a gateway connector. |
 | [`tern gateway add`](#gateway-connectors-ntfy-slack) | Install the ntfy or Slack gateway and enable it. |
 | [`tern gateway list`](#gateway-connectors-ntfy-slack) | Gateways in `config.toml` and whether each can run. |
@@ -167,13 +167,13 @@ tern service uninstall                       # stop starting them at login
 
 - **macOS, from the app** (the `tern` inside `tern.app`): registers with macOS through `SMAppService`, so tern and its menu-bar icon show in System Settings › General › Login Items, where you can also turn them off. macOS may ask you to allow them there first.
 - **macOS, a CLI install**: writes the LaunchAgent `~/Library/LaunchAgents/ai.tern.daemon.plist` (and `ai.tern.tray.plist` with `--tray`) and loads it. Either way the daemon has `KeepAlive = { SuccessfulExit = false }`: launchd restarts tern after a crash, but not after `tern stop` or Quit. `tern doctor` says which method is in use.
-- **Linux**: writes the systemd user unit `~/.config/systemd/user/tern-daemon.service` with `Restart=on-failure`, for the same reason, and enables it.
+- **Linux**: writes the systemd user unit `~/.config/systemd/user/tern-daemon.service` with `Restart=on-failure`, for the same reason, and enables it. With `--tray` it also writes the XDG autostart entry `~/.config/autostart/tern-tray.desktop`, which starts `tern tray` at login (and starts it now when a desktop session is available); `tern service uninstall` removes both.
 
 Logs go to `~/.tern/logs/daemon.{out,err}.log`. `--no-login` installs the service without starting tern at login (`tern start` then starts it through the service). Installing or uninstalling never stops a running tern; `tern stop` does. The desktop app's **Settings › Start tern when I log in** runs these commands.
 
 ### `tern tray`
 
-A menu-bar icon for tern on macOS, in its own small process: ● running (with a ring while a task runs, and a dot when something needs you), ◐ starting, stopping or not answering, ○ stopped. Its menu shows what tern is doing and has **Open tern**, **Start at login** and **Quit tern**, which stops tern the way `tern stop` does (asking first if a task is in progress), closes the app and removes the icon. When tern is stopped it offers **Start tern** and **Close this icon**. The tray only watches and asks; launchd keeps tern itself running. `tern service install --tray` starts it at login; inside `tern.app` it's the `tern Tray.app` login item. Builds without the `tray` cargo feature (on by default; its dependencies are macOS-only) don't have it.
+A menu-bar icon for tern on macOS, in its own small process: ● running (with a ring while a task runs, and a dot when something needs you), ◐ starting, stopping or not answering, ○ stopped. Its menu shows what tern is doing and has **Open tern**, **Start at login** and **Quit tern**, which stops tern the way `tern stop` does (asking first if a task is in progress), closes the app and removes the icon. When tern is stopped it offers **Start tern** and **Close this icon**. The tray only watches and asks; launchd keeps tern itself running. `tern service install --tray` starts it at login; inside `tern.app` it's the `tern Tray.app` login item. On Linux the same menu is a StatusNotifierItem (through `ksni`, over D-Bus; no GTK): KDE and most desktops show it, and GNOME needs the AppIndicator extension. **Open tern** runs `tern_desktop` (beside `tern`, else on `PATH`), and the "Quit tern?" question and errors use `zenity` or `kdialog` when one is installed (without either, Quit just quits: runs resume on the next start). `tern tray` needs a desktop session (a display and the D-Bus session bus) and exits with an explanation over SSH. Builds without the `tray` cargo feature (on by default; its dependencies are macOS and Linux only) don't have it.
 
 ### `tern gateway pair`
 

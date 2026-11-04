@@ -60,6 +60,7 @@ pub enum Action {
     CloseIcon,
 }
 
+#[cfg_attr(not(all(feature = "tray", target_os = "macos")), allow(dead_code))]
 impl Action {
     pub fn id(self) -> &'static str {
         match self {
@@ -311,9 +312,134 @@ pub fn icon_rgba(icon: Icon, size: u32) -> Vec<u8> {
     out
 }
 
+/// The icon as a StatusNotifierItem pixmap: ARGB32 in network byte order
+/// (bytes A, R, G, B), `size` × `size`, drawn in `rgb`. The black template
+/// icon would vanish on a dark panel, and Linux has no template images, so
+/// the shape is tinted a mid grey-blue that reads on light and dark.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn icon_argb(icon: Icon, size: u32, rgb: [u8; 3]) -> Vec<u8> {
+    icon_rgba(icon, size)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| [p[3], rgb[0], rgb[1], rgb[2]])
+        .collect()
+}
+
+/// Menu labels with `_` marking an access key (the dbusmenu convention):
+/// a literal underscore is written `__`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn escape_mnemonic(label: &str) -> String {
+    label.replace('_', "__")
+}
+
+/// The dialog program on Linux (neither is guaranteed to be installed).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogTool {
+    Zenity,
+    Kdialog,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl DialogTool {
+    pub fn program(self) -> &'static str {
+        match self {
+            Self::Zenity => "zenity",
+            Self::Kdialog => "kdialog",
+        }
+    }
+
+    /// Arguments for a yes/no question; the program exits 0 for yes.
+    pub fn confirm_args(self, title: &str, body: &str, yes: &str, no: &str) -> Vec<String> {
+        let s = |s: &str| s.to_owned();
+        match self {
+            Self::Zenity => vec![
+                s("--question"),
+                s("--title"),
+                s(title),
+                s("--text"),
+                // zenity reads Pango markup in the text.
+                markup_escape(body),
+                s("--ok-label"),
+                s(yes),
+                s("--cancel-label"),
+                s(no),
+            ],
+            Self::Kdialog => vec![
+                s("--title"),
+                s(title),
+                s("--yes-label"),
+                s(yes),
+                s("--no-label"),
+                s(no),
+                s("--yesno"),
+                s(body),
+            ],
+        }
+    }
+
+    /// Arguments for a message with an OK button.
+    pub fn message_args(self, title: &str, body: &str) -> Vec<String> {
+        let s = |s: &str| s.to_owned();
+        match self {
+            Self::Zenity => vec![
+                s("--info"),
+                s("--title"),
+                s(title),
+                s("--text"),
+                markup_escape(body),
+            ],
+            Self::Kdialog => vec![s("--title"), s(title), s("--msgbox"), s(body)],
+        }
+    }
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn markup_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linux_pixmap_is_argb_in_network_order() {
+        let size = 36;
+        let argb = icon_argb(Icon::Running, size, [10, 20, 30]);
+        assert_eq!(argb.len(), (size * size * 4) as usize);
+        let centre = ((size / 2 * size + size / 2) * 4) as usize;
+        assert_eq!(&argb[centre..centre + 4], [255, 10, 20, 30]);
+        // Transparent corners keep the colour but have no alpha.
+        assert_eq!(&argb[..4], [0, 10, 20, 30]);
+    }
+
+    #[test]
+    fn underscores_in_labels_are_literal() {
+        assert_eq!(escape_mnemonic("my_gateway down"), "my__gateway down");
+        assert_eq!(escape_mnemonic("Open tern"), "Open tern");
+    }
+
+    #[test]
+    fn dialog_arguments_suit_each_tool() {
+        let z = DialogTool::Zenity.confirm_args("Quit tern?", "a < b & c", "Quit tern", "Cancel");
+        assert_eq!(z[0], "--question");
+        assert!(z.contains(&"a &lt; b &amp; c".to_owned()));
+        assert!(z.windows(2).any(|w| w == ["--ok-label", "Quit tern"]));
+        let k = DialogTool::Kdialog.confirm_args("Quit tern?", "body", "Quit tern", "Cancel");
+        assert_eq!(&k[k.len() - 2..], ["--yesno", "body"]);
+        assert_eq!(
+            DialogTool::Kdialog.message_args("T", "B"),
+            ["--title", "T", "--msgbox", "B"]
+        );
+        assert_eq!(
+            DialogTool::Zenity.message_args("T", "B"),
+            ["--info", "--title", "T", "--text", "B"]
+        );
+    }
 
     fn running(runs: usize, approvals: usize, routines: usize) -> Health {
         Health::Running(Summary {

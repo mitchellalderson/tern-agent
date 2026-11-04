@@ -279,8 +279,36 @@ impl<U: Fn(Update)> Worker<U> {
     }
 }
 
+/// The Flutter app's executable on Linux (`apps/desktop/linux`).
+#[cfg(target_os = "linux")]
+pub const DESKTOP_EXE: &str = "tern_desktop";
+
+/// Open the desktop app: `tern_desktop` beside this binary, else on `PATH`.
+#[cfg(target_os = "linux")]
+fn open_app() -> anyhow::Result<()> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join(DESKTOP_EXE)))
+        .filter(|p| p.exists());
+    let mut cmd = std::process::Command::new(beside.unwrap_or_else(|| DESKTOP_EXE.into()));
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| {
+            anyhow::anyhow!("the tern app isn't installed (`{DESKTOP_EXE}` isn't on your PATH)")
+        })?;
+    // Reaped when the window closes, so it doesn't linger as a zombie.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Open the desktop app: the `tern.app` this tray is bundled in, else
 /// whichever one Launch Services knows.
+#[cfg(target_os = "macos")]
 fn open_app() -> anyhow::Result<()> {
     let host = std::env::current_exe()
         .ok()
