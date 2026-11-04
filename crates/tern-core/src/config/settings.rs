@@ -750,8 +750,8 @@ mod tests {
                 "outbox",
                 "taint",
                 "connectors",
-                "webhooks",
                 "auth",
+                "webhooks",
                 "api"
             ]
         );
