@@ -696,6 +696,7 @@ mod tests {
                 "memory",
                 "home",
                 "outbox",
+                "connectors",
                 "api"
             ]
         );

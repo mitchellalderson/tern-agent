@@ -103,6 +103,11 @@ docker_pids = 512          # 0 for no limit
 # wait_secs = 120              # at once when no app, TUI or tray is attached
 # expire_hours = 72           # how long an item waits for you before it expires
 
+# Luau connectors (~/.tern/connectors). A connector can declare its own rate
+# (capabilities.rate = "60/min"); this is the limit for those that don't.
+# [connectors]
+# rate = "120/min"             # HTTP requests per connector, shared by every run and script
+
 # Scheduled prompts (schedule_create, the app's routines). Each schedule can
 # override these.
 # [schedules]

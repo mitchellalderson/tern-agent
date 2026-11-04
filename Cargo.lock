@@ -4643,6 +4643,7 @@ dependencies = [
  "futures",
  "mlua",
  "reqwest",
+ "serde",
  "serde_json",
  "tempfile",
  "tern-core",

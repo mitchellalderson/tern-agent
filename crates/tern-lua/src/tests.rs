@@ -403,7 +403,9 @@ async fn draft_write_test_activate_flow() {
     );
     let summary = activate.summary(&json!({"name": "greet"})).unwrap();
     assert!(
-        summary.contains("http hosts: none; secrets: none; tools: hello (write)"),
+        summary.contains(
+            "http hosts: none; secrets: none; rate: 120/min (default); tools: hello (write)"
+        ),
         "{summary}"
     );
     let done = activate.call(&c, json!({"name": "greet"})).await;
@@ -868,3 +870,5 @@ fn testing_a_draft_has_the_effect_of_the_tool_tested() {
     ));
     assert_eq!(check("pay"), Check::Forbid("money_movement"));
 }
+
+mod auth;

@@ -102,7 +102,12 @@ impl Inspected {
 
 fn describe(vm: &Vm) -> String {
     let s = &vm.spec;
-    let mut out = format!("{} — {}\n{}", s.name, s.description, s.capability_summary());
+    let mut out = format!(
+        "{} — {}\n{}",
+        s.name,
+        s.description,
+        vm.capability_summary()
+    );
     for t in &s.tools {
         out.push_str(&format!(
             "\n- {} [{}]: {}",
@@ -211,8 +216,8 @@ impl Tool for ConnectorTest {
             .ok()
             .and_then(|n| self.inspected.inspect(&self.host, &self.dirs, n).ok());
         let risky = loaded.as_ref().is_some_and(|l| {
-            !l.fingerprint.capabilities.http.is_empty()
-                || !l.fingerprint.capabilities.secrets.is_empty()
+            let c = &l.fingerprint.capabilities;
+            !c.http.is_empty() || !c.secrets.is_empty() || !c.auth.is_empty()
         });
         let tool = args.get("tool").and_then(Value::as_str);
         let def = loaded.as_ref().and_then(|l| {
@@ -242,7 +247,7 @@ impl Tool for ConnectorTest {
         let caps = self
             .inspected
             .inspect(&self.host, &self.dirs, name)
-            .map(|l| l.vm.spec.capability_summary())
+            .map(|l| l.vm.capability_summary())
             .unwrap_or_else(|e| format!("invalid draft: {e}"));
         Some(format!("connector_test draft {name}.{tool} ({caps})"))
     }
@@ -261,6 +266,24 @@ impl Tool for ConnectorTest {
             Ok(out) => ToolResult::ok(out),
             Err(e) => ToolResult::error(format!("{name}.{tool}: {e}")),
         }
+    }
+}
+
+/// `. Changes: + http api.x.com/v2/*, - rate 60/min`, or that nothing changed.
+fn capability_diff(old: &[String], new: &[String]) -> String {
+    let added = new
+        .iter()
+        .filter(|l| !old.contains(l))
+        .map(|l| format!("+ {l}"));
+    let removed = old
+        .iter()
+        .filter(|l| !new.contains(l))
+        .map(|l| format!("- {l}"));
+    let changes: Vec<String> = added.chain(removed).collect();
+    if changes.is_empty() {
+        ". Capabilities unchanged from the active one".into()
+    } else {
+        format!(". Changes from the active one: {}", changes.join(", "))
     }
 }
 
@@ -302,19 +325,31 @@ impl Tool for ConnectorActivate {
         false
     }
 
-    /// The approval prompt shows exactly what the connector may access.
+    /// The approval prompt shows exactly what the connector may access
+    /// and, when it replaces an active one, what changes.
     fn summary(&self, args: &Value) -> Option<String> {
         let name = name_arg(args).ok()?;
-        let replacing = if self.dirs.active(name).exists() {
+        let active = self.dirs.active(name);
+        let replacing = if active.exists() {
             " (replacing the active one)"
         } else {
             ""
         };
         Some(match self.inspected.inspect(&self.host, &self.dirs, name) {
-            Ok(l) => format!(
-                "activate Luau connector {name}{replacing} — {}",
-                l.vm.spec.capability_summary()
-            ),
+            Ok(l) => {
+                let mut out = format!(
+                    "activate Luau connector {name}{replacing} — {}",
+                    l.vm.capability_summary()
+                );
+                if let Ok(old) = crate::load_file(&self.host, &active) {
+                    let rate = self.host.default_rate;
+                    out.push_str(&capability_diff(
+                        &old.spec.capabilities.lines(rate),
+                        &l.vm.spec.capabilities.lines(rate),
+                    ));
+                }
+                out
+            }
             Err(e) => format!("activate Luau connector {name} — invalid draft: {e}"),
         })
     }
@@ -364,8 +399,12 @@ return {
   name = "weather",                       -- must equal the `name` argument
   description = "Look up forecasts",
   capabilities = {
-    http = { "api.weather.example" },     -- hosts ctx.http may call ("*.example.com" allowed)
-    secrets = { "WEATHER_API_KEY" },      -- secrets ctx.secret may read
+    http = { "api.weather.example/v1/*" },  -- hosts ctx.http may call, optionally limited to paths
+                                          -- ("*.example.com" allowed; "*" in a path is one segment,
+                                          -- a trailing "*" is the rest)
+    auth = { secret = "WEATHER_API_KEY" },  -- tern adds "Authorization: Bearer <value>" to every
+                                          -- request to those hosts; the script never sees it
+    rate = "60/min",                      -- optional; requests per minute, hour or sec
   },
   tools = {
     forecast = {
@@ -376,9 +415,7 @@ return {
       idempotent = true,                  -- safe to re-run after a crash (default false)
       params = { type = "object", properties = { city = { type = "string" } }, required = { "city" } },
       run = function(ctx, args)
-        local res = ctx.http.get("https://api.weather.example/v1?q=" .. args.city, {
-          headers = { Authorization = "Bearer " .. ctx.secret("WEATHER_API_KEY") },
-        })
+        local res = ctx.http.get("https://api.weather.example/v1/forecast?q=" .. args.city)
         if not res.ok then error("HTTP " .. res.status) end
         return res.json                   -- tables are returned as JSON, strings as-is
       end,
@@ -386,6 +423,14 @@ return {
   },
 }
 
-A "read" tool may only send GET/HEAD; set read_via_post = true for one that reads via POST (GraphQL, search APIs). Tools that move money or trade must say money_movement = true or trade = true: tern refuses to run them.
+Credentials go in capabilities.auth, never in the script. Forms:
+  auth = "TOKEN"                                               -- Authorization: Bearer <TOKEN>
+  auth = { secret = "KEY", header = "X-Api-Key" }              -- X-Api-Key: <KEY> (scheme "" unless the header is Authorization)
+  auth = { secret = "TOKEN", header = "Authorization", scheme = "token" }
+  auth = { secret = "KEY", query = "api_key" }                 -- ?api_key=<KEY>
+  auth = { basic = { user = "JIRA_EMAIL", password = "JIRA_TOKEN" } }   -- HTTP Basic; user or password may be left out
+Add hosts = { "api.example.com" } to an entry to send it to only some of the http hosts, and use a list of entries for several. A request sends every entry for its host; pass auth = false in a request's options to send none, or auth = "NAME" to send only that one. The value is removed from responses and errors before the script sees them. capabilities.secrets with ctx.secret(name) still works for old connectors but is legacy: the script sees the value, and tern flags it to the user.
 
-ctx API: ctx.http.request{method, url, headers, json, body, timeout} and ctx.http.get/post/put/patch/delete(url, opts) return {status, ok, headers, body, json}; ctx.secret(name) (the secret must be listed in capabilities.secrets; if it isn't set, call secret_request so the user can enter it privately, before connector_test; never ask for secrets in the chat); ctx.kv.get(key) / ctx.kv.set(key, value) (per-connector storage; set nil to delete); ctx.log(level, msg); ctx.now() (unix ms). Globals: json.encode, json.decode, string, table, math, os.time/os.date. No file or process access, no require. Each call has a 5 second limit."#;
+A "read" tool may only send GET/HEAD; set read_via_post = true for one that reads via POST (GraphQL, search APIs). Tools that move money or trade must say money_movement = true or trade = true: tern refuses to run them. Requests outside the declared hosts and paths fail, including after redirects. Past the rate (default 120/min per connector, shared by every caller, scripts included) a request fails with "rate limited … try again in Ns"; a 429 or 503 with Retry-After pauses the connector for that long.
+
+ctx API: ctx.http.request{method, url, headers, json, body, timeout, auth} and ctx.http.get/post/put/patch/delete(url, opts) return {status, ok, headers, body, json}; ctx.kv.get(key) / ctx.kv.set(key, value) (per-connector storage; set nil to delete); ctx.log(level, msg); ctx.now() (unix ms). If a secret in capabilities.auth isn't set, call secret_request so the user can enter it privately, before connector_test; never ask for secrets in the chat. Globals: json.encode, json.decode, string, table, math, os.time/os.date. No file or process access, no require. Each call has a 5 second limit."#;
