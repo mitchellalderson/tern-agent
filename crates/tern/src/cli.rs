@@ -40,6 +40,15 @@ pub enum Command {
     },
     /// Run the gateway, scheduler, and local API in the foreground.
     Daemon,
+    /// Start tern in the background (through the service if installed).
+    Start,
+    /// Stop tern. Tasks in progress pick up where they left off next start.
+    Stop,
+    /// Start tern at login through launchd (macOS) or systemd (Linux).
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
     /// Pair and manage devices that reach this core over TCP.
     Devices {
         #[command(subcommand)]
@@ -101,6 +110,20 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ServiceCommand {
+    /// Install the service. A crash restarts tern; `tern stop` doesn't.
+    Install {
+        /// Install without starting tern at login.
+        #[arg(long)]
+        no_login: bool,
+    },
+    /// Remove the service (tern keeps running until stopped).
+    Uninstall,
+    /// Whether the service is installed, loaded and running.
+    Status,
 }
 
 #[derive(Debug, Subcommand)]

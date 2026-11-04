@@ -61,7 +61,7 @@ class _OfflineViewState extends State<OfflineView> {
               ),
               const SizedBox(height: 8),
               Text(
-                'The app talks to the tern daemon on\n'
+                'The app looks for tern on\n'
                 '${store.client.endpoint.describe()}',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodySmall,
@@ -79,8 +79,8 @@ class _OfflineViewState extends State<OfflineView> {
                   )
                 else
                   SelectableText(
-                    "Couldn't find the tern binary. Start it yourself:\n"
-                    'tern daemon',
+                    "Couldn't find tern on this computer. Start it "
+                    'yourself:\ntern start',
                     textAlign: TextAlign.center,
                     style: mono.copyWith(color: c.muted),
                   ),

@@ -7,6 +7,7 @@ mod devices_cmd;
 mod doctor;
 mod gateway_cmd;
 mod inspect;
+mod lifecycle;
 mod logging;
 mod providers;
 mod providers_cmd;
@@ -14,6 +15,7 @@ mod remote;
 mod report_cmd;
 mod run_cmd;
 mod runtime;
+mod service;
 mod subagents;
 mod tui_backend;
 
@@ -22,7 +24,9 @@ use std::process::ExitCode;
 use clap::Parser;
 use tern_core::TernHome;
 
-use cli::{Cli, Command, ConfigCommand, ConnectorsCommand, RunsCommand, SessionsCommand};
+use cli::{
+    Cli, Command, ConfigCommand, ConnectorsCommand, RunsCommand, ServiceCommand, SessionsCommand,
+};
 
 fn main() -> ExitCode {
     // `tern __sandbox-exec …`: confine this process, then exec a shell command.
@@ -123,6 +127,13 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         ),
         Some(Command::Resume { run_id, yes }) => run_cmd::resume(&home, &run_id, yes),
         Some(Command::Daemon) => daemon::run(&home),
+        Some(Command::Start) => lifecycle::start(&home),
+        Some(Command::Stop) => lifecycle::stop(&home),
+        Some(Command::Service { command }) => match command {
+            ServiceCommand::Install { no_login } => service::install(&home, !no_login),
+            ServiceCommand::Uninstall => service::uninstall(),
+            ServiceCommand::Status => service::status(&home),
+        },
         Some(Command::Report { output, run }) => {
             report_cmd::run(&home, output.as_deref(), run.as_deref())
         }

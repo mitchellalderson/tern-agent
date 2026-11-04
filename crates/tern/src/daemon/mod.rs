@@ -2,6 +2,7 @@
 //! scheduler, gateways, and the local API on `~/.tern/tern.sock`.
 
 pub mod api;
+pub mod api_lifecycle;
 mod api_providers;
 mod api_runs;
 mod api_schedules;
@@ -29,6 +30,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::runtime::Runtime;
 use manager::{Manager, Router, Routes};
+
+/// Test switch: answer `/v1/shutdown` but keep running, and ignore SIGTERM,
+/// like a wedged daemon, so `tern stop`'s escalation can be tested.
+pub const TEST_IGNORE_SHUTDOWN_ENV: &str = "TERN_TEST_IGNORE_SHUTDOWN";
 
 /// Holds the PID file lock for the daemon's lifetime.
 struct PidLock {
@@ -60,7 +65,16 @@ fn lock_pid(home: &TernHome) -> anyhow::Result<PidLock> {
 
 pub fn run(home: &TernHome) -> anyhow::Result<ExitCode> {
     home.ensure_layout()?;
-    let _pid = lock_pid(home)?;
+    let _pid = match lock_pid(home) {
+        Ok(lock) => lock,
+        // Under launchd/systemd a failure would be restarted every few
+        // seconds; another daemon running is fine, so exit cleanly.
+        Err(e) if std::env::var_os(crate::service::SERVICE_ENV).is_some() => {
+            eprintln!("{e:#}; leaving it running");
+            return Ok(ExitCode::SUCCESS);
+        }
+        Err(e) => return Err(e),
+    };
     let routes = Arc::new(Routes::default());
     let rt = Arc::new(Runtime::open(home, Arc::new(Router(routes.clone())))?);
     let _ = routes.store.set(rt.store.clone());
@@ -113,7 +127,11 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
 
     if let Some(g) = telegram {
         let host: Arc<dyn tern_gateway::ChatHost> = Arc::new(manager::Chats(manager.clone()));
-        tokio::spawn(g.run(host, shutdown.clone()));
+        let name = g.name().to_owned();
+        let task = tokio::spawn(g.run(host, shutdown.clone()));
+        if let Ok(mut t) = routes.lifecycle.gateway_tasks.lock() {
+            t.push((name, task));
+        }
     }
     tokio::spawn(scheduler::run(manager.clone(), shutdown.clone()));
 
@@ -136,7 +154,10 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     }
     tracing::info!(socket = %socket.display(), "daemon started");
 
-    wait_for_signal().await;
+    tokio::select! {
+        () = wait_for_signal() => {}
+        () = routes.lifecycle.shutdown.cancelled() => {}
+    }
     tracing::info!("daemon stopping");
     // Runs in progress are left `running`: the next start resumes them,
     // exactly as after a crash.
@@ -151,6 +172,16 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
 }
 
 async fn wait_for_signal() {
+    if std::env::var_os(TEST_IGNORE_SHUTDOWN_ENV).is_some() {
+        // Hold SIGTERM and SIGINT so they don't kill us; only SIGKILL will.
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            let _int = signal(SignalKind::interrupt());
+            let _term = signal(SignalKind::terminate());
+            std::future::pending::<()>().await;
+        }
+    }
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};

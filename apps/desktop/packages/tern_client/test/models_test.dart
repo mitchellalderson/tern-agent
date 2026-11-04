@@ -78,14 +78,13 @@ void main() {
   test('decodes session messages', () {
     final d = SessionDetail.fromJson(
       jsonDecode(
-            '{"id":"s","title":null,'
-            '"model":"m","messages":[{"role":"assistant","summary":false,'
-            '"content":[{"type":"text","text":"hi"},{"type":"tool_use",'
-            '"id":"t","name":"shell","input":{}}]},{"role":"user",'
-            '"summary":false,"content":[{"type":"tool_result",'
-            '"tool_use_id":"t","content":"ok"}]}]}',
-          )
-          as Json,
+        '{"id":"s","title":null,'
+        '"model":"m","messages":[{"role":"assistant","summary":false,'
+        '"content":[{"type":"text","text":"hi"},{"type":"tool_use",'
+        '"id":"t","name":"shell","input":{}}]},{"role":"user",'
+        '"summary":false,"content":[{"type":"tool_result",'
+        '"tool_use_id":"t","content":"ok"}]}]}',
+      ) as Json,
     );
     expect(d.messages, hasLength(2));
     expect(d.messages[0].content[1], isA<ToolUseBlock>());
@@ -98,8 +97,9 @@ void main() {
     );
     expect((e as RunEvent).sessionId, 's');
     expect(
-      (ev('{"type":"text_delta","run_id":"r","text":"x"}') as RunEvent)
-          .sessionId,
+      (ev(
+        '{"type":"text_delta","run_id":"r","text":"x"}',
+      ) as RunEvent).sessionId,
       isNull,
     );
   });
@@ -107,11 +107,10 @@ void main() {
   test('decodes schedules, runs and steps', () {
     final s = Schedule.fromJson(
       jsonDecode(
-            '{"id":"sch_1","cron":"0 8 * * 1-5",'
-            '"prompt":"p","session_id":"s","deliver_to":null,"enabled":false,'
-            '"next_run_at":null,"last_run_at":1762185600000,"last_status":"completed"}',
-          )
-          as Json,
+        '{"id":"sch_1","cron":"0 8 * * 1-5",'
+        '"prompt":"p","session_id":"s","deliver_to":null,"enabled":false,'
+        '"next_run_at":null,"last_run_at":1762185600000,"last_status":"completed"}',
+      ) as Json,
     );
     expect(s.nextRunAt, isNull);
     expect(s.lastRunAt!.year, 2025);
@@ -143,11 +142,10 @@ void main() {
     });
     final step = StepItem.fromJson(
       jsonDecode(
-            '{"idx":0,"kind":"llm","status":"completed",'
-            '"input":{"model":"m"},"output":null,"usage":{"input_tokens":5,"output_tokens":1},'
-            '"error":null,"started_at":1762185600000,"finished_at":1762185602500}',
-          )
-          as Json,
+        '{"idx":0,"kind":"llm","status":"completed",'
+        '"input":{"model":"m"},"output":null,"usage":{"input_tokens":5,"output_tokens":1},'
+        '"error":null,"started_at":1762185600000,"finished_at":1762185602500}',
+      ) as Json,
     );
     expect(step.duration, const Duration(milliseconds: 2500));
     expect(step.usage!.total, 6);
@@ -156,15 +154,36 @@ void main() {
   test('decodes secrets and validates names', () {
     final s = SecretStatus.fromJson(
       jsonDecode(
-            '{"name":"ANTHROPIC_API_KEY","in_file":false,"in_env":true,'
-            '"used_by":["provider anthropic"]}',
-          )
-          as Json,
+        '{"name":"ANTHROPIC_API_KEY","in_file":false,"in_env":true,'
+        '"used_by":["provider anthropic"]}',
+      ) as Json,
     );
     expect(s.isSet, isTrue);
     expect(s.usedBy, ['provider anthropic']);
     expect(secretName.hasMatch('GITHUB_TOKEN'), isTrue);
     expect(secretName.hasMatch('9LIVES'), isFalse);
     expect(secretName.hasMatch('A-B'), isFalse);
+  });
+
+  test('decodes status and shutdown replies', () {
+    final s = DaemonStatus.fromJson(
+      jsonDecode(
+        '{"version":"0.1.0","pid":42,"uptime_secs":90,'
+        '"managed_by":"launchd","running_runs":1,"pending_approvals":2,'
+        '"active_schedules":3,"gateways":[{"name":"telegram","ok":true}]}',
+      ) as Json,
+    );
+    expect(s.uptime, const Duration(seconds: 90));
+    expect(s.managedBy, 'launchd');
+    expect((s.runningRuns, s.pendingApprovals, s.activeSchedules), (1, 2, 3));
+    expect(s.gateways.single.ok, isTrue);
+    final r = ShutdownReply.fromJson(
+      jsonDecode(
+        '{"stopping":false,"runs":[{"run_id":"r","session_id":"s",'
+        '"title":"Summarize the Q3 report"}]}',
+      ) as Json,
+    );
+    expect(r.stopping, isFalse);
+    expect(r.runs.single.title, 'Summarize the Q3 report');
   });
 }

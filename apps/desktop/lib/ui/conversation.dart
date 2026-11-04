@@ -266,7 +266,7 @@ class _Empty extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          'Runs keep going in the daemon if you close this window.',
+          'Runs keep going in the background if you close this window.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ],

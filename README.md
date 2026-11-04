@@ -80,6 +80,8 @@ tern           # chat
 | [`tern run`](#tern-run) | Run one prompt non-interactively and print the answer. |
 | [`tern resume`](#tern-resume) | Continue an interrupted or failed run. |
 | [`tern daemon`](#tern-daemon) | Run the scheduler, gateways, and local API in the foreground. |
+| [`tern start` / `tern stop`](#tern-start-and-tern-stop) | Start tern in the background, or stop it. |
+| [`tern service`](#tern-service) | Start tern at login (launchd on macOS, systemd on Linux). |
 | [`tern gateway pair`](#tern-gateway-pair) | Pair a Telegram account with the bot. |
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
@@ -148,7 +150,33 @@ Runs in the foreground until SIGINT or SIGTERM, and provides:
 - **Local API** on `~/.tern/tern.sock` (mode 0600), which `tern` and the desktop app attach to.
 - **Crash recovery**: runs in progress when the daemon stops are left `running` and resume on the next start, exactly as after a crash.
 
-Only one daemon may use a data directory; a second one exits with the first one's pid. `tern doctor` reports whether it's running. To keep it running, start it from your service manager (systemd, launchd) or a terminal multiplexer; logs go to `~/.tern/logs/`.
+Only one daemon may use a data directory; a second one exits with the first one's pid. `tern doctor` reports whether it's running and what manages it. To keep it running, use [`tern start`](#tern-start-and-tern-stop) or [`tern service install`](#tern-service); logs go to `~/.tern/logs/`.
+
+### `tern start` and `tern stop`
+
+```sh
+tern start    # in the background: through the service if installed, else detached
+tern stop     # stop it; tasks in progress pick up where they left off next start
+```
+
+`tern start` starts tern through the login service when [`tern service`](#tern-service) installed one, and otherwise runs `tern daemon` detached (output in `~/.tern/logs/daemon.log`). It waits until tern answers, and does nothing if it's already running.
+
+`tern stop` asks tern to stop (`POST /v1/shutdown`). tern exits cleanly with code 0, so the service manager doesn't start it again, and runs in progress stay paused until the next start. If tern hasn't gone after 10 seconds (it's stuck, or an older version without the endpoint), `tern stop` stops it by force: it has the service manager let go of it first (`launchctl bootout` or `systemctl --user stop`, so it isn't brought back; the login item stays), then sends SIGTERM to the pid in `~/.tern/tern.pid`, and SIGKILL 5 seconds later. It only signals a `tern` process owned by you.
+
+The desktop app does the same from **tern › Quit tern completely** (⌥⌘Q), so nobody needs a terminal to turn tern off.
+
+### `tern service`
+
+```sh
+tern service install [--no-login]   # start tern at login
+tern service status                 # installed? loaded? running?
+tern service uninstall              # stop starting it at login
+```
+
+- **macOS**: writes the LaunchAgent `~/Library/LaunchAgents/ai.tern.daemon.plist` and loads it. It has `KeepAlive = { SuccessfulExit = false }`: launchd restarts tern after a crash, but not after `tern stop` or Quit.
+- **Linux**: writes the systemd user unit `~/.config/systemd/user/tern-daemon.service` with `Restart=on-failure`, for the same reason, and enables it.
+
+Logs go to `~/.tern/logs/daemon.{out,err}.log`. `--no-login` installs the service without starting tern at login (`tern start` then starts it through the service). Installing or uninstalling never stops a running tern; `tern stop` does. The desktop app's **Settings › Start tern when I log in** runs these commands.
 
 ### `tern gateway pair`
 
@@ -243,7 +271,7 @@ tern config set mcp.servers.github.args '["stdio"]'
 tern doctor [--offline]
 ```
 
-Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; the database's schema version and integrity; whether the daemon is running; schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each MCP server's command or URL and secrets. Each problem comes with a hint for fixing it.
+Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each MCP server's command or URL and secrets. Each problem comes with a hint for fixing it.
 
 It exits `1` if anything failed, `0` otherwise (warnings are things not set up yet). It is read-only and doesn't create `~/.tern`.
 
@@ -428,7 +456,7 @@ The repo has two halves: the Rust engine (`crates/`, built into the single `tern
 A running daemon keeps running the binary it started from. Hot reload in `flutter run` only reloads Dart, so after changing anything under `crates/` the app (and a `tern` chat attached to the daemon) keeps seeing the old engine until you restart it:
 
 ```sh
-kill $(cat ~/.tern/tern.pid)              # stop the old daemon (SIGTERM)
+tern stop                                 # stop the old daemon
 cargo build -p tern                       # → target/debug/tern
 target/debug/tern daemon                  # start the new one
 ```

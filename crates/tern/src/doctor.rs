@@ -471,6 +471,13 @@ fn check_schedules(r: &mut Report, home: &TernHome, config: &Config) {
 
 /// Read-only: inspects the PID file's lock without creating anything.
 fn check_daemon(r: &mut Report, home: &TernHome) {
+    if let Some(s) = crate::service::state() {
+        r.check(
+            Status::Info,
+            format!("managed by: {}", crate::service::describe(&s)),
+            None,
+        );
+    }
     let path = home.pid_path();
     let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
@@ -479,7 +486,7 @@ fn check_daemon(r: &mut Report, home: &TernHome) {
     else {
         r.check(
             Status::Info,
-            "not running (start it with `tern daemon`)",
+            "not running (start it with `tern start`)",
             None,
         );
         return;
@@ -487,7 +494,7 @@ fn check_daemon(r: &mut Report, home: &TernHome) {
     match file.try_lock() {
         Ok(()) => r.check(
             Status::Info,
-            "not running (start it with `tern daemon`)",
+            "not running (start it with `tern start`)",
             None,
         ),
         Err(_) => {
