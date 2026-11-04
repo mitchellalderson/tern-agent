@@ -10,6 +10,8 @@ pub const MANIFEST: &str = "bundle.toml";
 pub const SIGNATURE: &str = "bundle.toml.minisig";
 pub const ROUTINES: &str = "routines.toml";
 pub const README: &str = "README.md";
+pub const AGENT_FILE: &str = "agent.toml";
+pub const PERSONA_FILE: &str = "persona.md";
 
 /// Limits on what a bundle may hold, so a hostile archive can't fill the
 /// disk or memory.
@@ -56,6 +58,8 @@ pub enum Kind {
     Connector(String),
     /// `skills/<slug>/…`.
     Skill(String),
+    /// `agents/<slug>/agent.toml` and `agents/<slug>/persona.md`.
+    Agent(String),
     /// `routines.toml`.
     Routines,
     /// `README.md`, shown at install.
@@ -90,8 +94,11 @@ impl Manifest {
             )));
         }
         let mut seen = std::collections::BTreeSet::new();
+        let mut agents = std::collections::BTreeSet::new();
         for f in &self.files {
-            kind(&f.path)?;
+            if let Kind::Agent(slug) = kind(&f.path)? {
+                agents.insert(slug);
+            }
             if !seen.insert(f.path.as_str()) {
                 return Err(BundleError::Invalid(format!(
                     "{MANIFEST} lists {} twice",
@@ -103,6 +110,16 @@ impl Manifest {
                     "{MANIFEST}: {} needs a sha256 of 64 hex digits",
                     f.path
                 )));
+            }
+        }
+        for slug in agents {
+            for part in [AGENT_FILE, PERSONA_FILE] {
+                let want = format!("agents/{slug}/{part}");
+                if !self.files.iter().any(|f| f.path == want) {
+                    return Err(BundleError::Invalid(format!(
+                        "{MANIFEST}: agent {slug} needs {want}"
+                    )));
+                }
             }
         }
         Ok(())
@@ -170,11 +187,14 @@ pub fn kind(path: &str) -> Result<Kind, BundleError> {
         ["skills", ..] => Err(bad(
             "skills are skills/<name>/SKILL.md (and files beside it)",
         )),
+        ["agents", slug, AGENT_FILE | PERSONA_FILE] if tern_core::agents::check_slug(slug).is_ok() => {
+            Ok(Kind::Agent((*slug).to_owned()))
+        }
         ["agents", ..] => Err(bad(
-            "agent profile templates can't be installed by this version of tern yet",
+            "agent templates are agents/<name>/agent.toml and agents/<name>/persona.md",
         )),
         _ => Err(bad(
-            "a bundle holds connectors/*.luau, skills/<name>/…, routines.toml and README.md",
+            "a bundle holds connectors/*.luau, skills/<name>/…, agents/<name>/…, routines.toml and README.md",
         )),
     }
 }
@@ -187,6 +207,11 @@ pub fn kind(path: &str) -> Result<Kind, BundleError> {
 pub struct RoutineTemplate {
     /// Unique in the bundle: how an update finds it again.
     pub name: String,
+    /// The slug of an agent this bundle brings (`agents/<slug>/`): the
+    /// routine belongs to it. Otherwise it goes to the bundle's only
+    /// agent, or to the agent it is installed for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     pub prompt: String,
     pub trigger: TriggerTemplate,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -209,6 +234,79 @@ pub struct RoutineTemplate {
     pub channel: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+}
+
+/// `agents/<slug>/agent.toml`: an agent profile as a template. The persona
+/// is `persona.md` beside it. Nothing machine-specific (a model, a Telegram
+/// token, delegates, the tainted-host limit) travels: it is the user's job
+/// to set those after installing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTemplate {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<AvatarTemplate>,
+    /// `private` (the default) or `shared`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    /// Absent: read-only built-in tools, no connectors, no MCP servers,
+    /// all skills (it fails closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<tern_core::agents::ToolScope>,
+    /// The autonomy ceiling: `readonly`, `supervised`, `autonomous`, `yolo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomy: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AvatarTemplate {
+    pub glyph: String,
+    pub color: String,
+}
+
+impl AgentTemplate {
+    pub fn parse(slug: &str, text: &str) -> Result<Self, BundleError> {
+        let bad = |why: String| BundleError::Invalid(format!("agents/{slug}/{AGENT_FILE}: {why}"));
+        let t: AgentTemplate = toml::from_str(text).map_err(|e| bad(e.message().to_owned()))?;
+        if t.name.trim().is_empty() || t.name.chars().count() > 64 {
+            return Err(bad("name must be 1–64 characters".into()));
+        }
+        if let Some(m) = &t.memory
+            && !matches!(m.as_str(), "private" | "shared")
+        {
+            return Err(bad(format!(
+                "memory must be \"private\" or \"shared\", not {m:?}"
+            )));
+        }
+        if let Some(a) = &t.autonomy
+            && tern_core::approval::Autonomy::parse(a).is_none()
+        {
+            return Err(bad(format!(
+                "autonomy must be readonly, supervised, autonomous or yolo, not {a:?}"
+            )));
+        }
+        if let Some(av) = &t.avatar
+            && (av.glyph.chars().count() > 4 || av.color.len() > 16 || av.color.is_empty())
+        {
+            return Err(bad("avatar needs a short glyph and a colour name".into()));
+        }
+        Ok(t)
+    }
+
+    /// The scope it gets: its own, else the narrow default (read-only
+    /// built-ins), never `all` by omission.
+    pub fn scope(&self) -> tern_core::agents::ToolScope {
+        use tern_core::agents::{Pick, ToolScope};
+        self.tools.clone().unwrap_or(ToolScope {
+            builtins: Pick::ReadOnly,
+            connectors: Pick::Names(Vec::new()),
+            mcp: Pick::Names(Vec::new()),
+            skills: Pick::All,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -316,6 +414,14 @@ mod tests {
             Kind::Skill("brief".into())
         );
         assert_eq!(kind("routines.toml").unwrap(), Kind::Routines);
+        assert_eq!(
+            kind("agents/research/agent.toml").unwrap(),
+            Kind::Agent("research".into())
+        );
+        assert_eq!(
+            kind("agents/research/persona.md").unwrap(),
+            Kind::Agent("research".into())
+        );
         for bad in [
             "../x",
             "/etc/passwd",
@@ -327,6 +433,9 @@ mod tests {
             "skills/a/.env",
             "bin/tern",
             "agents/research.toml",
+            "agents/Research/agent.toml",
+            "agents/research/memory.md",
+            "agents/research/agent.toml/x",
             "a\\b",
         ] {
             assert!(kind(bad).is_err(), "{bad} should be refused");

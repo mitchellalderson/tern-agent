@@ -705,6 +705,9 @@ pub enum BundleCommand {
         /// A routine id (sch_…) to include as a template.
         #[arg(long = "routine")]
         routines: Vec<String>,
+        /// An agent (its @name) to include as a template, with its routines.
+        #[arg(long = "profile")]
+        agents: Vec<String>,
         /// Everything of yours: active connectors, skills, and the routines
         /// of --agent, except what came from installed bundles.
         #[arg(long)]

@@ -11,8 +11,8 @@ use tern_core::{Secrets, TernHome};
 use tern_store::{ScheduleRow, Store};
 
 use crate::manifest::{
-    Budget, Header, MAX_FILE_BYTES, ROUTINES, RoutineTemplate, RoutinesFile, TriggerTemplate,
-    valid_slug,
+    AGENT_FILE, AgentTemplate, AvatarTemplate, Budget, Header, MAX_FILE_BYTES, PERSONA_FILE,
+    ROUTINES, RoutineTemplate, RoutinesFile, TriggerTemplate, valid_slug,
 };
 use crate::sign::SecretKey;
 use crate::source::{assemble, pack};
@@ -27,6 +27,11 @@ pub struct Request {
     pub skills: Vec<String>,
     /// Routine ids (`sch_…`).
     pub routines: Vec<String>,
+    /// Agents (slugs) to include as templates: persona, tool scope, memory
+    /// scope, avatar and autonomy ceiling. Routines of an exported agent
+    /// go in as that agent's. Never the default agent, its model, its
+    /// Telegram bot or its memory.
+    pub agents: Vec<String>,
     /// Every active connector, skill and routine (of `agent`) that didn't
     /// come from an installed bundle.
     pub all: bool,
@@ -148,9 +153,76 @@ pub fn export(
         }
     }
 
+    // Agents, as templates.
+    let mut agent_slugs: BTreeMap<String, String> = BTreeMap::new(); // id -> slug
+    if !req.agents.is_empty() {
+        let store =
+            store.ok_or_else(|| BundleError::Invalid("agents need tern's database".into()))?;
+        for want in &req.agents {
+            let a = store
+                .agent(want.trim().trim_start_matches('@'))
+                .map_err(|e| BundleError::Io(e.to_string()))?
+                .ok_or_else(|| BundleError::Invalid(format!("no agent {want:?}")))?;
+            if a.is_default() {
+                return Err(BundleError::Invalid(
+                    "the default agent isn't exported: its persona and memory are yours".into(),
+                ));
+            }
+            if lock
+                .bundles
+                .iter()
+                .any(|b| b.agents.iter().any(|x| x.id == a.id))
+            {
+                notes.push(format!(
+                    "agent @{}: it came from an installed bundle; exported anyway as you asked",
+                    a.slug
+                ));
+            }
+            let persona =
+                std::fs::read_to_string(tern_core::agents::persona_path(home, &a.id))
+                    .map_err(|e| {
+                        BundleError::Io(format!("reading @{}'s persona: {e}", a.slug))
+                    })?;
+            let tools = a
+                .tools
+                .as_deref()
+                .map(tern_core::agents::ToolScope::parse)
+                .transpose()
+                .map_err(|e| BundleError::Invalid(format!("@{}'s tools: {e}", a.slug)))?;
+            let t = AgentTemplate {
+                name: a.name.clone(),
+                description: String::new(),
+                avatar: a
+                    .avatar
+                    .as_deref()
+                    .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
+                    .and_then(|v| {
+                        Some(AvatarTemplate {
+                            glyph: v.get("glyph")?.as_str()?.to_owned(),
+                            color: v.get("color")?.as_str()?.to_owned(),
+                        })
+                    }),
+                memory: Some(a.memory.clone()),
+                tools,
+                autonomy: a.autonomy.clone(),
+            };
+            files.insert(
+                format!("agents/{}/{AGENT_FILE}", a.slug),
+                toml::to_string(&t)
+                    .map_err(|e| BundleError::Io(e.to_string()))?
+                    .into_bytes(),
+            );
+            files.insert(
+                format!("agents/{}/{PERSONA_FILE}", a.slug),
+                persona.into_bytes(),
+            );
+            agent_slugs.insert(a.id.clone(), a.slug.clone());
+        }
+    }
+
     // Routines, as templates.
     let mut routines: Vec<ScheduleRow> = Vec::new();
-    if !req.routines.is_empty() || req.all {
+    if !req.routines.is_empty() || req.all || !agent_slugs.is_empty() {
         let store =
             store.ok_or_else(|| BundleError::Invalid("routines need tern's database".into()))?;
         let all = store
@@ -168,6 +240,15 @@ pub fn export(
                 .ok_or_else(|| BundleError::Invalid(format!("no routine {id}")))?;
             routines.push(r.clone());
         }
+        // An exported agent's routines come with it.
+        for r in &all {
+            if agent_slugs.contains_key(r.agent())
+                && !from_bundles.contains(r.id.as_str())
+                && !routines.iter().any(|x| x.id == r.id)
+            {
+                routines.push(r.clone());
+            }
+        }
         if req.all {
             let agent = req.agent.as_deref().unwrap_or(tern_store::DEFAULT_AGENT);
             for r in &all {
@@ -184,8 +265,11 @@ pub fn export(
     let mut names = BTreeSet::new();
     for r in &routines {
         match template(r, &mut names) {
-            Ok(t) => templates.push(t),
-            Err(why) if req.all => notes.push(format!("routine {}: left out: {why}", r.id)),
+            Ok(mut t) => {
+                t.agent = agent_slugs.get(r.agent()).cloned();
+                templates.push(t);
+            }
+            Err(why) if req.all || agent_slugs.contains_key(r.agent()) => notes.push(format!("routine {}: left out: {why}", r.id)),
             Err(why) => return Err(BundleError::Invalid(format!("routine {}: {why}", r.id))),
         }
     }
@@ -199,7 +283,7 @@ pub fn export(
 
     if files.is_empty() {
         return Err(BundleError::Invalid(
-            "nothing to export: name connectors, skills or routines, or pass --all".into(),
+            "nothing to export: name connectors, skills, agents or routines, or pass --all".into(),
         ));
     }
 
@@ -341,6 +425,7 @@ fn template(r: &ScheduleRow, names: &mut BTreeSet<String>) -> Result<RoutineTemp
     };
     Ok(RoutineTemplate {
         name,
+        agent: None,
         prompt: r.prompt.clone(),
         trigger,
         initiative: r.initiative.clone(),

@@ -13,7 +13,9 @@ use tern_core::{Secrets, TernHome};
 use tern_lua::{Host, Vm};
 use tern_store::Store;
 
-use crate::manifest::{Kind, ROUTINES, RoutineTemplate, RoutinesFile, kind};
+use crate::manifest::{
+    AGENT_FILE, AgentTemplate, Kind, PERSONA_FILE, ROUTINES, RoutineTemplate, RoutinesFile, kind,
+};
 use crate::source::{Bundle, Signed};
 use crate::state::{InstalledBundle, Lock, TrustStore};
 use crate::{BundleError, lookalike};
@@ -29,6 +31,8 @@ pub struct Plan {
     pub signature: SignatureInfo,
     pub connectors: Vec<ConnectorPlan>,
     pub skills: Vec<SkillPlan>,
+    /// Agent profiles it brings (templates: the agent is made at install).
+    pub agents: Vec<AgentPlan>,
     pub routines: Vec<RoutinePlan>,
     /// Secrets the connectors use: set them before activating.
     pub secrets: Vec<SecretNeed>,
@@ -101,6 +105,26 @@ pub struct SkillPlan {
     /// Files the agent could run (scripts), not just read.
     pub runnable: Vec<String>,
     pub existing: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentPlan {
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+    /// `private` or `shared`.
+    pub memory: String,
+    /// What it may use, one line per kind (`builtins: read_only`).
+    pub tools: Vec<String>,
+    /// Its autonomy ceiling, when the template sets one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autonomy: Option<String>,
+    /// The start of its persona.
+    pub persona: String,
+    /// An agent with this name exists and isn't this bundle's: a conflict.
+    pub existing: bool,
+    /// This bundle made it earlier: an update leaves it as you have it.
+    pub kept: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -201,6 +225,7 @@ pub fn plan(bundle: &Bundle, cx: &Context) -> Result<Plan, BundleError> {
 
     let mut connectors = Vec::new();
     let mut skills: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut agent_slugs: BTreeSet<String> = BTreeSet::new();
     let mut routines_text = None;
     let mut readme = None;
     for (path, bytes) in &bundle.files {
@@ -211,6 +236,9 @@ pub fn plan(bundle: &Bundle, cx: &Context) -> Result<Plan, BundleError> {
                 connectors.push(connector_plan(&name, path, &text, cx, &m.name)?);
             }
             Kind::Skill(slug) => skills.entry(slug).or_default().push(path.clone()),
+            Kind::Agent(slug) => {
+                agent_slugs.insert(slug);
+            }
             Kind::Routines => routines_text = Some(String::from_utf8_lossy(bytes).into_owned()),
             Kind::Readme => readme = Some(String::from_utf8_lossy(bytes).into_owned()),
         }
@@ -234,10 +262,29 @@ pub fn plan(bundle: &Bundle, cx: &Context) -> Result<Plan, BundleError> {
         skill_plans.push(p);
     }
 
+    let mut agent_plans = Vec::new();
+    for slug in &agent_slugs {
+        let p = agent_plan(bundle, slug, cx, installed)?;
+        for w in agent_warnings(&p, bundle, slug) {
+            warnings.push(w);
+        }
+        agent_plans.push(p);
+    }
+
     let templates = match &routines_text {
         Some(t) => RoutinesFile::parse(t)?.routines,
         None => Vec::new(),
     };
+    for r in &templates {
+        if let Some(a) = &r.agent
+            && !agent_slugs.contains(a)
+        {
+            return Err(BundleError::Invalid(format!(
+                "{ROUTINES}: routine {} belongs to agent {a}, which this bundle doesn't bring",
+                r.name
+            )));
+        }
+    }
     let bundled: BTreeSet<&str> = connectors.iter().map(|c| c.name.as_str()).collect();
     let routines = templates
         .iter()
@@ -256,6 +303,7 @@ pub fn plan(bundle: &Bundle, cx: &Context) -> Result<Plan, BundleError> {
         signature,
         connectors,
         skills: skill_plans,
+        agents: agent_plans,
         routines,
         secrets,
         connections,
@@ -271,6 +319,90 @@ pub fn plan(bundle: &Bundle, cx: &Context) -> Result<Plan, BundleError> {
         plan.changes = Some(diff(&old, &plan));
     }
     Ok(plan)
+}
+
+fn agent_plan(
+    bundle: &Bundle,
+    slug: &str,
+    cx: &Context,
+    installed: Option<&InstalledBundle>,
+) -> Result<AgentPlan, BundleError> {
+    let text = |part: &str| {
+        bundle
+            .file_text(&format!("agents/{slug}/{part}"))
+            .ok_or_else(|| BundleError::Invalid(format!("agent {slug} needs agents/{slug}/{part}")))
+    };
+    let t = AgentTemplate::parse(slug, &text(AGENT_FILE)?)?;
+    let persona = text(PERSONA_FILE)?;
+    if persona.trim().is_empty() {
+        return Err(BundleError::Invalid(format!(
+            "agents/{slug}/{PERSONA_FILE} is empty"
+        )));
+    }
+    let pick = |p: &tern_core::agents::Pick| match p {
+        tern_core::agents::Pick::All => "all".to_owned(),
+        tern_core::agents::Pick::ReadOnly => "read_only".to_owned(),
+        tern_core::agents::Pick::Names(n) if n.is_empty() => "none".to_owned(),
+        tern_core::agents::Pick::Names(n) => n.join(", "),
+    };
+    let scope = t.scope();
+    let ours = installed.is_some_and(|i| i.agents.iter().any(|a| a.slug == slug));
+    let exists = cx
+        .store
+        .and_then(|s| s.agent(slug).ok().flatten())
+        .is_some();
+    Ok(AgentPlan {
+        slug: slug.to_owned(),
+        name: t.name.clone(),
+        description: t.description.clone(),
+        memory: t.memory.clone().unwrap_or_else(|| "private".into()),
+        tools: vec![
+            format!("builtins: {}", pick(&scope.builtins)),
+            format!("connectors: {}", pick(&scope.connectors)),
+            format!("mcp: {}", pick(&scope.mcp)),
+            format!("skills: {}", pick(&scope.skills)),
+        ],
+        autonomy: t.autonomy.clone(),
+        persona: persona.trim().chars().take(600).collect(),
+        existing: exists && !ours,
+        kept: exists && ours,
+    })
+}
+
+/// What the user must not miss about a bundled agent's reach.
+fn agent_warnings(p: &AgentPlan, bundle: &Bundle, slug: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let scope = bundle
+        .file_text(&format!("agents/{slug}/{AGENT_FILE}"))
+        .and_then(|t| AgentTemplate::parse(slug, &t).ok())
+        .map(|t| t.scope())
+        .unwrap_or_default();
+    use tern_core::agents::Pick;
+    match &scope.builtins {
+        Pick::All => out.push(format!(
+            "agent @{slug} can use every built-in tool, including shell and file writes"
+        )),
+        Pick::Names(n) if n.iter().any(|t| t == "shell") => {
+            out.push(format!("agent @{slug} can run shell commands"));
+        }
+        _ => {}
+    }
+    if scope.connectors == Pick::All {
+        out.push(format!(
+            "agent @{slug} can use every connector you have, including ones added later"
+        ));
+    }
+    if scope.mcp == Pick::All {
+        out.push(format!(
+            "agent @{slug} can use every MCP server you have, including ones added later"
+        ));
+    }
+    if p.memory == "shared" {
+        out.push(format!(
+            "agent @{slug} reads and writes your shared memory"
+        ));
+    }
+    out
 }
 
 fn signature_info(
@@ -458,6 +590,9 @@ fn routine_plan(
     let bad = |why: String| BundleError::Invalid(format!("{ROUTINES}: routine {}: {why}", r.name));
     let t = &r.trigger;
     let mut notes = Vec::new();
+    if let Some(a) = &r.agent {
+        notes.push(format!("belongs to the agent @{a} this bundle brings"));
+    }
     if let Some(c) = &t.cron {
         c.parse::<tern_core::cron::Cron>()
             .map_err(|e| bad(e.to_string()))?;
@@ -645,6 +780,16 @@ pub fn capability_lines(p: &Plan) -> BTreeSet<String> {
             out.insert(format!("skill {}: runnable {r}", s.slug));
         }
     }
+    for a in &p.agents {
+        out.insert(format!("agent @{}", a.slug));
+        for t in &a.tools {
+            out.insert(format!("agent @{}: {t}", a.slug));
+        }
+        out.insert(format!("agent @{}: memory {}", a.slug, a.memory));
+        if let Some(l) = &a.autonomy {
+            out.insert(format!("agent @{}: autonomy ceiling {l}", a.slug));
+        }
+    }
     for r in &p.routines {
         out.insert(format!("routine {}: {}", r.name, r.trigger));
         out.insert(format!("routine {}: initiative {}", r.name, r.initiative));
@@ -661,6 +806,16 @@ pub fn diff(old: &Plan, new: &Plan) -> Changes {
             && (o.prompt != r.prompt || o.limits != r.limits)
         {
             changed.push(format!("routine {}: prompt or limits", r.name));
+        }
+    }
+    for a in &new.agents {
+        if let Some(o) = old.agents.iter().find(|o| o.slug == a.slug)
+            && (o.persona != a.persona || o.name != a.name)
+        {
+            changed.push(format!(
+                "agent @{}: persona or name (an agent you already have is left as it is)",
+                a.slug
+            ));
         }
     }
     for s in &new.skills {
@@ -688,6 +843,12 @@ impl Plan {
             .filter(|w| w.contains("already"))
             .cloned()
             .collect();
+        for a in self.agents.iter().filter(|a| a.existing) {
+            out.push(format!(
+                "you already have an agent @{}; rename or archive it first",
+                a.slug
+            ));
+        }
         for s in self.skills.iter().filter(|s| s.existing) {
             out.push(format!(
                 "you already have a skill in skills/{}; remove or rename it first",
@@ -796,6 +957,33 @@ impl Plan {
                 ));
                 if !s.runnable.is_empty() {
                     line(format!("    ⚠ can be run: {}", s.runnable.join(", ")));
+                }
+            }
+        }
+        if !self.agents.is_empty() {
+            line(String::new());
+            line("Agents (made when you install: each gets its own DM, and nothing here can raise what it may do):".into());
+            for a in &self.agents {
+                let what = if a.description.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", a.description)
+                };
+                line(format!("  @{} ({}){what}", a.slug, a.name));
+                line(format!("    memory: {}", a.memory));
+                for t in &a.tools {
+                    line(format!("    can use {t}"));
+                }
+                if let Some(l) = &a.autonomy {
+                    line(format!("    autonomy ceiling: {l}"));
+                }
+                let persona: String = a.persona.chars().take(200).collect();
+                line(format!("    persona: {}", persona.replace('\n', " ")));
+                if a.kept {
+                    line("    already installed: an update leaves it as you have it".into());
+                }
+                if a.existing {
+                    line("    ⚠ you already have an agent with this name".into());
                 }
             }
         }
