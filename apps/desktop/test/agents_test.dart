@@ -916,9 +916,8 @@ void main() {
       expect(store.thread, 'h1', reason: 'the sub-runs live in tern\'s thread');
       store.closeThread();
       await tester.pump();
-      await tester.tap(find.widgetWithText(TextButton, 'Reply'));
-      await tester.pump();
-      expect(store.replying?.id, 9);
+      // Flat conversations: no Reply on the card; you write in the DM.
+      expect(find.widgetWithText(TextButton, 'Reply'), findsNothing);
       debugDefaultTargetPlatformOverride = null;
     });
 

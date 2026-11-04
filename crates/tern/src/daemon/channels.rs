@@ -120,10 +120,11 @@ impl Manager {
         self.send_to_topic(channel, text, reply_to, model).await
     }
 
-    /// A reply under a post in Home or an agent's DM: a side thread
-    /// branched from it, the channel's agent's, continued by later replies.
-    /// Under a `delegated` post its first message says what the work was
-    /// and what came back (agent profiles §6.1).
+    /// A reply under a post in Home or an agent's DM. Conversations are
+    /// flat, so it continues the stream like any send; the post it answers
+    /// shows as a quote. Under a `delegated` post the message also says
+    /// what the work was and what came back (agent profiles §6.1), so the
+    /// delegate picks the work up in its own stream.
     async fn reply_in_main(
         self: &Arc<Self>,
         channel: &ChannelRow,
@@ -131,44 +132,18 @@ impl Manager {
         text: &str,
         model: Option<&str>,
     ) -> anyhow::Result<Sent> {
-        let store = &self.rt.store;
-        let post = store
+        let post = self
+            .rt
+            .store
             .post(to)?
             .filter(|p| p.channel_id == channel.id)
-            .with_context(|| format!("post {to} is not in #{}", channel.slug))?;
-        let agent = channel.agent_id.as_deref().unwrap_or(author::AGENT);
-        let existing = store.thread_branched_from(&channel.id, &format!("post:{to}"))?;
-        let session = match existing {
-            Some(s) => s.id,
-            None => self.reply_thread(channel, to, agent)?,
-        };
-        if let Some((run_id, _)) = self.queue_message(&session, text)? {
-            return Ok(Sent {
-                post: None,
-                run_id,
-                session_id: session,
-                queued: true,
-                new_segment: false,
-                woke: Vec::new(),
-            });
-        }
-        let first = store.session_counts(&session)?.1 == 0;
-        let input = if first && post.kind == super::delegations::KIND {
+            .ok_or_else(|| anyhow::anyhow!("post {to} is not in #{}", channel.slug))?;
+        let input = if post.kind == super::delegations::KIND {
             self.delegation_context(&post, text)
         } else {
             text.to_owned()
         };
-        let started = self
-            .start(Some(&session), model, &input, "api", "user", None)
-            .await?;
-        Ok(Sent {
-            post: None,
-            run_id: started.run_id,
-            session_id: started.session_id,
-            queued: false,
-            new_segment: false,
-            woke: Vec::new(),
-        })
+        self.send_home(channel, &input, false, model).await
     }
 
     /// A send into Home (§2.6, §4).

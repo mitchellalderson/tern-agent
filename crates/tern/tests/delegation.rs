@@ -224,8 +224,9 @@ async fn tern_hands_research_to_the_research_agent() {
         "{work:#}"
     );
 
-    // A reply under it continues the work in Research's DM, as Research,
-    // starting from the brief and the reports; the next reply continues it.
+    // A reply under it continues the work in Research's DM stream, as
+    // Research, starting from the brief and the reports (conversations are
+    // flat: no side thread); the next reply continues the same stream.
     let (code, sent) = post(
         &s,
         &format!("/v1/channels/{dm}/posts"),
@@ -246,7 +247,8 @@ async fn tern_hands_research_to_the_research_agent() {
             "SELECT branched_from FROM sessions WHERE id = ?1",
             &thread
         ),
-        Some(format!("post:{}", ptr["id"]))
+        None,
+        "no side thread"
     );
     let input: String = env
         .db()
@@ -270,7 +272,7 @@ async fn tern_hands_research_to_the_research_agent() {
         json!({ "text": "Thanks", "reply_to": ptr["id"] }),
     )
     .await;
-    assert_eq!(again["session_id"], thread.as_str(), "the same side thread");
+    assert_eq!(again["session_id"], thread.as_str(), "the same stream");
 
     // Inbox has no delegates by default: refused on the host side.
     let run = say(

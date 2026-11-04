@@ -8,7 +8,6 @@ import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
 import 'channel_view.dart' show NeedsYouTag;
-import 'move_dialog.dart';
 import 'widgets.dart';
 
 /// Where Home's stream was cut into a new session: a thin line, with the
@@ -217,7 +216,9 @@ class PostCard extends StatelessWidget {
                 ),
               ] else if (post.kind == 'delegated' && session != null) ...[
                 // Work done for another agent: its sub-runs live in the
-                // caller's thread; a reply continues it here.
+                // caller's thread. Conversations are flat, so it's continued
+                // by writing in this DM (the API's `reply_to` still carries
+                // the brief and reports).
                 if (post.text.startsWith('Working'))
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
@@ -232,10 +233,6 @@ class PostCard extends StatelessWidget {
                 _CardButton(
                   label: 'Open',
                   onPressed: () => store.openThread(session),
-                ),
-                _CardButton(
-                  label: 'Reply',
-                  onPressed: () => store.replyTo(post),
                 ),
               ] else if (session != null)
                 TextButton(
