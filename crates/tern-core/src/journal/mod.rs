@@ -41,6 +41,9 @@ pub enum StepKind {
     /// A tool call made by a script (the `python` tool), journaled after
     /// the script's own `tool` step (docs/python-tool-spec.md §3.3).
     PyCall,
+    /// One call from an MCP client (`tern mcp serve`, T6d): the approval
+    /// and the tool call, as one step.
+    McpCall,
 }
 
 impl StepKind {
@@ -56,6 +59,7 @@ impl StepKind {
             StepKind::Channel => "channel",
             StepKind::OutboxExec => "outbox_exec",
             StepKind::PyCall => "py_call",
+            StepKind::McpCall => "mcp_call",
         }
     }
 
@@ -71,6 +75,7 @@ impl StepKind {
             "channel" => StepKind::Channel,
             "outbox_exec" => StepKind::OutboxExec,
             "py_call" => StepKind::PyCall,
+            "mcp_call" => StepKind::McpCall,
             _ => return None,
         })
     }

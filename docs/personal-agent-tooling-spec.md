@@ -749,6 +749,16 @@ Exposes tern's **connectors, memory search and channels** as an MCP server over 
 agent can use your Luau connectors and post into a channel. The effect policy and taint still apply. Cheap: rmcp is
 already a dependency (it needs the `server` feature), and it spreads the Luau connector story outside tern.
 
+**Status (T6d shipped, 2026-11-04).** `tern mcp serve` over stdio, a bridge to the daemon's socket
+(`/v1/mcp-serve/tools`, `/v1/mcp-serve/call`), starting the daemon when it isn't running. A client sees the
+intersection of a fixed list (Luau connector tools, `memory_search`/`memory_save`, `channel_read`/`channel_post`,
+`schedule_*`, `skill_read`) with an agent profile's tool scope (`[mcp.serve] agent` or `--agent`); with none set,
+the four reads only. Each call is a model-less run with trigger `mcp` and one `mcp_call` step (the approval and
+the call), in one session per client, and it starts tainted: writes ask in tern without grants, an unanswered
+write goes to the outbox, a denial is a tool error, untrusted text reaches the client wrapped, and secret values
+are redacted. `--print-config` prints the client snippet; `doctor` reports configured clients. Not built:
+streamable HTTP, "ask an agent", and channels or memory as MCP resources. See DECISIONS.md, T6d.
+
 ## 9. Browser (T7, opt-in)
 
 Ranked by cost:
@@ -1035,7 +1045,7 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 | **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests (done) · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles (done: T3a taint, then T3 the outbox and autonomy; the Tasks view is T6b) · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits (done) | L / M / S–M | Stage 1 (effects, budgets) |
 | **3. Organize and surface** | Make background work visible and tidy. Mostly UI plus straightforward store work. | **T2** channels, home, posts, reply-to-act, Telegram topics · **T6b** activity ledger with hash chain, Tasks view, `tern security audit` · **T8b** `tern tray` on macOS (helper bundle, notifications with actions, login items, quit escalation, `tern://` links) · **T5b** skill capture | M each | Stage 2 (routines, outbox) |
 | **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** (done) `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) (done) · **T4b-ii** gateway connectors (ntfy, then Slack; done) | L | Stage 2 (taint before any external input); secret-requests spec built |
-| **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` · **T6d** `tern mcp serve` · **T4c** OpenAPI-to-connector and recorded test fixtures · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
+| **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` · **T6d** `tern mcp serve` (done) · **T4c** OpenAPI-to-connector and recorded test fixtures · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |
 | **6. Multiplayer** (later) | Several people with one agent: group rooms first, then members on one core, then hosted workspaces (§15) | **M0** Telegram, Slack and Discord group rooms with guests · **M1** members, per-member connections, approvals and memory · **M2** tern Cloud workspaces, invites, seats | M0 S–M, M1 L, M2 M | Stages 2–3 (taint, channels); M2 needs tern Cloud |
 
 **Sandboxed compute (PY0–PY3), alongside stage 2.** A `python` tool on Monty whose scripts call tern's tools as

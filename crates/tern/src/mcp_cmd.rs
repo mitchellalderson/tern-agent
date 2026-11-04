@@ -122,6 +122,10 @@ pub fn run(home: &TernHome, command: Option<McpCommand>) -> anyhow::Result<ExitC
                 _ => ExitCode::FAILURE,
             })
         }),
+        McpCommand::Serve {
+            agent,
+            print_config,
+        } => crate::mcp_serve::run(home, agent, print_config),
         McpCommand::Rm { name, keep_secrets } => with_backend(home, async |b| {
             b.remove_mcp(&name, !keep_secrets)
                 .map_err(anyhow::Error::msg)?;

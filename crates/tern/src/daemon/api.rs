@@ -28,6 +28,7 @@
 //! | GET / POST | `/v1/secret-requests[/{id}]` | the agent's prompts for secrets (`api_secrets.rs`) |
 //! | GET | `/v1/status` | version, uptime, counts, gateway health (`api_lifecycle.rs`) |
 //! | POST | `/v1/shutdown[?dry_run=1]` | stop with exit code 0 (`api_lifecycle.rs`) |
+//! | GET / POST | `/v1/mcp-serve/{tools,call}` | what `tern mcp serve` offers, and its calls (`api_mcp_serve.rs`) |
 //!
 //! Agent events on `/v1/events` carry `session_id` as well as `run_id`, and
 //! events of sub-agent runs also `parent_run_id` and `root_session_id`.
@@ -188,6 +189,7 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_connections::routes())
         .merge(super::api_providers::routes())
         .merge(super::api_mcp::routes())
+        .merge(super::api_mcp_serve::routes())
         .merge(super::api_lifecycle::routes())
         .merge(super::auth::routes())
         .with_state(manager)
@@ -429,6 +431,7 @@ async fn wait_run(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiR
                 error: run.error,
                 usage: Usage::default(),
                 quiet: run.quiet,
+                tool_result: None,
             }));
         }
         // Wake on this run finishing, or re-check every second.

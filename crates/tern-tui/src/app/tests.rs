@@ -326,6 +326,7 @@ fn outcome(status: RunStatus) -> BackendResult<RunOutcome> {
         error: None,
         usage: Usage::default(),
         quiet: false,
+        tool_result: None,
     })
 }
 
