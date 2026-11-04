@@ -121,6 +121,11 @@ impl ApiApprovals {
         rx.await.unwrap_or(Decision::Unanswered)
     }
 
+    /// Whether any client is attached to hear an approval.
+    pub fn listening(&self) -> bool {
+        self.tx().receiver_count() > 0
+    }
+
     pub fn answer(&self, id: &str, decision: Decision) -> bool {
         let tx = self.pending.lock().ok().and_then(|mut p| p.remove(id));
         tx.is_some_and(|(_, tx)| tx.send(decision).is_ok())
@@ -441,17 +446,29 @@ impl Router {
         (root.map(|r| r.session_id), chat)
     }
 
+    /// The conversation the run tree is in: where its cards wait.
     fn at(&self, root_session: Option<&str>) -> Where {
         let (Some(store), Some(id)) = (self.0.store.get(), root_session) else {
             return (None, None);
         };
-        match store.session(id) {
-            Ok(Some(s)) => {
-                let agent = s.agent().to_owned();
-                (s.channel_id, Some(agent))
-            }
-            _ => (None, None),
-        }
+        super::waiting::conversation_of(store, id)
+    }
+
+    fn manager(&self) -> Option<Arc<Manager>> {
+        self.0.manager.get().and_then(Weak::upgrade)
+    }
+
+    /// Ask API clients, with a `needs_you` post in the run's conversation
+    /// while it waits (none in Home, or when no client listens: then it
+    /// goes to the outbox at once, which posts its own).
+    async fn ask_api(&self, req: &ApprovalRequest, root: Option<String>, at: Where) -> Decision {
+        let waiting = match self.manager() {
+            Some(m) if self.0.api.listening() => super::waiting::open_approval(&m, req, &at),
+            _ => None,
+        };
+        let d = self.0.api.ask(req, root, at).await;
+        super::waiting::close_approval(waiting, &d);
+        d
     }
 }
 
@@ -493,13 +510,13 @@ impl ApprovalHandler for Router {
         {
             let (root, _) = self.place(&req.run_id);
             let at = self.at(root.as_deref());
-            return self.0.api.ask(req, root, at).await;
+            return self.ask_api(req, root, at).await;
         }
         match self.place(&req.run_id) {
             (_, Some((g, chat))) if !req.local_only => g.ask_approval(&chat, req).await,
             (root, _) => {
                 let at = self.at(root.as_deref());
-                self.0.api.ask(req, root, at).await
+                self.ask_api(req, root, at).await
             }
         }
     }
@@ -531,7 +548,11 @@ impl ApprovalHandler for Router {
             });
         }
         let at = self.at(root.as_deref());
+        let waiting = self
+            .manager()
+            .and_then(|m| super::waiting::open_secret(&m, req, &at));
         let values = self.0.secrets.ask(req, root, at).await;
+        super::waiting::close_secret(waiting, values.values().any(|v| !v.trim().is_empty()));
         if let Some(n) = &mut notice {
             // What the tool will save: a value that cleans up to nothing
             // (`""`, a bare `Bearer `) counts as skipped there too.

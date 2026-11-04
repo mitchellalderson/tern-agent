@@ -122,27 +122,25 @@ pub(super) fn channel_view(m: &Shared, c: ChannelRow) -> Channel {
             })
         })
         .count();
-    // Open needs-you posts (Home: their pointers), plus the approvals and
-    // secret requests waiting for an answer: Home counts every one (they
-    // all land there), an agent's DM the ones from its own runs, which it
-    // mirrors.
+    // Open needs-you posts (Home: their pointers). Approvals and secret
+    // requests wait where their run is: elsewhere as needs-you posts
+    // (counted above, and by their pointer in Home), in Home as cards in
+    // its stream, which Home adds.
     let open = m.rt.store.open_needs_you(&c.id).unwrap_or(0);
     let needs_you = if c.id == tern_store::HOME {
-        open + m.routes.api.pending().len() + m.routes.secrets.pending().len()
-    } else if c.kind == "main" {
-        let mine = |a: Option<&str>| a.is_some() && a == c.agent_id.as_deref();
+        let home = |ch: &Option<String>| crate::daemon::waiting::in_home(&(ch.clone(), None));
         open + m
             .routes
             .api
             .pending()
             .iter()
-            .filter(|p| mine(p.agent_id.as_deref()))
+            .filter(|p| home(&p.channel_id))
             .count()
             + m.routes
                 .secrets
                 .pending()
                 .iter()
-                .filter(|p| mine(p.agent_id.as_deref()))
+                .filter(|p| home(&p.channel_id))
                 .count()
     } else {
         open
@@ -495,14 +493,23 @@ async fn resolve(
     State(m): State<Shared>,
     UrlPath(id): UrlPath<i64>,
 ) -> ApiResult<serde_json::Value> {
-    // An outbox item's post closes when the item is decided.
-    if let Some(post) = m.rt.store.post(id).map_err(internal)?
-        && let Some(item) = super::outbox::outbox_of_post(&m.rt.store, &post)
-    {
-        return Err(ApiError(
-            axum::http::StatusCode::CONFLICT,
-            format!("this is outbox #{item}: approve or reject it instead"),
-        ));
+    // An outbox item's post closes when the item is decided, and a
+    // waiting request's when it's answered.
+    if let Some(post) = m.rt.store.post(id).map_err(internal)? {
+        if let Some(item) = super::outbox::outbox_of_post(&m.rt.store, &post) {
+            return Err(ApiError(
+                axum::http::StatusCode::CONFLICT,
+                format!("this is outbox #{item}: approve or reject it instead"),
+            ));
+        }
+        if post.resolved_at.is_none()
+            && let Some((what, _)) = super::waiting::waiting_of(&m.rt.store, &post)
+        {
+            return Err(ApiError(
+                axum::http::StatusCode::CONFLICT,
+                format!("this {what} closes when it's answered: answer it instead"),
+            ));
+        }
     }
     if !m.rt.store.resolve_post(id).map_err(internal)? {
         return Err(not_found("open needs-you post"));

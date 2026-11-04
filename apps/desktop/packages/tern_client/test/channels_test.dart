@@ -93,6 +93,23 @@ void main() {
     expect((done.outboxId, done.needsYou), (12, false));
   });
 
+  test('a waiting approval or secret request names it on its post', () {
+    Post parse(String extra) => Post.fromJson(
+      jsonDecode(
+            '{"id":7,"channel_id":"c","author_kind":"agent","author_id":"tern",'
+            '"author":"tern","kind":"needs_you","text":"Needs your approval",'
+            '$extra"created_at":1762185600000}',
+          )
+          as Json,
+    );
+    final a = parse('"approval_id":"ap1",');
+    expect((a.approvalId, a.secretRequestId, a.isRequest), ('ap1', null, true));
+    expect(a.resolved().approvalId, 'ap1');
+    final s = parse('"secret_request_id":"sr1",');
+    expect((s.secretRequestId, s.isRequest), ('sr1', true));
+    expect(parse('').isRequest, isFalse);
+  });
+
   test('sessions carry their place in a stream', () {
     final s = SessionItem.fromJson({
       'id': 's2',

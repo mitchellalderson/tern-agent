@@ -19,8 +19,9 @@ and §7.2 (agent profiles), and §3 there, where "channels" still means transpor
   chat**. Underneath, the engine starts a fresh session after a day or an idle gap (or when you say "New topic") and
   carries over a summary and open items, so no context grows forever (§2.6). **Topic channels** (`#finances`,
   `#launch`) have one shared timeline, a main thread with the main agent, and posts from sub-agents and routines.
-- **Home is where you act.** Approvals, secret requests and "needs you" items appear in Home as cards, never in topic
-  channels. A topic channel shows a line pointing to them.
+- **Cards live where the work is; Home points to them.** Approvals, secret requests and outbox items wait in the
+  conversation their run is in (a topic channel, an agent's DM, or Home), and Home gets a compact pointer to each one
+  from elsewhere, so everything waiting is still in one place (DECISIONS.md "Approvals land where the work is").
 - **Agents see each other through a journaled digest.** Before a model call, a run in a channel gets the posts that
   other agents made since it last looked, in one step just like the sub-agent `inbox`. Replay stays deterministic, and
   no agent ever reads another agent's session.
@@ -137,7 +138,7 @@ Every write has a `dedupe_key`, so a replayed or re-executed step never posts tw
 | A routine targeting the channel finishes (not `NO_REPLY`) | `answer` by the routine | `answer:<run>` |
 | Any run in the channel, sub-agents included, calls `channel_post` | `update` or `needs_you` | `post:<run>:<call_id>` |
 | A post in a topic channel needs the user | a `pointer` in Home, `points_to` that post | `pointer:<post>` |
-| A run anywhere asks for an approval or a secret | a `needs_you` card in Home, linked to the request; the topic channel shows "waiting for you in Home" | `ask:<approval id>` |
+| A run anywhere asks for an approval or a secret | outside Home, a `needs_you` post in the run tree's conversation (its card), with a `pointer` in Home; rewritten to how it ended ("Approved: …") once answered | `approval:<id>`, `secret:<id>` |
 | A sub-agent finishes | no post by default: its report goes to its parent as today, and the parent's answer is what gets posted. The timeline shows the parent's answer with an "N agents" chip that expands to the agents card. | |
 
 Home is different: its stream is the segments' own messages, shown with tool steps and sub-agent cards as the
@@ -299,15 +300,20 @@ Sidebar, top to bottom:
   for the agent's turns, and cards for what came from elsewhere (routine results, pointers, approvals, secret
   requests). The composer has a **New topic** button. The header has **History**, a list of earlier segments, side
   chats and migrated conversations, searchable, each opening in the right pane.
-- **Approvals and secret requests appear only in Home**, as cards with their buttons, whichever channel or sub-agent
-  asked (Grok Bot does the same: never in group chats). The asking channel's timeline shows "waiting for you in
-  Home", which jumps there. The Home badge counts open ones.
+- **Approvals and secret requests appear where the run is**: in the topic channel's timeline as an inline card (in
+  place of its `needs_you` post), in an agent's DM or Home in the stream. A sub-agent's or delegate's go to the
+  conversation of the top-level run, a routine's to the channel it posts to. Home shows a pointer ("needs you ·
+  #home-service-market") with **Go to** and, for an approval, **Approve once** / **Deny**; it leaves Home once
+  answered anywhere. The channel's and agent's rows in the sidebar badge what waits there; the Home badge and the
+  tray count everything. (This replaced C2's "only in Home" at the user's request: Grok Bot keeps them out of group
+  chats, but a card far from the work it's about was confusing.)
 - **A topic channel** opens the timeline: posts with the author's `AgentAvatar` and a small tag (◷ routine, ↳ under a
   parent agent) and relative time, in one flat list (§6.2): a reply carries a one-line quote of what it answers when
   that isn't right above it. At the bottom, one live line per member that's running ("research-1 · Running
   http_fetch", from run events). The composer posts to the channel.
 - **See work** on an agent's post shows its session in the right pane to read (no composer): tool steps and
-  sub-agent cards. A moved-in conversation's post has **Read conversation**. Approvals are in Home.
+  sub-agent cards. A moved-in conversation's post has **Read conversation**. Its run's approvals are in the
+  conversation it belongs to; the pane says where if that isn't the open one.
 - **Header:** channel title, an instructions editor, the members who posted recently, and the context meter for the
   main thread.
 - **State:** `TernStore` gains `channels` and `posts[channel]`, applies `post_created`, and tracks read state per
@@ -397,7 +403,7 @@ only.
 | Product | Direct surface | What this design takes from it |
 |---|---|---|
 | Claude Duet ([product page](https://claude.com/product/claude-duet)) | **One thread** for everything ("Your history is in one thread"): a morning brief, inline Approve / Not now, quiet until something needs you. Topic channels are reported by one secondary source only, so the spec's "topic threads plus a home thread" reading of Duet is unconfirmed. | Home as one stream; needs-you items as inline cards. |
-| Grok Bot, xAI ([chat and collaboration](https://docs.x.ai/grok-bot/chat-and-collaboration), [FAQ](https://docs.x.ai/grok-bot/faq)) | Docs: a DM per bot, listed in a sidebar like contacts, each with its own memory; a few facts are shared. Group chats of 2–6 bots, where bots decide who answers. Approvals, secret requests and drafts never appear in groups. Your direct message takes priority over background work. | Approvals only in Home; per-agent streams with profiles; topic channels as the group-chat analogue. |
+| Grok Bot, xAI ([chat and collaboration](https://docs.x.ai/grok-bot/chat-and-collaboration), [FAQ](https://docs.x.ai/grok-bot/faq)) | Docs: a DM per bot, listed in a sidebar like contacts, each with its own memory; a few facts are shared. Group chats of 2–6 bots, where bots decide who answers. Approvals, secret requests and drafts never appear in groups. Your direct message takes priority over background work. | Per-agent streams with profiles; topic channels as the group-chat analogue. Unlike Grok Bot, approvals do appear in group-like channels, where the run is, with a pointer in Home. |
 | OpenClaw ([sessions and chats](https://docs.openclaw.ai/help/faq/sessions-and-chats), [compaction](https://docs.openclaw.ai/reference/session-management-compaction)) | Docs: DMs collapse into one main session per agent, bounded by compaction. `/new` and `/reset` start fresh. Daily (default 04:00) or idle resets are opt-in; heartbeat and cron events don't count as activity. Groups and forum topics get their own sessions. | Segment cutting, background activity not keeping a segment alive, `/new`. |
 | Slack agents ([split view](https://docs.slack.dev/surfaces/split-view)) | Docs: a private chat with the agent beside channels. Reported: a Chat tab with the latest thread and a History tab of past ones, with new threads started automatically. | History; topic detection as a later idea. |
 | Lindy ([launch post](https://www.lindy.ai/blog/lindy-assistant-launch)) | Docs: iMessage, SMS, email or Slack, "same assistant, same memory, wherever you are". | Open question 9. |

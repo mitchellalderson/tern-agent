@@ -11,6 +11,7 @@ import '../state/transcript.dart';
 import '../theme.dart';
 import 'agents.dart';
 import 'channel_items.dart';
+import 'channel_view.dart';
 import 'inspector.dart';
 import 'move_dialog.dart';
 
@@ -63,6 +64,9 @@ class ItemView extends StatelessWidget {
       post: post,
       store: store,
     ),
+    // An answered request in a DM's stream: how it ended.
+    PostItem(:final post) when post.isRequest && post.kind == 'needs_you' =>
+      NoteLine(post: post, icon: Icons.check_circle_outline),
     PostItem(:final post) => PostCard(post: post, store: store),
   };
 }

@@ -24,7 +24,7 @@ class ThreadPane extends StatelessWidget {
     final title =
         store.sessions.where((s) => s.id == session).firstOrNull?.title ??
         'Conversation';
-    final waiting = store.waitingInThread();
+    final waiting = store.waitingForThread();
     return Container(
       color: c.background,
       child: Column(
@@ -66,7 +66,8 @@ class ThreadPane extends StatelessWidget {
             ),
           ),
           const Hairline(),
-          if (waiting > 0) WaitingInHome(store: store, count: waiting),
+          if (waiting case (:final channel, :final count))
+            WaitingIn(store: store, channelId: channel, count: count),
           Expanded(
             child: ListView.builder(
               reverse: true,

@@ -30,8 +30,8 @@ much like Grok Bot's group chats.
   only who owns a schedule changes. You can also just chat with any agent.
 - **Agents join topic channels as members.** Each channel has a **lead** agent that answers by default. Others answer
   when `@mentioned`, which wakes them, within a per-channel budget and a hop limit so agents can't loop.
-- **Approvals still land in Home**, whichever agent asks. The asking agent's DM also shows the card when the run
-  started there (open question 1).
+- **Approvals land where the run is**: the asking agent's DM when the run started there, the topic channel, or Home,
+  with a pointer in Home for the ones elsewhere (open question 1, answered).
 - **Taint carries across agents** as T3a set out: a run that reads another agent's tainted post, or is woken by one,
   is tainted.
 
@@ -189,13 +189,13 @@ works per main channel because it was written against `main_session_id`:
 - **Stream**: `GET /v1/channels/{id}/stream` already serves any main channel.
 - **Routine results**: posted into the DM by default, interleaved like routine posts in Home today (§4).
 
-**What stays Home-only:**
+**What Home still collects:**
 
-- **Approvals and secret requests**: every one appears in Home, with the Home badge counting them, as C2 built. If the
-  asking run belongs to an agent's DM (its stream, a routine posting there, or their
-  sub-agents), the same card also appears inline in that DM. It is one request, so answering in either place closes
-  both. Topic channels still only show "Waiting for you in Home". This mirror is open question 1; without it, a DM
-  shows a waiting line like topic channels.
+- **Approvals and secret requests**: each card appears in the conversation the asking run tree is in: an agent's DM
+  (its stream, a routine posting there, or their sub-agents and delegates), a topic channel, or Home. Home shows a
+  pointer to each one from elsewhere, and its badge counts them all; answering in either place closes both. This was
+  first built as a mirror (every card in Home, and also in the DM); the user then asked for cards to live only where
+  the work is (DECISIONS.md "Approvals land where the work is").
 - **Pointers** (`needs_you` from a topic channel, C4) go to Home, plus to the posting agent's DM when that isn't
   `tern`.
 
@@ -419,9 +419,9 @@ parallel if wanted. The one shared resource is the migration number.
 
 ## 9. Open questions
 
-1. **Approvals in an agent's DM.** Recommended: Home stays the one place every approval lands and is counted, and the
-   asking agent's DM also shows the card when the run started there (one request, answered in either). The strict
-   alternative is Home only, with a waiting line in the DM like topic channels. Which do you want?
+1. **Approvals in an agent's DM.** Answered (2026-11-04): the card lives in the conversation where the run is (the DM,
+   a topic channel, or Home), and Home shows a compact pointer that clears when it's answered anywhere. Not a mirror,
+   and not Home only.
 2. **Memory default for new agents.** Recommended: private, with `user.md` always shared (Grok Bot's model). The
    alternative is shared by default, which is simpler, but agents' notes mix.
 3. **Telegram.** One bot with `/agent` and topics (AP1), with per-agent bots as an option later (AP3)? Or is a bot per

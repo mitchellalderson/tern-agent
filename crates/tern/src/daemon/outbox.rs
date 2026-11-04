@@ -3,10 +3,9 @@
 //! and recovery after a crash. The agent queues items itself
 //! (`tern_core::agent`); `Router::deferred` announces them.
 //!
-//! Home integration is deliberately thin: a `Change::OutboxChanged` event,
-//! the list at `/v1/outbox`, and an `update` post for results and expiries.
-//! C4's `needs_you` pointers into Home should replace the announcement here
-//! (`Manager::announce_outbox`) when they land.
+//! A pending item is a `needs_you` post in the conversation its run tree is
+//! in (`waiting::conversation_of`), with C4's pointer in Home; clients also
+//! get `Change::OutboxChanged` and the list at `/v1/outbox`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -240,12 +239,11 @@ impl Manager {
         let root = store
             .root_run(&row.run_id)
             .ok()
-            .and_then(|r| store.run(&r).ok().flatten())
-            .and_then(|r| store.session(&r.session_id).ok().flatten());
+            .and_then(|r| store.run(&r).ok().flatten());
         let mut item = OutboxItem::from(row);
-        if let Some(s) = root {
-            item.agent_id = Some(s.agent().to_owned());
-            item.channel_id = s.channel_id;
+        if let Some(r) = root {
+            (item.channel_id, item.agent_id) =
+                super::waiting::conversation_of(store, &r.session_id);
         }
         item
     }

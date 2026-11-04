@@ -139,6 +139,8 @@ class PostCard extends StatelessWidget {
       'subagent' => (Icons.subdirectory_arrow_right, 'agent'),
       _ => null,
     };
+    final elsewhere =
+        post.kind == 'pointer' && (post.isRequest || post.outboxId != null);
     return Container(
       decoration: BoxDecoration(
         color: c.card,
@@ -195,8 +197,11 @@ class PostCard extends StatelessWidget {
                   ],
                 ),
               ),
-              // A pointer: go to what waits, or mark it done here.
-              if (post.outboxId != null)
+              // A pointer: go to what waits, or mark it done here. One to
+              // a request or outbox item has its buttons under the text.
+              if (elsewhere)
+                const SizedBox.shrink()
+              else if (post.outboxId != null)
                 // Decided in the outbox cards above the composer.
                 _CardButton(
                   label: post.needsYou ? 'Waiting below' : 'Decided ✓',
@@ -205,8 +210,8 @@ class PostCard extends StatelessWidget {
               else if (post.kind == 'pointer') ...[
                 if (from != null)
                   _CardButton(
-                    label: 'Go to #${from.slug}',
-                    onPressed: () => store.openChannelView(from.id),
+                    label: 'Go to ${store.conversationName(from.id)}',
+                    onPressed: () => store.openConversation(from.id),
                   ),
                 _CardButton(
                   label: post.needsYou ? 'Done' : 'Done ✓',
@@ -255,9 +260,65 @@ class PostCard extends StatelessWidget {
             styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
                 .copyWith(p: Theme.of(context).textTheme.bodyMedium),
           ),
+          if (elsewhere) ...[
+            const SizedBox(height: 4),
+            Wrap(spacing: 4, children: _waitingElsewhere(context)),
+          ],
         ],
       ),
     );
+  }
+}
+
+extension on PostCard {
+  /// A Home pointer to an approval, secret request or outbox item waiting
+  /// in another conversation: open it there, or answer a simple one here.
+  List<Widget> _waitingElsewhere(BuildContext context) {
+    final to = post.pointsToChannel;
+    final go = to == null
+        ? null
+        : _CardButton(
+            label: 'Go to ${store.conversationName(to)}',
+            onPressed: () => store.openConversation(to),
+          );
+    if (!post.needsYou) {
+      return [const _CardButton(label: 'Decided ✓', onPressed: null)];
+    }
+    if (post.outboxId case final id?) {
+      final item = store.outbox
+          .where((o) => o.id == id && o.pending)
+          .firstOrNull;
+      return [
+        ?go,
+        if (item != null) ...[
+          _CardButton(
+            label: 'Approve',
+            onPressed: () => store.decideOutbox(item, approve: true),
+          ),
+          _CardButton(
+            label: 'Reject',
+            onPressed: () => store.decideOutbox(item, approve: false),
+          ),
+        ],
+      ];
+    }
+    // An approval can be allowed once or denied from here; "always" and
+    // the host limit's choices, and secrets, are on the card where it
+    // waits.
+    final card = store.requestCard(post);
+    return [
+      ?go,
+      if (card case final ApprovalItem a when a.outcome == null) ...[
+        _CardButton(
+          label: 'Approve once',
+          onPressed: () => store.answer(a, Decision.once),
+        ),
+        _CardButton(
+          label: 'Deny',
+          onPressed: () => store.answer(a, Decision.deny),
+        ),
+      ],
+    ];
   }
 }
 
@@ -354,4 +415,3 @@ class MovedMarker extends StatelessWidget {
     );
   }
 }
-

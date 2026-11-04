@@ -330,28 +330,7 @@ class _AgentListRow extends StatelessWidget {
                   ),
                 ),
                 if (waiting > 0)
-                  Tooltip(
-                    message:
-                        '$waiting waiting for you (answer here or in Home)',
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 1,
-                      ),
-                      decoration: BoxDecoration(
-                        color: c.warn,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        '$waiting',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  )
+                  WaitingBadge(count: waiting)
                 else if (store.agentBusy(a))
                   SizedBox(
                     width: 10,
@@ -432,7 +411,9 @@ List<Widget> channelsSection(BuildContext context, TernStore store) {
                       ),
                     ),
                   ),
-                  if (store.busy(ch))
+                  if (store.waitingIn(ch.id) case final n when n > 0)
+                    WaitingBadge(count: n)
+                  else if (store.busy(ch))
                     SizedBox(
                       width: 10,
                       height: 10,
@@ -746,6 +727,34 @@ class _SessionRow extends StatelessWidget {
       ),
     );
   }
+}
+
+/// How many approvals, secret requests and outbox items wait in a
+/// conversation: answered there (Home has a pointer to each).
+class WaitingBadge extends StatelessWidget {
+  const WaitingBadge({super.key, required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: '$count waiting for you here',
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: context.colors.warn,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        '$count',
+        style: const TextStyle(
+          fontSize: 11,
+          color: Colors.white,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    ),
+  );
 }
 
 class _Dot extends StatelessWidget {

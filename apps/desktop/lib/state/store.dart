@@ -304,20 +304,17 @@ class TernStore extends ChangeNotifier {
   final _activeAgents = <String, String>{};
 
   /// Approvals, secret requests and outbox items waiting from `a`'s runs.
-  int waitingFor(Agent a) =>
-      {
-        for (final t in transcripts.values)
-          for (final i in t.items)
-            if ((i is ApprovalItem &&
-                    i.outcome == null &&
-                    (i.approval.agentId ?? Agent.defaultId) == a.id) ||
-                (i is SecretRequestItem &&
-                    i.open &&
-                    (i.request.agentId ?? Agent.defaultId) == a.id))
-              i,
-      }.length +
+  int waitingFor(Agent a) => switch (a.mainChannelId) {
+    final dm? => waitingIn(dm),
+    null => 0,
+  };
+
+  /// Cards and outbox items waiting in conversation `channelId` (Home, a
+  /// DM or a topic channel): its sidebar badge.
+  int waitingIn(String channelId) =>
+      waitingCards(channelId).length +
       outbox
-          .where((o) => o.pending && (o.agentId ?? Agent.defaultId) == a.id)
+          .where((o) => o.pending && (o.channelId ?? homeId) == channelId)
           .length;
 
   Channel? get openChannel =>
@@ -435,39 +432,49 @@ class TernStore extends ChangeNotifier {
   /// Someone is working in the channel.
   bool busy(Channel c) => _activeIn.containsValue(c.id);
 
-  /// Approvals and secret requests (all shown in Home) from runs in
-  /// `channelId`.
-  int waitingFrom(String channelId) {
-    final home = transcripts[homeKey];
-    if (home == null) return 0;
-    return home.items.where((i) {
-      final run = switch (i) {
-        ApprovalItem(:final approval, :final outcome) when outcome == null =>
-          approval.runId,
-        SecretRequestItem(:final request) when i.open => request.runId,
-        _ => null,
-      };
-      return run != null && _runChannel[run] == channelId;
-    }).length;
+  /// Approvals and secret requests from runs in the right pane's thread
+  /// that wait in another conversation than the open one: where, and how
+  /// many.
+  ({String channel, int count})? waitingForThread() {
+    final t = threadTranscript;
+    if (t == null) return null;
+    final runs = {?t.activeRun, for (final c in t.children) ?c.runId};
+    for (final ch in channels) {
+      if (ch.id == channel) continue;
+      final n = waitingCards(ch.id)
+          .where(
+            (i) => switch (i) {
+              ApprovalItem(:final approval) => runs.contains(approval.runId),
+              SecretRequestItem(:final request) => runs.contains(request.runId),
+              _ => false,
+            },
+          )
+          .length;
+      if (n > 0) return (channel: ch.id, count: n);
+    }
+    return null;
   }
 
-  /// Approvals and secret requests from runs in the right pane's thread.
-  int waitingInThread() {
-    final t = threadTranscript;
-    final home = transcripts[homeKey];
-    if (t == null || home == null) return 0;
-    final runs = {?t.activeRun, for (final c in t.children) ?c.runId};
-    return home.items
-        .where(
-          (i) => switch (i) {
-            ApprovalItem(:final approval, :final outcome) =>
-              outcome == null && runs.contains(approval.runId),
-            SecretRequestItem(:final request) =>
-              i.open && runs.contains(request.runId),
-            _ => false,
-          },
-        )
-        .length;
+  /// Open the conversation `channelId`: Home, an agent's DM, or a topic
+  /// channel's timeline.
+  Future<void> openConversation(String channelId) async {
+    final ch = channels.where((c) => c.id == channelId).firstOrNull;
+    if (channelId == homeId || ch == null) return openHome();
+    if (ch.isMain) {
+      if (agentOf(channelId) case final a?) return openAgent(a);
+      return openHome();
+    }
+    return openChannelView(channelId);
+  }
+
+  /// What to call conversation `channelId`: Home, an agent's name, or
+  /// `#slug`.
+  String conversationName(String channelId) {
+    if (channelId == homeId) return 'Home';
+    final ch = channels.where((c) => c.id == channelId).firstOrNull;
+    if (ch == null) return 'Home';
+    if (ch.isMain) return agentOf(channelId)?.name ?? ch.title;
+    return '#${ch.slug}';
   }
 
   Channel? get home => channels.where((c) => c.isHome).firstOrNull;
@@ -650,12 +657,9 @@ class TernStore extends ChangeNotifier {
       if (t.activeRun case final run? when !live.contains(run)) t.endRun(run);
     }
     for (final a in await client.pendingApprovals()) {
-      _transcriptFor(hasChannels ? homeKey : a.sessionId)
-          ?.apply(ApprovalRequested(a));
-      if (hasChannels) {
-        _approvalSession[a.runId] = homeKey;
-        _mirror(a.channelId, (i) => i is ApprovalItem && i.approval.id == a.id);
-      }
+      final key = hasChannels ? _requestKey(a.channelId) : a.sessionId;
+      _transcriptFor(key)?.apply(ApprovalRequested(a));
+      if (hasChannels) _approvalSession[a.runId] = key;
     }
     if (hasMcp) await loadMcp(notify: false);
     if (hasOutbox) await refreshOutbox(notify: false);
@@ -671,12 +675,6 @@ class TernStore extends ChangeNotifier {
       try {
         for (final r in await client.secretRequests()) {
           _transcriptFor(_routeSecret(r))?.apply(SecretRequested(r));
-          if (hasChannels) {
-            _mirror(
-              r.channelId,
-              (i) => i is SecretRequestItem && i.request.id == r.id,
-            );
-          }
         }
       } on TernException {
         // Not available to this device: the event stream still delivers.
@@ -716,16 +714,39 @@ class TernStore extends ChangeNotifier {
     }
   }
 
-  /// Show the item of Home's transcript that `matches` (an approval or a
-  /// secret request) in the agent's DM `channelId` too: the same item, so
-  /// answering or expiring it in either place closes both (agent profiles
-  /// §3, open question 1). Home's own requests aren't mirrored.
-  void _mirror(String? channelId, bool Function(Item) matches) {
-    if (channelId == null || channelId == homeId) return;
-    final item = transcripts[homeKey]?.items.where(matches).firstOrNull;
-    if (item == null) return;
-    final t = transcripts.putIfAbsent(streamKeyOf(channelId), Transcript.new);
-    if (!t.items.contains(item)) t.items.add(item);
+  /// Where a run's approvals and secret requests wait: the conversation
+  /// its tree is in, by the root session's channel (DECISIONS.md
+  /// "Approvals land where the work is"). Home and DMs show the cards in
+  /// their stream; a topic channel's are held under the same key and shown
+  /// in its timeline. Home gets the daemon's pointer post for the others.
+  static String _requestKey(String? channelId) =>
+      channelId == null || channelId == homeId
+      ? homeKey
+      : streamKeyOf(channelId);
+
+  /// The open approval and secret request cards waiting in `channelId`.
+  List<Item> waitingCards(String channelId) => [
+    for (final i in transcripts[_requestKey(channelId)]?.items ?? const [])
+      if ((i is ApprovalItem && i.outcome == null) ||
+          (i is SecretRequestItem && i.open))
+        i,
+  ];
+
+  /// The live card for a request post or pointer, if this app has it.
+  Item? requestCard(Post post) {
+    for (final t in transcripts.values) {
+      for (final i in t.items) {
+        if (i is ApprovalItem &&
+                post.approvalId != null &&
+                i.approval.id == post.approvalId ||
+            i is SecretRequestItem &&
+                post.secretRequestId != null &&
+                i.request.id == post.secretRequestId) {
+          return i;
+        }
+      }
+    }
+    return null;
   }
 
   /// Whether [run] is in a session of the open stream (or one this app
@@ -889,6 +910,10 @@ class TernStore extends ChangeNotifier {
       for (final item in t.items.whereType<PostItem>()) {
         if (item.post.id == post.id) item.post = post;
       }
+      // An answered request's pointer leaves Home.
+      if (!showsInStream(post)) {
+        t.items.removeWhere((i) => i is PostItem && i.post.id == post.id);
+      }
     }
     workVersion++;
     notifyListeners();
@@ -920,7 +945,7 @@ class TernStore extends ChangeNotifier {
       return;
     }
     final t = transcripts[streamKey];
-    if (t == null) return;
+    if (t == null || !showsInStream(post)) return;
     // Mid-run, appending would split the reply streaming in.
     if (t.activeRun == null) {
       t.items.add(PostItem(post));
@@ -1256,9 +1281,9 @@ class TernStore extends ChangeNotifier {
         if (canManageConnections) unawaited(loadConnections());
         return;
       case ApprovalRequested(:final approval):
-        // With channels, every approval is answered in Home.
+        // With channels, in the conversation the run is in.
         session = hasChannels
-            ? homeKey
+            ? _requestKey(approval.channelId)
             : approval.rootSessionId ?? approval.sessionId;
         _runSession[approval.runId] ??= approval.sessionId;
         _approvalSession[approval.runId] = session;
@@ -1326,27 +1351,15 @@ class TernStore extends ChangeNotifier {
       return;
     }
     var changed = _transcriptFor(session)!.apply(e);
-    if (hasChannels) {
-      switch (e) {
-        case ApprovalRequested(:final approval):
-          _mirror(
-            approval.channelId,
-            (i) => i is ApprovalItem && i.approval.id == approval.id,
-          );
-        case SecretRequested(:final request):
-          _mirror(
-            request.channelId,
-            (i) => i is SecretRequestItem && i.request.id == request.id,
-          );
-        default:
+    // A run's cards wait in its conversation, which may not be the
+    // transcript its events land in: a run ending closes them there too.
+    if (e is RunFinished && hasChannels) {
+      for (final t in transcripts.values) {
+        if (identical(t, transcripts[session])) continue;
+        t
+          ..expireApprovals(e.runId)
+          ..expireSecretRequests(e.runId);
       }
-    }
-    // Home holds every approval and secret request; a run ending closes
-    // its own there too.
-    if (e is RunFinished && hasChannels && session != homeKey) {
-      transcripts[homeKey]
-        ?..expireApprovals(e.runId)
-        ..expireSecretRequests(e.runId);
     }
     if (e is ToolFinished) changed = _closeSecrets(e) || changed;
     if (e is RunEvent && _parentOf.containsKey(e.runId)) {
@@ -1415,10 +1428,12 @@ class TernStore extends ChangeNotifier {
     );
   }
 
-  /// Where a request's card belongs: Home, or without channels the
-  /// conversation the user started.
+  /// Where a request's card belongs: the conversation its run is in, or
+  /// without channels the conversation the user started.
   String _routeSecret(SecretRequest r) {
-    final session = hasChannels ? homeKey : r.rootSessionId ?? r.sessionId;
+    final session = hasChannels
+        ? _requestKey(r.channelId)
+        : r.rootSessionId ?? r.sessionId;
     _runSession[r.runId] ??= r.sessionId;
     _secretSession[r.runId] = session;
     return session;
@@ -1809,15 +1824,15 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Pending outbox items for the open stream: every one in Home (they
-  /// all land there), an agent's own in its DM (agent profiles §3).
-  List<OutboxItem> outboxHere() {
-    final dm = streamOpen && !homeOpen;
-    return [
-      for (final o in outbox)
-        if (o.pending && (!dm || o.channelId == channel)) o,
-    ];
-  }
+  /// Pending outbox items for the open stream: the ones its runs queued
+  /// (Home's own, or an agent's in its DM). Items from elsewhere wait
+  /// there, with a pointer in Home. A core without channels: all of them.
+  List<OutboxItem> outboxHere() => [
+    for (final o in outbox)
+      if (o.pending &&
+          (!hasChannels || (o.channelId ?? homeId) == (channel ?? homeId)))
+        o,
+  ];
 
   /// Re-read the items waiting in the outbox.
   Future<void> refreshOutbox({bool notify = true}) async {

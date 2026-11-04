@@ -25,6 +25,7 @@ pub mod outbox;
 pub mod scheduler;
 pub mod tls;
 pub mod uploads;
+pub mod waiting;
 pub mod wakes;
 
 use std::collections::HashMap;

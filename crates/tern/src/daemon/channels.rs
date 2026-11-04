@@ -56,9 +56,16 @@ pub fn view(store: &Store, row: tern_store::PostRow) -> Post {
         .and_then(|id| store.post(id).ok().flatten())
         .map(|p| p.channel_id);
     let outbox_id = super::outbox::outbox_of_post(store, &row);
+    let (approval_id, secret_request_id) = match super::waiting::waiting_of(store, &row) {
+        Some(("approval", id)) => (Some(id), None),
+        Some((_, id)) => (None, Some(id)),
+        None => (None, None),
+    };
     Post {
         points_to_channel,
         outbox_id,
+        approval_id,
+        secret_request_id,
         ..Post::from(row)
     }
 }

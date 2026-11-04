@@ -367,39 +367,32 @@ void main() {
     expect(store.otherAgents.map((a) => a.id), ['tern:research']);
   });
 
-  test(
-    'an approval lands in Home and is mirrored in its agent\'s DM',
-    () async {
-      final (store, _) = await _store();
-      store.onEventForTest(
-        ApprovalRequested(_approval('a1', 'dm:research', 'tern:research')),
-      );
-      store.onEventForTest(ApprovalRequested(_approval('a2', 'home', 'tern')));
-      final home = store.transcripts[TernStore.homeKey]!;
-      final dm = store.transcripts[TernStore.streamKeyOf('dm:research')]!;
-      expect(home.items.whereType<ApprovalItem>().length, 2);
-      final mirrored = dm.items.whereType<ApprovalItem>().single;
-      expect(mirrored.approval.id, 'a1');
-      // One request, counted once.
-      expect(store.pendingApprovals, 2);
-      expect(store.waitingFor(_research), 1);
-      expect(store.waitingFor(_tern), 1);
-      // Answered in the DM, closed in Home too; it survives the DM reloading.
-      await store.openAgent(_research);
-      final shown = store.current!.items.whereType<ApprovalItem>().single;
-      await store.answer(shown, Decision.once);
-      expect(
-        home.items
-            .whereType<ApprovalItem>()
-            .firstWhere((a) => a.approval.id == 'a1')
-            .outcome,
-        'approved',
-      );
-      expect(store.pendingApprovals, 1);
-    },
-  );
+  test('an approval waits in its agent\'s DM, not in Home', () async {
+    final (store, _) = await _store();
+    store.onEventForTest(
+      ApprovalRequested(_approval('a1', 'dm:research', 'tern:research')),
+    );
+    store.onEventForTest(ApprovalRequested(_approval('a2', 'home', 'tern')));
+    final home = store.transcripts[TernStore.homeKey]!;
+    final dm = store.transcripts[TernStore.streamKeyOf('dm:research')]!;
+    // Each where its run is; Home gets the daemon's pointer for a1.
+    expect(home.items.whereType<ApprovalItem>().map((a) => a.approval.id), [
+      'a2',
+    ]);
+    expect(dm.items.whereType<ApprovalItem>().single.approval.id, 'a1');
+    expect(store.pendingApprovals, 2);
+    expect(store.waitingFor(_research), 1);
+    expect(store.waitingFor(_tern), 1);
+    // Answered in the DM; it survives the DM reloading.
+    await store.openAgent(_research);
+    final shown = store.current!.items.whereType<ApprovalItem>().single;
+    expect(shown.approval.id, 'a1');
+    await store.answer(shown, Decision.once);
+    expect(store.pendingApprovals, 1);
+    expect(store.waitingFor(_research), 0);
+  });
 
-  test('an agent\'s DM shows its own outbox items; Home shows all', () async {
+  test('Home and an agent\'s DM each show their own outbox items', () async {
     final (store, _) = await _store();
     OutboxItem item(int id, String channel, String agent) => OutboxItem(
       id: id,
@@ -418,7 +411,7 @@ void main() {
       item(1, 'dm:research', 'tern:research'),
       item(2, 'home', 'tern'),
     ];
-    expect(store.outboxHere().map((o) => o.id), [1, 2]);
+    expect(store.outboxHere().map((o) => o.id), [2]);
     expect(store.waitingFor(_research), 1);
     await store.openAgent(_research);
     expect(store.outboxHere().map((o) => o.id), [1]);
