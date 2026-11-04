@@ -15,6 +15,7 @@ import 'package:tern_desktop/state/transcript.dart';
 import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/home.dart';
 import 'package:tern_desktop/ui/move_dialog.dart';
+import 'package:tern_desktop/ui/sidebar.dart';
 
 Future<void> _font(String family, List<String> paths) async {
   for (final p in paths) {
@@ -60,6 +61,9 @@ Post _post(
   String authorKind = 'agent',
   String author = 'tern',
   String session = 'fin-main',
+  String? kind,
+  String? approvalId,
+  bool resolved = false,
   int? replyTo,
   int ago = 0,
 }) => Post(
@@ -69,9 +73,11 @@ Post _post(
   authorKind: authorKind,
   authorId: author,
   author: author,
-  kind: authorKind == 'user' ? 'message' : 'answer',
+  kind: kind ?? (authorKind == 'user' ? 'message' : 'answer'),
   text: text,
   replyTo: replyTo,
+  approvalId: approvalId,
+  resolvedAt: resolved ? _now : null,
   createdAt: _now.subtract(Duration(minutes: ago)),
 );
 
@@ -144,23 +150,42 @@ TernStore _store() {
       ago: 28,
     ),
     _m('h2', 12, 'user', 'Pay Acme from the business account.', ago: 2),
-  ]);
-  home.items.whereType<UserItem>().last.queued = true;
-  home.items.add(
-    ApprovalItem(
-      const Approval(
-        id: 'a1',
-        runId: 'r9',
-        sessionId: 'fin-main',
-        tool: 'http_fetch',
-        input: {'url': 'https://bank.example/transfer'},
-        summary: 'http_fetch POST https://bank.example/transfer',
-        effect: 'destructive',
-        pattern: null,
+    // #finances' run waits on an approval: Home points to it.
+    StreamPost(
+      Post(
+        id: 13,
+        channelId: 'home',
+        authorKind: 'agent',
+        authorId: 'tern',
+        author: 'tern',
+        kind: 'pointer',
+        text: _asking,
+        pointsTo: 12,
+        pointsToChannel: 'fin',
+        approvalId: 'a1',
+        createdAt: _now.subtract(const Duration(minutes: 1)),
       ),
     ),
-  );
+  ]);
+  home.items.whereType<UserItem>().last.queued = true;
   store.transcripts[TernStore.homeKey] = home;
+  // The card itself waits in #finances, where the run is.
+  store.transcripts[TernStore.streamKeyOf('fin')] = Transcript()
+    ..items.add(
+      ApprovalItem(
+        const Approval(
+          id: 'a1',
+          runId: 'r9',
+          sessionId: 'fin-main',
+          tool: 'http_fetch',
+          input: {'url': 'https://bank.example/transfer'},
+          summary: 'http_fetch POST https://bank.example/transfer',
+          effect: 'destructive',
+          pattern: null,
+          channelId: 'fin',
+        ),
+      ),
+    );
   store.posts['fin'] = [
     _post(
       5,
@@ -175,13 +200,7 @@ TernStore _store() {
       replyTo: 5,
       ago: 298,
     ),
-    _post(
-      7,
-      'Why so much?',
-      authorKind: 'user',
-      author: 'you',
-      ago: 62,
-    ),
+    _post(7, 'Why so much?', authorKind: 'user', author: 'you', ago: 62),
     _post(
       8,
       '2 invoices need a decision: Acme €1,240, Northwind €310.',
@@ -199,9 +218,22 @@ TernStore _store() {
       ago: 59,
     ),
     _post(10, 'Card fees comparison done; Mercury is cheapest for us.', ago: 5),
+    // An earlier request, answered: the line it leaves.
+    _post(
+      11,
+      'Approved: http_fetch GET https://bank.example/rates',
+      kind: 'needs_you',
+      approvalId: 'a0',
+      resolved: true,
+      ago: 4,
+    ),
+    _post(12, _asking, kind: 'needs_you', approvalId: 'a1', ago: 1),
   ];
   return store;
 }
+
+const _asking =
+    'Needs your approval: http_fetch POST https://bank.example/transfer';
 
 Future<void> _shot(WidgetTester tester, GlobalKey key, String name) =>
     tester.runAsync(() async {
@@ -264,6 +296,10 @@ void main() {
       );
       await tester.pump(const Duration(milliseconds: 100));
       expect(tester.takeException(), isNull);
+      // A pointer, answerable here, not the card.
+      expect(find.text('Go to #finances'), findsOneWidget);
+      expect(find.text('Approve once'), findsOneWidget);
+      expect(find.text('Allow once'), findsNothing);
       await _shot(tester, key, 'home_${dark ? 'dark' : 'light'}');
 
       // Moving the current topic: the dialog over Home.
@@ -280,8 +316,9 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       await tester.pump(const Duration(milliseconds: 400));
 
-      // #finances: one flat timeline, a reply quoting what it answers,
-      // and the approval its run is waiting on answered in Home.
+      // #finances: one flat timeline, a reply quoting what it answers, an
+      // answered request's line, and the approval its run is waiting on
+      // as a card in the timeline.
       store
         ..channel = 'fin'
         ..selected = 'fin-main';
@@ -296,6 +333,9 @@ void main() {
       store.notifyListeners();
       await tester.pump(const Duration(milliseconds: 100));
       expect(tester.takeException(), isNull);
+      expect(find.text('Allow once'), findsOneWidget);
+      expect(find.textContaining('Waiting for you in'), findsNothing);
+      expect(find.byType(WaitingBadge), findsOneWidget);
       await _shot(tester, key, 'channel_${dark ? 'dark' : 'light'}');
       debugDefaultTargetPlatformOverride = null;
     });

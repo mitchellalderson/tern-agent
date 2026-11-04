@@ -36,6 +36,13 @@ class CutItem extends Item {
 }
 
 /// Something posted from elsewhere: a routine's result, a card.
+/// Whether a stream (Home or a DM) shows [p]. A waiting request's post
+/// is its card, which the live event shows; a request's pointer in Home
+/// goes once it's answered; what's left is the line saying how it ended.
+bool showsInStream(Post p) =>
+    !p.isRequest ||
+    (p.kind == 'pointer' ? p.resolvedAt == null : p.resolvedAt != null);
+
 class PostItem extends Item {
   PostItem(this.post);
   Post post;
@@ -306,8 +313,10 @@ class Transcript {
           b.add(message, messageId: messageId, queued: queued);
         case StreamCut():
           t.items.add(CutItem(i));
-        case StreamPost(:final post):
+        case StreamPost(:final post) when showsInStream(post):
           t.items.add(PostItem(post));
+        case StreamPost():
+          break;
         case StreamUnknown():
           break;
       }

@@ -153,6 +153,8 @@ class Post {
     this.mentions = const [],
     this.wakeDepth = 0,
     this.outboxId,
+    this.approvalId,
+    this.secretRequestId,
     required this.createdAt,
   });
 
@@ -177,6 +179,8 @@ class Post {
     mentions: [for (final m in j['mentions'] as List? ?? const []) m as String],
     wakeDepth: j['wake_depth'] as int? ?? 0,
     outboxId: j['outbox_id'] as int?,
+    approvalId: j['approval_id'] as String?,
+    secretRequestId: j['secret_request_id'] as String?,
     createdAt: _time(j['created_at'] as int),
   );
 
@@ -201,6 +205,7 @@ class Post {
   /// `note` (a quiet line from tern: "Research joined").
   final String kind;
   final String text;
+
   /// The post this one answers or replies to: shown as a quote above it,
   /// never as a thread.
   final int? replyTo;
@@ -222,7 +227,16 @@ class Post {
   /// The outbox item this `needs_you` post (or pointer) stands for. It
   /// closes when the item is decided; "Done" alone is refused.
   final int? outboxId;
+
+  /// The approval or secret request this `needs_you` post (or pointer)
+  /// stands for, waiting in the conversation its run is in. It closes
+  /// when the request is answered; "Done" alone is refused.
+  final String? approvalId;
+  final String? secretRequestId;
   final DateTime createdAt;
+
+  /// Stands for an approval or a secret request.
+  bool get isRequest => approvalId != null || secretRequestId != null;
 
   bool get mine => authorKind == 'user';
 
@@ -251,6 +265,8 @@ class Post {
     mentions: mentions,
     wakeDepth: wakeDepth,
     outboxId: outboxId,
+    approvalId: approvalId,
+    secretRequestId: secretRequestId,
     createdAt: createdAt,
   );
 }

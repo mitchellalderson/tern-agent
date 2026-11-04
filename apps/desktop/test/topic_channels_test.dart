@@ -9,6 +9,7 @@ import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/channel_view.dart';
 import 'package:tern_desktop/ui/home.dart';
 import 'package:tern_desktop/ui/routines.dart';
+import 'package:tern_desktop/ui/sidebar.dart';
 import 'package:tern_desktop/ui/thread_pane.dart';
 
 final _t0 = DateTime(2026, 11, 3, 9);
@@ -70,6 +71,7 @@ class _FakeClient extends TernClient {
   }) async => channel != 'fin'
       ? []
       : [
+          ?extra,
           // Newest first; 5 and 6 were a side thread off post 2 (from
           // before channels were flat): now they're in the timeline.
           _post(6, 'Mostly card fees.', session: 'side', replyTo: 5),
@@ -172,7 +174,59 @@ class _FakeClient extends TernClient {
 
   @override
   Future<List<Schedule>> schedules() async => [];
+
+  final answers = <(String, Decision)>[];
+
+  /// A post newer than the fixed ones, for reloads.
+  Post? extra;
+
+  @override
+  Future<void> answer(String approval, Decision decision) async =>
+      answers.add((approval, decision));
 }
+
+/// An approval from a run in #finances.
+const _ask = Approval(
+  id: 'a1',
+  runId: 'r9',
+  sessionId: 'main',
+  tool: 'shell',
+  input: {},
+  summary: 'shell rm x',
+  pattern: 'rm *',
+  channelId: 'fin',
+);
+
+/// Its needs-you post in #finances, and the pointer to it in Home.
+Post _askPost({bool resolved = false}) => Post(
+  id: 20,
+  channelId: 'fin',
+  sessionId: 'main',
+  runId: 'r9',
+  authorKind: 'agent',
+  authorId: 'tern',
+  author: 'tern',
+  kind: 'needs_you',
+  text: resolved ? 'Approved: shell rm x' : 'Needs your approval: shell rm x',
+  resolvedAt: resolved ? _t0 : null,
+  approvalId: 'a1',
+  createdAt: _t0.add(const Duration(minutes: 20)),
+);
+
+Post _pointer({bool resolved = false}) => Post(
+  id: 21,
+  channelId: 'home',
+  authorKind: 'agent',
+  authorId: 'tern',
+  author: 'tern',
+  kind: 'pointer',
+  text: 'Needs your approval: shell rm x',
+  pointsTo: 20,
+  pointsToChannel: 'fin',
+  resolvedAt: resolved ? _t0 : null,
+  approvalId: 'a1',
+  createdAt: _t0.add(const Duration(minutes: 20)),
+);
 
 Future<(TernStore, _FakeClient)> _store() async {
   final client = _FakeClient();
@@ -235,44 +289,84 @@ void main() {
     expect(quoted(4), isNull);
   });
 
-  test('approvals from a channel are answered in Home', () async {
+  test('approvals from a channel wait in the channel, not in Home', () async {
     final (store, _) = await _store();
     await store.openChannelView('fin');
     store.onEventForTest(const RunStarted(runId: 'r9', sessionId: 'main'));
-    // The daemon adds channel_id; hand-built events can't, so use JSON.
-    store.onEventForTest(
-      TernEvent.fromJson({
-        'type': 'tool_started',
-        'run_id': 'r9',
-        'session_id': 'main',
-        'channel_id': 'fin',
-        'id': 't1',
-        'name': 'shell',
-        'summary': 'shell ls',
-      }),
-    );
-    store.onEventForTest(
-      const ApprovalRequested(
-        Approval(
-          id: 'a1',
-          runId: 'r9',
-          sessionId: 'main',
-          tool: 'shell',
-          input: {},
-          summary: 'shell rm x',
-          pattern: null,
-        ),
-      ),
-    );
+    store.onEventForTest(const ApprovalRequested(_ask));
     final home = store.transcripts[TernStore.homeKey]!;
-    expect(home.items.whereType<ApprovalItem>().single.approval.id, 'a1');
-    expect(store.transcripts['main']!.items.whereType<ApprovalItem>(), isEmpty);
-    expect(store.waitingFrom('fin'), 1);
-    expect(store.pendingApprovals, 1);
-    // The run ending closes it there too.
+    expect(home.items.whereType<ApprovalItem>(), isEmpty);
+    expect(
+      store.waitingCards('fin').whereType<ApprovalItem>().single.approval.id,
+      'a1',
+    );
+    expect(store.waitingIn('fin'), 1);
+    expect(store.waitingIn(TernStore.homeId), 0);
+    expect(store.pendingApprovals, 1, reason: 'the tray counts everything');
+    // Its post in the channel stands for the live card.
+    store.onEventForTest(PostCreated(_askPost()));
+    expect(store.posts['fin']!.last.approvalId, 'a1');
+    expect(store.requestCard(_askPost()), store.waitingCards('fin').single);
+    // The run ending closes it where it waits.
     store.onEventForTest(const RunFinished(runId: 'r9', status: 'completed'));
-    expect(home.items.whereType<ApprovalItem>().single.outcome, 'expired');
-    expect(store.waitingFrom('fin'), 0);
+    expect(store.waitingIn('fin'), 0);
+  });
+
+  test("Home's stream shows a request's pointer until it's answered", () {
+    expect(showsInStream(_pointer()), isTrue);
+    expect(showsInStream(_pointer(resolved: true)), isFalse);
+    // A DM's own request post is its card while it waits, then a line.
+    expect(showsInStream(_askPost()), isFalse);
+    expect(showsInStream(_askPost(resolved: true)), isTrue);
+    expect(showsInStream(_post(1, 'hi')), isTrue);
+  });
+
+  testWidgets('the card is in the channel; Home points to it and answers it', (
+    tester,
+  ) async {
+    final (store, client) = await _store();
+    await _pump(tester, store);
+    store.onEventForTest(const RunStarted(runId: 'r9', sessionId: 'main'));
+    store.onEventForTest(const ApprovalRequested(_ask));
+    store.onEventForTest(PostCreated(_pointer()));
+    await _settle(tester);
+
+    // Home: a pointer, not the card, and the sidebar badges #finances.
+    expect(find.text('Allow once'), findsNothing);
+    expect(find.text('Go to #finances'), findsOneWidget);
+    expect(find.text('Approve once'), findsOneWidget);
+    expect(find.byType(WaitingBadge), findsOneWidget);
+
+    // #finances: the card inline in its timeline, no "Waiting in Home".
+    await tester.tap(find.text('Go to #finances'));
+    await _settle(tester);
+    store.onEventForTest(PostCreated(_askPost()));
+    await _settle(tester);
+    expect(store.openChannel?.id, 'fin');
+    expect(find.text('Allow once'), findsOneWidget);
+    expect(find.textContaining('Waiting for you in'), findsNothing);
+    expect(find.textContaining('Needs your approval'), findsNothing);
+
+    // Back in Home, answer from the pointer: both close.
+    await store.openHome();
+    store.onEventForTest(PostCreated(_pointer()));
+    await _settle(tester);
+    await tester.tap(find.text('Approve once'));
+    await _settle(tester);
+    expect(client.answers, [('a1', Decision.once)]);
+    store
+      ..onEventForTest(PostUpdated(_askPost(resolved: true)))
+      ..onEventForTest(PostUpdated(_pointer(resolved: true)));
+    await _settle(tester);
+    expect(find.text('Approve once'), findsNothing, reason: 'the pointer went');
+    expect(find.byType(WaitingBadge), findsNothing);
+    // #finances keeps a line saying how it ended.
+    client.extra = _askPost(resolved: true);
+    await store.openChannelView('fin');
+    await _settle(tester);
+    expect(find.text('Allow once'), findsNothing);
+    expect(find.textContaining('Approved: '), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
   });
 
   testWidgets('sidebar, a flat timeline, posting and a new channel', (
@@ -294,7 +388,10 @@ void main() {
     expect(find.text('reply-sweep'), findsOneWidget);
     // No threads: everything is in the timeline, replies quote.
     expect(find.text('Mostly card fees.'), findsOneWidget);
-    expect(find.textContaining('replying to tern: “About 1,240 EUR.”'), findsOneWidget);
+    expect(
+      find.textContaining('replying to tern: “About 1,240 EUR.”'),
+      findsOneWidget,
+    );
     expect(find.text('Reply in thread'), findsNothing);
     expect(find.textContaining('replies'), findsNothing);
     expect(find.byTooltip('New posts'), findsNothing);

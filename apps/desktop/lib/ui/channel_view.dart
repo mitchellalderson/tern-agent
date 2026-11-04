@@ -8,6 +8,7 @@ import '../theme.dart';
 import 'agent_face.dart';
 import 'conversation.dart';
 import 'routines.dart';
+import 'items.dart';
 import 'widgets.dart';
 
 /// A topic channel's timeline (docs/channels-design.md §5.2): its posts,
@@ -42,8 +43,22 @@ class ChannelView extends StatelessWidget {
     final shown = store.posts[ch.id] ?? const <Post>[];
     // One live line per member at work here (channels-design §5.2).
     final lines = store.liveIn(ch.id);
-    final waiting = store.waitingFrom(ch.id);
-    final extra = lines.length;
+    // Approvals and secret requests wait here, as cards in place of their
+    // posts; one whose post hasn't arrived yet goes at the bottom.
+    final placed = {
+      for (final p in shown) ?p.approvalId,
+      for (final p in shown) ?p.secretRequestId,
+    };
+    final loose = [
+      for (final i in store.waitingCards(ch.id))
+        if (!placed.contains(switch (i) {
+          ApprovalItem(:final approval) => approval.id,
+          SecretRequestItem(:final request) => request.id,
+          _ => null,
+        }))
+          i,
+    ];
+    final extra = lines.length + loose.length;
     return Column(
       children: [
         _ChannelHeader(
@@ -53,9 +68,8 @@ class ChannelView extends StatelessWidget {
           onTogglePanel: onTogglePanel,
         ),
         const Hairline(),
-        if (waiting > 0) WaitingInHome(store: store, count: waiting),
         Expanded(
-          child: shown.isEmpty && lines.isEmpty
+          child: shown.isEmpty && extra == 0
               ? _EmptyChannel(channel: ch)
               : ListView.builder(
                   reverse: true,
@@ -69,11 +83,13 @@ class ChannelView extends StatelessWidget {
                           horizontal: 24,
                           vertical: 6,
                         ),
-                        child: i < extra
+                        child: i < lines.length
                             ? MemberLine(
-                                line: lines[extra - 1 - i],
+                                line: lines[lines.length - 1 - i],
                                 store: store,
                               )
+                            : i < extra
+                            ? ItemView(item: loose[extra - 1 - i], store: store)
                             : _timelinePost(
                                 shown,
                                 shown.length - 1 - (i - extra),
@@ -95,11 +111,21 @@ class ChannelView extends StatelessWidget {
 }
 
 extension on ChannelView {
-  Widget _timelinePost(List<Post> shown, int i) => TimelinePost(
-    post: shown[i],
-    store: store,
-    quote: ChannelView.quoted(shown[i], i > 0 ? shown[i - 1] : null, shown),
-  );
+  Widget _timelinePost(List<Post> shown, int i) {
+    final post = shown[i];
+    if (post.isRequest) {
+      // Waiting: the card itself, answered here. Answered: how it ended.
+      final card = post.needsYou ? store.requestCard(post) : null;
+      return card != null
+          ? ItemView(item: card, store: store)
+          : NoteLine(post: post, icon: Icons.check_circle_outline);
+    }
+    return TimelinePost(
+      post: post,
+      store: store,
+      quote: ChannelView.quoted(post, i > 0 ? shown[i - 1] : null, shown),
+    );
+  }
 }
 
 /// "research-1 · Running http_fetch": a member working in the channel.
@@ -135,21 +161,28 @@ class MemberLine extends StatelessWidget {
   }
 }
 
-/// "Waiting for you in Home": approvals and secret requests are answered
-/// there, whichever channel asked.
-class WaitingInHome extends StatelessWidget {
-  const WaitingInHome({super.key, required this.store, required this.count});
+/// "Waiting for you in #renovation": a thread's run asks in the
+/// conversation it's in, which isn't the one open.
+class WaitingIn extends StatelessWidget {
+  const WaitingIn({
+    super.key,
+    required this.store,
+    required this.channelId,
+    required this.count,
+  });
 
   final TernStore store;
+  final String channelId;
   final int count;
 
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
+    final where = store.conversationName(channelId);
     return Material(
       color: c.warn.withValues(alpha: 0.1),
       child: InkWell(
-        onTap: () => store.openHome(),
+        onTap: () => store.openConversation(channelId),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
           child: Row(
@@ -159,13 +192,13 @@ class WaitingInHome extends StatelessWidget {
               Expanded(
                 child: Text(
                   count == 1
-                      ? 'Waiting for you in Home'
-                      : '$count things waiting for you in Home',
+                      ? 'Waiting for you in $where'
+                      : '$count things waiting for you in $where',
                   style: const TextStyle(fontSize: 12.5),
                 ),
               ),
               Text(
-                'Go to Home',
+                'Go to $where',
                 style: TextStyle(fontSize: 12.5, color: c.accent),
               ),
             ],
@@ -440,9 +473,14 @@ class MemberAvatars extends StatelessWidget {
 /// A quiet line from tern in a timeline: "Research joined", "@ops not
 /// woken: …".
 class NoteLine extends StatelessWidget {
-  const NoteLine({super.key, required this.post});
+  const NoteLine({
+    super.key,
+    required this.post,
+    this.icon = Icons.info_outline,
+  });
 
   final Post post;
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) {
@@ -452,7 +490,7 @@ class NoteLine extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.info_outline, size: 13, color: c.muted),
+          Icon(icon, size: 13, color: c.muted),
           const SizedBox(width: 6),
           Flexible(
             child: ConstrainedBox(
@@ -632,7 +670,7 @@ class TimelinePost extends StatelessWidget {
                         onTap: () => store.decideOutbox(item, approve: false),
                       ),
                     ],
-                  ] else if (post.needsYou)
+                  ] else if (post.needsYou && !post.isRequest)
                     _Action(label: 'Done', onTap: () => store.resolvePost(post))
                   else if (post.kind == 'needs_you')
                     const _Action(label: 'Done ✓', onTap: null),

@@ -69,6 +69,13 @@ pub struct Post {
     /// item, which resolves the post; "done" alone is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outbox_id: Option<i64>,
+    /// A `needs_you` post (or its pointer) for an approval or a secret
+    /// request waiting in the conversation its run is in: answer the
+    /// request, which closes the post.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_request_id: Option<String>,
     /// Unix ms.
     pub created_at: i64,
 }
@@ -97,6 +104,8 @@ impl From<tern_store::PostRow> for Post {
             mentions: p.mentions,
             wake_depth: p.wake_depth,
             outbox_id: None,
+            approval_id: None,
+            secret_request_id: None,
             created_at: p.created_at,
         }
     }
