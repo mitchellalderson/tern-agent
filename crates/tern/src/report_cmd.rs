@@ -223,7 +223,7 @@ fn connector_secret_names(home: &TernHome) -> Vec<String> {
         })
         .filter(|p| p.extension().is_some_and(|e| e == tern_lua::EXTENSION))
         .filter_map(|p| tern_lua::load_file(&host, &p).ok())
-        .flat_map(|vm| vm.spec.capabilities.secrets)
+        .flat_map(|vm| vm.spec.capabilities.all_secrets())
         .collect()
 }
 

@@ -790,7 +790,8 @@ fn build_tools(
     #[cfg(feature = "python")]
     registry.register(Arc::new(python_tool(config, home)));
 
-    let lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
+    let mut lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
+    lua.default_rate = config.connectors.rate;
     let dirs = tern_lua::tools::Dirs {
         active: home.connectors_dir(),
         drafts: home.drafts_dir(),

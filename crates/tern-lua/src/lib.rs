@@ -1,7 +1,9 @@
 //! Sandboxed Luau connectors (spec §10): user- or agent-written tools in
 //! `~/.tern/connectors/*.luau`, each in its own VM with declared capabilities.
 
+mod allow;
 mod host;
+mod limit;
 mod spec;
 pub mod tools;
 
@@ -14,8 +16,9 @@ use serde_json::Value;
 use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult, ToolSource};
 use tern_core::types::ToolSpec;
 
-pub use host::{DEFAULT_MEMORY, DEFAULT_TIMEOUT, Host, LoadError, Vm, host_allowed};
-pub use spec::{Capabilities, ConnectorSpec, ToolDef, check_schema, valid_ident};
+pub use allow::{host_allowed, path_allowed};
+pub use host::{DEFAULT_MEMORY, DEFAULT_RATE, DEFAULT_TIMEOUT, Host, LoadError, Vm};
+pub use spec::{Auth, Capabilities, ConnectorSpec, Inject, ToolDef, check_schema, valid_ident};
 
 pub const EXTENSION: &str = "luau";
 
@@ -38,12 +41,20 @@ pub struct Fingerprint {
 
 impl Fingerprint {
     fn to_json(&self) -> String {
-        serde_json::json!({
+        let c = &self.capabilities;
+        let mut v = serde_json::json!({
             "hash": self.hash,
-            "http": self.capabilities.http,
-            "secrets": self.capabilities.secrets,
-        })
-        .to_string()
+            "http": c.http,
+            "secrets": c.secrets,
+        });
+        // Only when declared, so records written before T4b still match.
+        if !c.auth.is_empty() {
+            v["auth"] = serde_json::to_value(&c.auth).unwrap_or_default();
+        }
+        if let Some(r) = c.rate {
+            v["rate"] = r.to_string().into();
+        }
+        v.to_string()
     }
 
     fn from_json(s: &str) -> Option<Self> {
@@ -54,11 +65,21 @@ impl Fingerprint {
                 .map(|x| x.as_str().map(str::to_owned))
                 .collect()
         };
+        let auth = match v.get("auth") {
+            None => Vec::new(),
+            Some(a) => serde_json::from_value(a.clone()).ok()?,
+        };
+        let rate = match v.get("rate") {
+            None => None,
+            Some(r) => Some(r.as_str()?.parse().ok()?),
+        };
         Some(Self {
             hash: v["hash"].as_str()?.to_owned(),
             capabilities: Capabilities {
                 http: list("http")?,
                 secrets: list("secrets")?,
+                auth,
+                rate,
             },
         })
     }
@@ -319,30 +340,59 @@ impl Connectors {
             .unwrap_or_default()
     }
 
-    /// Every secret name any loaded connector may read (for redaction).
+    /// Every secret name any loaded connector uses (for redaction).
     pub fn secret_names(&self) -> Vec<String> {
         self.specs()
             .into_iter()
-            .flat_map(|s| s.capabilities.secrets)
+            .flat_map(|s| s.capabilities.all_secrets())
             .collect()
     }
 
-    /// `(secret, "connector <name>")` for every secret an active connector declares.
+    /// `(secret, what uses it)` for every secret an active connector
+    /// declares, e.g. `connector notion · sent by tern to api.notion.com`.
     pub fn secret_uses(&self) -> Vec<(String, String)> {
         self.specs()
-            .into_iter()
-            .flat_map(|s| {
-                let user = format!("connector {}", s.name);
-                s.capabilities
-                    .secrets
-                    .into_iter()
-                    .map(move |secret| (secret, user.clone()))
-            })
+            .iter()
+            .flat_map(|s| secret_users(s, false, false))
             .collect()
     }
 }
 
-/// `(secret, what reads it)` for every secret a connector in `active` or
+/// How `spec` uses each of its secrets, for the Secrets view and the
+/// `secret_request` prompt. A raw read (`ctx.secret`) is marked legacy.
+fn secret_users(spec: &ConnectorSpec, draft: bool, reach: bool) -> Vec<(String, String)> {
+    let caps = &spec.capabilities;
+    let mut who = format!("connector {}", spec.name);
+    if draft {
+        who.push_str(" (draft)");
+    }
+    let mut uses = Vec::new();
+    for a in &caps.auth {
+        let hosts = if a.hosts.is_empty() {
+            caps.http
+                .iter()
+                .map(|h| allow::entry_host(h).to_owned())
+                .collect::<Vec<_>>()
+        } else {
+            a.hosts.clone()
+        };
+        let user = format!("{who} · sent by tern to {}", hosts.join(", "));
+        uses.extend(
+            a.secrets()
+                .into_iter()
+                .map(|s| (s.to_owned(), user.clone())),
+        );
+    }
+    let mut raw = who;
+    if reach && !caps.http.is_empty() {
+        raw.push_str(&format!(" · reaches {}", caps.http.join(", ")));
+    }
+    raw.push_str(" · reads the value itself (legacy ctx.secret)");
+    uses.extend(caps.secrets.iter().map(|s| (s.clone(), raw.clone())));
+    uses
+}
+
+/// `(secret, what uses it)` for every secret a connector in `active` or
 /// `drafts` declares, naming the hosts it can send it to, e.g.
 /// `connector weather (draft) · reaches api.weather.com`. Shown when the
 /// agent asks the user for a secret, so they can see where it would go.
@@ -353,15 +403,7 @@ pub fn describe_secret_uses(host: &Host, active: &Path, drafts: &Path) -> Vec<(S
             let Ok(vm) = load_file(host, &path) else {
                 continue;
             };
-            let caps = &vm.spec.capabilities;
-            let mut user = format!("connector {}", vm.spec.name);
-            if draft {
-                user.push_str(" (draft)");
-            }
-            if !caps.http.is_empty() {
-                user.push_str(&format!(" · reaches {}", caps.http.join(", ")));
-            }
-            uses.extend(caps.secrets.iter().map(|s| (s.clone(), user.clone())));
+            uses.extend(secret_users(&vm.spec, draft, true));
         }
     }
     uses

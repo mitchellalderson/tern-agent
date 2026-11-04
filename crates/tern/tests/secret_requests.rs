@@ -224,7 +224,9 @@ async fn agent_asks_api_client_answers_value_stays_private() {
     assert_eq!(req["secrets"][0]["in_file"], false);
     assert_eq!(
         req["secrets"][0]["used_by"],
-        json!(["connector weather (draft) · reaches api.weather.example"])
+        json!([
+            "connector weather (draft) · reaches api.weather.example · reads the value itself (legacy ctx.secret)"
+        ])
     );
     let id = req["id"].as_str().unwrap().to_owned();
     let call_id = req["call_id"].as_str().unwrap().to_owned();

@@ -267,6 +267,9 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
         _ => r.check(Status::Info, "telegram disabled", None),
     }
 
+    r.section("Connectors");
+    check_connectors(&mut r, home);
+
     r.section("MCP servers");
     if config.mcp.servers.is_empty() {
         r.check(Status::Info, "none configured", None);
@@ -285,6 +288,60 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
     } else {
         println!("All good.");
         Ok(ExitCode::SUCCESS)
+    }
+}
+
+/// Active Luau connectors: each one's credentials and rate, with a warning
+/// for those that read secret values themselves (`ctx.secret`, spec W2).
+fn check_connectors(r: &mut Report, home: &TernHome) {
+    let files = crate::connectors_cmd::luau_files_in(&home.connectors_dir());
+    if files.is_empty() {
+        r.check(Status::Info, "none active", None);
+        return;
+    }
+    let host = match crate::connectors_cmd::host(home) {
+        Ok(h) => h,
+        Err(e) => return r.check(Status::Warn, format!("can't inspect connectors: {e}"), None),
+    };
+    for path in files {
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match tern_lua::load_file(&host, &path) {
+            Err(e) => r.check(
+                Status::Warn,
+                format!("{file}: {e}"),
+                Some("`tern connectors list` shows every connector"),
+            ),
+            Ok(vm) => {
+                let c = &vm.spec.capabilities;
+                let rate = c.rate.unwrap_or(host.default_rate);
+                match crate::connectors_cmd::legacy_note(&vm.spec) {
+                    Some(note) => r.check(
+                        Status::Warn,
+                        format!("{}: {note}", vm.spec.name),
+                        Some(
+                            "ask tern to rewrite it with capabilities.auth, then activate it again",
+                        ),
+                    ),
+                    None if !c.auth.is_empty() => r.check(
+                        Status::Ok,
+                        format!(
+                            "{}: credentials sent by tern ({}), {rate}",
+                            vm.spec.name,
+                            c.auth_secrets().join(", ")
+                        ),
+                        None,
+                    ),
+                    None => r.check(
+                        Status::Ok,
+                        format!("{}: no credentials, {rate}", vm.spec.name),
+                        None,
+                    ),
+                }
+            }
+        }
     }
 }
 

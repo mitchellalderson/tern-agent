@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use crate::home::expand_tilde;
 
 pub mod edit;
+mod rate;
 pub mod settings;
+
+pub use rate::Rate;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -63,6 +66,7 @@ pub struct Config {
     pub autonomy: crate::approval::Autonomy,
     pub outbox: OutboxConfig,
     pub taint: TaintConfig,
+    pub connectors: ConnectorsConfig,
 }
 
 /// Taint settings (tooling spec §5.3).
@@ -73,6 +77,22 @@ pub struct TaintConfig {
     /// hasn't contacted (`ask`), or don't (`allow`). An agent can set its
     /// own.
     pub egress: crate::approval::Egress,
+}
+
+/// Luau connectors (tooling spec §6.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConnectorsConfig {
+    /// Requests per connector when its file declares no `rate`.
+    pub rate: Rate,
+}
+
+impl Default for ConnectorsConfig {
+    fn default() -> Self {
+        Self {
+            rate: Rate::per_minute(120),
+        }
+    }
 }
 
 /// Deferred approvals (tooling spec §5.2).
@@ -116,6 +136,7 @@ impl Default for Config {
             autonomy: crate::approval::Autonomy::default(),
             outbox: OutboxConfig::default(),
             taint: TaintConfig::default(),
+            connectors: ConnectorsConfig::default(),
         }
     }
 }
@@ -776,6 +797,9 @@ env_secrets = ["GITHUB_TOKEN"]
         .unwrap();
         assert_eq!(c.autonomy, crate::approval::Autonomy::Autonomous);
         assert_eq!((c.outbox.wait_secs, c.outbox.expire_hours), (30, 72));
+        let c = Config::parse("[connectors]\nrate = \"10/sec\"\n", Path::new("x")).unwrap();
+        assert_eq!(c.connectors.rate.to_string(), "10/sec");
+        assert!(Config::parse("[connectors]\nrate = \"lots\"\n", Path::new("x")).is_err());
         assert_eq!(
             Config::default().autonomy,
             crate::approval::Autonomy::Supervised

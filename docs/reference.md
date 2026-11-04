@@ -10,7 +10,7 @@ Everything tern does, command by command. For installing and a first chat, see t
 | **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `python` (sandboxed compute that calls your tools), `http_fetch`, long-term memory and capped profile notes (`user.md`, `memory.md`), search over past conversations, skills, schedules. |
 | **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. A run that has read untrusted content (a web page, mail, a tool marked `untrusted`) is **tainted**: its `write` and `destructive` calls ask whatever "always" says, and the prompt says why ([Taint](#taint)). A write nobody answers in time waits in the [outbox](#outbox) instead of being denied, and `autonomy` sets how much runs may do without asking ([Autonomy](#autonomy)). |
 | **MCP** | Ask the agent ("add the GitHub MCP server"; you approve the exact command each time, and only on this machine for local commands), or add, test, toggle and remove servers with `/mcp` in the chat or [`tern mcp`](#tern-mcp), or edit `[mcp.servers.<name>]` (stdio or streamable HTTP); changes apply without a restart, a server's pasted `mcpServers` JSON works too, and their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. For a browser, see [Recipe: give tern a browser](recipes/browser.md). |
-| **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
+| **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and paths they may reach, which credentials tern adds to their requests (the script never sees them), a request rate, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
 | **Telegram** | Chat from your phone, approve tool calls with buttons, get scheduled results. |
 | **Schedules** | "Every weekday at 8am, summarize my unread GitHub notifications" becomes a cron schedule whose results are delivered to the chat that asked. Runs with nothing to say stay silent, results wait out your quiet hours, and each schedule can be capped per day. See [Schedules](#schedules). |
@@ -209,7 +209,7 @@ tern connectors [list]     # active connectors and drafts, with capabilities and
 tern connectors test <name>
 ```
 
-`list` loads every `.luau` file in `~/.tern/connectors/` (active) and `~/.tern/connectors/drafts/` (written by the agent, not yet activated) and prints each one's description, declared hosts and secrets, its tools with their effect (`- lua__mail__search [read]: … (untrusted)`), and any secrets that aren't set. Files that fail to load are marked `✗` with the error. Active connectors that keep the pre-effects approval default are marked `grandfathered`.
+`list` loads every `.luau` file in `~/.tern/connectors/` (active) and `~/.tern/connectors/drafts/` (written by the agent, not yet activated) and prints each one's description, declared hosts and paths, credentials, rate and secrets, its tools with their effect (`- lua__mail__search [read]: … (untrusted)`), and any secrets that aren't set. Files that fail to load are marked `✗` with the error. Active connectors that keep the pre-effects approval default are marked `grandfathered`, and those that read secret values themselves with `ctx.secret` are marked `legacy`.
 
 `test <name>` validates `<name>.luau` (active first, then drafts) and lists the tools it exposes, with their effect and flags (untrusted, read via POST, idempotent, requires approval, refused). It exits non-zero if the connector doesn't exist or doesn't load. Neither command writes anything.
 
@@ -224,6 +224,23 @@ pay    = { money_movement = true, ... },               -- refused; also `trade =
 ```
 
 A `read` tool can only send GET and HEAD unless it sets `read_via_post`; anything else fails before the request goes out. Connectors that were already active when tern gained effects keep their old behaviour (tools without an `effect` don't ask) until you activate them again or edit them.
+
+And what it may reach, with which credentials:
+
+```lua
+capabilities = {
+  http = { "api.github.com/repos/*", "api.github.com/search/*" },  -- hosts, optionally with paths
+  auth = { secret = "GITHUB_TOKEN", scheme = "token" },           -- tern adds "Authorization: token …"
+  rate = "60/min",                                                 -- requests per sec, min or hour
+}
+```
+
+- **`auth`**: tern adds the credential to each request to the connector's hosts; the script never sees the value, and it is replaced with `[REDACTED]` in anything a server sends back (body, headers) and in errors. Forms: `auth = "NAME"` (Bearer), `{ secret = "NAME", header = "X-Api-Key" }`, `{ secret = "NAME", header = "Authorization", scheme = "token" }`, `{ secret = "NAME", query = "api_key" }`, `{ basic = { user = "U", password = "P" } }` (both secret names). `hosts = { … }` sends an entry to only some of the declared hosts, and a list of entries declares several. A request can pass `auth = false` to send none, or `auth = "NAME"` for just one.
+- **Paths**: `host/path` entries allow only matching paths on that host; `*` is one path segment and a trailing `*` is the rest. A host listed without a path allows every path. Every request and every redirect is checked; a path-restricted host also refuses encoded `/`, `\` and `.` (`%2f`, `%5c`, `%2e`).
+- **Rate**: each connector has one budget, shared by every run, routine, sub-agent and `python` script that calls it; past it a request fails at once with `rate limited … try again in Ns` and nothing is sent. Without `rate`, `connectors.rate` applies. A server's `429` or `503` with `Retry-After: <seconds>` pauses the connector that long (at most an hour).
+- **Legacy `ctx.secret`**: `capabilities.secrets = { "NAME" }` with `ctx.secret("NAME")` still works for older connectors, but the script then holds the value and could send it to any host it may reach. The activation prompt, `tern connectors list`, `tern doctor` and the Secrets view (`reads the value itself (legacy ctx.secret)`) say so.
+
+Activating a connector shows all of this, and replacing an active one lists what changed (`+ http api.github.com/search/*, - rate 60/min`). Changing any of it afterwards stops the connector from loading until you approve it again.
 
 ### `tern setup`
 
@@ -285,7 +302,7 @@ tern config set mcp.servers.github.args '["stdio"]'
 tern doctor [--offline]
 ```
 
-Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; every model in each fallback chain (configured provider, and listed by it when online); the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
+Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; every model in each fallback chain (configured provider, and listed by it when online); the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; each active Luau connector (a warning for one that reads secret values itself with `ctx.secret`); and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
 
 It exits `1` if anything failed, `0` otherwise (warnings are things not set up yet). It is read-only and doesn't create `~/.tern`.
 
@@ -357,6 +374,7 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `outbox.wait_secs` | `120` | How long a `write`/`destructive` approval waits for an answer before it goes to the [outbox](#outbox) (at once when no client is attached). |
 | `outbox.expire_hours` | `72` | How long an outbox item waits for you. |
 | `taint.egress` | `"ask"` | In a tainted run, a read from a site it hasn't reached asks first (`ask`) or doesn't (`allow`). An agent can set its own ([New sites in a tainted run](#new-sites-in-a-tainted-run)). |
+| `connectors.rate` | `"120/min"` | HTTP requests per Luau connector for those that declare no `rate`, shared by every caller ([`tern connectors`](#tern-connectors)). Read at start. |
 
 The desktop app shows all of this (except providers, MCP servers and the Telegram gateway, which have their own windows) under **tern › Configuration…** or **Settings › All settings (config.toml)…**: every setting by section with its description from `config.example.toml`, a mark on what you've changed, a reset to the default, search, and a note on settings that matter for safety (`sandbox.network`, `sandbox.confine`, the API listeners). Changes are saved as you make them, keeping the file's comments. `default_model`, `schedules.*`, `home.*` and `api.remote_mcp_stdio` apply from the next run; the rest when tern restarts, which the window offers to do. The same is on the API, owner scope only:
 
@@ -530,7 +548,7 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 - **Secrets** come from the environment or `~/.tern/secrets.toml`, which must be mode 0600. Every secret value tern reads is scrubbed from the journal, conversation history, and connector and MCP server logs, and none reach the shell's environment.
 - **File tools** can't modify `~/.tern` and can't read `secrets.toml` or the database. Reads and writes outside the workspace need approval, and paths that escape the workspace through `..` or symlinks are refused.
 - **`http_fetch`** refuses loopback, private, link-local, and cloud-metadata addresses, checking every redirect hop and pinning DNS between the check and the connection.
-- **Luau connectors** run in sandboxed VMs (no files, processes, or `require`; 5 s and 64 MB per call) and can only reach the hosts and secrets they declare, including across redirects. An activated connector that changes, or that declares different capabilities than you approved, isn't loaded.
+- **Luau connectors** run in sandboxed VMs (no files, processes, or `require`; 5 s and 64 MB per call) and can only reach the hosts and paths they declare, including across redirects, within a request rate. Credentials declared with `auth` are added by tern and never visible to the script; only legacy connectors using `ctx.secret` see secret values, and they are flagged. An activated connector that changes, or that declares different capabilities than you approved, isn't loaded.
 - **`python`** scripts reach nothing but the run's read-only tools, each checked and journaled like a direct call, and a read-only view of the workspace; see [Compute](#compute-python).
 - **`shell`** runs in an OS sandbox (Seatbelt on macOS, Landlock on Linux) that confines writes to the workspace and keeps your home directory and `~/.tern` unreadable; see [Sandboxing](#sandboxing).
 - **Effects** are enforced by tern, not the model: `destructive` calls ask every time and `money_movement` / `trade` tools are refused outright, even with `--yes`.

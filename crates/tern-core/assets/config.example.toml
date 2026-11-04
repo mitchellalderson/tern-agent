@@ -109,6 +109,11 @@ docker_pids = 512          # 0 for no limit
 # [taint]
 # egress = "ask"               # "allow" for runs meant to browse; an agent can set its own
 
+# Luau connectors (~/.tern/connectors). A connector can declare its own rate
+# (capabilities.rate = "60/min"); this is the limit for those that don't.
+# [connectors]
+# rate = "120/min"             # HTTP requests per connector, shared by every run and script
+
 # Scheduled prompts (schedule_create, the app's routines). Each schedule can
 # override these.
 # [schedules]

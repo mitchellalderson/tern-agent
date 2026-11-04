@@ -5,10 +5,14 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use mlua::{Function, Lua, LuaOptions, LuaSerdeExt, StdLib, Table, Value, VmState};
+use reqwest::header::{self, HeaderMap, HeaderName, HeaderValue};
 use tern_core::Secrets;
+use tern_core::config::Rate;
 use tern_store::Store;
 
-use crate::spec::{Capabilities, ConnectorSpec};
+use crate::allow::{entry_host, host_allowed, path_allowed};
+use crate::limit::Limiter;
+use crate::spec::{Auth, Capabilities, ConnectorSpec, Inject};
 
 /// Per-call wall-clock limit (spec §10.1).
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -16,6 +20,10 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_MEMORY: usize = 64 * 1024 * 1024;
 /// Largest HTTP response body a connector can read.
 const MAX_HTTP_BODY: usize = 5 * 1024 * 1024;
+/// Redirects `ctx.http` follows, each checked like the first request.
+const MAX_REDIRECTS: usize = 5;
+/// Requests per connector when it declares no `rate` (`[connectors] rate`).
+pub const DEFAULT_RATE: Rate = Rate::per_minute(120);
 
 /// How users provide secrets; shown when one is missing so the model
 /// relays the real mechanism instead of inventing one (like a `.env` file).
@@ -57,6 +65,10 @@ pub struct Host {
     pub secrets: Arc<Secrets>,
     pub timeout: Duration,
     pub memory: usize,
+    /// For connectors that declare no `rate`.
+    pub default_rate: Rate,
+    /// Request budgets by connector name, kept across reloads.
+    pub limiter: Arc<Limiter>,
 }
 
 impl Host {
@@ -66,6 +78,8 @@ impl Host {
             secrets: Arc::new(secrets),
             timeout: DEFAULT_TIMEOUT,
             memory: DEFAULT_MEMORY,
+            default_rate: DEFAULT_RATE,
+            limiter: Arc::default(),
         })
     }
 }
@@ -77,7 +91,8 @@ pub struct Vm {
     runs: Vec<(String, Function)>,
     deadline: Arc<Mutex<Option<Instant>>>,
     host: Host,
-    /// This connector's HTTP client: redirects are checked against its allowlist.
+    /// This connector's HTTP client. It follows no redirects: `ctx.http`
+    /// follows them itself, checking each hop.
     http: reqwest::Client,
     /// One call at a time per VM (the deadline is per VM).
     busy: tokio::sync::Mutex<()>,
@@ -119,7 +134,9 @@ impl Vm {
             return Err(LoadError::Invalid("the file must `return` a table".into()));
         };
         let (spec, runs) = crate::spec::parse(&lua, &table)?;
-        let http = connector_client(&spec.capabilities)?;
+        let http = tern_core::net::http_client()
+            .build()
+            .map_err(|e| LoadError::Lua(format!("http client: {e}")))?;
         Ok(Self {
             spec,
             lua,
@@ -130,6 +147,11 @@ impl Vm {
             busy: tokio::sync::Mutex::new(()),
             grandfathered: false,
         })
+    }
+
+    /// The approval prompt's summary, with this host's default rate.
+    pub fn capability_summary(&self) -> String {
+        self.spec.capability_summary(self.host.default_rate)
     }
 
     /// Run tool `name` with JSON `args`. Errors (including Lua errors and
@@ -144,9 +166,22 @@ impl Vm {
             .iter()
             .find(|t| t.name == name)
             .is_some_and(|t| t.get_only())
-            .then_some(name);
+            .then(|| name.to_owned());
         let _guard = self.busy.lock().await;
-        let ctx = make_ctx(&self.lua, &self.host, &self.http, &self.spec, get_only)
+        let net = Arc::new(Net {
+            connector: self.spec.name.clone(),
+            caps: self.spec.capabilities.clone(),
+            client: self.http.clone(),
+            get_only,
+            secrets: self.host.secrets.clone(),
+            limiter: self.host.limiter.clone(),
+            rate: self
+                .spec
+                .capabilities
+                .rate
+                .unwrap_or(self.host.default_rate),
+        });
+        let ctx = make_ctx(&self.lua, &self.host, net, &self.spec)
             .map_err(|e| format!("building ctx: {e}"))?;
         let lua_args = self
             .lua
@@ -256,36 +291,54 @@ fn install_globals(lua: &Lua, chunk: &str, secrets: Arc<Secrets>) -> mlua::Resul
     Ok(())
 }
 
+/// What `ctx.http` works with for one call.
+struct Net {
+    connector: String,
+    caps: Capabilities,
+    client: reqwest::Client,
+    /// The tool, when it may only send GET and HEAD.
+    get_only: Option<String>,
+    secrets: Arc<Secrets>,
+    limiter: Arc<Limiter>,
+    rate: Rate,
+}
+
+impl Net {
+    /// A credential's value, for the host to send. T4a resolves names per
+    /// connection here.
+    fn secret(&self, name: &str) -> mlua::Result<String> {
+        self.secrets.get(name).ok_or_else(|| {
+            mlua::Error::runtime(format!(
+                "secret {name:?} is not set. {}",
+                SECRETS_HELP.replace("{key}", name)
+            ))
+        })
+    }
+}
+
 /// Build the `ctx` table for one call, bound to this connector's capabilities.
-fn make_ctx(
-    lua: &Lua,
-    host: &Host,
-    client: &reqwest::Client,
-    spec: &ConnectorSpec,
-    get_only: Option<&str>,
-) -> mlua::Result<Table> {
+fn make_ctx(lua: &Lua, host: &Host, net: Arc<Net>, spec: &ConnectorSpec) -> mlua::Result<Table> {
     let ctx = lua.create_table()?;
     let caps = Arc::new(spec.capabilities.clone());
-    let get_only: Option<Arc<str>> = get_only.map(Arc::from);
     let name = spec.name.clone();
 
     let http = lua.create_table()?;
     {
-        let (caps, client, get_only) = (caps.clone(), client.clone(), get_only.clone());
+        let net = net.clone();
         http.raw_set(
             "request",
             lua.create_async_function(move |lua, opts: Table| {
-                let (caps, client, get_only) = (caps.clone(), client.clone(), get_only.clone());
-                async move { http_request(&lua, &caps, &client, get_only.as_deref(), opts).await }
+                let net = net.clone();
+                async move { http_request(&lua, &net, opts).await }
             })?,
         )?;
     }
     for method in ["get", "post", "put", "patch", "delete"] {
-        let (caps, client, get_only) = (caps.clone(), client.clone(), get_only.clone());
+        let net = net.clone();
         http.raw_set(
             method,
             lua.create_async_function(move |lua, (url, opts): (String, Option<Table>)| {
-                let (caps, client, get_only) = (caps.clone(), client.clone(), get_only.clone());
+                let net = net.clone();
                 async move {
                     let opts = match opts {
                         Some(t) => t,
@@ -293,7 +346,7 @@ fn make_ctx(
                     };
                     opts.raw_set("url", url)?;
                     opts.raw_set("method", method.to_ascii_uppercase())?;
-                    http_request(&lua, &caps, &client, get_only.as_deref(), opts).await
+                    http_request(&lua, &net, opts).await
                 }
             })?,
         )?;
@@ -305,6 +358,11 @@ fn make_ctx(
         ctx.raw_set(
             "secret",
             lua.create_function(move |_, key: String| {
+                if caps.auth_secrets().contains(&key) {
+                    return Err(mlua::Error::runtime(format!(
+                        "secret {key:?} is sent by tern itself (capabilities.auth), so the script can't read it; requests to its hosts already carry it"
+                    )));
+                }
                 if !caps.secrets.contains(&key) {
                     return Err(mlua::Error::runtime(format!(
                         "secret {key:?} is not declared in {name}'s capabilities.secrets"
@@ -388,33 +446,6 @@ fn error_chain(e: &reqwest::Error) -> String {
     msg
 }
 
-/// An HTTP client that follows a redirect only if its target is also on the
-/// connector's allowlist (reqwest's default would follow anywhere, carrying
-/// custom headers like `X-Api-Key` along).
-fn connector_client(caps: &Capabilities) -> Result<reqwest::Client, LoadError> {
-    tern_core::net::http_client()
-        .redirect(connector_redirects(caps.http.clone()))
-        .build()
-        .map_err(|e| LoadError::Lua(format!("http client: {e}")))
-}
-
-fn connector_redirects(allowed: Vec<String>) -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(move |attempt| {
-        let host = attempt.url().host_str().unwrap_or_default().to_owned();
-        if attempt.previous().len() >= 5 {
-            attempt.error("too many redirects")
-        } else if !matches!(attempt.url().scheme(), "http" | "https")
-            || !host_allowed(&allowed, &host)
-        {
-            attempt.error(format!(
-                "redirect to {host:?}, which is not in this connector's capabilities.http"
-            ))
-        } else {
-            attempt.follow()
-        }
-    })
-}
-
 /// For a request to a hostname: resolve it, refuse non-public addresses, and
 /// return a client pinned to exactly those addresses, so DNS can't answer
 /// with a private one between the check and the connection. An IP literal is
@@ -427,7 +458,10 @@ async fn pinned_client(
 ) -> Result<Option<reqwest::Client>, String> {
     let bare = host.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
-        let declared = caps.http.iter().any(|h| h.eq_ignore_ascii_case(bare));
+        let declared = caps
+            .http
+            .iter()
+            .any(|h| entry_host(h).eq_ignore_ascii_case(bare));
         return if tern_core::net::is_public(ip) || declared {
             Ok(None)
         } else {
@@ -451,114 +485,350 @@ async fn pinned_client(
         ));
     }
     tern_core::net::http_client()
-        .redirect(connector_redirects(caps.http.clone()))
         .resolve_to_addrs(bare, &addrs)
         .build()
         .map(Some)
         .map_err(|e| format!("http client: {e}"))
 }
 
-/// `true` if `host` is allowed by an entry like `api.example.com` or `*.example.com`.
-pub fn host_allowed(allowed: &[String], host: &str) -> bool {
-    let host = host.to_ascii_lowercase();
-    allowed.iter().any(|a| {
-        let a = a.to_ascii_lowercase();
-        match a.strip_prefix("*.") {
-            Some(suffix) => host.ends_with(&format!(".{suffix}")),
-            None => a == host,
-        }
-    })
+/// Whether `url` is within the allowlist; `redirect` words the error for a hop.
+fn check_target(caps: &Capabilities, url: &reqwest::Url, redirect: bool) -> mlua::Result<()> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(mlua::Error::runtime(if redirect {
+            format!("http: redirect to unsupported scheme {:?}", url.scheme())
+        } else {
+            format!("http: unsupported scheme {:?}", url.scheme())
+        }));
+    }
+    let host = url.host_str().unwrap_or_default();
+    let allowed = if caps.http.is_empty() {
+        "none".to_owned()
+    } else {
+        caps.http.join(", ")
+    };
+    if !host_allowed(&caps.http, host) {
+        return Err(mlua::Error::runtime(if redirect {
+            format!(
+                "http: redirect to {host:?}, which is not in this connector's capabilities.http (allowed: {allowed})"
+            )
+        } else {
+            format!(
+                "http: host {host:?} is not in this connector's capabilities.http (allowed: {allowed})"
+            )
+        }));
+    }
+    if !path_allowed(&caps.http, host, url.path()) {
+        let what = if redirect { "redirect to " } else { "" };
+        return Err(mlua::Error::runtime(format!(
+            "http: {what}{}{} is outside the paths capabilities.http allows (allowed: {allowed})",
+            host,
+            url.path()
+        )));
+    }
+    Ok(())
 }
 
-async fn http_request(
-    lua: &Lua,
-    caps: &Capabilities,
-    client: &reqwest::Client,
-    get_only: Option<&str>,
-    opts: Table,
-) -> mlua::Result<Table> {
+/// Which declared credentials a request carries (`auth` in its options).
+enum Pick {
+    All,
+    None,
+    One(String),
+}
+
+impl Pick {
+    fn wants(&self, auth: &Auth) -> bool {
+        match self {
+            Pick::All => true,
+            Pick::None => false,
+            Pick::One(name) => auth.secrets().contains(&name.as_str()),
+        }
+    }
+}
+
+/// Add one credential to a request. Every form of the value that could come
+/// back (raw, URL-encoded, base64) goes into `redact`.
+fn inject(
+    net: &Net,
+    auth: &Auth,
+    headers: &mut HeaderMap,
+    url: &mut reqwest::Url,
+    redact: &mut Vec<String>,
+) -> mlua::Result<()> {
+    let sensitive = |name: &str, value: String| -> mlua::Result<HeaderValue> {
+        let mut v = HeaderValue::from_str(&value).map_err(|_| {
+            mlua::Error::runtime(format!(
+                "http: secret {name} can't be sent in a header (it has characters headers can't carry)"
+            ))
+        })?;
+        v.set_sensitive(true);
+        Ok(v)
+    };
+    match &auth.inject {
+        Inject::Header {
+            header,
+            scheme,
+            secret,
+        } => {
+            let value = net.secret(secret)?;
+            let full = if scheme.is_empty() {
+                value.clone()
+            } else {
+                format!("{scheme} {value}")
+            };
+            let name = HeaderName::from_bytes(header.as_bytes())
+                .map_err(|_| mlua::Error::runtime(format!("http: bad header {header:?}")))?;
+            headers.insert(name, sensitive(secret, full)?);
+            redact.push(value);
+        }
+        Inject::Query { param, secret } => {
+            let value = net.secret(secret)?;
+            url.query_pairs_mut().append_pair(param, &value);
+            redact.push(form_encode(&value));
+            redact.push(value);
+        }
+        Inject::Basic { user, password } => {
+            let get = |n: &Option<String>| -> mlua::Result<String> {
+                n.as_deref()
+                    .map(|n| net.secret(n))
+                    .unwrap_or(Ok(String::new()))
+            };
+            let (u, p) = (get(user)?, get(password)?);
+            let token = base64(format!("{u}:{p}").as_bytes());
+            headers.insert(
+                header::AUTHORIZATION,
+                sensitive("basic", format!("Basic {token}"))?,
+            );
+            redact.extend([u, p, token]);
+        }
+    }
+    Ok(())
+}
+
+/// Replace each injected value (longest first) with `[REDACTED]`.
+fn scrub(values: &[String], text: &str) -> String {
+    tern_core::secrets::redact_with(values, text)
+}
+
+/// `application/x-www-form-urlencoded`, as `Url::query_pairs_mut` writes it.
+fn form_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
+                out.push(char::from(b));
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | (u32::from(b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ABC[(n >> (18 - 6 * i) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+async fn http_request(lua: &Lua, net: &Net, opts: Table) -> mlua::Result<Table> {
     let url: String = opts
         .raw_get::<Option<String>>("url")?
         .ok_or_else(|| mlua::Error::runtime("http.request: `url` is required"))?;
-    let parsed = reqwest::Url::parse(&url)
+    let mut url = reqwest::Url::parse(&url)
         .map_err(|e| mlua::Error::runtime(format!("http: invalid url {url:?}: {e}")))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(mlua::Error::runtime(format!(
-            "http: unsupported scheme {:?}",
-            parsed.scheme()
-        )));
-    }
-    let host = parsed.host_str().unwrap_or_default().to_owned();
-    if !host_allowed(&caps.http, &host) {
-        let allowed = if caps.http.is_empty() {
-            "none".to_owned()
-        } else {
-            caps.http.join(", ")
-        };
-        return Err(mlua::Error::runtime(format!(
-            "http: host {host:?} is not in this connector's capabilities.http (allowed: {allowed})"
-        )));
-    }
+    check_target(&net.caps, &url, false)?;
     let method: String = opts
         .raw_get::<Option<String>>("method")?
         .unwrap_or_else(|| "GET".into());
-    let method = reqwest::Method::from_bytes(method.to_ascii_uppercase().as_bytes())
+    let mut method = reqwest::Method::from_bytes(method.to_ascii_uppercase().as_bytes())
         .map_err(|_| mlua::Error::runtime(format!("http: invalid method {method:?}")))?;
     // Checked before anything is sent: a `read` tool can't write by POST.
-    if let Some(tool) = get_only
+    if let Some(tool) = &net.get_only
         && !matches!(method, reqwest::Method::GET | reqwest::Method::HEAD)
     {
         return Err(mlua::Error::runtime(format!(
             "http: tools.{tool} declares effect = \"read\" but sent {method}; declare effect = \"write\", or set read_via_post = true if it only reads (GraphQL, search APIs)"
         )));
     }
-    let pinned = pinned_client(caps, &parsed, &host)
-        .await
-        .map_err(mlua::Error::runtime)?;
-    let client = pinned.as_ref().unwrap_or(client);
-    let mut req = client.request(method, parsed);
-    if let Some(headers) = opts.raw_get::<Option<Table>>("headers")? {
-        for pair in headers.pairs::<String, String>() {
+    let pick = match opts.raw_get::<Value>("auth")? {
+        Value::Nil | Value::Boolean(true) => Pick::All,
+        Value::Boolean(false) => Pick::None,
+        Value::String(s) => {
+            let s = s.to_string_lossy();
+            if !net.caps.auth_secrets().contains(&s) {
+                return Err(mlua::Error::runtime(format!(
+                    "http: auth = {s:?} isn't in this connector's capabilities.auth"
+                )));
+            }
+            Pick::One(s)
+        }
+        _ => {
+            return Err(mlua::Error::runtime(
+                "http: `auth` must be false or a secret name from capabilities.auth",
+            ));
+        }
+    };
+    let mut headers = HeaderMap::new();
+    if let Some(table) = opts.raw_get::<Option<Table>>("headers")? {
+        for pair in table.pairs::<String, String>() {
             let (k, v) = pair?;
-            req = req.header(k, v);
+            let name = HeaderName::from_bytes(k.as_bytes())
+                .map_err(|_| mlua::Error::runtime(format!("http: invalid header name {k:?}")))?;
+            if name == header::HOST {
+                return Err(mlua::Error::runtime(
+                    "http: the Host header is set from the url",
+                ));
+            }
+            let value = HeaderValue::from_str(&v)
+                .map_err(|_| mlua::Error::runtime(format!("http: invalid value for header {k}")))?;
+            headers.append(name, value);
         }
     }
     let json_body: Value = opts.raw_get("json")?;
-    if !json_body.is_nil() {
+    let mut body: Option<Vec<u8>> = if !json_body.is_nil() {
         let j: serde_json::Value = lua.from_value_with(json_body, FROM_LUA)?;
-        req = req.json(&j);
-    } else if let Some(body) = opts.raw_get::<Option<String>>("body")? {
-        req = req.body(body);
-    }
-    if let Some(secs) = opts.raw_get::<Option<f64>>("timeout")? {
-        req = req.timeout(Duration::from_secs_f64(secs.clamp(0.1, 300.0)));
-    }
+        headers
+            .entry(header::CONTENT_TYPE)
+            .or_insert(HeaderValue::from_static("application/json"));
+        Some(serde_json::to_vec(&j).map_err(mlua::Error::external)?)
+    } else {
+        opts.raw_get::<Option<String>>("body")?
+            .map(String::into_bytes)
+    };
+    let timeout = opts
+        .raw_get::<Option<f64>>("timeout")?
+        .map(|secs| Duration::from_secs_f64(secs.clamp(0.1, 300.0)));
 
-    let resp = req.send().await.map_err(|e| {
-        mlua::Error::runtime(format!(
-            "http: request to {host} failed: {}",
-            error_chain(&e)
-        ))
-    })?;
+    net.limiter
+        .take(&net.connector, net.rate)
+        .map_err(|e| mlua::Error::runtime(format!("http: {e}")))?;
+
+    // Redirects are followed here, not by reqwest, so every hop gets the
+    // allowlist, path and address checks, and credentials are added afresh
+    // for the hop's own host (or not at all).
+    let first_host = url.host_str().unwrap_or_default().to_owned();
+    let mut redact: Vec<String> = Vec::new();
+    let mut hops = 0;
+    let (resp, host) = loop {
+        let host = url.host_str().unwrap_or_default().to_owned();
+        if hops > 0 {
+            check_target(&net.caps, &url, true)?;
+        }
+        let pinned = pinned_client(&net.caps, &url, &host)
+            .await
+            .map_err(mlua::Error::runtime)?;
+        let client = pinned.as_ref().unwrap_or(&net.client);
+        let mut hop_headers = headers.clone();
+        if !host.eq_ignore_ascii_case(&first_host) {
+            for h in [
+                header::AUTHORIZATION,
+                header::COOKIE,
+                header::PROXY_AUTHORIZATION,
+            ] {
+                hop_headers.remove(h);
+            }
+        }
+        let mut hop_url = url.clone();
+        for auth in net
+            .caps
+            .auth
+            .iter()
+            .filter(|a| a.applies_to(&host) && pick.wants(a))
+        {
+            inject(net, auth, &mut hop_headers, &mut hop_url, &mut redact)?;
+        }
+        redact.retain(|v| v.len() >= 4);
+        redact.sort_by_key(|v| std::cmp::Reverse(v.len()));
+        redact.dedup();
+        let mut req = client.request(method.clone(), hop_url).headers(hop_headers);
+        if let Some(b) = &body {
+            req = req.body(b.clone());
+        }
+        if let Some(t) = timeout {
+            req = req.timeout(t);
+        }
+        let resp = req.send().await.map_err(|e| {
+            mlua::Error::runtime(scrub(
+                &redact,
+                &format!("http: request to {host} failed: {}", error_chain(&e)),
+            ))
+        })?;
+        let location = resp
+            .status()
+            .is_redirection()
+            .then(|| resp.headers().get(header::LOCATION))
+            .flatten()
+            .and_then(|l| l.to_str().ok())
+            .map(str::to_owned);
+        let Some(location) = location else {
+            break (resp, host);
+        };
+        hops += 1;
+        if hops > MAX_REDIRECTS {
+            return Err(mlua::Error::runtime(format!(
+                "http: more than {MAX_REDIRECTS} redirects"
+            )));
+        }
+        url = url.join(&location).map_err(|e| {
+            mlua::Error::runtime(scrub(
+                &redact,
+                &format!("http: bad redirect {location:?}: {e}"),
+            ))
+        })?;
+        let status = resp.status().as_u16();
+        if status == 303 || (matches!(status, 301 | 302) && method == reqwest::Method::POST) {
+            method = reqwest::Method::GET;
+            body = None;
+            headers.remove(header::CONTENT_TYPE);
+        }
+    };
     let status = resp.status().as_u16();
+    if matches!(status, 429 | 503)
+        && let Some(secs) = resp
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        net.limiter
+            .retry_after(&net.connector, Duration::from_secs(secs));
+    }
     let headers = lua.create_table()?;
     for (k, v) in resp.headers() {
         if let Ok(v) = v.to_str() {
-            headers.raw_set(k.as_str(), v)?;
+            headers.raw_set(k.as_str(), scrub(&redact, v))?;
         }
     }
-    let mut body = Vec::new();
+    let mut raw = Vec::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| mlua::Error::runtime(format!("http: reading body: {e}")))?;
-        if body.len() + chunk.len() > MAX_HTTP_BODY {
+        let chunk = chunk.map_err(|e| {
+            mlua::Error::runtime(scrub(
+                &redact,
+                &format!("http: reading body from {host}: {e}"),
+            ))
+        })?;
+        if raw.len() + chunk.len() > MAX_HTTP_BODY {
             return Err(mlua::Error::runtime(format!(
                 "http: response body exceeds {MAX_HTTP_BODY} bytes"
             )));
         }
-        body.extend_from_slice(&chunk);
+        raw.extend_from_slice(&chunk);
     }
-    let text = String::from_utf8_lossy(&body).into_owned();
+    let text = scrub(&redact, &String::from_utf8_lossy(&raw));
     let out = lua.create_table()?;
     out.raw_set("status", status)?;
     out.raw_set("ok", (200..300).contains(&status))?;
@@ -575,14 +845,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn host_allowlist() {
-        let allowed = vec!["api.linear.app".to_owned(), "*.example.com".to_owned()];
-        assert!(host_allowed(&allowed, "api.linear.app"));
-        assert!(host_allowed(&allowed, "API.Linear.app"));
-        assert!(host_allowed(&allowed, "a.b.example.com"));
-        assert!(!host_allowed(&allowed, "example.com"));
-        assert!(!host_allowed(&allowed, "api.linear.app.evil.com"));
-        assert!(!host_allowed(&allowed, "evillinear.app"));
-        assert!(!host_allowed(&[], "anything"));
+    fn encodings_match_what_is_sent() {
+        assert_eq!(base64(b"user:pass"), "dXNlcjpwYXNz");
+        assert_eq!(base64(b"a"), "YQ==");
+        assert_eq!(base64(b"ab"), "YWI=");
+        assert_eq!(base64(b""), "");
+        let mut u = reqwest::Url::parse("http://x/").unwrap();
+        let v = "a b/c+d=é";
+        u.query_pairs_mut().append_pair("k", v);
+        assert_eq!(u.query().unwrap(), format!("k={}", form_encode(v)));
     }
 }

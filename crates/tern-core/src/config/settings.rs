@@ -707,6 +707,7 @@ mod tests {
                 "home",
                 "outbox",
                 "taint",
+                "connectors",
                 "api"
             ]
         );
