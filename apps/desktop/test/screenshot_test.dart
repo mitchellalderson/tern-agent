@@ -88,9 +88,31 @@ TernStore demoStore() {
     ),
   ];
   store.schedules = [
-    Schedule(id: 'a', cron: '0 1 * * *', prompt: 'Overnight sourcing: find new seed-stage fintechs', sessionId: 's2', enabled: true, nextRunAt: DateTime(now.year, now.month, now.day + 1, 1), lastStatus: 'completed'),
-    Schedule(id: 'b', cron: '0 8 * * 1-5', prompt: 'Reply sweep', sessionId: 'x', enabled: true, nextRunAt: DateTime(now.year, now.month, now.day + 1, 8), lastStatus: 'failed'),
-    const Schedule(id: 'c', cron: '0 9 * * 1', prompt: 'Weekly expense report', sessionId: 'y', enabled: false),
+    Schedule(
+      id: 'a',
+      cron: '0 1 * * *',
+      prompt: 'Overnight sourcing: find new seed-stage fintechs',
+      sessionId: 's2',
+      enabled: true,
+      nextRunAt: DateTime(now.year, now.month, now.day + 1, 1),
+      lastStatus: 'completed',
+    ),
+    Schedule(
+      id: 'b',
+      cron: '0 8 * * 1-5',
+      prompt: 'Reply sweep',
+      sessionId: 'x',
+      enabled: true,
+      nextRunAt: DateTime(now.year, now.month, now.day + 1, 8),
+      lastStatus: 'failed',
+    ),
+    const Schedule(
+      id: 'c',
+      cron: '0 9 * * 1',
+      prompt: 'Weekly expense report',
+      sessionId: 'y',
+      enabled: false,
+    ),
   ];
   store.selected = 's1';
   store.draft = false;

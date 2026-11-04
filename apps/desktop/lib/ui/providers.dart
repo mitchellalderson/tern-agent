@@ -46,6 +46,11 @@ class _ProvidersDialogState extends State<ProvidersDialog> {
   }
 
   Future<void> _load() async {
+    if (widget.store.daemonTooOld) {
+      // Called from initState too, before the first build.
+      _error = TernStore.daemonTooOldMessage;
+      return;
+    }
     try {
       final list = await _client.providers();
       if (!mounted) return;

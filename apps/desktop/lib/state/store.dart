@@ -93,6 +93,16 @@ class TernStore extends ChangeNotifier {
   /// No usable model yet: show provider setup instead of the composer.
   bool get setupNeeded => info?.setupNeeded ?? false;
 
+  /// The daemon predates provider setup (`/v1/providers`): it answers 404,
+  /// so say why instead.
+  bool get daemonTooOld =>
+      health != null && !health!.features.contains('providers');
+
+  static const daemonTooOldMessage =
+      'The running tern daemon is older than this app and has no model '
+      'setup yet. Restart it to update: stop `tern daemon` and start it '
+      'again (or quit it and press Start tern here).';
+
   Future<void> connect() async {
     _retry?.cancel();
     await _events?.cancel();
@@ -703,6 +713,10 @@ class TernStore extends ChangeNotifier {
 
   /// Fetch every provider's models (cached by the daemon unless `refresh`).
   Future<void> loadModels({bool refresh = false}) async {
+    if (daemonTooOld) {
+      modelLists = [];
+      return;
+    }
     loadingModels = true;
     notifyListeners();
     try {

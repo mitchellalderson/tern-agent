@@ -45,6 +45,8 @@ pub const API_VERSION: u32 = 1;
 /// What `/v1/health` advertises; clients derive behaviour from it.
 pub const FEATURES: &[&str] = &[
     "devices",
+    // `/v1/providers`, `/v1/models` and `/v1/config/default_model`.
+    "providers",
     "schedules",
     "uploads",
     "subagents",

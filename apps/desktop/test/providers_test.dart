@@ -128,7 +128,7 @@ class _FakeClient extends TernClient {
 
 TernStore _store(_FakeClient client) => TernStore(client)
   ..link = Link.online
-  ..health = const Health(pid: 1, version: '0.1.0')
+  ..health = const Health(pid: 1, version: '0.1.0', features: {'providers'})
   ..info = Info(tools: const [], setupNeeded: client.setupNeeded);
 
 Widget _app(Widget home, {bool dark = false, GlobalKey? key}) {
@@ -370,6 +370,20 @@ void main() {
     expect(client.defaults, ['anthropic:mystery']);
     expect(store.modelWarning, 'not in the list');
     debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('an older daemon gets an explanation, not a 404', (tester) async {
+    final client = _FakeClient();
+    final store = _store(client)
+      ..health = const Health(pid: 1, version: '0.1.0');
+    expect(store.daemonTooOld, isTrue);
+    await tester.pumpWidget(
+      _app(Scaffold(body: ProvidersDialog(store: store))),
+    );
+    await tester.pump();
+    expect(find.textContaining('older than this app'), findsOneWidget);
+    await store.loadModels();
+    expect(store.modelLists, isEmpty);
   });
 
   for (final dark in [false, true]) {

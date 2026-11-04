@@ -466,6 +466,14 @@ class _ModelPickerDialogState extends State<ModelPickerDialog> {
                   ],
                 ),
                 const SizedBox(height: 8),
+                if (store.daemonTooOld) ...[
+                  Text(
+                    '${TernStore.daemonTooOldMessage} Until then, type a '
+                    'model as provider:model.',
+                    style: TextStyle(fontSize: 12.5, color: c.warn),
+                  ),
+                  const SizedBox(height: 8),
+                ],
                 ModelList(
                   lists: store.modelLists,
                   loading: store.loadingModels,
