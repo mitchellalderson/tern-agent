@@ -139,8 +139,7 @@ pub fn audit(home: &TernHome, config: &Config, store: Option<&Store>) -> Audit {
     egress(&mut a, config, store);
     gateways(&mut a, home, config);
     connectors(&mut a, home);
-    // TODO(T4b-iii): list unsigned or unpinned bundles once bundles exist,
-    // through the bundle store T4b-iii adds.
+    bundles(&mut a, home);
     if let Some(store) = store {
         devices(&mut a, store);
         routines(&mut a, config, store);
@@ -406,6 +405,29 @@ fn gateways(a: &mut Audit, home: &TernHome, config: &Config) {
     }
 }
 
+/// Installed bundles (tooling spec §6.5, W2): unsigned ones, and ones
+/// signed by a key the user hasn't trusted.
+fn bundles(a: &mut Audit, home: &TernHome) {
+    for b in tern_bundle::installed(home) {
+        let what = format!("bundle {} {} (from {})", b.name, b.version, b.source);
+        if b.key.is_none() {
+            a.add(
+                Severity::Medium,
+                "bundles",
+                format!("{what} is unsigned"),
+                Some("Install a signed release, or `tern bundle remove` it."),
+            );
+        } else if !b.key_trusted {
+            a.add(
+                Severity::Low,
+                "bundles",
+                format!("{what} is signed by a key you haven't trusted"),
+                Some("Check the key with its author, then `tern bundle trust` it."),
+            );
+        }
+    }
+}
+
 fn connectors(a: &mut Audit, home: &TernHome) {
     let files = crate::connectors_cmd::luau_files_in(&home.connectors_dir());
     if files.is_empty() {
@@ -634,6 +656,46 @@ mod tests {
         ] {
             assert!(!broad_scope(s), "{s}");
         }
+    }
+
+    #[test]
+    fn unsigned_and_untrusted_bundles_are_listed() {
+        use tern_bundle::state::{InstalledBundle, Lock};
+        let tmp = tempfile::tempdir().unwrap();
+        let home = TernHome::new(tmp.path().join("tern"));
+        let bundle = |name: &str, key: Option<&str>| InstalledBundle {
+            name: name.into(),
+            version: "1.0.0".into(),
+            source: format!("https://example.com/{name}.tar.zst"),
+            key: key.map(Into::into),
+            ..InstalledBundle::default()
+        };
+        let lock = Lock {
+            bundles: vec![bundle("plain", None), bundle("signed", Some("RWQkey"))],
+        };
+        let path = tern_bundle::Paths::new(&home).lock();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        lock.save(&path).unwrap();
+        let mut a = Audit::default();
+        bundles(&mut a, &home);
+        let found: Vec<_> = a
+            .findings
+            .iter()
+            .map(|f| (f.severity, f.title.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    Severity::Medium,
+                    "bundle plain 1.0.0 (from https://example.com/plain.tar.zst) is unsigned"
+                ),
+                (
+                    Severity::Low,
+                    "bundle signed 1.0.0 (from https://example.com/signed.tar.zst) is signed by a key you haven't trusted"
+                ),
+            ]
+        );
     }
 
     #[test]
