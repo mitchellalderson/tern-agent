@@ -479,7 +479,53 @@ pub enum HooksCommand {
 #[derive(Debug, Subcommand)]
 pub enum ConnectorsCommand {
     List,
-    Test { name: String },
+    /// Validate a connector and replay its recorded fixtures offline (no
+    /// network, no secrets). With --record, call the live API and save the
+    /// calls as fixtures instead.
+    Test {
+        name: String,
+        /// Call the live API and save the calls, sanitized, as fixtures
+        /// beside the connector (<name>.fixtures.json).
+        #[arg(long)]
+        record: bool,
+        /// The tool to record (default: the recorded read calls again, or
+        /// every read tool that needs no arguments).
+        #[arg(long, requires = "record")]
+        tool: Option<String>,
+        /// The tool's arguments, as a JSON object.
+        #[arg(long, requires = "tool")]
+        args: Option<String>,
+    },
+    /// Generate a draft connector from an OpenAPI 3 or Swagger 2 document
+    /// (a URL or a file, JSON or YAML). It is activated like any draft: ask
+    /// tern to activate it and approve its capabilities.
+    FromOpenapi {
+        /// The document's URL or path.
+        source: String,
+        /// Connector name (default: from the document's title).
+        #[arg(long)]
+        name: Option<String>,
+        /// Operations to include, comma-separated: names from --list,
+        /// operationIds, "GET /path", or tag:<tag>.
+        #[arg(long, value_delimiter = ',')]
+        ops: Vec<String>,
+        /// Only list the operations (a page at a time).
+        #[arg(long)]
+        list: bool,
+        /// With --list: only this tag.
+        #[arg(long)]
+        tag: Option<String>,
+        /// With --list: only operations whose name, path or summary has this.
+        #[arg(long)]
+        search: Option<String>,
+        /// With --list: where the page starts.
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        /// Where requests go, when the document's servers are missing or
+        /// relative (a file has no URL to resolve them against).
+        #[arg(long)]
+        base_url: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

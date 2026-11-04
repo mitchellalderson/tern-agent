@@ -13,6 +13,7 @@ use tern_store::Store;
 use tern_auth::{Connections, Resolved};
 
 use crate::allow::{entry_host, host_allowed, path_allowed};
+use crate::fixtures::{self, Tape};
 use crate::limit::Limiter;
 use crate::spec::{Auth, Capabilities, ConnectorSpec, Inject, is_oauth_secret};
 
@@ -74,6 +75,9 @@ pub struct Host {
     /// Accounts (tooling spec §6.8). `None` (tests, tools that don't run
     /// connectors): every call uses plain secret names.
     pub connections: Option<Arc<Connections>>,
+    /// `connector_test` saves a live call as a fixture (T4c,
+    /// `[connectors] record_tests`).
+    pub record_fixtures: bool,
 }
 
 impl Host {
@@ -86,6 +90,7 @@ impl Host {
             default_rate: DEFAULT_RATE,
             limiter: Arc::default(),
             connections: None,
+            record_fixtures: true,
         })
     }
 }
@@ -173,6 +178,18 @@ impl Vm {
         args: &serde_json::Value,
         conn: Option<Resolved>,
     ) -> Result<String, String> {
+        self.call_taped(name, args, conn, None).await
+    }
+
+    /// [`Vm::call_as`] recording its HTTP exchanges, or replaying recorded
+    /// ones without touching the network (T4c fixtures).
+    pub async fn call_taped(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        conn: Option<Resolved>,
+        tape: Option<Arc<Tape>>,
+    ) -> Result<String, String> {
         let Some((_, run)) = self.runs.iter().find(|(n, _)| n == name) else {
             return Err(format!("connector {} has no tool {name:?}", self.spec.name));
         };
@@ -198,6 +215,7 @@ impl Vm {
                 .unwrap_or(self.host.default_rate),
             conn,
             connections: self.host.connections.clone(),
+            tape,
         });
         let ctx = make_ctx(&self.lua, &self.host, net, &self.spec)
             .map_err(|e| format!("building ctx: {e}"))?;
@@ -322,6 +340,8 @@ struct Net {
     /// The account this call runs under (`None`: the implicit default).
     conn: Option<Resolved>,
     connections: Option<Arc<Connections>>,
+    /// Recording, or replaying instead of the network.
+    tape: Option<Arc<Tape>>,
 }
 
 impl Net {
@@ -445,8 +465,15 @@ fn make_ctx(lua: &Lua, host: &Host, net: Arc<Net>, spec: &ConnectorSpec) -> mlua
 
     let kv = lua.create_table()?;
     let ns = Connections::kv_namespace(&name, net.conn.as_ref());
+    // A replay starts from empty storage and leaves the real one alone, so
+    // it is repeatable and a test doesn't move a cursor or counter.
+    let kv_store = if net.tape.as_ref().is_some_and(|t| t.is_replay()) {
+        Store::open_in_memory().map_err(mlua::Error::external)?
+    } else {
+        host.store.clone()
+    };
     {
-        let (store, ns) = (host.store.clone(), ns.clone());
+        let (store, ns) = (kv_store.clone(), ns.clone());
         kv.raw_set(
             "get",
             lua.create_function(move |lua, key: String| {
@@ -462,7 +489,7 @@ fn make_ctx(lua: &Lua, host: &Host, net: Arc<Net>, spec: &ConnectorSpec) -> mlua
         )?;
     }
     {
-        let store = host.store.clone();
+        let store = kv_store;
         kv.raw_set(
             "set",
             lua.create_function(move |lua, (key, value): (String, Value)| {
@@ -787,6 +814,29 @@ async fn http_request(lua: &Lua, net: &Net, opts: Table) -> mlua::Result<Table> 
         .raw_get::<Option<f64>>("timeout")?
         .map(|secs| Duration::from_secs_f64(secs.clamp(0.1, 300.0)));
 
+    // Fixtures see the request as the script made it, before credentials
+    // are added, with known secret values scrubbed.
+    let secrets = net.secrets.clone();
+    let tape_req = net.tape.as_ref().map(|_| fixtures::Request {
+        method: method.as_str().to_owned(),
+        url: fixtures::clean_url(&url, &|t: &str| secrets.redact(t)),
+        headers: fixtures::clean_request_headers(&headers, &|t: &str| secrets.redact(t)),
+        body: body.as_ref().map(|b| {
+            fixtures::clean_body(&String::from_utf8_lossy(b), &|t: &str| secrets.redact(t))
+        }),
+    });
+    if let (Some(tape), Some(req)) = (&net.tape, &tape_req)
+        && tape.is_replay()
+    {
+        let resp = tape.take(req).ok_or_else(|| {
+            mlua::Error::runtime(format!(
+                "http: no recorded response for {} {} (replaying fixtures; record again with a live test)",
+                req.method, req.url
+            ))
+        })?;
+        return response_table(lua, resp.status, resp.headers.into_iter(), resp.body);
+    }
+
     net.limiter
         .take(&net.connector, net.rate)
         .map_err(|e| mlua::Error::runtime(format!("http: {e}")))?;
@@ -905,12 +955,11 @@ async fn http_request(lua: &Lua, net: &Net, opts: Table) -> mlua::Result<Table> 
         net.limiter
             .retry_after(&net.connector, Duration::from_secs(secs));
     }
-    let headers = lua.create_table()?;
-    for (k, v) in resp.headers() {
-        if let Ok(v) = v.to_str() {
-            headers.raw_set(k.as_str(), scrub(&redact, v))?;
-        }
-    }
+    let resp_headers: Vec<(String, String)> = resp
+        .headers()
+        .iter()
+        .filter_map(|(k, v)| Some((k.as_str().to_owned(), scrub(&redact, v.to_str().ok()?))))
+        .collect();
     let mut raw = Vec::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
@@ -928,10 +977,39 @@ async fn http_request(lua: &Lua, net: &Net, opts: Table) -> mlua::Result<Table> 
         raw.extend_from_slice(&chunk);
     }
     let text = scrub(&redact, &String::from_utf8_lossy(&raw));
+    if let (Some(tape), Some(req)) = (&net.tape, tape_req) {
+        let clean = |t: &str| secrets.redact(&scrub(&redact, t));
+        tape.push(
+            req,
+            fixtures::Response {
+                status,
+                headers: resp_headers
+                    .iter()
+                    .filter(|(k, _)| fixtures::keep_response_header(k))
+                    .map(|(k, v)| (k.clone(), clean(v)))
+                    .collect(),
+                body: fixtures::clip(fixtures::clean_body(&text, &clean)),
+            },
+        );
+    }
+    response_table(lua, status, resp_headers.into_iter(), text)
+}
+
+/// What `ctx.http` returns: `{status, ok, headers, body, json}`.
+fn response_table(
+    lua: &Lua,
+    status: u16,
+    headers: impl Iterator<Item = (String, String)>,
+    text: String,
+) -> mlua::Result<Table> {
+    let h = lua.create_table()?;
+    for (k, v) in headers {
+        h.raw_set(k, v)?;
+    }
     let out = lua.create_table()?;
     out.raw_set("status", status)?;
     out.raw_set("ok", (200..300).contains(&status))?;
-    out.raw_set("headers", headers)?;
+    out.raw_set("headers", h)?;
     if let Ok(j) = serde_json::from_str::<serde_json::Value>(&text) {
         out.raw_set("json", lua.to_value_with(&j, TO_LUA)?)?;
     }

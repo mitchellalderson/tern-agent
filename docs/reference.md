@@ -67,7 +67,7 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern grants`](#new-sites-in-a-tainted-run) | The "always" grants approvals have recorded (commands, tools, sites), and removing them. |
 | [`tern outbox`](#outbox) | Writes waiting for your approval: list, show, approve (optionally edited), reject. |
 | [`tern hooks`](#webhooks) | Webhook routines: create (URL and secret shown once), list, rotate, revoke, fire locally. |
-| [`tern connectors`](#tern-connectors) | List or validate Luau connectors. |
+| [`tern connectors`](#tern-connectors) | List or validate Luau connectors, replay or record their test fixtures, or generate one from an OpenAPI document. |
 | [`tern connections`](#tern-connections) | Accounts of connectors and MCP servers: sign in, add another, set the default, remove. |
 | [`tern setup`](#tern-setup) | Connect a model provider: paste a key, pick a model. |
 | [`tern providers`](#tern-providers) | List, add, or remove model providers (for scripts). |
@@ -210,12 +210,17 @@ A run is one prompt driven to a final answer within a session. Its journal recor
 
 ```sh
 tern connectors [list]     # active connectors and drafts, with capabilities and missing secrets
-tern connectors test <name>
+tern connectors test <name> [--record [--tool T --args JSON]]
+tern connectors from-openapi <url|file> [--list [--tag T] [--search S] [--offset N]] [--ops a,b,tag:x] [--name N] [--base-url U]
 ```
 
 `list` loads every `.luau` file in `~/.tern/connectors/` (active) and `~/.tern/connectors/drafts/` (written by the agent, not yet activated) and prints each one's description, declared hosts and paths, credentials, rate and secrets, its tools with their effect (`- lua__mail__search [read]: … (untrusted)`), and any secrets that aren't set. Files that fail to load are marked `✗` with the error. Active connectors that keep the pre-effects approval default are marked `grandfathered`, and those that read secret values themselves with `ctx.secret` are marked `legacy`.
 
-`test <name>` validates `<name>.luau` (active first, then drafts) and lists the tools it exposes, with their effect and flags (untrusted, read via POST, idempotent, requires approval, refused). It exits non-zero if the connector doesn't exist or doesn't load. Neither command writes anything.
+`test <name>` validates `<name>.luau` (active first, then drafts) and lists the tools it exposes, with their effect and flags (untrusted, read via POST, idempotent, requires approval, refused). Then it replays the connector's **recorded fixtures** offline: every recorded call runs again against the saved responses, with no network and no secrets, and must return what it returned when recorded. It exits non-zero if the connector doesn't exist or doesn't load, or a recorded call fails or returns something else, so it can run in CI. `list` writes nothing.
+
+**Fixtures** live beside the connector as `<name>.fixtures.json` (`~/.tern/connectors/drafts/` for a draft; activating moves them to `~/.tern/connectors/`), so they travel with it. `test <name> --record` calls the live API and saves the calls: by default the read calls already recorded, or every read tool that needs no arguments; `--tool T --args '{…}'` records one call of any tool (a write really happens). The agent records as it works: `connector_test`'s first live call of a tool with given arguments is saved, and testing the same arguments again replays it offline without asking (`mode: "live"` calls the API again, `mode: "replay"` never does). Nothing secret is saved: requests are recorded before tern adds credentials, every known secret value is replaced with `[REDACTED]`, request headers with credential-like names and all response headers except content type, paging, rate-limit and caching ones are dropped, and the string values of JSON fields and query parameters named like credentials (`access_token`, `api_key`, `password`, `client_secret`, …, but not paging tokens such as `next_page_token`) are redacted. Responses are cut at 256 KB. Look over a fixtures file before sharing it anyway: an API can return personal data that isn't a credential. `connectors.record_tests = false` turns recording off.
+
+`from-openapi` generates a draft from an **OpenAPI 3.x or Swagger 2.0** document (JSON or YAML, from a URL fetched like `http_fetch` or a local file): one tool per operation, named from its `operationId` (or method and path), with its parameters and JSON or form body as typed params. GET and HEAD are `read` (marked `untrusted`), DELETE is `destructive`, the rest `write`. `capabilities.http` is the server's host with each operation's path (`{id}` segments as `*`; more than 40 collapse to the base path), `auth` comes from the security scheme the chosen operations use (an API key in a header or query, a bearer token, HTTP Basic, each as a secret named after the connector such as `PETSTORE_API_KEY`; OAuth 2 and OpenID Connect as `capabilities.oauth` with the scopes those operations need, a built-in profile's provider when the API is one tern knows), and `rate` comes from an `x-rate-limit`-style extension or "N requests per minute" in the description. Without `--ops` it takes the first `connectors.openapi_tools` (8) non-deprecated reads; a document with more than `connectors.openapi_max_tools` (40) operations is listed instead and nothing is written, so a 500-operation API never becomes 500 tools: pick with `--ops` (tool names, operationIds, `"GET /path"`, or `tag:<tag>`). `--list` pages through the operations with their tags. Operations that need a file upload or a cookie can't be generated. The draft is not active: ask tern to activate it, and you approve its capabilities like any other. The agent does the same with `connector_from_openapi`, and prefers it to writing a connector by hand when a service publishes such a document.
 
 A connector tool declares what it does:
 
@@ -409,6 +414,9 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `outbox.expire_hours` | `72` | How long an outbox item waits for you. |
 | `taint.egress` | `"ask"` | In a tainted run, a read from a site it hasn't reached asks first (`ask`) or doesn't (`allow`). An agent can set its own ([New sites in a tainted run](#new-sites-in-a-tainted-run)). |
 | `connectors.rate` | `"120/min"` | HTTP requests per Luau connector for those that declare no `rate`, shared by every caller ([`tern connectors`](#tern-connectors)). Read at start. |
+| `connectors.record_tests` | `true` | `connector_test` saves a live call as a fixture beside the draft (no credentials) and replays it offline when the same call is tested again. Read at start. |
+| `connectors.openapi_tools` | `8` | Operations `connector_from_openapi` and `tern connectors from-openapi` generate when none are named (reads first). Read at start. |
+| `connectors.openapi_max_tools` | `40` | Most operations one generated connector may have; a larger document is listed for choosing instead of generated. Read at start. |
 | `auth.clients` | `{}` | OAuth apps you registered, by provider: `google = { client_id = "…", client_secret_secret = "GOOGLE_CLIENT_SECRET" }` (the secret's name, not its value). Needed for built-in profiles (Google wants a "Desktop app" client); servers that register clients themselves need none. |
 | `auth.local_issuers` | `[]` | OAuth servers allowed on private or loopback addresses (`"http://127.0.0.1:8080"`), for a self-hosted identity provider. Every other token, metadata or registration endpoint must be public https. |
 | `auth.sign_in_timeout_secs` | `300` | How long a sign-in waits for the browser or a device code. |

@@ -9,17 +9,18 @@ Use this whenever the user wants tern to reach a service it can't yet (write a c
 
 ## The steps
 
-1. **Identify** the service and, if you can, its API base URL or MCP server URL.
+1. **Identify** the service and, if you can, its API base URL or MCP server URL. Look in its developer docs for an **OpenAPI or Swagger document** (often `openapi.json`, `openapi.yaml`, `swagger.json`, or an "API spec" download link): if there is one, the connector is generated from it rather than written by hand.
 2. **Discover**: call `auth_discover` with the service's name and the URL (`mcp: true` for an MCP server). It checks tern's built-in profiles and the service's own metadata; no guessing.
 3. **Research, only if discovery says "unknown"**: search the service's developer docs for "OAuth". If it has OAuth, pass `auth_propose` a plan with `authorize_url`, `token_url`, `api_hosts` (the hosts your connector will call) and `evidence` (the doc URLs). tern refuses addresses that aren't on the API's own domain or a known identity provider, so a page can't send the user to a lookalike. Don't use addresses from anywhere but the service's own docs.
 4. **Propose**: call `auth_propose` with the `plan_id`. The user picks signing in or a key on a card; you never pick for them when both are offered. Respect "cancel".
 5. **Build**:
+   - From an OpenAPI or Swagger document: `connector_from_openapi` with its URL. A large API returns its operations to choose from: pick the ones the user needs (by name, `"GET /path"` or `"tag:<tag>"`). It derives the allowlist, effects and auth from the document; check that the auth it chose matches what the user picked in step 4, and edit with `connector_write` if not.
    - Connector with OAuth: `capabilities.oauth = { <provider> = { scopes = { … } } }` using the plan's `provider`, and only the scopes the tools need. No `auth` line is needed: tern sends the token.
    - Connector with a key: `capabilities.auth = "NAME"` (or another form from `connector_write`'s guide).
    - Remote MCP server with OAuth: `mcp_add` with `oauth: true` and no secret fields.
    - MCP server with a key: `mcp_add` with `bearer_token_secret`, `header_secrets` or `env_secrets`.
 6. **Connect**: `connection_add` with the target and the `plan_id`. The user signs in on a card (their browser, or a code) or enters the key privately. You get `connected`, `reconnected`, `skipped` or `timed_out`, never a token.
-7. **Test** with `connector_test` or a read-only call. With several accounts, pass `connection`.
+7. **Test** with `connector_test` or a read-only call. With several accounts, pass `connection`. The first live call of each tool is recorded as a fixture beside the draft; after an edit, test the same arguments again to replay offline.
 
 ## Several accounts
 

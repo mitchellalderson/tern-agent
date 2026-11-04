@@ -1060,6 +1060,7 @@ fn build_tools(
 
     let mut lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
     lua.default_rate = config.connectors.rate;
+    lua.record_fixtures = config.connectors.record_tests;
     lua.connections = Some(connections.clone());
     let dirs = tern_lua::tools::Dirs {
         active: home.connectors_dir(),
@@ -1095,6 +1096,10 @@ fn build_tools(
         dirs: dirs.clone(),
         inspected: Default::default(),
     }));
+    let mut from_openapi = tern_lua::tools::ConnectorFromOpenapi::new(lua.clone(), dirs.clone());
+    from_openapi.default_tools = config.connectors.openapi_tools.max(1);
+    from_openapi.max_tools = config.connectors.openapi_max_tools.max(1);
+    registry.register(Arc::new(from_openapi));
     registry.register(Arc::new(tern_lua::tools::ConnectorActivate {
         host: lua,
         dirs,

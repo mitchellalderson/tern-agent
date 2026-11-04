@@ -73,6 +73,8 @@ libc = "0.2"
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 seccompiler = "0.5"
 tracing-appender = "0.2.5"
+# OpenAPI documents in YAML (T4c); pure Rust, no unsafe.
+yaml-rust2 = { version = "0.13.0", default-features = false }
 tray-icon = { version = "0.26.1", default-features = false }
 dispatch2 = "0.3.1"
 objc2 = "0.6.5"
