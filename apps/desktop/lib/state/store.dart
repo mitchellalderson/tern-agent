@@ -928,7 +928,7 @@ class TernStore extends ChangeNotifier {
       notifier.show(
         id: a.id,
         title: '${a.agentLabel ?? 'tern'} wants to run ${a.tool}',
-        body: a.headline,
+        body: [a.headline, ?a.taintNote].join('\n'),
         approval: true,
       ),
     );

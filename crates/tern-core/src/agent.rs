@@ -29,6 +29,8 @@ use crate::types::{
 
 mod carry;
 pub use carry::CarryOutput;
+pub mod taint;
+use taint::Taint;
 
 pub const MAX_LLM_ATTEMPTS: u32 = 5;
 /// The result of a tool call cut off by the output limit. Its arguments are
@@ -360,6 +362,7 @@ impl Agent {
         // Set once a limit is reached: the next model call is the closing
         // turn, made without tools.
         let mut wrap_up: Option<Limit> = None;
+        let mut taint = Taint::at_start(run);
         loop {
             if cancel.is_cancelled() {
                 return Ok(RunStatus::Interrupted);
@@ -372,7 +375,7 @@ impl Agent {
                 }
             }
             if self.inbox_due(run, idx, false)? {
-                match self.inbox_step(run, idx, false, cancel).await {
+                match self.inbox_step(run, idx, false, &mut taint, cancel).await {
                     Ok(_) => idx += 1,
                     Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
                     Err(e) => return Err(e.into()),
@@ -486,7 +489,7 @@ impl Agent {
                     outcome.final_text.push_str(&limit.note(&outcome.usage));
                     return Ok(RunStatus::Completed);
                 }
-                match self.inbox_step(run, idx, true, cancel).await {
+                match self.inbox_step(run, idx, true, &mut taint, cancel).await {
                     Ok(0) => return Ok(RunStatus::Completed),
                     Ok(_) => {
                         idx += 1;
@@ -509,8 +512,10 @@ impl Agent {
                     // Refused without running; nothing to approve or redo.
                     crate::tool::ToolPolicy::new(crate::tool::Effect::Read, true)
                 };
-                if approval::needs_check(&call.name, &policy) {
-                    let decision = self.approval_step(run, idx, &call, &policy, cancel).await;
+                if approval::needs_check(&call.name, &policy, taint.is_set()) {
+                    let decision = self
+                        .approval_step(run, idx, &call, &policy, taint.reason(), cancel)
+                        .await;
                     idx += 1;
                     match decision {
                         Ok(ApprovalOutcome::Approved) => {}
@@ -526,6 +531,7 @@ impl Agent {
                     name: call.name.clone(),
                     summary: self.tools.summarize(&call),
                 });
+                let untrusted = in_scope && !truncated && self.tools.untrusted(&call.name);
                 let in_flight = if policy.idempotent {
                     InFlight::Retry
                 } else {
@@ -553,11 +559,12 @@ impl Agent {
                                 });
                             })
                         };
-                        let (r, consumes) = with_call(
+                        let (mut r, consumes) = with_call(
                             &call.id,
                             with_progress(sink, self.tools.call_in(scope, &ctx, &call)),
                         )
                         .await;
+                        r.untrusted = untrusted;
                         let msg = tool_result(&call, &r);
                         Ok(StepOutput::new(r)
                             .with_messages(vec![msg])
@@ -565,6 +572,9 @@ impl Agent {
                     })
                     .await?;
                 idx += 1;
+                if result.value.untrusted {
+                    taint.mark(&self.store, &run.id, &taint::tool_reason(&call.name))?;
+                }
                 if result.value.is_error {
                     // The first line of a tool error is usually the reason.
                     let reason = self.journal.redact_text(&preview(&result.value.content));
@@ -617,6 +627,7 @@ impl Agent {
         run: &RunRow,
         idx: u32,
         wait: bool,
+        taint: &mut Taint,
         cancel: &CancellationToken,
     ) -> Result<usize, StepError> {
         let out = self
@@ -632,14 +643,31 @@ impl Agent {
                         Some(h) => h.take_mail(&run.id, wait, cancel).await?,
                         None => self.store.pending_mail(&run.id)?,
                     };
+                    let mut tainted = Vec::with_capacity(mail.len());
+                    for m in &mail {
+                        let from = match &m.from_run_id {
+                            Some(id) => self.store.run(id)?,
+                            None => None,
+                        };
+                        tainted.push(from.is_some_and(|r| r.taint.is_some()));
+                    }
                     let text = mail
                         .iter()
-                        .map(crate::subagent::render_mail)
+                        .zip(&tainted)
+                        .map(|(m, &t)| {
+                            let text = crate::subagent::render_mail(m);
+                            if t {
+                                taint::wrap("agent mail", &text)
+                            } else {
+                                text
+                            }
+                        })
                         .collect::<Vec<_>>()
                         .join("\n\n");
                     let entries: Vec<InboxEntry> = mail
                         .iter()
-                        .map(|m| {
+                        .zip(&tainted)
+                        .map(|(m, &tainted)| {
                             let body: Value = serde_json::from_str(&m.body).unwrap_or(Value::Null);
                             let field =
                                 |k: &str| body.get(k).and_then(Value::as_str).map(Into::into);
@@ -649,6 +677,7 @@ impl Agent {
                                 from_run_id: m.from_run_id.clone(),
                                 agent: field("agent"),
                                 status: field("status"),
+                                tainted,
                             }
                         })
                         .collect();
@@ -670,6 +699,9 @@ impl Agent {
         if !out.replayed && !out.value.mail.is_empty() {
             tracing::info!(run = %run.id, idx, mail = out.value.mail.len(), "delivered agent mail");
         }
+        if out.value.mail.iter().any(|m| m.tainted) {
+            taint.mark(&self.store, &run.id, taint::TAINTED_MAIL)?;
+        }
         Ok(out.value.mail.len())
     }
 
@@ -679,6 +711,7 @@ impl Agent {
         idx: u32,
         call: &ToolCall,
         policy: &crate::tool::ToolPolicy,
+        taint: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<ApprovalOutcome, StepError> {
         let out = self
@@ -690,7 +723,7 @@ impl Agent {
                 call,
                 InFlight::Retry,
                 || async {
-                    let decision = self.decide(run, call, policy, cancel).await?;
+                    let decision = self.decide(run, call, policy, taint, cancel).await?;
                     let messages = match decision {
                         ApprovalOutcome::Approved => vec![],
                         ApprovalOutcome::Denied if policy.forbidden.is_some() => {
@@ -726,14 +759,15 @@ impl Agent {
         Ok(out.value)
     }
 
-    /// The effect policy with the allowlist, then ask. Runs inside the
-    /// approval step so the decision is journaled even when the policy or
-    /// the allowlist answers it.
+    /// The effect policy with the allowlist and the run's taint, then ask.
+    /// Runs inside the approval step so the decision is journaled even when
+    /// the policy or the allowlist answers it.
     async fn decide(
         &self,
         run: &RunRow,
         call: &ToolCall,
         policy: &crate::tool::ToolPolicy,
+        taint: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<ApprovalOutcome, StepError> {
         let always_ok = self.tools.allow_always(call);
@@ -741,7 +775,7 @@ impl Agent {
         let granted = policy.forbidden.is_none()
             && always_ok
             && approval::allowed_by(&self.store.allowlist(&call.name)?, call);
-        let (effect, always) = match approval::check(&call.name, policy, granted) {
+        let (effect, always) = match approval::check(&call.name, policy, granted, taint.is_some()) {
             approval::Check::Allow => return Ok(ApprovalOutcome::Approved),
             approval::Check::Forbid(flag) => {
                 tracing::warn!(run = %run.id, tool = %call.name, flag, "refused a forbidden tool");
@@ -759,6 +793,7 @@ impl Agent {
             pattern: approval::pattern_for(call).filter(|_| always),
             parent_run_id: run.parent_run_id.clone(),
             agent_label: run.label.clone(),
+            taint: taint.map(Into::into),
             local_only: policy.local_approval,
         };
         let asked = tokio::time::timeout(self.cfg.approval_timeout, self.approvals.ask(&req));
@@ -954,7 +989,10 @@ impl Agent {
             Some(StepKind::MemoryFlush) => {}
             Some(_) => return Ok(false),
             None => {
+                // A tainted run's transcript may carry injected "facts".
+                let tainted = self.store.run(&run.id)?.is_some_and(|r| r.taint.is_some());
                 if !self.cfg.memory_flush
+                    || tainted
                     || tools.is_empty()
                     || !memory::flush_applies(run)
                     || !memory::flush_affordable(run, usage, transcript)
@@ -1006,7 +1044,7 @@ impl Agent {
                                 .filter(|c| c.name == memory::FLUSH_TOOL);
                             for call in calls.take(memory::MAX_FLUSH_SAVES) {
                                 let policy = self.tools.policy(&ctx, &call);
-                                if approval::needs_check(&call.name, &policy) {
+                                if approval::needs_check(&call.name, &policy, false) {
                                     out.saved.push("skipped: would need approval".into());
                                     continue;
                                 }
@@ -1242,12 +1280,19 @@ pub fn backoff(base: Duration, attempt: u32) -> Duration {
     capped.mul_f64(0.5 + fastrand::f64() * 0.5)
 }
 
+/// The tool result message; an untrusted one is wrapped
+/// ([`taint::wrap`]).
 fn tool_result(call: &ToolCall, r: &ToolResult) -> Message {
+    let content = if r.untrusted {
+        taint::wrap(&call.name, &r.content)
+    } else {
+        r.content.clone()
+    };
     Message {
         role: Role::User,
         content: vec![ContentBlock::ToolResult {
             tool_use_id: call.id.clone(),
-            content: r.content.clone(),
+            content,
             is_error: r.is_error,
         }],
     }

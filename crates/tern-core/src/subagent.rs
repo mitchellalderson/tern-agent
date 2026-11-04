@@ -243,6 +243,9 @@ pub struct InboxEntry {
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// Sent by a tainted run: reading it taints this one (tooling spec §5.3).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tainted: bool,
 }
 
 /// Journaled output of an `inbox` step.

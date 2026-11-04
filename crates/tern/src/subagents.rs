@@ -641,6 +641,8 @@ impl Subagents {
                     budget_tokens: budget,
                     max_iterations: Some(max_iterations),
                     queued,
+                    // Inherited from a tainted parent by the store.
+                    taint: None,
                 },
                 &input,
             )?;

@@ -60,6 +60,12 @@ pub struct RunRow {
     pub max_iterations: Option<u32>,
     /// A scheduled run that answered `NO_REPLY`: nothing was delivered.
     pub quiet: bool,
+    /// Why the run started tainted (untrusted input, a tainted parent).
+    /// Fixed at creation.
+    pub input_taint: Option<String>,
+    /// Why the run is tainted (tooling spec §5.3); `None` while clean.
+    /// Sticky: set once, never cleared.
+    pub taint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,13 +148,19 @@ pub struct NewRun<'a> {
     pub max_iterations: Option<u32>,
     /// Create the run `queued` (recorded, not yet driven) instead of `running`.
     pub queued: bool,
+    /// Start the run tainted, for this reason. A sub-agent of a tainted run
+    /// starts tainted without it.
+    pub taint: Option<&'a str>,
 }
+
+/// The taint reason of a sub-agent spawned by a tainted run.
+pub const SPAWNED_BY_TAINTED: &str = "spawned by a tainted run";
 
 pub(crate) const SESSION_COLS: &str = "id, title, source, external_ref, model, created_at, updated_at, \
     channel_id, prev_session_id, segment_reason, branched_from";
 pub(crate) const RUN_COLS: &str = "id, session_id, status, trigger, model, system_prompt, \
     input_message_id, started_at, updated_at, finished_at, error, parent_run_id, parent_call_id, \
-    label, depth, tool_scope, budget_tokens, max_iterations, quiet";
+    label, depth, tool_scope, budget_tokens, max_iterations, quiet, input_taint, taint";
 const STEP_COLS: &str = "run_id, idx, kind, input_hash, input_json, output_json, status, \
                          usage_json, error, started_at, finished_at";
 const MESSAGE_COLS: &str =
@@ -191,6 +203,8 @@ pub(crate) fn run_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         budget_tokens: r.get::<_, Option<i64>>(16)?.map(|v| v.max(0) as u64),
         max_iterations: r.get(17)?,
         quiet: r.get::<_, i64>(18)? != 0,
+        input_taint: r.get(19)?,
+        taint: r.get(20)?,
     })
 }
 
@@ -303,7 +317,20 @@ impl Store {
             "UPDATE runs SET input_message_id = ?2 WHERE id = ?1",
             params![run.id, msg_id],
         )?;
+        if let Some(taint) = run.taint {
+            tx.execute(
+                "UPDATE runs SET input_taint = ?2, taint = ?2 WHERE id = ?1",
+                params![run.id, taint],
+            )?;
+        }
         if let Some(parent) = run.parent_run_id {
+            // A sub-agent of a tainted run starts tainted: its brief may
+            // carry what the parent read (tooling spec §12, open question).
+            tx.execute(
+                "UPDATE runs SET input_taint = ?3, taint = ?3 WHERE id = ?1 AND input_taint IS NULL
+                   AND EXISTS (SELECT 1 FROM runs WHERE id = ?2 AND taint IS NOT NULL)",
+                params![run.id, parent, SPAWNED_BY_TAINTED],
+            )?;
             // A sub-agent's session is in its parent's channel.
             tx.execute(
                 "UPDATE sessions SET channel_id =
@@ -321,6 +348,16 @@ impl Store {
         let row = tx.query_row(&sql, [run.id], run_row)?;
         tx.commit()?;
         Ok(row)
+    }
+
+    /// Mark a run tainted, keeping the first reason. Returns whether it was
+    /// clean before.
+    pub fn set_run_taint(&self, id: &str, reason: &str) -> Result<bool> {
+        let n = self.conn()?.execute(
+            "UPDATE runs SET taint = ?2 WHERE id = ?1 AND taint IS NULL",
+            params![id, reason],
+        )?;
+        Ok(n > 0)
     }
 
     pub fn run(&self, id: &str) -> Result<Option<RunRow>> {

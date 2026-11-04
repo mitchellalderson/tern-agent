@@ -32,6 +32,7 @@ class McpServerConfig {
     this.idempotent = false,
     this.requiresApproval = false,
     this.effects = const {},
+    this.untrusted = false,
   });
 
   factory McpServerConfig.fromJson(Json j) => McpServerConfig(
@@ -53,6 +54,7 @@ class McpServerConfig {
     idempotent: j['idempotent'] as bool? ?? false,
     requiresApproval: j['requires_approval'] as bool? ?? false,
     effects: _strings(j['effects']),
+    untrusted: j['untrusted'] as bool? ?? false,
   );
 
   final McpTransport transport;
@@ -87,6 +89,10 @@ class McpServerConfig {
   /// Tool name (or `*`) → `read`, `write` or `destructive`.
   final Map<String, String> effects;
 
+  /// Its tools return third-party text (a browser, mail): their results
+  /// taint the run, so its writes ask.
+  final bool untrusted;
+
   /// Every secret the server needs, in the daemon's order.
   List<String> get secretNames => [
     ...envSecrets,
@@ -116,6 +122,7 @@ class McpServerConfig {
       if (idempotent) 'idempotent': true,
       if (requiresApproval) 'requires_approval': true,
       if (effects.isNotEmpty) 'effects': effects,
+      if (untrusted) 'untrusted': true,
     };
   }
 
@@ -138,6 +145,7 @@ class McpServerConfig {
     idempotent: idempotent,
     requiresApproval: requiresApproval,
     effects: effects,
+    untrusted: untrusted,
   );
 
   static Map<String, String> _strings(Object? j) => {

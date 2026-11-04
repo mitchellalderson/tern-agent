@@ -189,6 +189,55 @@ class Hairline extends StatelessWidget {
   );
 }
 
+/// The subtle marker on a post written by a tainted run.
+class TaintMark extends StatelessWidget {
+  const TaintMark({super.key});
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: 'Written by a run that read untrusted content (mail, a web page…)',
+    child: Icon(
+      Icons.shield_outlined,
+      size: 13,
+      color: context.colors.warn.withValues(alpha: 0.8),
+    ),
+  );
+}
+
+/// A small amber "untrusted" mark for a tainted run or post: it read
+/// third-party text, so its writes ask. [reason] becomes the tooltip.
+class TaintBadge extends StatelessWidget {
+  const TaintBadge({super.key, this.reason, this.label = 'untrusted'});
+
+  final String? reason;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Tooltip(
+      message: reason == null
+          ? 'Written by a run that read untrusted content'
+          : 'This run read untrusted content ($reason), so its changes ask first',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        decoration: BoxDecoration(
+          border: Border.all(color: c.warn.withValues(alpha: 0.6)),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.shield_outlined, size: 11, color: c.warn),
+            const SizedBox(width: 3),
+            Text(label, style: TextStyle(fontSize: 10.5, color: c.warn)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 String relativeTime(DateTime t, [DateTime? now]) {
   now ??= DateTime.now();
   final d = now.difference(t);

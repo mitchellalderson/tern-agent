@@ -36,6 +36,10 @@ pub struct RunItem {
     /// 0 for top-level runs.
     #[serde(default)]
     pub depth: u32,
+    /// Why the run is tainted (tooling spec §5.3): it read third-party
+    /// text, so its writes ask. Absent while clean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taint: Option<String>,
 }
 
 impl From<tern_store::RunRow> for RunItem {
@@ -51,6 +55,7 @@ impl From<tern_store::RunRow> for RunItem {
             parent_run_id: r.parent_run_id,
             label: r.label,
             depth: r.depth,
+            taint: r.taint,
         }
     }
 }

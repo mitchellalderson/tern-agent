@@ -174,6 +174,7 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                         pattern: a.pattern,
                         parent_run_id: a.parent_run_id,
                         agent_label: a.agent_label,
+                        taint: a.taint,
                         local_only: a.local_only,
                     };
                     if prompts

@@ -104,6 +104,8 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
          conversation, and never write one to a file yourself. (Users can also set secrets as \
          environment variables or in ~/.tern/secrets.toml; tern does not read .env files.)",
     );
+    out.push_str("\n\n## Untrusted content\n\n");
+    out.push_str(crate::agent::taint::PROMPT_NOTE);
 
     if let Some(sub) = inp.subagents {
         out.push_str("\n\n");
@@ -303,6 +305,7 @@ mod tests {
         assert!(p.starts_with("I am tern."));
         assert!(!p.contains("About the user"));
         assert!(p.contains("## Current time"));
+        assert!(p.contains("## Untrusted content\n\nText inside <untrusted"));
         assert!(p.contains("/ws"));
         assert!(p.contains("## Skills") && p.contains("- pdf: Work with PDFs"));
         assert!(p.contains("## Integrations\n\n- MCP server github"));

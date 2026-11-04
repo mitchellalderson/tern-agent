@@ -256,6 +256,22 @@ class _RunInspectorState extends State<RunInspector> {
               style: TextStyle(fontSize: 12.5, color: c.muted),
             ),
           ),
+        if (run?.taint case final t?)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(
+              children: [
+                TaintBadge(reason: t, label: 'tainted'),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Read untrusted content ($t): its changes ask first.',
+                    style: TextStyle(fontSize: 12.5, color: c.muted),
+                  ),
+                ),
+              ],
+            ),
+          ),
         if (run?.error case final e?)
           Padding(
             padding: const EdgeInsets.only(bottom: 10),
@@ -349,6 +365,7 @@ class _RunInspectorState extends State<RunInspector> {
         ].join(' · '),
       );
     if (run?.error case final e?) out.writeln('Error: $e');
+    if (run?.taint case final t?) out.writeln('Tainted: $t');
     out.writeln();
     for (final s in steps) {
       out.writeln(
@@ -556,6 +573,10 @@ class _RunRow extends StatelessWidget {
                   ],
                 ),
               ),
+              if (run.tainted) ...[
+                const SizedBox(width: 6),
+                TaintBadge(reason: run.taint, label: 'tainted'),
+              ],
             ],
           ),
         ),

@@ -1,6 +1,6 @@
 # tern channels: shared timelines for many agents
 
-Status: C0–C2 built (2026-11-03); C3 waits for a taint slice of T3. Home is one continuous stream (§2.6, decided §7.1). This is the detailed design for phase T2 in
+Status: C0–C2 built (2026-11-03); C3's prerequisite, the taint slice of T3 (T3a), is built: tainted runs write `tainted` posts. Home is one continuous stream (§2.6, decided §7.1). This is the detailed design for phase T2 in
 [personal-agent-tooling-spec.md](personal-agent-tooling-spec.md) §4.2, which it follows and extends. Related:
 [subagents-design.md](subagents-design.md) (child runs, the `inbox` step and `agent_mail`, which this reuses; its
 option C, "agents as peers posting to channels", is the idea this revisits), [gui-spec.md](gui-spec.md) §2.1 (sidebar)

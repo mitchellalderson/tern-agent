@@ -440,6 +440,10 @@ pub struct McpServerConfig {
     /// They win over the server's `readOnlyHint` / `destructiveHint`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub effects: BTreeMap<String, crate::tool::Effect>,
+    /// The server's tools return third-party text (a browser, mail, chat):
+    /// their results taint the run (tooling spec §5.3).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub untrusted: bool,
 }
 
 impl McpServerConfig {

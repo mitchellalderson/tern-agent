@@ -53,8 +53,9 @@ pub fn runs_list(home: &TernHome) -> anyhow::Result<()> {
             1 => "  (+1 sub-agent)".into(),
             n => format!("  (+{n} sub-agents)"),
         };
+        let tainted = if r.taint.is_some() { "  tainted" } else { "" };
         println!(
-            "{}  {:<11} {}  {}{kids}",
+            "{}  {:<11} {}  {}{kids}{tainted}",
             r.id,
             r.status,
             time(r.started_at),
@@ -80,6 +81,9 @@ pub fn runs_show(home: &TernHome, run_id: &str) -> anyhow::Result<()> {
     }
     if let Some(e) = &run.error {
         println!("error    {e}");
+    }
+    if let Some(t) = &run.taint {
+        println!("tainted  {t} (writes ask; tooling spec §5.3)");
     }
     if let Some(parent) = &run.parent_run_id {
         println!(
@@ -127,12 +131,17 @@ pub fn runs_show(home: &TernHome, run_id: &str) -> anyhow::Result<()> {
 /// `child` and its descendants, one line each, indented by depth.
 fn print_tree(store: &Store, child: &tern_store::RunRow, level: usize) -> anyhow::Result<()> {
     println!(
-        "{:indent$}└ {} {:<11} {}  {}",
+        "{:indent$}└ {} {:<11} {}  {}{}",
         "",
         child.label.as_deref().unwrap_or("?"),
         child.status,
         child.id,
         child.model.as_deref().unwrap_or("-"),
+        if child.taint.is_some() {
+            "  tainted"
+        } else {
+            ""
+        },
         indent = 5 + level * 2
     );
     for c in store.children(&child.id)? {
@@ -177,11 +186,18 @@ fn describe(step: &StepRow) -> String {
                 .unwrap_or_default();
             let result = match output {
                 Some(Value::String(s)) => s,
-                Some(o) => match (o["is_error"].as_bool(), o["content"].as_str()) {
-                    (Some(true), Some(c)) => format!("✗ {}", one_line(c, 60)),
-                    (_, Some(c)) => format!("✓ {}", one_line(c, 60)),
-                    _ => o.to_string(),
-                },
+                Some(o) => {
+                    let mark = if o["untrusted"].as_bool() == Some(true) {
+                        " [untrusted]"
+                    } else {
+                        ""
+                    };
+                    match (o["is_error"].as_bool(), o["content"].as_str()) {
+                        (Some(true), Some(c)) => format!("✗ {}{mark}", one_line(c, 60)),
+                        (_, Some(c)) => format!("✓ {}{mark}", one_line(c, 60)),
+                        _ => o.to_string(),
+                    }
+                }
                 None => "(no result)".into(),
             };
             format!("{} — {result}", one_line(&summary, 60))
@@ -200,9 +216,16 @@ fn describe(step: &StepRow) -> String {
                     let items: Vec<String> = o
                         .mail
                         .iter()
-                        .map(|m| match (&m.agent, &m.status) {
-                            (Some(a), Some(s)) => format!("{a} {s}"),
-                            _ => m.kind.clone(),
+                        .map(|m| {
+                            let item = match (&m.agent, &m.status) {
+                                (Some(a), Some(s)) => format!("{a} {s}"),
+                                _ => m.kind.clone(),
+                            };
+                            if m.tainted {
+                                format!("{item} [tainted]")
+                            } else {
+                                item
+                            }
                         })
                         .collect();
                     format!("{wait}delivered: {}", items.join(", "))

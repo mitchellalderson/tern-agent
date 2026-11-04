@@ -59,6 +59,9 @@ pub struct NewPost<'a> {
     pub text: &'a str,
     pub reply_to: Option<i64>,
     pub points_to: Option<i64>,
+    /// Written by a tainted run (tooling spec §5.3): a reader treats it as
+    /// untrusted.
+    pub tainted: bool,
     /// Makes the write idempotent: a second post with the same key returns
     /// the first.
     pub dedupe_key: Option<&'a str>,
@@ -371,8 +374,8 @@ impl Store {
         let conn = self.conn()?;
         let n = conn.execute(
             "INSERT INTO posts (channel_id, session_id, run_id, author_kind, author_id, author, kind,
-               text, reply_to, points_to, dedupe_key, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+               text, reply_to, points_to, dedupe_key, created_at, tainted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT (dedupe_key) DO NOTHING",
             params![
                 p.channel_id,
@@ -386,7 +389,8 @@ impl Store {
                 p.reply_to,
                 p.points_to,
                 p.dedupe_key,
-                now
+                now,
+                p.tainted,
             ],
         )?;
         let sql = format!("SELECT {POST_COLS} FROM posts WHERE id = ?1");

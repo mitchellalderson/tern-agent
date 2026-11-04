@@ -290,11 +290,16 @@ impl TelegramGateway {
 }
 
 /// What a still-streaming reply shows: the tail, if it's over the limit.
-/// "Allow destructive · shell git push?", prefixed with a sub-agent's label when one asks.
+/// "Allow destructive · shell git push?", prefixed with a sub-agent's label when one asks,
+/// and followed by why a tainted run asks.
 fn approval_prompt(req: &ApprovalRequest) -> String {
-    match &req.agent_label {
+    let ask = match &req.agent_label {
         Some(l) => format!("[{l}] Allow {}?", req.headline()),
         None => format!("Allow {}?", req.headline()),
+    };
+    match req.taint_note() {
+        Some(note) => format!("{ask}\n⚠ {note}"),
+        None => ask,
     }
 }
 
