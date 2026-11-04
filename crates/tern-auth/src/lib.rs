@@ -7,6 +7,7 @@
 //! only through the host (`ctx.http`'s `auth`, an MCP client's header).
 
 pub mod b64;
+pub mod connections;
 pub mod discover;
 pub mod domain;
 pub mod error;
@@ -18,6 +19,7 @@ pub mod register;
 pub mod tokens;
 pub mod tools;
 
+pub use connections::{Conn, ConnAuth, Connections, Kind, Resolved};
 pub use discover::{AuthPlan, ClientKind, Source};
 pub use error::AuthError;
 pub use flow::{Client, DeviceCode, OAuthConfig, PendingSignIn, TokenAuth, TokenSet};

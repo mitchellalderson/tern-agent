@@ -4691,6 +4691,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tern-auth",
  "tern-core",
  "tern-store",
  "thiserror 2.0.21",
@@ -4711,10 +4712,13 @@ dependencies = [
  "rmcp",
  "serde_json",
  "tempfile",
+ "tern-auth",
  "tern-core",
+ "tern-store",
  "tokio",
  "tokio-util",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]

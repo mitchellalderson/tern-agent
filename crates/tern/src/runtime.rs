@@ -152,8 +152,9 @@ impl Runtime {
                 state,
             });
         });
+        let connections = open_connections(&config, &store, &secrets);
         let (mut tools, connectors, mcp) =
-            build_tools(home, &config, &store, &secrets, &slot, notify)?;
+            build_tools(home, &config, &store, &secrets, &slot, notify, &connections)?;
         // Channels (docs/channels-design.md §3): a post an agent writes is
         // announced like the daemon's own.
         let post_changes = changes.clone();
@@ -810,6 +811,24 @@ fn docker_settings(config: &Config) -> tern_sandbox::DockerSettings {
     }
 }
 
+/// Accounts and their tokens, shared by connectors, MCP servers, the auth
+/// tools and front ends.
+pub fn open_connections(
+    config: &Config,
+    store: &Store,
+    secrets: &Secrets,
+) -> Arc<tern_auth::Connections> {
+    let tokens = Arc::new(tern_auth::Tokens::new(
+        secrets.clone(),
+        tern_auth::Guard::new(&config.auth.local_issuers),
+    ));
+    Arc::new(tern_auth::Connections::new(
+        store.clone(),
+        tokens,
+        config.auth.max_connections as usize,
+    ))
+}
+
 fn build_tools(
     home: &TernHome,
     config: &Config,
@@ -817,6 +836,7 @@ fn build_tools(
     secrets: &Secrets,
     subagents: &HostSlot,
     mcp_notify: tern_mcp::Notify,
+    connections: &Arc<tern_auth::Connections>,
 ) -> anyhow::Result<(
     ToolRegistry,
     Arc<tern_lua::Connectors>,
@@ -856,6 +876,7 @@ fn build_tools(
 
     let mut lua = tern_lua::Host::new(store.clone(), secrets.clone())?;
     lua.default_rate = config.connectors.rate;
+    lua.connections = Some(connections.clone());
     let dirs = tern_lua::tools::Dirs {
         active: home.connectors_dir(),
         drafts: home.drafts_dir(),
@@ -892,11 +913,17 @@ fn build_tools(
         inspected: Default::default(),
     }));
 
-    let mcp = Arc::new(tern_mcp::McpServers::from_config(
-        &config.mcp.servers,
-        Arc::new(secrets.clone()),
-        Some(mcp_notify),
-    ));
+    let mcp = Arc::new(
+        tern_mcp::McpServers::from_config(
+            &config.mcp.servers,
+            Arc::new(secrets.clone()),
+            Some(mcp_notify),
+        )
+        .with_connections(
+            connections.clone(),
+            Duration::from_secs(config.auth.idle_timeout_secs),
+        ),
+    );
     registry.add_source(mcp.clone());
     Ok((registry, connectors, mcp))
 }

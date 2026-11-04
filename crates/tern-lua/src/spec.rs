@@ -20,6 +20,28 @@ pub struct Capabilities {
     /// Requests per period, shared by every call of this connector. `None`
     /// uses the host's default (`[connectors] rate`).
     pub rate: Option<Rate>,
+    /// Signs in with OAuth (tooling spec §6.2): tokens come from the
+    /// connection the call runs under and are sent by the host.
+    pub oauth: Option<OAuthCap>,
+}
+
+/// `capabilities.oauth = { google = { scopes = { … } } }`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuthCap {
+    /// A built-in profile's id or a discovered provider's name.
+    pub provider: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+/// The credential name an `auth` entry uses for OAuth tokens.
+pub fn oauth_secret(provider: &str) -> String {
+    format!("oauth:{provider}")
+}
+
+/// Whether a credential name is an OAuth source rather than a secret.
+pub fn is_oauth_secret(name: &str) -> bool {
+    name.starts_with("oauth:")
 }
 
 impl Capabilities {
@@ -35,10 +57,15 @@ impl Capabilities {
         v
     }
 
-    /// Every secret this connector uses, raw or injected.
+    /// Every secret this connector uses, raw or injected (OAuth tokens are
+    /// the connection's, not named secrets).
     pub fn all_secrets(&self) -> Vec<String> {
         let mut v = self.secrets.clone();
-        for s in self.auth_secrets() {
+        for s in self
+            .auth_secrets()
+            .into_iter()
+            .filter(|s| !is_oauth_secret(s))
+        {
             if !v.contains(&s) {
                 v.push(s);
             }
@@ -55,6 +82,9 @@ impl Capabilities {
     /// a connector is replaced. `default_rate` is shown when none is declared.
     pub fn lines(&self, default_rate: Rate) -> Vec<String> {
         let mut out: Vec<String> = self.http.iter().map(|h| format!("http {h}")).collect();
+        if let Some(o) = &self.oauth {
+            out.push(format!("oauth {}", o.describe()));
+        }
         for a in &self.auth {
             out.push(format!("auth {}", a.describe()));
         }
@@ -68,6 +98,17 @@ impl Capabilities {
             None => format!("rate {default_rate} (default)"),
         });
         out
+    }
+}
+
+impl OAuthCap {
+    /// `google (scopes: gmail.readonly, gmail.send)`.
+    pub fn describe(&self) -> String {
+        if self.scopes.is_empty() {
+            self.provider.clone()
+        } else {
+            format!("{} (scopes: {})", self.provider, self.scopes.join(", "))
+        }
     }
 }
 
@@ -206,6 +247,12 @@ impl ConnectorSpec {
             None => format!("{default_rate} (default)"),
         };
         let mut out = format!("http hosts: {}; ", list(&c.http));
+        if let Some(o) = &c.oauth {
+            out.push_str(&format!(
+                "OAuth sign-in: {} (each account signs in separately; tern keeps the tokens); ",
+                o.describe()
+            ));
+        }
         if !auth.is_empty() {
             out.push_str(&format!(
                 "auth (tern sends it, the script never sees it): {}; ",
@@ -260,9 +307,23 @@ const MAX_AUTH: usize = 8;
 
 /// `capabilities.auth`: `"NAME"` (a Bearer token), one table, or a list of
 /// either.
-fn parse_auth(v: Value, http: &[String]) -> Result<Vec<Auth>, LoadError> {
+fn parse_auth(v: Value, http: &[String], oauth: Option<&str>) -> Result<Vec<Auth>, LoadError> {
     let entries: Vec<Value> = match v {
-        Value::Nil => return Ok(Vec::new()),
+        // OAuth with no `auth`: a Bearer token to every declared host.
+        Value::Nil => {
+            return Ok(oauth
+                .map(|p| {
+                    vec![Auth {
+                        inject: Inject::Header {
+                            header: "Authorization".into(),
+                            scheme: "Bearer".into(),
+                            secret: oauth_secret(p),
+                        },
+                        hosts: Vec::new(),
+                    }]
+                })
+                .unwrap_or_default());
+        }
         Value::Table(t) if t.raw_len() > 0 => t
             .sequence_values::<Value>()
             .collect::<mlua::Result<_>>()
@@ -286,13 +347,34 @@ fn parse_auth(v: Value, http: &[String]) -> Result<Vec<Auth>, LoadError> {
     }
     let auth = entries
         .into_iter()
-        .map(|e| parse_auth_entry(e, http))
+        .map(|e| parse_auth_entry(e, http, oauth))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(auth)
 }
 
-fn secret_name(v: Option<String>, what: &str) -> Result<Option<String>, LoadError> {
-    let Some(name) = v else { return Ok(None) };
+fn secret_name(
+    v: Option<String>,
+    what: &str,
+    oauth: Option<&str>,
+) -> Result<Option<String>, LoadError> {
+    let Some(mut name) = v else { return Ok(None) };
+    // `"oauth"` or `"oauth:<provider>"`: the connection's access token.
+    if name == "oauth" || is_oauth_secret(&name) {
+        let Some(provider) = oauth else {
+            return Err(invalid(format!(
+                "capabilities.auth {what} {name:?} needs capabilities.oauth (the provider and scopes)"
+            )));
+        };
+        if name == "oauth" {
+            name = oauth_secret(provider);
+        }
+        if name != oauth_secret(provider) {
+            return Err(invalid(format!(
+                "capabilities.auth {what} {name:?}: this connector signs in with {provider:?} (capabilities.oauth)"
+            )));
+        }
+        return Ok(Some(name));
+    }
     tern_core::secrets::check_name(&name).map_err(|_| {
         invalid(format!(
             "capabilities.auth {what} {name:?} isn't a valid secret name"
@@ -301,10 +383,11 @@ fn secret_name(v: Option<String>, what: &str) -> Result<Option<String>, LoadErro
     Ok(Some(name))
 }
 
-fn parse_auth_entry(v: Value, http: &[String]) -> Result<Auth, LoadError> {
+fn parse_auth_entry(v: Value, http: &[String], oauth: Option<&str>) -> Result<Auth, LoadError> {
     let t = match v {
         Value::String(s) => {
-            let secret = secret_name(Some(s.to_string_lossy()), "secret")?.unwrap_or_default();
+            let secret =
+                secret_name(Some(s.to_string_lossy()), "secret", oauth)?.unwrap_or_default();
             return Ok(Auth {
                 inject: Inject::Header {
                     header: "Authorization".into(),
@@ -335,7 +418,7 @@ fn parse_auth_entry(v: Value, http: &[String]) -> Result<Auth, LoadError> {
         t.raw_get::<Option<String>>(k)
             .map_err(|_| invalid(format!("capabilities.auth.{k} must be a string")))
     };
-    let secret = secret_name(text("secret")?, "secret")?;
+    let secret = secret_name(text("secret")?, "secret", oauth)?;
     let (header, scheme, query) = (text("header")?, text("scheme")?, text("query")?);
     let basic: Option<Table> = t.raw_get("basic").map_err(|_| {
         invalid("capabilities.auth.basic must be { user = \"SECRET\", password = \"SECRET\" }")
@@ -350,7 +433,13 @@ fn parse_auth_entry(v: Value, http: &[String]) -> Result<Auth, LoadError> {
             let v = b.raw_get::<Option<String>>(k).map_err(|_| {
                 invalid(format!("capabilities.auth.basic.{k} must be a secret name"))
             })?;
-            secret_name(v, &format!("basic.{k}"))
+            let name = secret_name(v, &format!("basic.{k}"), oauth)?;
+            if name.as_deref().is_some_and(is_oauth_secret) {
+                return Err(invalid(
+                    "capabilities.auth.basic can't carry an OAuth token",
+                ));
+            }
+            Ok(name)
         };
         let (user, password) = (field("user")?, field("password")?);
         if user.is_none() && password.is_none() {
@@ -435,6 +524,64 @@ fn parse_auth_entry(v: Value, http: &[String]) -> Result<Auth, LoadError> {
     Ok(Auth { inject, hosts })
 }
 
+/// `capabilities.oauth = { google = { scopes = { "gmail.readonly" } } }`:
+/// one provider (a built-in profile or a discovered one) and its scopes.
+fn parse_oauth(v: Option<Table>, http: &[String]) -> Result<Option<OAuthCap>, LoadError> {
+    let Some(t) = v else { return Ok(None) };
+    let mut found = None;
+    for pair in t.pairs::<String, Value>() {
+        let (provider, conf) = pair
+            .map_err(|_| invalid("capabilities.oauth must be { provider = { scopes = { … } } }"))?;
+        if found.is_some() {
+            return Err(invalid("capabilities.oauth names more than one provider"));
+        }
+        if !valid_ident(&provider) {
+            return Err(invalid(format!(
+                "capabilities.oauth provider {provider:?} must match [a-z][a-z0-9_]*"
+            )));
+        }
+        let scopes = match conf {
+            Value::Table(c) => {
+                for pair in c.pairs::<String, Value>() {
+                    let (k, _) = pair.map_err(|_| invalid("capabilities.oauth is unreadable"))?;
+                    if k != "scopes" {
+                        return Err(invalid(format!(
+                            "capabilities.oauth.{provider}: unknown key {k:?} (expected scopes)"
+                        )));
+                    }
+                }
+                string_list(
+                    c.raw_get("scopes")
+                        .map_err(|_| invalid("capabilities.oauth scopes must be a list"))?,
+                    "capabilities.oauth scopes",
+                )?
+            }
+            Value::Boolean(true) => Vec::new(),
+            _ => {
+                return Err(invalid(
+                    "capabilities.oauth must be { provider = { scopes = { … } } }",
+                ));
+            }
+        };
+        if scopes.len() > 50
+            || scopes
+                .iter()
+                .any(|s| s.is_empty() || s.len() > 200 || s.contains(char::is_whitespace))
+        {
+            return Err(invalid(
+                "capabilities.oauth scopes must be up to 50 words without spaces",
+            ));
+        }
+        found = Some(OAuthCap { provider, scopes });
+    }
+    if found.is_some() && http.is_empty() {
+        return Err(invalid(
+            "capabilities.oauth needs capabilities.http: the hosts the token is sent to",
+        ));
+    }
+    Ok(found)
+}
+
 pub fn parse(lua: &Lua, t: &Table) -> Result<(ConnectorSpec, Vec<(String, Function)>), LoadError> {
     let get_str = |key: &str| -> Result<String, LoadError> {
         match t.raw_get::<Value>(key) {
@@ -462,10 +609,16 @@ pub fn parse(lua: &Lua, t: &Table) -> Result<(ConnectorSpec, Vec<(String, Functi
                 "capabilities.http",
             )?;
             check_http(&http)?;
+            let oauth = parse_oauth(
+                c.raw_get("oauth")
+                    .map_err(|_| invalid("capabilities.oauth must be a table"))?,
+                &http,
+            )?;
             let auth = parse_auth(
                 c.raw_get("auth")
                     .map_err(|_| invalid("capabilities.auth is unreadable"))?,
                 &http,
+                oauth.as_ref().map(|o| o.provider.as_str()),
             )?;
             let rate = match c.raw_get::<Value>("rate") {
                 Ok(Value::Nil) => None,
@@ -489,6 +642,7 @@ pub fn parse(lua: &Lua, t: &Table) -> Result<(ConnectorSpec, Vec<(String, Functi
                 )?,
                 auth,
                 rate,
+                oauth,
             }
         }
     };

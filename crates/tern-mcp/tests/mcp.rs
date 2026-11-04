@@ -488,3 +488,197 @@ async fn http_bearer_tokens_come_from_secrets() {
     let ok = tern_mcp::verify("fx", &cfg, secrets, right).await.unwrap();
     assert_eq!(ok.tools.len(), 5);
 }
+
+#[tokio::test]
+async fn two_accounts_get_their_own_process_and_secrets() {
+    use tern_auth::{ConnAuth, Connections, Guard, Kind, Tokens};
+    let (secrets, _tmp) = secrets(&[
+        ("FIXTURE_TOKEN", "tok-default"),
+        ("\"conn/fixture/side/FIXTURE_TOKEN\"", "tok-side"),
+    ]);
+    let tokens = Arc::new(Tokens::new((*secrets).clone(), Guard::offline()));
+    let conns = Arc::new(Connections::new(
+        tern_store::Store::open_in_memory().unwrap(),
+        tokens,
+        10,
+    ));
+    let key = ConnAuth::Key {
+        names: vec!["FIXTURE_TOKEN".into()],
+    };
+    conns
+        .add(Kind::Mcp, "fixture", "default", None, Some("me@work"), &key)
+        .unwrap();
+    conns
+        .add(Kind::Mcp, "fixture", "side", None, Some("me@side"), &key)
+        .unwrap();
+    let set = McpServers::new(vec![McpServer::new(
+        "fixture",
+        stdio_cfg(vec!["FIXTURE_TOKEN".into()]),
+        secrets,
+    )])
+    .with_connections(conns.clone(), Duration::from_millis(50));
+    set.prepare().await;
+    let tool = |name: &str| {
+        set.tools()
+            .into_iter()
+            .find(|t| t.spec().name == name)
+            .unwrap()
+    };
+    let env = tool("mcp__fixture__env");
+    assert_eq!(
+        env.spec().input_schema["properties"]["connection"]["enum"],
+        json!(["default", "side"])
+    );
+    assert!(set.describe()[0].contains("accounts: default (me@work, default), side (me@side)"));
+    let run = |args: serde_json::Value| {
+        let env = env.clone();
+        async move { env.call(&ctx(), args).await }
+    };
+    let side = run(json!({"name": "FIXTURE_TOKEN", "connection": "side"})).await;
+    assert_eq!(side.content, "tok-side");
+    let default = run(json!({"name": "FIXTURE_TOKEN", "connection": "default"})).await;
+    assert_eq!(default.content, "tok-default");
+    // `env` is a write (no annotations): with two accounts it must say which.
+    let none = run(json!({"name": "FIXTURE_TOKEN"})).await;
+    assert!(
+        none.is_error && none.content.contains("must say which"),
+        "{}",
+        none.content
+    );
+    assert_eq!(
+        env.summary(&json!({"name": "X", "connection": "side"}))
+            .as_deref(),
+        Some("mcp__fixture__env as fixture · side (me@side)")
+    );
+    // A read uses the default.
+    let echo = tool("mcp__fixture__echo")
+        .call(&ctx(), json!({"text": "hi"}))
+        .await;
+    assert_eq!(echo.content, "hi");
+    // One process per account; the extra one stops when idle.
+    let side_pid: u32 = run(json!({"name": "$$", "connection": "side"}))
+        .await
+        .content
+        .parse()
+        .unwrap();
+    let default_pid: u32 = run(json!({"name": "$$", "connection": "default"}))
+        .await
+        .content
+        .parse()
+        .unwrap();
+    assert_ne!(side_pid, default_pid);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    set.prepare().await;
+    for _ in 0..50 {
+        if !alive(side_pid) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!alive(side_pid), "the idle account's server stopped");
+    assert!(alive(default_pid), "the default account's stays");
+    // And starts again on its next use.
+    let again = run(json!({"name": "FIXTURE_TOKEN", "connection": "side"})).await;
+    assert_eq!(again.content, "tok-side");
+}
+
+#[tokio::test]
+async fn an_oauth_account_signs_in_to_an_http_server_and_refreshes_on_401() {
+    use tern_auth::{ConnAuth, Connections, Guard, Kind, OAuthConfig, TokenSet, Tokens};
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    struct Server(std::process::Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut server = Server(
+        std::process::Command::new("python3")
+            .args([
+                fixture(),
+                "--http".into(),
+                "--token".into(),
+                "AT-fresh-1".into(),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut line = String::new();
+    std::io::BufReader::new(server.0.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let port: u16 = line.trim().parse().unwrap();
+    let idp = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("refresh_token=RT-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT-fresh-1", "token_type": "Bearer", "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&idp)
+        .await;
+    let (secrets, _tmp) = secrets(&[]);
+    let tokens = Arc::new(Tokens::new((*secrets).clone(), Guard::new(&[idp.uri()])));
+    let conns = Arc::new(Connections::new(
+        tern_store::Store::open_in_memory().unwrap(),
+        tokens.clone(),
+        10,
+    ));
+    let cfg = OAuthConfig {
+        provider: "fx".into(),
+        authorize_url: format!("{}/authorize", idp.uri()),
+        token_url: format!("{}/token", idp.uri()),
+        client_id: "tern".into(),
+        ..OAuthConfig::default()
+    };
+    let work = conns
+        .add(
+            Kind::Mcp,
+            "fx",
+            "work",
+            None,
+            Some("me@fx"),
+            &ConnAuth::OAuth(Box::new(cfg)),
+        )
+        .unwrap();
+    // The stored token is stale at the server.
+    tokens
+        .save(
+            &work.key(),
+            &TokenSet {
+                access_token: "AT-stale-0".into(),
+                refresh_token: Some("RT-1".into()),
+                expires_at: None,
+                scope: None,
+                id_token: None,
+            },
+        )
+        .unwrap();
+    let set = McpServers::new(vec![McpServer::new(
+        "fx",
+        McpServerConfig {
+            transport: McpTransport::Http,
+            enabled: true,
+            url: Some(format!("http://127.0.0.1:{port}/mcp")),
+            ..Default::default()
+        },
+        secrets.clone(),
+    )])
+    .with_connections(conns, Duration::from_secs(600));
+    set.prepare().await;
+    let echo = set
+        .tools()
+        .into_iter()
+        .find(|t| t.spec().name == "mcp__fx__echo")
+        .expect("listed through the work account");
+    assert_eq!(echo.call(&ctx(), json!({"text": "hi"})).await.content, "hi");
+    assert_eq!(
+        secrets.get("conn/fx/work/oauth/access_token").as_deref(),
+        Some("AT-fresh-1")
+    );
+    assert_eq!(secrets.redact("Bearer AT-fresh-1"), "Bearer [REDACTED]");
+}

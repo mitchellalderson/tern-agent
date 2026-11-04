@@ -10,9 +10,11 @@ use tern_core::Secrets;
 use tern_core::config::Rate;
 use tern_store::Store;
 
+use tern_auth::{Connections, Resolved};
+
 use crate::allow::{entry_host, host_allowed, path_allowed};
 use crate::limit::Limiter;
-use crate::spec::{Auth, Capabilities, ConnectorSpec, Inject};
+use crate::spec::{Auth, Capabilities, ConnectorSpec, Inject, is_oauth_secret};
 
 /// Per-call wall-clock limit (spec §10.1).
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -69,6 +71,9 @@ pub struct Host {
     pub default_rate: Rate,
     /// Request budgets by connector name, kept across reloads.
     pub limiter: Arc<Limiter>,
+    /// Accounts (tooling spec §6.8). `None` (tests, tools that don't run
+    /// connectors): every call uses plain secret names.
+    pub connections: Option<Arc<Connections>>,
 }
 
 impl Host {
@@ -80,6 +85,7 @@ impl Host {
             memory: DEFAULT_MEMORY,
             default_rate: DEFAULT_RATE,
             limiter: Arc::default(),
+            connections: None,
         })
     }
 }
@@ -90,7 +96,7 @@ pub struct Vm {
     lua: Lua,
     runs: Vec<(String, Function)>,
     deadline: Arc<Mutex<Option<Instant>>>,
-    host: Host,
+    pub(crate) host: Host,
     /// This connector's HTTP client. It follows no redirects: `ctx.http`
     /// follows them itself, checking each hop.
     http: reqwest::Client,
@@ -157,6 +163,16 @@ impl Vm {
     /// Run tool `name` with JSON `args`. Errors (including Lua errors and
     /// timeouts) come back as `Err(message)`, never panics.
     pub async fn call(&self, name: &str, args: &serde_json::Value) -> Result<String, String> {
+        self.call_as(name, args, None).await
+    }
+
+    /// [`Vm::call`] under an account (`None`: the implicit default).
+    pub async fn call_as(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        conn: Option<Resolved>,
+    ) -> Result<String, String> {
         let Some((_, run)) = self.runs.iter().find(|(n, _)| n == name) else {
             return Err(format!("connector {} has no tool {name:?}", self.spec.name));
         };
@@ -180,6 +196,8 @@ impl Vm {
                 .capabilities
                 .rate
                 .unwrap_or(self.host.default_rate),
+            conn,
+            connections: self.host.connections.clone(),
         });
         let ctx = make_ctx(&self.lua, &self.host, net, &self.spec)
             .map_err(|e| format!("building ctx: {e}"))?;
@@ -301,17 +319,36 @@ struct Net {
     secrets: Arc<Secrets>,
     limiter: Arc<Limiter>,
     rate: Rate,
+    /// The account this call runs under (`None`: the implicit default).
+    conn: Option<Resolved>,
+    connections: Option<Arc<Connections>>,
 }
 
 impl Net {
-    /// A credential's value, for the host to send. T4a resolves names per
-    /// connection here.
-    fn secret(&self, name: &str) -> mlua::Result<String> {
-        self.secrets.get(name).ok_or_else(|| {
-            mlua::Error::runtime(format!(
-                "secret {name:?} is not set. {}",
-                SECRETS_HELP.replace("{key}", name)
-            ))
+    /// A credential's value, for the host to send: the call's account's
+    /// secret (`conn/<target>/<slug>/<NAME>`, the plain name for the
+    /// default), or its OAuth access token. `rejected` is a token the
+    /// service just refused, to refresh past.
+    async fn secret(&self, name: &str, rejected: Option<&str>) -> mlua::Result<String> {
+        if is_oauth_secret(name) {
+            let (Some(conns), Some(conn)) = (&self.connections, &self.conn) else {
+                return Err(mlua::Error::runtime(format!(
+                    "{} signs in with OAuth and has no connected account yet: call connection_add so the user can sign in",
+                    self.connector
+                )));
+            };
+            return conns
+                .access_token(conn, rejected)
+                .await
+                .map_err(mlua::Error::runtime);
+        }
+        let scoped = Connections::secret_name(self.conn.as_ref(), name);
+        self.secrets.get(&scoped).ok_or_else(|| {
+            let help = SECRETS_HELP.replace("{key}", &scoped);
+            mlua::Error::runtime(match &self.conn {
+                Some(c) => format!("secret {name:?} is not set for {}. {help}", c.conn.title()),
+                None => format!("secret {name:?} is not set. {help}"),
+            })
         })
     }
 }
@@ -378,8 +415,29 @@ fn make_ctx(lua: &Lua, host: &Host, net: Arc<Net>, spec: &ConnectorSpec) -> mlua
         )?;
     }
 
+    // Which account: `{ slug, label, account }`, the default when there are
+    // no connections.
+    let who = lua.create_table()?;
+    match &net.conn {
+        Some(r) => {
+            who.raw_set("slug", r.conn.slug.clone())?;
+            who.raw_set(
+                "label",
+                r.conn.label.clone().unwrap_or_else(|| r.conn.slug.clone()),
+            )?;
+            if let Some(a) = &r.conn.account {
+                who.raw_set("account", a.clone())?;
+            }
+        }
+        None => {
+            who.raw_set("slug", tern_auth::DEFAULT_SLUG)?;
+            who.raw_set("label", tern_auth::DEFAULT_SLUG)?;
+        }
+    }
+    ctx.raw_set("connection", who)?;
+
     let kv = lua.create_table()?;
-    let ns = format!("lua:{name}");
+    let ns = Connections::kv_namespace(&name, net.conn.as_ref());
     {
         let (store, ns) = (host.store.clone(), ns.clone());
         kv.raw_set(
@@ -546,14 +604,16 @@ impl Pick {
 }
 
 /// Add one credential to a request. Every form of the value that could come
-/// back (raw, URL-encoded, base64) goes into `redact`.
-fn inject(
+/// back (raw, URL-encoded, base64) goes into `redact`. An OAuth token sent
+/// is returned, so a 401 can refresh past it.
+async fn inject(
     net: &Net,
     auth: &Auth,
     headers: &mut HeaderMap,
     url: &mut reqwest::Url,
     redact: &mut Vec<String>,
-) -> mlua::Result<()> {
+    rejected: Option<&str>,
+) -> mlua::Result<Option<String>> {
     let sensitive = |name: &str, value: String| -> mlua::Result<HeaderValue> {
         let mut v = HeaderValue::from_str(&value).map_err(|_| {
             mlua::Error::runtime(format!(
@@ -569,7 +629,7 @@ fn inject(
             scheme,
             secret,
         } => {
-            let value = net.secret(secret)?;
+            let value = net.secret(secret, rejected).await?;
             let full = if scheme.is_empty() {
                 value.clone()
             } else {
@@ -578,21 +638,29 @@ fn inject(
             let name = HeaderName::from_bytes(header.as_bytes())
                 .map_err(|_| mlua::Error::runtime(format!("http: bad header {header:?}")))?;
             headers.insert(name, sensitive(secret, full)?);
-            redact.push(value);
+            redact.push(value.clone());
+            if is_oauth_secret(secret) {
+                return Ok(Some(value));
+            }
         }
         Inject::Query { param, secret } => {
-            let value = net.secret(secret)?;
+            let value = net.secret(secret, rejected).await?;
             url.query_pairs_mut().append_pair(param, &value);
             redact.push(form_encode(&value));
-            redact.push(value);
+            redact.push(value.clone());
+            if is_oauth_secret(secret) {
+                return Ok(Some(value));
+            }
         }
         Inject::Basic { user, password } => {
-            let get = |n: &Option<String>| -> mlua::Result<String> {
-                n.as_deref()
-                    .map(|n| net.secret(n))
-                    .unwrap_or(Ok(String::new()))
+            let u = match user {
+                Some(n) => net.secret(n, None).await?,
+                None => String::new(),
             };
-            let (u, p) = (get(user)?, get(password)?);
+            let p = match password {
+                Some(n) => net.secret(n, None).await?,
+                None => String::new(),
+            };
             let token = base64(format!("{u}:{p}").as_bytes());
             headers.insert(
                 header::AUTHORIZATION,
@@ -601,7 +669,7 @@ fn inject(
             redact.extend([u, p, token]);
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Replace each injected value (longest first) with `[REDACTED]`.
@@ -741,31 +809,55 @@ async fn http_request(lua: &Lua, net: &Net, opts: Table) -> mlua::Result<Table> 
                 hop_headers.remove(h);
             }
         }
-        let mut hop_url = url.clone();
-        for auth in net
-            .caps
-            .auth
-            .iter()
-            .filter(|a| a.applies_to(&host) && pick.wants(a))
-        {
-            inject(net, auth, &mut hop_headers, &mut hop_url, &mut redact)?;
-        }
-        redact.retain(|v| v.len() >= 4);
-        redact.sort_by_key(|v| std::cmp::Reverse(v.len()));
-        redact.dedup();
-        let mut req = client.request(method.clone(), hop_url).headers(hop_headers);
-        if let Some(b) = &body {
-            req = req.body(b.clone());
-        }
-        if let Some(t) = timeout {
-            req = req.timeout(t);
-        }
-        let resp = req.send().await.map_err(|e| {
-            mlua::Error::runtime(scrub(
-                &redact,
-                &format!("http: request to {host} failed: {}", error_chain(&e)),
-            ))
-        })?;
+        // An OAuth token the service refuses (401) is refreshed and the hop
+        // sent once more.
+        let mut rejected: Option<String> = None;
+        let resp = loop {
+            let mut hop_headers = hop_headers.clone();
+            let mut hop_url = url.clone();
+            let mut sent_token = None;
+            for auth in net
+                .caps
+                .auth
+                .iter()
+                .filter(|a| a.applies_to(&host) && pick.wants(a))
+            {
+                let sent = inject(
+                    net,
+                    auth,
+                    &mut hop_headers,
+                    &mut hop_url,
+                    &mut redact,
+                    rejected.as_deref(),
+                )
+                .await?;
+                sent_token = sent_token.or(sent);
+            }
+            redact.retain(|v| v.len() >= 4);
+            redact.sort_by_key(|v| std::cmp::Reverse(v.len()));
+            redact.dedup();
+            let mut req = client.request(method.clone(), hop_url).headers(hop_headers);
+            if let Some(b) = &body {
+                req = req.body(b.clone());
+            }
+            if let Some(t) = timeout {
+                req = req.timeout(t);
+            }
+            let resp = req.send().await.map_err(|e| {
+                mlua::Error::runtime(scrub(
+                    &redact,
+                    &format!("http: request to {host} failed: {}", error_chain(&e)),
+                ))
+            })?;
+            match sent_token {
+                Some(t)
+                    if resp.status() == reqwest::StatusCode::UNAUTHORIZED && rejected.is_none() =>
+                {
+                    rejected = Some(t);
+                }
+                _ => break resp,
+            }
+        };
         let location = resp
             .status()
             .is_redirection()
