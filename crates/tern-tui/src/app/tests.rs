@@ -52,6 +52,10 @@ struct Fake {
     channel_posts: Mutex<std::collections::BTreeMap<String, Vec<crate::PostLine>>>,
     channels_made: Mutex<Vec<String>>,
     suggestions: Mutex<Vec<(i64, bool)>>,
+    /// (what, id, slug, title) passed to `rename`; (what, id, choice)
+    /// passed to `delete`.
+    renames: Mutex<Vec<(crate::Managed, String, Option<String>, Option<String>)>>,
+    deletes: Mutex<Vec<(crate::Managed, String, crate::DeleteChoice)>>,
 }
 
 #[async_trait]
@@ -308,6 +312,39 @@ impl Backend for Fake {
             needs_you: 0,
             active_runs: 0,
         })
+    }
+    fn rename(
+        &self,
+        what: crate::Managed,
+        id: &str,
+        slug: Option<&str>,
+        title: Option<&str>,
+    ) -> BackendResult<String> {
+        self.renames.lock().unwrap().push((
+            what,
+            id.into(),
+            slug.map(Into::into),
+            title.map(Into::into),
+        ));
+        Ok("renamed".into())
+    }
+    fn delete_preview(&self, what: crate::Managed, id: &str) -> BackendResult<String> {
+        if id == "tern:research" {
+            return Err("1 run(s) of @research are in progress".into());
+        }
+        Ok(format!("Delete {what:?} {id}?"))
+    }
+    fn delete(
+        &self,
+        what: crate::Managed,
+        id: &str,
+        choice: &crate::DeleteChoice,
+    ) -> BackendResult<String> {
+        self.deletes
+            .lock()
+            .unwrap()
+            .push((what, id.into(), choice.clone()));
+        Ok(format!("deleted {id}"))
     }
     fn send_to_channel(&self, id: &str, text: &str, _: Option<&str>) -> BackendResult<Started> {
         let mut s = self.channel_sends.lock().unwrap();
@@ -1873,4 +1910,95 @@ fn channel_commands_switch_post_and_show_what_needs_you() {
     submit(&mut app, "/channel finances");
     submit(&mut app, "/agent inbox");
     assert!(app.channel.is_none());
+}
+
+#[test]
+fn channels_and_agents_are_renamed_and_deleted_only_after_confirming() {
+    let (mut app, fake) = new_app();
+    submit(&mut app, "/channel #finances");
+    assert!(app.channel.is_some());
+
+    // Rename and retitle go straight through.
+    submit(&mut app, "/channel rename finances money");
+    submit(&mut app, "/channel title #finances Money talk");
+    assert_eq!(
+        fake.renames.lock().unwrap().as_slice(),
+        [
+            (
+                crate::Managed::Channel,
+                "c-fin".to_owned(),
+                Some("money".to_owned()),
+                None
+            ),
+            (
+                crate::Managed::Channel,
+                "c-fin".to_owned(),
+                None,
+                Some("Money talk".to_owned())
+            ),
+        ]
+    );
+
+    // Deleting shows what it touches first, and does nothing until `yes`.
+    submit(&mut app, "/channel delete finances");
+    let n = notices(&app);
+    assert!(n.contains("Delete Channel c-fin?"), "{n}");
+    assert!(n.contains("Confirm with: /channel delete finances yes"), "{n}");
+    assert!(fake.deletes.lock().unwrap().is_empty());
+    submit(&mut app, "/channel delete finances yes");
+    assert_eq!(fake.deletes.lock().unwrap().len(), 1);
+    assert!(app.channel.is_none(), "the open channel was deleted: back in Home");
+    // Home and DMs are refused before asking the backend.
+    submit(&mut app, "/channel delete home yes");
+    assert!(notices(&app).contains("isn't a topic channel"));
+    assert_eq!(fake.deletes.lock().unwrap().len(), 1);
+
+    // Agents: rename, slug, and a delete that says where routines go.
+    submit(&mut app, "/agents rename inbox Mail Room");
+    submit(&mut app, "/agents slug @inbox mail");
+    let r = fake.renames.lock().unwrap();
+    assert_eq!(
+        r[2..],
+        [
+            (
+                crate::Managed::Agent,
+                "tern:inbox".to_owned(),
+                None,
+                Some("Mail Room".to_owned())
+            ),
+            (
+                crate::Managed::Agent,
+                "tern:inbox".to_owned(),
+                Some("mail".to_owned()),
+                None
+            ),
+        ]
+    );
+    drop(r);
+    submit(&mut app, "/agents delete inbox to research");
+    let n = notices(&app);
+    assert!(
+        n.contains("Confirm with: /agents delete inbox to research yes"),
+        "{n}"
+    );
+    assert_eq!(fake.deletes.lock().unwrap().len(), 1);
+    submit(&mut app, "/agents delete inbox to research yes");
+    let d = fake.deletes.lock().unwrap();
+    assert_eq!(
+        d[1],
+        (
+            crate::Managed::Agent,
+            "tern:inbox".to_owned(),
+            crate::DeleteChoice {
+                reassign_to: Some("research".into()),
+                delete_routines: false
+            }
+        )
+    );
+    drop(d);
+    // A refusal (work in progress) is shown, not confirmed.
+    submit(&mut app, "/agents delete research");
+    assert!(notices(&app).contains("in progress"));
+    submit(&mut app, "/agents delete inbox routines yes");
+    assert!(fake.deletes.lock().unwrap()[2].2.delete_routines);
 }

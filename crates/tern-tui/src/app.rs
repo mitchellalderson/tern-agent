@@ -221,7 +221,11 @@ Commands:
   /channel <slug>   post to a topic channel (/channel home: back to Home)
   /channel new <slug> [title]  make a channel and switch to it
   /channel accept|decline <slug>  answer an agent's channel suggestion
+  /channel rename <slug> <new-slug> | title <slug> <title> | delete <slug>
+                    rename, retitle or delete a channel (delete asks first)
   /agents           list your agents and the last run's sub-agents
+  /agents rename <@name> <name> | slug <@name> <new-name> | delete <@name>
+                    rename an agent or delete it (delete asks first)
   /agent <name>     talk to one of your agents in its DM (/agent tern: back)
   /agent <label>    show a sub-agent's transcript (Esc closes)
   /agent <label> <message>  send a running sub-agent a message
@@ -892,6 +896,9 @@ impl App {
                 }
                 return self.channel_command(arg);
             }
+            "agents" if matches!(arg.split_whitespace().next(), Some("rename" | "slug" | "delete")) => {
+                return self.manage_agent(arg);
+            }
             "agents" => {
                 self.list_profiles();
                 self.list_agents();
@@ -1056,6 +1063,7 @@ impl App {
                 self.decide_suggestion(rest.trim_start_matches('#'), first == "accept");
                 vec![]
             }
+            "rename" | "title" | "delete" => self.manage_channel(first, rest),
             slug => {
                 let slug = slug.trim_start_matches('#');
                 let found = match self.backend.channels() {
@@ -1086,6 +1094,191 @@ impl App {
                 vec![]
             }
         }
+    }
+
+    /// `/channel rename <slug> <new-slug>`, `/channel title <slug> <title>`,
+    /// `/channel delete <slug> [yes]`.
+    fn manage_channel(&mut self, verb: &str, rest: &str) -> Vec<Effect> {
+        let mut words = rest.split_whitespace();
+        let Some(slug) = words.next().map(|s| s.trim_start_matches('#').to_owned()) else {
+            self.error(format!(
+                "usage: /channel {verb} <slug> {}",
+                match verb {
+                    "rename" => "<new-slug>",
+                    "title" => "<new title>",
+                    _ => "[yes]",
+                }
+            ));
+            return vec![];
+        };
+        let tail: Vec<&str> = words.collect();
+        let channel = match self.backend.channels() {
+            Ok(l) => l.into_iter().find(|c| c.slug == slug || c.id == slug),
+            Err(e) => {
+                self.error(e);
+                return vec![];
+            }
+        };
+        let Some(c) = channel else {
+            self.error(format!("no channel #{slug}; /channels lists them"));
+            return vec![];
+        };
+        if c.kind != "topic" {
+            self.error(format!(
+                "{} isn't a topic channel: Home and DMs keep their names (a DM follows its agent: /agents rename)",
+                c.title
+            ));
+            return vec![];
+        }
+        let current = self.channel.as_ref().is_some_and(|cur| cur.id == c.id);
+        match verb {
+            "rename" | "title" => {
+                let value = tail.join(" ");
+                if value.is_empty() {
+                    self.error(format!("usage: /channel {verb} {slug} <new value>"));
+                    return vec![];
+                }
+                let (new_slug, title) = if verb == "rename" {
+                    (Some(value.as_str()), None)
+                } else {
+                    (None, Some(value.as_str()))
+                };
+                match self
+                    .backend
+                    .rename(crate::Managed::Channel, &c.id, new_slug, title)
+                {
+                    Ok(done) => {
+                        self.notice(done);
+                        if current && let Ok(l) = self.backend.channels() {
+                            self.channel = l.into_iter().find(|x| x.id == c.id);
+                        }
+                    }
+                    Err(e) => self.error(e),
+                }
+            }
+            _ => {
+                let confirmed = tail.last().is_some_and(|w| *w == "yes");
+                if !confirmed {
+                    match self.backend.delete_preview(crate::Managed::Channel, &c.id) {
+                        Ok(text) => self.notice(format!(
+                            "{text}\nThis can't be undone. Confirm with: /channel delete {slug} yes"
+                        )),
+                        Err(e) => self.error(e),
+                    }
+                    return vec![];
+                }
+                match self.backend.delete(
+                    crate::Managed::Channel,
+                    &c.id,
+                    &crate::DeleteChoice::default(),
+                ) {
+                    Ok(done) => {
+                        if current {
+                            self.channel = None;
+                            self.entries.clear();
+                            self.session = None;
+                        }
+                        self.notice(done);
+                    }
+                    Err(e) => self.error(e),
+                }
+            }
+        }
+        vec![]
+    }
+
+    /// `/agents rename <slug> <name>`, `/agents slug <slug> <new-slug>`,
+    /// `/agents delete <slug> [to <agent> | routines] [yes]`.
+    fn manage_agent(&mut self, arg: &str) -> Vec<Effect> {
+        let mut words = arg.split_whitespace();
+        let verb = words.next().unwrap_or_default();
+        let Some(target) = words.next() else {
+            self.error(format!("usage: /agents {verb} <@name> ..."));
+            return vec![];
+        };
+        let Some(p) = self.find_profile(target) else {
+            self.error(format!("no agent {target:?}; /agents lists them"));
+            return vec![];
+        };
+        let tail: Vec<&str> = words.collect();
+        match verb {
+            "rename" | "slug" => {
+                let value = tail.join(" ");
+                if value.is_empty() {
+                    self.error(format!("usage: /agents {verb} {target} <new value>"));
+                    return vec![];
+                }
+                let (slug, title) = if verb == "slug" {
+                    (Some(value.as_str()), None)
+                } else {
+                    (None, Some(value.as_str()))
+                };
+                match self
+                    .backend
+                    .rename(crate::Managed::Agent, &p.id, slug, title)
+                {
+                    Ok(done) => {
+                        self.notice(done);
+                        if self.profile.as_ref().is_some_and(|cur| cur.id == p.id) {
+                            self.profile = self.find_profile(&p.id);
+                        }
+                    }
+                    Err(e) => self.error(e),
+                }
+            }
+            _ => {
+                let confirmed = tail.last().is_some_and(|w| *w == "yes");
+                let mut choice = crate::DeleteChoice::default();
+                let mut i = 0;
+                while i < tail.len() {
+                    match tail[i] {
+                        "routines" => choice.delete_routines = true,
+                        "to" if i + 1 < tail.len() => {
+                            choice.reassign_to = Some(tail[i + 1].to_owned());
+                            i += 1;
+                        }
+                        "yes" => {}
+                        other => {
+                            self.error(format!(
+                                "unexpected {other:?}; /agents delete <@name> [to <@agent> | routines] [yes]"
+                            ));
+                            return vec![];
+                        }
+                    }
+                    i += 1;
+                }
+                if !confirmed {
+                    match self.backend.delete_preview(crate::Managed::Agent, &p.id) {
+                        Ok(text) => {
+                            let mut cmd = format!("/agents delete {}", p.slug);
+                            if let Some(to) = &choice.reassign_to {
+                                cmd.push_str(&format!(" to {to}"));
+                            }
+                            if choice.delete_routines {
+                                cmd.push_str(" routines");
+                            }
+                            self.notice(format!(
+                                "{text}\nThis can't be undone. Confirm with: {cmd} yes"
+                            ));
+                        }
+                        Err(e) => self.error(e),
+                    }
+                    return vec![];
+                }
+                match self.backend.delete(crate::Managed::Agent, &p.id, &choice) {
+                    Ok(done) => {
+                        if self.profile.as_ref().is_some_and(|cur| cur.id == p.id) {
+                            self.profile = None;
+                            self.entries.clear();
+                            self.session = None;
+                        }
+                        self.notice(done);
+                    }
+                    Err(e) => self.error(e),
+                }
+            }
+        }
+        vec![]
     }
 
     /// Post to `c` from now on, showing its recent posts.

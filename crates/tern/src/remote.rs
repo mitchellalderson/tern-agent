@@ -763,6 +763,90 @@ impl Backend for Remote {
         Ok(channel_info(c))
     }
 
+    fn rename(
+        &self,
+        what: tern_tui::Managed,
+        id: &str,
+        slug: Option<&str>,
+        title: Option<&str>,
+    ) -> BackendResult<String> {
+        match what {
+            tern_tui::Managed::Agent => {
+                let a: crate::daemon::api_agents::Agent = self.send_json(
+                    reqwest::Method::PATCH,
+                    &format!("/v1/agents/{}", id.trim_start_matches('@')),
+                    json!({ "slug": slug.map(|s| s.trim_start_matches('@')), "name": title }),
+                )?;
+                Ok(format!("@{} is now {}", a.slug, a.name))
+            }
+            tern_tui::Managed::Channel => {
+                let c: crate::daemon::api_channels::Channel = self.send_json(
+                    reqwest::Method::PATCH,
+                    &format!("/v1/channels/{}", id.trim_start_matches('#')),
+                    json!({ "slug": slug.map(|s| s.trim_start_matches('#')), "title": title }),
+                )?;
+                Ok(format!("#{} ({})", c.slug, c.title))
+            }
+        }
+    }
+
+    fn delete_preview(&self, what: tern_tui::Managed, id: &str) -> BackendResult<String> {
+        let (text, blockers) = match what {
+            tern_tui::Managed::Agent => {
+                let i: crate::manage::AgentImpact = self.get(&format!(
+                    "/v1/agents/{}/impact",
+                    id.trim_start_matches('@')
+                ))?;
+                (i.describe(), i.blockers)
+            }
+            tern_tui::Managed::Channel => {
+                let i: crate::manage::ChannelImpact = self.get(&format!(
+                    "/v1/channels/{}/impact",
+                    id.trim_start_matches('#')
+                ))?;
+                (i.describe(), i.blockers)
+            }
+        };
+        if blockers.is_empty() {
+            Ok(text)
+        } else {
+            Err(blockers.join("; "))
+        }
+    }
+
+    fn delete(
+        &self,
+        what: tern_tui::Managed,
+        id: &str,
+        choice: &tern_tui::DeleteChoice,
+    ) -> BackendResult<String> {
+        match what {
+            tern_tui::Managed::Agent => {
+                let slug = id.trim_start_matches('@');
+                let mut path = format!("/v1/agents/{slug}?confirm=true");
+                if let Some(to) = &choice.reassign_to {
+                    path.push_str(&format!("&reassign_to={}", to.trim_start_matches('@')));
+                }
+                if choice.delete_routines {
+                    path.push_str("&delete_routines=true");
+                }
+                self.send_json::<Value>(reqwest::Method::DELETE, &path, json!({}))?;
+                Ok(format!("deleted @{slug}; its history stays readable"))
+            }
+            tern_tui::Managed::Channel => {
+                let slug = id.trim_start_matches('#');
+                self.send_json::<Value>(
+                    reqwest::Method::DELETE,
+                    &format!("/v1/channels/{slug}?confirm=true"),
+                    json!({}),
+                )?;
+                Ok(format!(
+                    "deleted #{slug}; its conversations stay in History"
+                ))
+            }
+        }
+    }
+
     fn send_to_channel(&self, id: &str, text: &str, model: Option<&str>) -> BackendResult<Started> {
         let sent: crate::daemon::channels::Sent = self.send_json(
             reqwest::Method::POST,

@@ -193,6 +193,63 @@ impl ChannelImpact {
 }
 
 impl Runtime {
+    /// Rename agent `a`: its display name, and its @name when `slug` is
+    /// given (its DM follows; its id and history don't change). The
+    /// default agent keeps the @name `tern`.
+    pub fn rename_agent(
+        &self,
+        a: &AgentRow,
+        name: Option<&str>,
+        slug: Option<&str>,
+    ) -> Result<AgentRow, ManageError> {
+        let name = name.map(str::trim);
+        if name.is_none() && slug.is_none() {
+            return refuse("give a new name, or a new @name");
+        }
+        if name == Some("") {
+            return refuse("name is empty");
+        }
+        let slug = slug.map(|s| s.trim().trim_start_matches('@'));
+        if let Some(s) = slug {
+            if a.is_default() && s != DEFAULT_AGENT {
+                return refuse(
+                    "the default agent's @name stays `tern`; rename its display name instead",
+                );
+            }
+            tern_core::agents::check_slug(s).map_err(ManageError::Refused)?;
+            if self
+                .store
+                .agent(s)
+                .map_err(anyhow::Error::from)?
+                .is_some_and(|o| o.id != a.id)
+            {
+                return refuse(format!("there is already an agent @{s}"));
+            }
+            if self
+                .store
+                .channel(&tern_store::dm_slug(s))
+                .map_err(anyhow::Error::from)?
+                .is_some_and(|c| c.agent_id.as_deref() != Some(a.id.as_str()))
+            {
+                return refuse(format!("the channel #{} is taken", tern_store::dm_slug(s)));
+            }
+        }
+        self.store
+            .update_agent(
+                &a.id,
+                &tern_store::AgentChange {
+                    name: name.map(str::to_owned),
+                    slug: slug.map(str::to_owned),
+                    ..tern_store::AgentChange::default()
+                },
+            )
+            .map_err(anyhow::Error::from)?;
+        self.store
+            .agent(&a.id)
+            .map_err(anyhow::Error::from)?
+            .ok_or_else(|| ManageError::Refused("no such agent".into()))
+    }
+
     /// What deleting `a` would touch.
     pub fn agent_impact(&self, a: &AgentRow) -> Result<AgentImpact, ManageError> {
         let u = self.store.agent_use(&a.id).map_err(anyhow::Error::from)?;

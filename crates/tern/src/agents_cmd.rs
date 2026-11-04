@@ -146,39 +146,7 @@ fn rename(
     slug: Option<String>,
 ) -> anyhow::Result<()> {
     let a = find(rt, agent)?;
-    let name = name.map(|n| n.trim().to_owned());
-    if name.is_none() && slug.is_none() {
-        bail!("give a new name, or --slug for a new @name");
-    }
-    if name.as_deref() == Some("") {
-        bail!("name is empty");
-    }
-    let slug = slug.map(|s| s.trim().trim_start_matches('@').to_owned());
-    if let Some(s) = &slug {
-        if a.is_default() && s != tern_store::DEFAULT_AGENT {
-            bail!("the default agent's @name stays `tern`; rename its display name instead");
-        }
-        tern_core::agents::check_slug(s).map_err(anyhow::Error::msg)?;
-        if rt.store.agent(s)?.is_some_and(|o| o.id != a.id) {
-            bail!("there is already an agent @{s}");
-        }
-        if rt
-            .store
-            .channel(&tern_store::dm_slug(s))?
-            .is_some_and(|c| c.agent_id.as_deref() != Some(a.id.as_str()))
-        {
-            bail!("the channel #{} is taken", tern_store::dm_slug(s));
-        }
-    }
-    rt.store.update_agent(
-        &a.id,
-        &AgentChange {
-            name,
-            slug,
-            ..AgentChange::default()
-        },
-    )?;
-    let a = find(rt, &a.id)?;
+    let a = rt.rename_agent(&a, name.as_deref(), slug.as_deref())?;
     println!("@{} is now {} (id {} is unchanged)", a.slug, a.name, a.id);
     Ok(())
 }
