@@ -369,6 +369,16 @@ The agent creates schedules with `schedule_create` and changes them with `schedu
   - `usd_per_day` needs the model's price, from `providers.<name>.prices` or the provider's model list. Without one the USD cap is ignored; the log says so once, and `tern doctor` lists it.
   - A run that uses more than `tokens_per_run` is stopped and fails with the reason ("stopped: this run used N tokens, over its cap of M"), which is delivered like any failure.
 - `tern doctor` reports schedules paused by a cap, USD caps that can't apply, and deliveries waiting for quiet hours to end.
+- **Results are posted to a channel** (Home unless the schedule's `channel` says otherwise; `POST`/`PATCH /v1/schedules` take `channel`, a slug or id). A `NO_REPLY` run posts nothing. `deliver_to` stays the push to Telegram.
+
+## Channels
+
+Channels are topic timelines (`#finances`, `#launch`) over one shared memory; see [channels-design.md](channels-design.md). **Home** is the main channel, your direct line to the agent; it always exists and can't be archived.
+
+- A channel's timeline is its **posts**: what you send there, the agent's answers, and routine results. Each post has an `author` to show and a stable `author_id` (`owner` for you, `tern` for the agent, `routine:<schedule id>`), which becomes a member or agent id later. Tool calls stay in the thread's session.
+- Sending into a topic channel (`POST /v1/channels/{id}/posts` `{text}`) writes your post and starts a run in the channel's **main thread**; its answer is posted as a reply to yours. With `reply_to` it goes to a **side thread** branched from that post. A channel's `instructions` are added to the system prompt of its runs.
+- Home's conversation is its messages, so sending there writes no post; Home's posts are what comes from elsewhere, such as routine results.
+- API: `GET/POST /v1/channels`, `PATCH /v1/channels/{id}` (`title`, `instructions`, `archived`), `GET /v1/channels/{id}/posts?before=&limit=` (newest first), `POST /v1/channels/{id}/posts`, `GET /v1/sessions?channel=` (a channel's threads), and `channel` on `POST /v1/runs` for a new thread. `/v1/events` adds `{"post_created": {"post": …}}` and `{"channels_changed": {}}`, and run events carry `channel_id`.
 
 ## Telegram
 

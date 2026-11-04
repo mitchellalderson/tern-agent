@@ -16,5 +16,6 @@
   "tokens_per_run": 200000,
   "paused": "budget",
   "paused_until": 1762210800000,
-  "paused_reason": "runs_per_day"
+  "paused_reason": "runs_per_day",
+  "channel_id": "home"
 }

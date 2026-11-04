@@ -88,6 +88,12 @@ pub enum Change {
         name: String,
         state: Option<crate::mcp::McpState>,
     },
+    /// A post was written to a channel's timeline.
+    PostCreated {
+        post: crate::channels::Post,
+    },
+    /// A channel was created, renamed, archived, or got a new main thread.
+    ChannelsChanged {},
 }
 
 /// What a client fills in to add or change a provider.

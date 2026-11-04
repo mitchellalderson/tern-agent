@@ -310,7 +310,15 @@ impl Runtime {
         } else {
             AgentRole::Main
         };
-        let system = self.prompts.build(role, 0);
+        let mut system = self.prompts.build(role, 0);
+        if let Some(c) = self.store.session_channel(&session.id)?
+            && let Some(section) = c
+                .instructions
+                .as_deref()
+                .and_then(|i| tern_core::channels::instructions_section(&c.slug, i))
+        {
+            system.push_str(&section);
+        }
         let run = self
             .agent
             .start_run(&session.id, text, &model, &system, trigger)?;

@@ -2,6 +2,7 @@
 //! scheduler, gateways, and the local API on `~/.tern/tern.sock`.
 
 pub mod api;
+pub mod api_channels;
 pub mod api_lifecycle;
 mod api_mcp;
 mod api_providers;
@@ -10,6 +11,7 @@ mod api_schedules;
 mod api_secrets;
 mod api_subagents;
 pub mod auth;
+pub mod channels;
 pub mod listen;
 pub mod manager;
 pub mod scheduler;
@@ -115,6 +117,8 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
         h.set_driver(Arc::new(manager::ManagerDriver(Arc::downgrade(&manager))));
     }
 
+    // Channel posts a crash skipped (docs/channels-design.md §2.3).
+    manager.reconcile_posts();
     // Spec §5.3: resume recent runs a crash cut off; mark older ones interrupted.
     // Sub-agents are ordinary runs here; a parent that gets to waiting on
     // one first starts it itself, and `spawn` won't drive a run twice.

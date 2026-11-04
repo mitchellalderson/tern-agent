@@ -466,6 +466,11 @@ impl Manager {
                 a.remove(&session_id);
             }
             let _ = done_tx.send(true);
+            if result.is_ok()
+                && let Err(e) = me.post_run_result(&run_id)
+            {
+                tracing::warn!(run = %run_id, error = %e, "writing the run's post failed");
+            }
             match result {
                 Ok(outcome) => me.deliver(&outcome).await,
                 Err(e) => tracing::error!(run = %run_id, error = %e, "run could not be driven"),

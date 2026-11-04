@@ -14,7 +14,7 @@ pub fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SessionRow {
     pub id: String,
     pub title: Option<String>,
@@ -23,6 +23,14 @@ pub struct SessionRow {
     pub model: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The channel it is a thread of (`home` unless set otherwise).
+    pub channel_id: Option<String>,
+    /// A segment of a stream (Home, a chat): the segment it continues.
+    pub prev_session_id: Option<String>,
+    /// Why the segment was cut: `idle`, `day`, `new_topic` or `migrated`.
+    pub segment_reason: Option<String>,
+    /// A side thread: `message:<id>` or `post:<id>` it branched from.
+    pub branched_from: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,7 +144,8 @@ pub struct NewRun<'a> {
     pub queued: bool,
 }
 
-const SESSION_COLS: &str = "id, title, source, external_ref, model, created_at, updated_at";
+pub(crate) const SESSION_COLS: &str = "id, title, source, external_ref, model, created_at, updated_at, \
+    channel_id, prev_session_id, segment_reason, branched_from";
 pub(crate) const RUN_COLS: &str = "id, session_id, status, trigger, model, system_prompt, \
     input_message_id, started_at, updated_at, finished_at, error, parent_run_id, parent_call_id, \
     label, depth, tool_scope, budget_tokens, max_iterations, quiet";
@@ -145,7 +154,7 @@ const STEP_COLS: &str = "run_id, idx, kind, input_hash, input_json, output_json,
 const MESSAGE_COLS: &str =
     "id, session_id, run_id, step_idx, role, content_json, text, created_at, summary_of";
 
-fn session_row(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
+pub(crate) fn session_row(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
     Ok(SessionRow {
         id: r.get(0)?,
         title: r.get(1)?,
@@ -154,6 +163,10 @@ fn session_row(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
         model: r.get(4)?,
         created_at: r.get(5)?,
         updated_at: r.get(6)?,
+        channel_id: r.get(7)?,
+        prev_session_id: r.get(8)?,
+        segment_reason: r.get(9)?,
+        branched_from: r.get(10)?,
     })
 }
 
@@ -214,6 +227,7 @@ fn message_row(r: &Row<'_>) -> rusqlite::Result<MessageRow> {
 impl Store {
     // ---- sessions ----
 
+    /// A new session in Home (see [`Store::create_thread`] for others).
     pub fn create_session(
         &self,
         id: &str,
@@ -222,17 +236,18 @@ impl Store {
     ) -> Result<SessionRow> {
         let now = now_ms();
         self.conn()?.execute(
-            "INSERT INTO sessions (id, source, model, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+            "INSERT INTO sessions (id, source, model, created_at, updated_at, channel_id)
+             VALUES (?1, ?2, ?3, ?4, ?4, 'home')",
             params![id, source, model, now],
         )?;
         Ok(SessionRow {
             id: id.into(),
-            title: None,
             source: source.into(),
-            external_ref: None,
             model: model.map(Into::into),
             created_at: now,
             updated_at: now,
+            channel_id: Some("home".into()),
+            ..SessionRow::default()
         })
     }
 
@@ -288,6 +303,15 @@ impl Store {
             "UPDATE runs SET input_message_id = ?2 WHERE id = ?1",
             params![run.id, msg_id],
         )?;
+        if let Some(parent) = run.parent_run_id {
+            // A sub-agent's session is in its parent's channel.
+            tx.execute(
+                "UPDATE sessions SET channel_id =
+                   (SELECT s.channel_id FROM runs r JOIN sessions s ON s.id = r.session_id WHERE r.id = ?2)
+                 WHERE id = ?1",
+                params![run.session_id, parent],
+            )?;
+        }
         let title: String = input.text.chars().take(80).collect();
         tx.execute(
             "UPDATE sessions SET updated_at = ?2, title = COALESCE(title, ?3) WHERE id = ?1",
@@ -522,8 +546,8 @@ impl Store {
         let rows = stmt.query_map(params![limit as i64, source], |r| {
             Ok(SessionSummary {
                 session: session_row(r)?,
-                messages: r.get(7)?,
-                runs: r.get(8)?,
+                messages: r.get(11)?,
+                runs: r.get(12)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
