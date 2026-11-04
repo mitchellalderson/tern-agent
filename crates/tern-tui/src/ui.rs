@@ -396,7 +396,100 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     if let Some(p) = &app.secret_prompt {
         secret_prompt_lines(p, width, &mut out);
     }
+    if let Some(p) = &app.auth_prompt {
+        auth_lines(&p.request, app.auth_pick, width, &mut out);
+    }
     out
+}
+
+/// A sign-in card: the choice between signing in and a key, or the page
+/// to open (or code to enter), with where it came from.
+fn auth_lines(
+    req: &tern_core::approval::AuthPrompt,
+    pick: usize,
+    width: usize,
+    out: &mut Vec<Line<'static>>,
+) {
+    use tern_core::approval::AuthCard;
+    let head = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let key = Style::new().fg(Color::Cyan);
+    let dim = Style::new().fg(Color::DarkGray);
+    out.push(Line::default());
+    let notes = match &req.card {
+        AuthCard::Choose {
+            title,
+            options,
+            notes,
+        } => {
+            out.push(Line::from(Span::styled(format!("🔐 {title}"), head)));
+            for (i, o) in options.iter().enumerate() {
+                let label = if o.recommended {
+                    format!("{} (recommended)", o.label)
+                } else {
+                    o.label.clone()
+                };
+                out.push(Line::from(vec![
+                    Span::raw(if i == pick { " ▸ " } else { "   " }),
+                    Span::styled(format!("[{}] ", i + 1), key),
+                    Span::styled(label, if i == pick { head } else { key }),
+                ]));
+                for l in wrap(&o.detail, width.saturating_sub(7)) {
+                    out.push(Line::from(vec![Span::raw("       "), Span::styled(l, dim)]));
+                }
+            }
+            out.push(Line::from(vec![
+                Span::styled("   ↑/↓ Enter", key),
+                Span::raw(" choose   "),
+                Span::styled("Esc", key),
+                Span::raw(" cancel"),
+            ]));
+            notes
+        }
+        AuthCard::SignIn {
+            title,
+            url,
+            user_code,
+            verification_uri,
+            device_available,
+            notes,
+        } => {
+            out.push(Line::from(Span::styled(format!("🔐 {title}"), head)));
+            if let (Some(code), Some(at)) = (user_code, verification_uri) {
+                out.push(Line::from(vec![
+                    Span::raw("   Enter the code "),
+                    Span::styled(code.clone(), head),
+                    Span::raw(" at "),
+                    Span::styled(at.clone(), key),
+                ]));
+            }
+            if let Some(u) = url {
+                for l in wrap(u, width.saturating_sub(3)) {
+                    out.push(Line::from(vec![Span::raw("   "), Span::styled(l, dim)]));
+                }
+                let mut keys = vec![
+                    Span::styled("   [Enter]", key),
+                    Span::raw(" open in your browser   "),
+                ];
+                if *device_available {
+                    keys.push(Span::styled("[d]", key));
+                    keys.push(Span::raw(" use a code instead   "));
+                }
+                keys.extend([Span::styled("[Esc]", key), Span::raw(" cancel")]);
+                out.push(Line::from(keys));
+            } else {
+                out.push(Line::from(vec![
+                    Span::styled("   [Esc]", key),
+                    Span::raw(" cancel"),
+                ]));
+            }
+            notes
+        }
+    };
+    for n in notes {
+        for l in wrap(n, width.saturating_sub(3)) {
+            out.push(Line::from(vec![Span::raw("   "), Span::styled(l, dim)]));
+        }
+    }
 }
 
 /// The agent's request for secrets: who asks and why (in the agent's own
@@ -646,6 +739,8 @@ fn draw_input(
 ) {
     let title = if app.secret_prompt.is_some() {
         " enter the secret above · Esc skips "
+    } else if app.auth_prompt.is_some() {
+        " answer the sign-in card above · Esc cancels "
     } else if app.approval.is_some() {
         " answer the approval above: y / a / n "
     } else if app.is_running() {
@@ -670,6 +765,7 @@ fn draw_input(
     frame.render_widget(Paragraph::new(visible), inner);
     if app.approval.is_none()
         && app.secret_prompt.is_none()
+        && app.auth_prompt.is_none()
         && app.secrets.is_none()
         && app.setup.is_none()
         && app.mcp.is_none()
@@ -696,6 +792,8 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         h.clone()
     } else if app.secret_prompt.is_some() {
         "secret needed".into()
+    } else if app.auth_prompt.is_some() {
+        "sign-in needed".into()
     } else if app.approval.is_some() {
         "approval needed".into()
     } else if let Some(r) = &app.running {

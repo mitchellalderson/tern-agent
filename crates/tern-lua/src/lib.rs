@@ -56,6 +56,9 @@ impl Fingerprint {
         if let Some(r) = c.rate {
             v["rate"] = r.to_string().into();
         }
+        if let Some(o) = &c.oauth {
+            v["oauth"] = serde_json::to_value(o).unwrap_or_default();
+        }
         v.to_string()
     }
 
@@ -75,6 +78,10 @@ impl Fingerprint {
             None => None,
             Some(r) => Some(r.as_str()?.parse().ok()?),
         };
+        let oauth = match v.get("oauth") {
+            None => None,
+            Some(o) => Some(serde_json::from_value(o.clone()).ok()?),
+        };
         Some(Self {
             hash: v["hash"].as_str()?.to_owned(),
             capabilities: Capabilities {
@@ -82,6 +89,7 @@ impl Fingerprint {
                 secrets: list("secrets")?,
                 auth,
                 rate,
+                oauth,
             },
         })
     }
@@ -220,16 +228,46 @@ pub fn tool_name(connector: &str, tool: &str) -> String {
     format!("lua__{connector}__{tool}")
 }
 
+impl LuaTool {
+    /// This connector's accounts, when its tools take a `connection`.
+    fn routed(&self) -> Option<Vec<tern_auth::Conn>> {
+        self.vm
+            .host
+            .connections
+            .as_ref()?
+            .routed(tern_auth::Kind::Connector, &self.vm.spec.name)
+    }
+
+    /// The account a call runs under, with the account parameter taken out
+    /// of `args`. `Err` refuses the call before anything is sent.
+    fn route(&self, args: &mut Value) -> Result<Option<tern_auth::Resolved>, String> {
+        let Some(conns) = &self.vm.host.connections else {
+            return Ok(None);
+        };
+        let asked = tern_auth::connections::take_param(&self.def.params, args);
+        conns.resolve(
+            tern_auth::Kind::Connector,
+            &self.vm.spec.name,
+            asked.as_deref(),
+            self.def.effect(),
+        )
+    }
+}
+
 #[async_trait]
 impl Tool for LuaTool {
     fn spec(&self) -> ToolSpec {
+        let input_schema = match self.routed() {
+            Some(conns) => tern_auth::connections::with_param(&self.def.params, &conns),
+            None => self.def.params.clone(),
+        };
         ToolSpec {
             name: tool_name(&self.vm.spec.name, &self.def.name),
             description: format!(
                 "{} (Luau connector {})",
                 self.def.description, self.vm.spec.name
             ),
-            input_schema: self.def.params.clone(),
+            input_schema,
         }
     }
 
@@ -241,7 +279,12 @@ impl Tool for LuaTool {
         self.def.untrusted
     }
 
-    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+    fn policy(&self, _: &ToolCtx, args: &Value) -> ToolPolicy {
+        // A call the host will refuse for want of an account sends nothing,
+        // so nobody is asked to approve it.
+        if self.route(&mut args.clone()).is_err() {
+            return ToolPolicy::new(Effect::Read, true);
+        }
         ToolPolicy {
             // M4: no approval unless the tool asked for it.
             granted: self.vm.grandfathered && self.def.declared_effect.is_none(),
@@ -251,8 +294,27 @@ impl Tool for LuaTool {
         }
     }
 
-    async fn call(&self, _: &ToolCtx, args: Value) -> ToolResult {
-        match self.vm.call(&self.def.name, &args).await {
+    /// Names the account, so a wrong-account send is visible on the
+    /// approval card (§6.8.2): `lua__gmail__send as gmail · personal
+    /// (mitch@gmail.com)`.
+    fn summary(&self, args: &Value) -> Option<String> {
+        self.routed()?;
+        let r = self.route(&mut args.clone()).ok()??;
+        Some(format!(
+            "{} as {}",
+            tool_name(&self.vm.spec.name, &self.def.name),
+            r.conn.title()
+        ))
+    }
+
+    async fn call(&self, _: &ToolCtx, mut args: Value) -> ToolResult {
+        let conn = match self.route(&mut args) {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolResult::error(format!("{}.{}: {e}", self.vm.spec.name, self.def.name));
+            }
+        };
+        match self.vm.call_as(&self.def.name, &args, conn).await {
             Ok(out) => ToolResult::ok(out),
             Err(e) => ToolResult::error(format!("{}.{}: {e}", self.vm.spec.name, self.def.name)),
         }
@@ -382,6 +444,7 @@ fn secret_users(spec: &ConnectorSpec, draft: bool, reach: bool) -> Vec<(String, 
         uses.extend(
             a.secrets()
                 .into_iter()
+                .filter(|s| !spec::is_oauth_secret(s))
                 .map(|s| (s.to_owned(), user.clone())),
         );
     }
@@ -415,6 +478,10 @@ pub fn describe_secret_uses(host: &Host, active: &Path, drafts: &Path) -> Vec<(S
 impl ToolSource for Connectors {
     async fn prepare(&self) {
         self.reload_if_changed();
+        // Accounts can change from another process (`tern connections`).
+        if let Some(c) = &self.host.connections {
+            c.reload();
+        }
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -438,10 +505,19 @@ impl ToolSource for Connectors {
         self.specs()
             .into_iter()
             .map(|s| {
-                format!(
+                let mut line = format!(
                     "Luau connector {}: {} (tools lua__{}__*)",
                     s.name, s.description, s.name
-                )
+                );
+                if let Some(accounts) = self
+                    .host
+                    .connections
+                    .as_ref()
+                    .and_then(|c| c.describe(tern_auth::Kind::Connector, &s.name))
+                {
+                    line.push_str(&format!("; accounts: {accounts}"));
+                }
+                line
             })
             .collect()
     }

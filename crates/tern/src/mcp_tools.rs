@@ -101,6 +101,7 @@ fn add_args(raw: &Value) -> Result<(String, bool, McpServerConfig), String> {
         .remove("replace")
         .and_then(|r| r.as_bool())
         .unwrap_or(false);
+    m.remove("oauth");
     let cfg = serde_json::from_value(v).map_err(|e| format!("invalid config: {e}"))?;
     Ok((name, replace, cfg))
 }
@@ -111,12 +112,20 @@ impl McpAdd {
     }
 }
 
+/// `oauth: true`: an http server that signs in with OAuth. It answers 401
+/// until an account is connected, so that answer saves it.
+fn signs_in(raw: &Value, cfg: &McpServerConfig) -> bool {
+    raw.get("oauth").and_then(Value::as_bool) == Some(true)
+        && cfg.transport == McpTransport::Http
+        && cfg.secret_names().next().is_none()
+}
+
 #[async_trait]
 impl Tool for McpAdd {
     fn spec(&self) -> ToolSpec {
         spec(
             "mcp_add",
-            "Add an MCP server, or replace one with `replace: true`. The user approves every call, seeing the exact command or URL. Before calling: work out the config from the server's docs (a pasted `mcpServers` JSON maps directly: command/args/env, or url/headers); put every API key or token in `env_secrets` (stdio), `bearer_token_secret` or `header_secrets` (http) by name, and get missing values with `secret_request` first. Never put a secret value in `env`, `args` or the URL. The server is started and its tools listed before saving; if that fails you get its error and stderr and nothing is saved. Its tools can be used from the user's next message. A command (stdio) server can only be approved in the TUI or desktop app on the host, not from Telegram or another device: if the user is elsewhere, tell them that.",
+            "Add an MCP server, or replace one with `replace: true`. The user approves every call, seeing the exact command or URL. Before calling: work out the config from the server's docs (a pasted `mcpServers` JSON maps directly: command/args/env, or url/headers). For a remote (http) server, sign-in comes first: call auth_discover with its URL and mcp: true; if it signs in with OAuth, call auth_propose, and when the user chooses signing in, add it with `oauth: true` and no secret fields, then call connection_add so they sign in. Otherwise put every API key or token in `env_secrets` (stdio), `bearer_token_secret` or `header_secrets` (http) by name, and get missing values with `secret_request` first. Never put a secret value in `env`, `args` or the URL. The server is started and its tools listed before saving; if that fails you get its error and stderr and nothing is saved. Its tools can be used from the user's next message. A command (stdio) server can only be approved in the TUI or desktop app on the host, not from Telegram or another device: if the user is elsewhere, tell them that.",
             json!({
                 "type": "object",
                 "properties": {
@@ -133,7 +142,8 @@ impl Tool for McpAdd {
                     "disabled_tools": { "type": "array", "items": { "type": "string" }, "description": "the server's tool names to hide" },
                     "requires_approval": { "type": "boolean", "description": "ask before each of its tool calls" },
                     "idempotent": { "type": "boolean", "description": "its tools are safe to re-run" },
-                    "replace": { "type": "boolean", "description": "replace an existing server of this name" }
+                    "replace": { "type": "boolean", "description": "replace an existing server of this name" },
+                    "oauth": { "type": "boolean", "description": "http: the server signs in with OAuth (from auth_discover); it is saved even though it refuses requests until connection_add signs an account in" }
                 },
                 "required": ["name", "transport"]
             }),
@@ -230,6 +240,23 @@ impl Tool for McpAdd {
         }
         let verified = match self.0.verify_mcp(&name, &cfg, Default::default()).await {
             Ok(v) => v,
+            Err(e)
+                if e.kind == tern_core::mcp::McpErrorKind::Unauthorized && signs_in(&raw, &cfg) =>
+            {
+                let old = exists.then_some(name.as_str());
+                return match self.0.save_mcp(old, &name, &cfg, &Default::default()) {
+                    Ok(_) => ToolResult::ok(
+                        json!({
+                            "saved": true,
+                            "name": name,
+                            "signed_in": false,
+                            "next": format!("It needs an account: call connection_add with target {name:?} (and the plan_id from auth_propose) so the user signs in."),
+                        })
+                        .to_string(),
+                    ),
+                    Err(e) => ToolResult::error(format!("not saved: {e:#}")),
+                };
+            }
             Err(e) => {
                 return ToolResult::error(
                     json!({

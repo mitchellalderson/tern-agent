@@ -193,14 +193,15 @@ impl Tool for ConnectorTest {
         ToolSpec {
             name: "connector_test".into(),
             description:
-                "Run one tool of a draft connector with the given arguments and return its result."
+                "Run one tool of a draft connector with the given arguments and return its result. With several accounts connected, `connection` picks one (else the default)."
                     .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "name": { "type": "string" },
                     "tool": { "type": "string" },
-                    "args": { "type": "object" }
+                    "args": { "type": "object" },
+                    "connection": { "type": "string", "description": "The account to test under" }
                 },
                 "required": ["name", "tool"]
             }),
@@ -262,7 +263,21 @@ impl Tool for ConnectorTest {
             Err(e) => return ToolResult::error(e),
         };
         let tool_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
-        match vm.call(tool, &tool_args).await {
+        // A test only reads what its account allows; it runs under the
+        // account asked for, else the default.
+        let conn = match &self.host.connections {
+            Some(c) => match c.resolve(
+                tern_auth::Kind::Connector,
+                name,
+                args.get("connection").and_then(Value::as_str),
+                Effect::Read,
+            ) {
+                Ok(r) => r,
+                Err(e) => return ToolResult::error(e),
+            },
+            None => None,
+        };
+        match vm.call_as(tool, &tool_args, conn).await {
             Ok(out) => ToolResult::ok(out),
             Err(e) => ToolResult::error(format!("{name}.{tool}: {e}")),
         }
@@ -423,14 +438,21 @@ return {
   },
 }
 
-Credentials go in capabilities.auth, never in the script. Forms:
+Signing in comes first: before writing a connector for a service, call auth_discover (with the API's base URL when you know it). If it signs in with OAuth, call auth_propose with the plan_id so the user chooses; if discovery says "unknown", look in the service's developer docs for OAuth and pass what you find to auth_propose as a researched plan (tern checks the addresses), else use a key. Never pick for the user when both are offered.
+
+OAuth (when the user chose signing in): declare the provider from the plan and the scopes the tools need, and tern sends the account's token, refreshing it as needed; the script never sees it:
+  capabilities = { http = { "gmail.googleapis.com" }, oauth = { google = { scopes = { "https://www.googleapis.com/auth/gmail.readonly" } } } }
+Then call connection_add (with the plan_id) so the user signs in, and connector_test. ctx.connection is { slug, label, account }: the account the call runs under. When the user has several accounts (work and personal Gmail), tern adds a `connection` argument to every tool and routes each call; the script doesn't change.
+
+Keys (when there is no OAuth, or the user chose a key) go in capabilities.auth, never in the script. Forms:
   auth = "TOKEN"                                               -- Authorization: Bearer <TOKEN>
   auth = { secret = "KEY", header = "X-Api-Key" }              -- X-Api-Key: <KEY> (scheme "" unless the header is Authorization)
   auth = { secret = "TOKEN", header = "Authorization", scheme = "token" }
   auth = { secret = "KEY", query = "api_key" }                 -- ?api_key=<KEY>
   auth = { basic = { user = "JIRA_EMAIL", password = "JIRA_TOKEN" } }   -- HTTP Basic; user or password may be left out
+  auth = "oauth"                                               -- the OAuth token, placed explicitly (with capabilities.oauth)
 Add hosts = { "api.example.com" } to an entry to send it to only some of the http hosts, and use a list of entries for several. A request sends every entry for its host; pass auth = false in a request's options to send none, or auth = "NAME" to send only that one. The value is removed from responses and errors before the script sees them. capabilities.secrets with ctx.secret(name) still works for old connectors but is legacy: the script sees the value, and tern flags it to the user.
 
 A "read" tool may only send GET/HEAD; set read_via_post = true for one that reads via POST (GraphQL, search APIs). Tools that move money or trade must say money_movement = true or trade = true: tern refuses to run them. Requests outside the declared hosts and paths fail, including after redirects. Past the rate (default 120/min per connector, shared by every caller, scripts included) a request fails with "rate limited … try again in Ns"; a 429 or 503 with Retry-After pauses the connector for that long.
 
-ctx API: ctx.http.request{method, url, headers, json, body, timeout, auth} and ctx.http.get/post/put/patch/delete(url, opts) return {status, ok, headers, body, json}; ctx.kv.get(key) / ctx.kv.set(key, value) (per-connector storage; set nil to delete); ctx.log(level, msg); ctx.now() (unix ms). If a secret in capabilities.auth isn't set, call secret_request so the user can enter it privately, before connector_test; never ask for secrets in the chat. Globals: json.encode, json.decode, string, table, math, os.time/os.date. No file or process access, no require. Each call has a 5 second limit."#;
+ctx API: ctx.http.request{method, url, headers, json, body, timeout, auth} and ctx.http.get/post/put/patch/delete(url, opts) return {status, ok, headers, body, json}; ctx.kv.get(key) / ctx.kv.set(key, value) (per-connector, per-account storage; set nil to delete); ctx.connection; ctx.log(level, msg); ctx.now() (unix ms). If a key in capabilities.auth isn't set, call secret_request so the user can enter it privately (or connection_add with method "key" for another account), before connector_test; never ask for secrets or tokens in the chat. Globals: json.encode, json.decode, string, table, math, os.time/os.date. No file or process access, no require. Each call has a 5 second limit."#;

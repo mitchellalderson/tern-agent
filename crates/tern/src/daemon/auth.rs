@@ -61,6 +61,9 @@ pub const FEATURES: &[&str] = &[
     "outbox",
     // `/v1/webhooks`: webhook routines, their secrets and local fires (T1c).
     "webhooks",
+    // `/v1/connections`, `/v1/auth-prompts` and their events (tooling spec
+    // §6.7–6.8).
+    "connections",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";
@@ -113,6 +116,9 @@ const OWNER_ONLY: &[&str] = &[
     "/v1/devices",
     "/v1/config",
     "/v1/secrets",
+    // Accounts and sign-in cards: credentials, like secrets.
+    "/v1/connections",
+    "/v1/auth-prompts",
     "/v1/providers",
     "/v1/shutdown",
     // Moving conversations between channels rearranges what everyone sees.

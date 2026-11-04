@@ -1591,3 +1591,111 @@ fn a_sub_agent_label_wins_over_an_agent_name() {
     assert_eq!(app.profile.as_ref().map(|p| p.slug.as_str()), Some("inbox"));
     assert_eq!(fake.agent_sends.lock().unwrap()[0].1, "what came in?");
 }
+
+fn auth_card(
+    id: &str,
+    call: &str,
+    card: tern_core::approval::AuthCard,
+) -> (crate::PendingAuth, oneshot::Receiver<String>) {
+    let (reply, rx) = oneshot::channel();
+    let request = tern_core::approval::AuthPrompt {
+        id: id.into(),
+        run_id: "r1".into(),
+        session_id: "s1".into(),
+        call_id: Some(call.into()),
+        parent_run_id: None,
+        agent_label: None,
+        card,
+    };
+    (crate::PendingAuth { request, reply }, rx)
+}
+
+#[test]
+fn sign_in_cards_choose_open_and_close() {
+    use tern_core::approval::{AuthCard, AuthOption};
+    let (mut app, _) = new_app();
+    submit(&mut app, "connect notion");
+    let opt = |id: &str, rec: bool| AuthOption {
+        id: id.into(),
+        label: format!("{id} label"),
+        detail: format!("{id} detail"),
+        recommended: rec,
+    };
+    let (p, mut rx) = auth_card(
+        "a1",
+        "c1",
+        AuthCard::Choose {
+            title: "Connect Notion".into(),
+            options: vec![opt("oauth", false), opt("key", true)],
+            notes: vec!["Found via auth.notion.com metadata (verified).".into()],
+        },
+    );
+    app.on_prompt(UserPrompt::Auth(p));
+    let s = screen(&mut app, 90, 24);
+    assert!(
+        s.contains("Connect Notion") && s.contains("key label (recommended)"),
+        "{s}"
+    );
+    assert!(
+        s.contains("metadata (verified)") && s.contains("sign-in needed"),
+        "{s}"
+    );
+    // The recommended option starts highlighted; ↑ then Enter picks the first.
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(rx.try_recv().unwrap(), "oauth");
+    assert!(app.auth_prompt.is_none());
+
+    let (p, mut rx) = auth_card(
+        "a2",
+        "c2",
+        AuthCard::SignIn {
+            title: "Sign in to gmail · work".into(),
+            url: Some("https://accounts.google.com/o/oauth2/v2/auth?x=1".into()),
+            user_code: None,
+            verification_uri: None,
+            device_available: true,
+            notes: vec![],
+        },
+    );
+    app.on_prompt(UserPrompt::Auth(p));
+    assert_eq!(
+        press(&mut app, KeyCode::Enter),
+        vec![Effect::OpenUrl(
+            "https://accounts.google.com/o/oauth2/v2/auth?x=1".into()
+        )]
+    );
+    assert!(rx.try_recv().is_err(), "opening doesn't answer");
+    // A device code for the same call replaces it.
+    let (p, _rx3) = auth_card(
+        "a3",
+        "c2",
+        AuthCard::SignIn {
+            title: "Sign in to gmail · work".into(),
+            url: None,
+            user_code: Some("WDJB-MJHT".into()),
+            verification_uri: Some("https://www.google.com/device".into()),
+            device_available: false,
+            notes: vec![],
+        },
+    );
+    app.on_prompt(UserPrompt::Auth(p));
+    assert_eq!(
+        app.auth_prompt.as_ref().map(|p| p.request.id.as_str()),
+        Some("a3")
+    );
+    let s = screen(&mut app, 90, 24);
+    assert!(s.contains("WDJB-MJHT"), "{s}");
+    // The tool finishing closes it.
+    app.on_agent_event(AgentEvent::ToolFinished {
+        run_id: "r1".into(),
+        id: "c2".into(),
+        name: "connection_add".into(),
+        is_error: false,
+        preview: String::new(),
+        output: String::new(),
+        replayed: false,
+    });
+    assert!(app.auth_prompt.is_none());
+    drop(rx);
+}

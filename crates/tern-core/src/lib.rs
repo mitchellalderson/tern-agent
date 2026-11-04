@@ -34,4 +34,10 @@ pub mod defaults {
     pub const PERSONA_MD: &str = include_str!("../assets/persona.md");
     pub const USER_MD: &str = include_str!("../assets/user.md");
     pub const CONFIG_TOML: &str = include_str!("../assets/config.example.toml");
+    /// Skills tern installs once (`TernHome::ensure_layout`): (directory,
+    /// `SKILL.md`). A user who deletes or edits one keeps their choice.
+    pub const SKILLS: &[(&str, &str)] = &[(
+        "connect-a-service",
+        include_str!("../assets/skills/connect-a-service/SKILL.md"),
+    )];
 }

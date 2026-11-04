@@ -5,6 +5,7 @@ import 'dart:io';
 import 'agents.dart';
 import 'channels.dart';
 import 'config.dart';
+import 'connections.dart';
 import 'endpoint.dart';
 import 'lifecycle.dart';
 import 'mcp.dart';
@@ -575,6 +576,71 @@ class TernClient {
   /// request is no longer pending, 403 without owner scope.
   Future<void> answerSecretRequest(String id, Map<String, String> values) =>
       _json('POST', '/v1/secret-requests/$id', {'values': values});
+
+  /// Open sign-in and connect cards (resync). Check `features` in
+  /// [health] for `connections` first.
+  Future<List<AuthPrompt>> authPrompts() async => [
+    for (final p in await _json('GET', '/v1/auth-prompts') as List)
+      AuthPrompt.fromJson(p as Json),
+  ];
+
+  /// Answer a card with one of its option ids, `device` or `cancel`. 400 if
+  /// the card doesn't offer that, 404 if it is gone.
+  Future<void> answerAuthPrompt(String id, String answer) =>
+      _json('POST', '/v1/auth-prompts/${_seg(id)}', {'answer': answer});
+
+  /// The accounts, and everything one can be added to. Owner-only.
+  Future<ConnectionList> connections() async =>
+      ConnectionList.fromJson(await _json('GET', '/v1/connections'));
+
+  /// Add an account. With `method: oauth` this waits (up to ~5 minutes) for
+  /// the user to sign in; the sign-in card arrives on the event stream
+  /// meanwhile. `values` (keyed by the target's `key_names`) go only in the
+  /// body. 409 means cancelled or declined, 408 timed out.
+  Future<ConnectResult> addConnection({
+    required String kind,
+    required String target,
+    String? connection,
+    String? label,
+    String? method,
+    bool device = false,
+    Map<String, String> values = const {},
+  }) async => ConnectResult.fromJson(
+    await _json('POST', '/v1/connections', {
+      'kind': kind,
+      'target': target,
+      'connection': ?connection,
+      'label': ?label,
+      'method': ?method,
+      if (device) 'device': true,
+      if (values.isNotEmpty) 'values': values,
+    }),
+  );
+
+  static String _acct(Account a) =>
+      '/v1/connections/${_seg(a.kind)}/${_seg(a.target)}/${_seg(a.slug)}';
+
+  /// Sign `a` in again (or replace its keys).
+  Future<ConnectResult> reconnectConnection(
+    Account a, {
+    bool device = false,
+    Map<String, String> values = const {},
+  }) async => ConnectResult.fromJson(
+    await _json('POST', '${_acct(a)}/reconnect', {
+      if (device) 'device': true,
+      if (values.isNotEmpty) 'values': values,
+    }),
+  );
+
+  Future<Account> makeDefaultConnection(Account a) async =>
+      Account.fromJson(await _json('POST', '${_acct(a)}/default'));
+
+  Future<Account> renameConnection(Account a, String label) async =>
+      Account.fromJson(await _json('PATCH', _acct(a), {'label': label}));
+
+  /// Revoke at the service where possible, then delete its tokens, keys,
+  /// cache and grants.
+  Future<void> removeConnection(Account a) => _json('DELETE', _acct(a));
 
   Future<List<Schedule>> schedules() async => [
     for (final s in await _json('GET', '/v1/schedules') as List)

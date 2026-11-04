@@ -16,6 +16,7 @@ use rmcp::service::{RoleClient, RunningService, ServiceError};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};
 use serde_json::Value;
+use tern_auth::{Conn as Account, Connections, Kind, Resolved};
 use tern_core::Secrets;
 use tern_core::config::{McpServerConfig, McpTransport};
 use tern_core::mcp::{McpErrorKind, McpState, McpStatus, McpToolInfo, McpVerified, McpVerifyError};
@@ -48,6 +49,9 @@ const PASSTHROUGH_ENV: &[&str] = &[
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
+/// An extra account's client stops after this long unused (`[auth]
+/// idle_timeout_secs`).
+const DEFAULT_IDLE: Duration = Duration::from_secs(600);
 /// Longest tool name every provider accepts.
 const MAX_TOOL_NAME: usize = 64;
 /// Lines of a stdio server's stderr kept for clients.
@@ -144,6 +148,10 @@ pub struct McpServer {
     state: RwLock<McpState>,
     server_info: RwLock<Option<String>>,
     stderr: Arc<Mutex<VecDeque<String>>>,
+    /// The account this instance signs in as (tooling spec §6.8): `None`
+    /// for the server's own config with plain secret names.
+    account: Option<(Arc<Connections>, Resolved)>,
+    last_used: Mutex<Instant>,
 }
 
 impl McpServer {
@@ -165,6 +173,8 @@ impl McpServer {
             state: RwLock::new(state),
             server_info: RwLock::new(None),
             stderr: Arc::default(),
+            account: None,
+            last_used: Mutex::new(Instant::now()),
         }
     }
 
@@ -222,11 +232,15 @@ impl McpServer {
         }
     }
 
+    /// A declared secret, for this instance's account
+    /// (`conn/<server>/<slug>/<NAME>`, the plain name for the default).
     fn secret(&self, name: &str) -> Option<String> {
-        self.overrides
-            .get(name)
-            .cloned()
-            .or_else(|| self.secrets.get(name))
+        self.overrides.get(name).cloned().or_else(|| {
+            self.secrets.get(&Connections::secret_name(
+                self.account.as_ref().map(|(_, r)| r),
+                name,
+            ))
+        })
     }
 
     pub fn missing_secrets(&self) -> Vec<String> {
@@ -519,6 +533,50 @@ impl McpServer {
             let (k, v) = secret_header(header, secret, "")?;
             headers.insert(k, v);
         }
+        // An OAuth account: its access token, refreshed once if the server
+        // refuses it.
+        let oauth = self
+            .account
+            .as_ref()
+            .filter(|(_, r)| r.conn.auth.oauth().is_some());
+        let Some((conns, r)) = oauth else {
+            return self.serve_http(url, headers).await;
+        };
+        let token = conns
+            .access_token(r, None)
+            .await
+            .map_err(|e| ConnErr::new(McpErrorKind::Unauthorized, e))?;
+        let bearer = |t: &str| {
+            let mut v =
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {t}")).map_err(|_| {
+                    ConnErr::new(
+                        McpErrorKind::Invalid,
+                        "the access token isn't a valid header value",
+                    )
+                })?;
+            v.set_sensitive(true);
+            Ok::<_, ConnErr>(v)
+        };
+        let mut first = headers.clone();
+        first.insert(reqwest::header::AUTHORIZATION, bearer(&token)?);
+        match self.serve_http(url, first).await {
+            Err(e) if e.kind == McpErrorKind::Unauthorized => {
+                let fresh = conns
+                    .access_token(r, Some(&token))
+                    .await
+                    .map_err(|e| ConnErr::new(McpErrorKind::Unauthorized, e))?;
+                headers.insert(reqwest::header::AUTHORIZATION, bearer(&fresh)?);
+                self.serve_http(url, headers).await
+            }
+            other => other,
+        }
+    }
+
+    async fn serve_http(
+        &self,
+        url: &str,
+        headers: reqwest::header::HeaderMap,
+    ) -> Result<Client, ConnErr> {
         let client = tern_core::net::http_client()
             .default_headers(headers)
             .build()
@@ -554,6 +612,9 @@ impl McpServer {
     }
 
     pub async fn call(&self, remote: &str, args: Value) -> ToolResult {
+        if let Ok(mut t) = self.last_used.lock() {
+            *t = Instant::now();
+        }
         let mut conn = self.conn.lock().await;
         if let Err(e) = self.ensure_locked(&mut conn).await {
             return ToolResult::error(e);
@@ -704,18 +765,46 @@ pub fn exposed_name(server: &str, tool: &str) -> String {
 struct McpTool {
     server: Arc<McpServer>,
     tool: RemoteTool,
+    accounts: Arc<Accounts>,
+}
+
+impl McpTool {
+    fn routed(&self) -> Option<Vec<Account>> {
+        self.accounts
+            .conns
+            .as_ref()?
+            .routed(Kind::Mcp, &self.server.name)
+    }
+
+    /// The account a call runs under, with the parameter taken out.
+    fn route(&self, args: &mut Value) -> Result<Option<Resolved>, String> {
+        let Some(conns) = &self.accounts.conns else {
+            return Ok(None);
+        };
+        let asked = tern_auth::connections::take_param(&self.tool.schema, args);
+        conns.resolve(
+            Kind::Mcp,
+            &self.server.name,
+            asked.as_deref(),
+            self.effect(),
+        )
+    }
 }
 
 #[async_trait]
 impl Tool for McpTool {
     fn spec(&self) -> ToolSpec {
+        let input_schema = match self.routed() {
+            Some(conns) => tern_auth::connections::with_param(&self.tool.schema, &conns),
+            None => self.tool.schema.clone(),
+        };
         ToolSpec {
             name: self.tool.exposed.clone(),
             description: format!(
                 "{} (MCP server {})",
                 self.tool.description, self.server.name
             ),
-            input_schema: self.tool.schema.clone(),
+            input_schema,
         }
     }
 
@@ -727,17 +816,111 @@ impl Tool for McpTool {
         self.server.cfg.untrusted
     }
 
-    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+    fn policy(&self, _: &ToolCtx, args: &Value) -> ToolPolicy {
+        // Refused for want of an account: nothing is sent, nobody asked.
+        if self.route(&mut args.clone()).is_err() {
+            return ToolPolicy::new(Effect::Read, true);
+        }
         ToolPolicy::new(self.effect(), self.server.cfg.idempotent)
             .forced(self.server.cfg.requires_approval)
     }
 
-    async fn call(&self, ctx: &ToolCtx, args: Value) -> ToolResult {
+    fn summary(&self, args: &Value) -> Option<String> {
+        self.routed()?;
+        let r = self.route(&mut args.clone()).ok()??;
+        Some(format!("{} as {}", self.tool.exposed, r.conn.title()))
+    }
+
+    async fn call(&self, ctx: &ToolCtx, mut args: Value) -> ToolResult {
+        let server = match self.route(&mut args) {
+            Ok(r) => self.accounts.instance(&self.server, r.as_ref()),
+            Err(e) => return ToolResult::error(format!("{}: {e}", self.tool.exposed)),
+        };
         tokio::select! {
-            r = self.server.call(&self.tool.remote, args) => r,
+            r = server.call(&self.tool.remote, args) => r,
             () = ctx.cancel.cancelled() => ToolResult::error("cancelled"),
         }
     }
+}
+
+/// Clients by (server, slug), with the connection each was made for.
+type Instances = BTreeMap<(String, String), (Account, Arc<McpServer>)>;
+
+/// Every account's client of every server (tooling spec §6.8.1): one MCP
+/// session per connection, started on first use; a stdio server is one
+/// process per connection, stopped when idle.
+struct Accounts {
+    conns: Option<Arc<Connections>>,
+    secrets: Arc<Secrets>,
+    /// By (server, slug), with the connection they were made for.
+    instances: Mutex<Instances>,
+    idle: Duration,
+}
+
+impl Accounts {
+    /// The client for `r` of `base` (`None`: the server's own config).
+    fn instance(&self, base: &Arc<McpServer>, r: Option<&Resolved>) -> Arc<McpServer> {
+        let (Some(conns), Some(r)) = (&self.conns, r) else {
+            return base.clone();
+        };
+        let mut m = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (base.name.clone(), r.conn.slug.clone());
+        if let Some((made_for, s)) = m.get(&key)
+            && same_account(made_for, &r.conn)
+            && s.cfg == base.cfg
+        {
+            return s.clone();
+        }
+        let mut s = McpServer::build(&base.name, base.cfg.clone(), self.secrets.clone());
+        s.account = Some((conns.clone(), r.clone()));
+        s.notify = None;
+        let s = Arc::new(s);
+        m.insert(key, (r.conn.clone(), s.clone()));
+        s
+    }
+
+    /// The instance whose tools are listed: the default account's, once a
+    /// server has accounts.
+    fn listing(&self, base: &Arc<McpServer>) -> Arc<McpServer> {
+        let Some(conns) = &self.conns else {
+            return base.clone();
+        };
+        let list = conns.list(Kind::Mcp, &base.name);
+        match list.iter().find(|c| c.is_default).or(list.first()) {
+            Some(c) => self.instance(base, Some(&Resolved { conn: c.clone() })),
+            None => base.clone(),
+        }
+    }
+
+    /// Stop accounts' clients unused for the idle timeout (the listing one
+    /// stays), and forget instances of removed connections.
+    fn reap(&self) {
+        let Some(conns) = &self.conns else { return };
+        let mut m = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+        m.retain(|(server, slug), (made_for, _)| {
+            conns
+                .get(Kind::Mcp, server, slug)
+                .is_some_and(|c| same_account(made_for, &c))
+        });
+        for (made_for, s) in m.values() {
+            let idle = s.last_used.lock().map(|t| t.elapsed()).unwrap_or_default();
+            if !made_for.is_default
+                && idle >= self.idle
+                && let Ok(mut c) = s.conn.try_lock()
+                && c.client.is_some()
+            {
+                tracing::info!(server = %s.name, connection = %made_for.slug, "stopping an idle MCP connection");
+                *c = Conn::default();
+                s.set_state(McpState::NotStarted);
+            }
+        }
+    }
+}
+
+/// Same connection, same credentials: a re-sign-in or new status makes a
+/// fresh client.
+fn same_account(a: &Account, b: &Account) -> bool {
+    a.id == b.id && a.auth == b.auth && a.status == b.status && a.account == b.account
 }
 
 /// All configured MCP servers as one tool source.
@@ -745,6 +928,7 @@ pub struct McpServers {
     servers: RwLock<BTreeMap<String, Arc<McpServer>>>,
     secrets: Arc<Secrets>,
     notify: Option<Notify>,
+    accounts: Arc<Accounts>,
 }
 
 impl McpServers {
@@ -755,9 +939,27 @@ impl McpServers {
             .unwrap_or_default();
         Self {
             servers: RwLock::new(servers.into_iter().map(|s| (s.name.clone(), s)).collect()),
+            accounts: Arc::new(Accounts {
+                conns: None,
+                secrets: secrets.clone(),
+                instances: Mutex::default(),
+                idle: DEFAULT_IDLE,
+            }),
             secrets,
             notify: None,
         }
+    }
+
+    /// Route calls to accounts (tooling spec §6.8). Extra accounts' clients
+    /// stop after `idle` unused.
+    pub fn with_connections(mut self, conns: Arc<Connections>, idle: Duration) -> Self {
+        self.accounts = Arc::new(Accounts {
+            conns: Some(conns),
+            secrets: self.secrets.clone(),
+            instances: Mutex::default(),
+            idle,
+        });
+        self
     }
 
     /// Servers for `cfg`, none started. `notify` hears every state change.
@@ -768,6 +970,12 @@ impl McpServers {
     ) -> Self {
         let set = Self {
             servers: RwLock::default(),
+            accounts: Arc::new(Accounts {
+                conns: None,
+                secrets: secrets.clone(),
+                instances: Mutex::default(),
+                idle: DEFAULT_IDLE,
+            }),
             secrets,
             notify,
         };
@@ -869,15 +1077,21 @@ impl McpServers {
 #[async_trait]
 impl ToolSource for McpServers {
     async fn prepare(&self) {
-        let servers = self.servers();
-        let starts = servers
+        if let Some(c) = &self.accounts.conns {
+            c.reload();
+        }
+        self.accounts.reap();
+        let servers: Vec<Arc<McpServer>> = self
+            .servers()
             .iter()
             .filter(|s| s.cfg.enabled)
-            .map(|s| async move {
-                if let Err(e) = s.ensure().await {
-                    tracing::warn!("{e}");
-                }
-            });
+            .map(|s| self.accounts.listing(s))
+            .collect();
+        let starts = servers.iter().map(|s| async move {
+            if let Err(e) = s.ensure().await {
+                tracing::warn!("{e}");
+            }
+        });
         futures::future::join_all(starts).await;
     }
 
@@ -886,7 +1100,8 @@ impl ToolSource for McpServers {
             .into_iter()
             .filter(|s| s.cfg.enabled)
             .flat_map(|s| {
-                let tools = s.tools.read().map(|t| t.clone()).unwrap_or_default();
+                let listing = self.accounts.listing(&s);
+                let tools = listing.tools.read().map(|t| t.clone()).unwrap_or_default();
                 tools
                     .into_iter()
                     .filter(|t| !s.cfg.disabled_tools.contains(&t.remote))
@@ -894,6 +1109,7 @@ impl ToolSource for McpServers {
                         Arc::new(McpTool {
                             server: s.clone(),
                             tool,
+                            accounts: self.accounts.clone(),
                         }) as Arc<dyn Tool>
                     })
                     .collect::<Vec<_>>()
@@ -904,20 +1120,32 @@ impl ToolSource for McpServers {
     fn describe(&self) -> Vec<String> {
         self.servers()
             .iter()
-            .filter_map(|s| match s.state() {
-                McpState::Disabled => None,
-                // Servers start on a run's first use, so "not started" is normal here.
-                McpState::NotStarted => {
-                    Some(format!("MCP server {} (tools mcp__{}__*)", s.name, s.name))
-                }
-                _ => Some(format!(
-                    "MCP server {}: {} (tools mcp__{}__*)",
-                    s.name,
-                    s.status(),
-                    s.name
-                )),
+            .map(|s| self.accounts.listing(s))
+            .filter_map(|s| {
+                let accounts = self
+                    .accounts
+                    .conns
+                    .as_ref()
+                    .and_then(|c| c.describe(Kind::Mcp, &s.name))
+                    .map(|a| format!("; accounts: {a}"))
+                    .unwrap_or_default();
+                Some(format!("{}{accounts}", describe_one(&s)?))
             })
             .collect()
+    }
+}
+
+fn describe_one(s: &McpServer) -> Option<String> {
+    match s.state() {
+        McpState::Disabled => None,
+        // Servers start on a run's first use, so "not started" is normal here.
+        McpState::NotStarted => Some(format!("MCP server {} (tools mcp__{}__*)", s.name, s.name)),
+        _ => Some(format!(
+            "MCP server {}: {} (tools mcp__{}__*)",
+            s.name,
+            s.status(),
+            s.name
+        )),
     }
 }
 
@@ -988,6 +1216,12 @@ mod tests {
                 schema: Value::Null,
                 hinted: Effect::Read,
             },
+            accounts: Arc::new(Accounts {
+                conns: None,
+                secrets: Arc::default(),
+                instances: Mutex::default(),
+                idle: DEFAULT_IDLE,
+            }),
         };
         assert!(tool(true).untrusted());
         assert!(!tool(false).untrusted());

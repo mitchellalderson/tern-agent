@@ -8,6 +8,7 @@ export 'src/agents.dart';
 export 'src/channels.dart';
 export 'src/client.dart';
 export 'src/config.dart';
+export 'src/connections.dart';
 export 'src/endpoint.dart';
 export 'src/lifecycle.dart';
 export 'src/mcp.dart';

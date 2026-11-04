@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use tern_core::SecretStatus;
 use tern_core::agent::RunOutcome;
 use tern_core::approval::{
-    ApprovalHandler, ApprovalRequest, Decision, SecretRequest, SecretValues,
+    ApprovalHandler, ApprovalRequest, AuthPrompt, Decision, SecretRequest, SecretValues,
 };
 use tern_core::config::McpServerConfig;
 use tern_core::events::AgentEvent;
@@ -110,6 +110,11 @@ pub trait Backend: Send + Sync + 'static {
     fn reload(&self) -> BackendResult<String>;
     fn subscribe(&self) -> broadcast::Receiver<AgentEvent>;
     /// Every known secret, without values.
+    /// Accounts of connectors and MCP servers, one line each (`/connections`).
+    fn connections(&self) -> BackendResult<Vec<String>> {
+        Err("this backend doesn't list connections".into())
+    }
+
     fn secrets(&self) -> BackendResult<Vec<SecretStatus>> {
         Err("this backend can't manage secrets".into())
     }
@@ -264,10 +269,21 @@ pub struct PendingSecret {
     pub reply: oneshot::Sender<SecretValues>,
 }
 
+/// A sign-in card (`auth_propose`, `connection_add`), answered through
+/// `reply` with an option's id, `device` or `cancel`. Dropping `reply`
+/// answers nothing (the sign-in finished in the browser).
+pub struct PendingAuth {
+    pub request: AuthPrompt,
+    pub reply: oneshot::Sender<String>,
+}
+
 /// Something the agent is waiting on the user for.
 pub enum UserPrompt {
     Approval(PendingApproval),
     Secret(PendingSecret),
+    Auth(PendingAuth),
+    /// Close sign-in card `id`: it was answered elsewhere or is over.
+    AuthClosed(String),
 }
 
 /// `ApprovalHandler` that forwards requests to the TUI's event loop.
@@ -305,5 +321,16 @@ impl ApprovalHandler for TuiApprover {
         self.tx.send(UserPrompt::Secret(pending)).await.ok()?;
         // A prompt closed without an answer counts as skipped.
         Some(rx.await.unwrap_or_default())
+    }
+
+    async fn ask_auth(&self, request: &AuthPrompt) -> Option<String> {
+        let (reply, rx) = oneshot::channel();
+        let pending = PendingAuth {
+            request: request.clone(),
+            reply,
+        };
+        self.tx.send(UserPrompt::Auth(pending)).await.ok()?;
+        // Closed without an answer: cancelled.
+        Some(rx.await.unwrap_or_else(|_| "cancel".into()))
     }
 }

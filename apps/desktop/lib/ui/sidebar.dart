@@ -79,7 +79,8 @@ class _SidebarState extends State<Sidebar> {
             if (store.hasAgents) ...agentsSection(context, store),
             ...channelsSection(context, store),
           ],
-          if (store.hasMcp) _Library(store: store),
+          if (store.hasMcp || store.canManageConnections)
+            _Library(store: store),
           // With channels, conversations live in Home's History.
           if (store.hasChannels)
             const Spacer()
@@ -563,6 +564,8 @@ class _Library extends StatelessWidget {
     final c = context.colors;
     final selected = store.page == LibraryPage.mcp;
     final down = store.mcpServers.where((s) => s.state is McpUnavailable);
+    final reauth =
+        store.connectionList?.accounts.where((a) => a.failing).length ?? 0;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Column(
@@ -575,50 +578,87 @@ class _Library extends StatelessWidget {
               style: Theme.of(context).textTheme.labelSmall,
             ),
           ),
-          Material(
-            color: selected ? c.selection : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(8),
+          if (store.hasMcp)
+            _LibraryRow(
+              icon: Icons.extension_outlined,
+              label: 'MCP servers',
+              selected: selected,
               onTap: () => store.openMcp(),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 7,
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.extension_outlined, size: 14, color: c.muted),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'MCP servers',
-                        style: TextStyle(
-                          fontSize: 13.5,
-                          fontWeight: selected
-                              ? FontWeight.w500
-                              : FontWeight.w400,
-                        ),
-                      ),
-                    ),
-                    if (down.isNotEmpty)
-                      Tooltip(
-                        message:
-                            '${down.map((s) => s.name).join(', ')} '
-                            'unavailable',
-                        child: _Dot(color: c.error),
-                      )
-                    else if (store.mcpServers.isNotEmpty)
-                      Text(
-                        '${store.mcpServers.length}',
-                        style: TextStyle(fontSize: 11.5, color: c.muted),
-                      ),
-                  ],
+              trailing: down.isNotEmpty
+                  ? Tooltip(
+                      message:
+                          '${down.map((s) => s.name).join(', ')} unavailable',
+                      child: _Dot(color: c.error),
+                    )
+                  : store.mcpServers.isNotEmpty
+                  ? Text(
+                      '${store.mcpServers.length}',
+                      style: TextStyle(fontSize: 11.5, color: c.muted),
+                    )
+                  : null,
+            ),
+          if (store.canManageConnections)
+            _LibraryRow(
+              icon: Icons.link,
+              label: 'Connections',
+              selected: store.page == LibraryPage.connections,
+              onTap: store.openConnections,
+              trailing: reauth > 0
+                  ? Tooltip(
+                      message: '$reauth need signing in again',
+                      child: _Dot(color: c.warn),
+                    )
+                  : null,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LibraryRow extends StatelessWidget {
+  const _LibraryRow({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.trailing,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Material(
+      color: selected ? c.selection : Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          child: Row(
+            children: [
+              Icon(icon, size: 14, color: c.muted),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
+                  ),
                 ),
               ),
-            ),
+              ?trailing,
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

@@ -751,6 +751,7 @@ mod tests {
                 "taint",
                 "connectors",
                 "webhooks",
+                "auth",
                 "api"
             ]
         );

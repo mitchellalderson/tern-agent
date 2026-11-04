@@ -68,6 +68,7 @@ pub struct Config {
     pub outbox: OutboxConfig,
     pub taint: TaintConfig,
     pub connectors: ConnectorsConfig,
+    pub auth: AuthConfig,
 }
 
 /// Taint settings (tooling spec §5.3).
@@ -94,6 +95,52 @@ impl Default for ConnectorsConfig {
             rate: Rate::per_minute(120),
         }
     }
+}
+
+/// Signing in to services and their connections (tooling spec §6.7–6.8).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuthConfig {
+    /// OAuth apps the user registered, by provider (`google`, or the name
+    /// a discovered issuer was given).
+    pub clients: BTreeMap<String, OAuthClientConfig>,
+    /// OAuth servers tern may reach on private or loopback addresses (a
+    /// local or self-hosted identity provider), as `scheme://host[:port]`.
+    /// Every other token, metadata or registration endpoint must be public.
+    pub local_issuers: Vec<String>,
+    /// How long a sign-in waits for the browser (or a device code).
+    pub sign_in_timeout_secs: u64,
+    /// Accounts per connector or MCP server.
+    pub max_connections: u32,
+    /// An https URL hosting tern's client ID metadata document, for servers
+    /// that accept one instead of registration (empty: register instead).
+    pub client_metadata_url: String,
+    /// Stop an extra account's stdio MCP server after this long unused.
+    pub idle_timeout_secs: u64,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            clients: BTreeMap::new(),
+            local_issuers: Vec::new(),
+            sign_in_timeout_secs: 300,
+            max_connections: 10,
+            client_metadata_url: String::new(),
+            idle_timeout_secs: 600,
+        }
+    }
+}
+
+/// An OAuth app the user registered with a provider.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthClientConfig {
+    pub client_id: String,
+    /// The secret holding the app's client secret, for providers that want
+    /// one even from desktop apps (Google's "Desktop app" clients).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_secret: Option<String>,
 }
 
 /// Deferred approvals (tooling spec §5.2).
@@ -139,6 +186,7 @@ impl Default for Config {
             outbox: OutboxConfig::default(),
             taint: TaintConfig::default(),
             connectors: ConnectorsConfig::default(),
+            auth: AuthConfig::default(),
         }
     }
 }
@@ -194,6 +242,11 @@ impl Config {
                 s.secret_names()
                     .map(|secret| (secret.to_owned(), format!("mcp {name}"))),
             );
+        }
+        for (name, c) in &self.auth.clients {
+            if let Some(secret) = &c.client_secret_secret {
+                uses.push((secret.clone(), format!("OAuth app {name}")));
+            }
         }
         uses
     }

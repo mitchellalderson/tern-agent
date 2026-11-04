@@ -108,6 +108,9 @@ pub enum Change {
         id: i64,
         state: String,
     },
+    /// A connection (account) was added, removed, renamed, signed in again
+    /// or changed status; re-read `/v1/connections`.
+    ConnectionsChanged {},
 }
 
 /// What a client fills in to add or change a provider.

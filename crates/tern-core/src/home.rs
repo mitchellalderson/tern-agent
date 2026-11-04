@@ -116,6 +116,30 @@ impl TernHome {
         ] {
             std::fs::create_dir_all(dir)?;
         }
+        self.seed_skills()
+    }
+
+    /// Install tern's own skills once each. `.installed` remembers which
+    /// were installed, so a skill the user deleted doesn't come back.
+    fn seed_skills(&self) -> io::Result<()> {
+        let marker = self.skills_dir().join(".installed");
+        let done = std::fs::read_to_string(&marker).unwrap_or_default();
+        let mut add = String::new();
+        for (name, text) in crate::defaults::SKILLS {
+            if done.lines().any(|l| l == *name) {
+                continue;
+            }
+            let dir = self.skills_dir().join(name);
+            if !dir.exists() {
+                std::fs::create_dir_all(&dir)?;
+                std::fs::write(dir.join("SKILL.md"), text)?;
+            }
+            add.push_str(name);
+            add.push('\n');
+        }
+        if !add.is_empty() {
+            std::fs::write(&marker, format!("{done}{add}"))?;
+        }
         Ok(())
     }
 }
@@ -290,5 +314,17 @@ mod tests {
         assert!(home.drafts_dir().is_dir());
         assert!(home.logs_dir().is_dir());
         assert!(home.skills_dir().is_dir());
+        // tern's own skills are installed once; one the user deleted stays
+        // deleted.
+        let skill = home.skills_dir().join("connect-a-service");
+        let found = crate::skills::discover(&home.skills_dir());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "connect-a-service");
+        assert!(found[0].description.contains("OAuth first"));
+        std::fs::remove_dir_all(&skill).unwrap();
+        home.ensure_layout().unwrap();
+        assert!(!skill.exists());
+        let found = crate::skills::discover(&home.skills_dir());
+        assert!(found.is_empty(), "the marker file isn't a skill");
     }
 }

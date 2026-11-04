@@ -68,6 +68,7 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern outbox`](#outbox) | Writes waiting for your approval: list, show, approve (optionally edited), reject. |
 | [`tern hooks`](#webhooks) | Webhook routines: create (URL and secret shown once), list, rotate, revoke, fire locally. |
 | [`tern connectors`](#tern-connectors) | List or validate Luau connectors. |
+| [`tern connections`](#tern-connections) | Accounts of connectors and MCP servers: sign in, add another, set the default, remove. |
 | [`tern setup`](#tern-setup) | Connect a model provider: paste a key, pick a model. |
 | [`tern providers`](#tern-providers) | List, add, or remove model providers (for scripts). |
 | [`tern mcp`](#tern-mcp) | List, add, import, test and manage MCP servers. |
@@ -245,6 +246,27 @@ capabilities = {
 
 Activating a connector shows all of this, and replacing an active one lists what changed (`+ http api.github.com/search/*, - rate 60/min`). Changing any of it afterwards stops the connector from loading until you approve it again.
 
+### `tern connections`
+
+```sh
+tern connections [list]                                    # every account, its sign-in method, default and status
+tern connections add <name> [--connection work] [--label L] [--key] [--device] [--kind connector|mcp]
+tern connections reconnect <name> <connection> [--device]  # sign in again after a revoked or expired grant
+tern connections default <name> <connection>               # the account reads use when none is named
+tern connections rename <name> <connection> <label>
+tern connections remove <name> <connection>                # revoke at the provider, delete its tokens, keys, cache and grants
+```
+
+A **connection** is one account of a connector or MCP server: *gmail · work (me@inngest.com)* and *gmail · personal (me@gmail.com)* are two connections of one `gmail` connector. Each is signed in and stored separately; tokens and keys live in `secrets.toml` under `conn/<name>/<connection>/` and never reach the agent or a script. Until you add a second account, every connector and MCP server has one implicit `default` connection that uses its plain secret names, as before.
+
+`add` signs in with OAuth when tern knows how (a built-in profile, the server's own metadata, or an earlier account's settings): it opens your browser on the service's own sign-in page and catches the answer on a one-shot `127.0.0.1` port. `--device` prints a code to enter on any device instead, for a tern running elsewhere. `--key` asks for the connector's or server's declared secrets (hidden) instead. The connection name defaults to `default` for the first account and to a name made from the account's email after that (`me@inngest.com` → `inngest`, `me@gmail.com` → `me`). Signing in to an account that is already connected refreshes it instead of adding a duplicate. At most `[auth] max_connections` (10) per connector or server.
+
+With two or more accounts, every tool of that connector or server takes a `connection` argument naming one. Reads without it use the default; writes and deletes without it are refused with the list of accounts, so the agent has to choose, and the approval card names the account (`lua__gmail__send as gmail · personal (me@gmail.com)`). An account whose sign-in was revoked or expired shows `needs reauth` and refuses calls until you reconnect it.
+
+In the TUI, `/connections` lists the accounts. The desktop app has a Connections view.
+
+**Connector code** declares OAuth with `capabilities.oauth = { google = { scopes = { "https://www.googleapis.com/auth/gmail.readonly" } } }` (one provider: a built-in profile, `google`, `microsoft`, `github`, `slack`, `notion`, `linear`, `atlassian`, `dropbox`, or a provider the agent discovered). tern sends the account's access token as `Authorization: Bearer …` to every declared host (or where `auth = "oauth"` entries say), refreshes it when it expires or the service answers 401, and the script sees only `ctx.connection` (`{ slug, label, account }`). OAuth apps you registered yourself go in `[auth.clients]` (see [Configuration](#configuration)).
+
 ### `tern setup`
 
 Opens the chat TUI on the `/setup` panel (see [`tern`](#tern)): choose a provider, paste its API key, pick a model. Uses the running daemon when there is one, so it picks up the change at once.
@@ -387,6 +409,12 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `outbox.expire_hours` | `72` | How long an outbox item waits for you. |
 | `taint.egress` | `"ask"` | In a tainted run, a read from a site it hasn't reached asks first (`ask`) or doesn't (`allow`). An agent can set its own ([New sites in a tainted run](#new-sites-in-a-tainted-run)). |
 | `connectors.rate` | `"120/min"` | HTTP requests per Luau connector for those that declare no `rate`, shared by every caller ([`tern connectors`](#tern-connectors)). Read at start. |
+| `auth.clients` | `{}` | OAuth apps you registered, by provider: `google = { client_id = "…", client_secret_secret = "GOOGLE_CLIENT_SECRET" }` (the secret's name, not its value). Needed for built-in profiles (Google wants a "Desktop app" client); servers that register clients themselves need none. |
+| `auth.local_issuers` | `[]` | OAuth servers allowed on private or loopback addresses (`"http://127.0.0.1:8080"`), for a self-hosted identity provider. Every other token, metadata or registration endpoint must be public https. |
+| `auth.sign_in_timeout_secs` | `300` | How long a sign-in waits for the browser or a device code. |
+| `auth.max_connections` | `10` | Accounts per connector or MCP server ([`tern connections`](#tern-connections)). |
+| `auth.idle_timeout_secs` | `600` | An extra account's stdio MCP server stops after this long unused (the default account's stays up). |
+| `auth.client_metadata_url` | `""` | An https URL hosting a client ID metadata document, used as the client ID by servers that accept one instead of registration. |
 
 The desktop app shows all of this (except providers, MCP servers and the Telegram gateway, which have their own windows) under **tern › Configuration…** or **Settings › All settings (config.toml)…**: every setting by section with its description from `config.example.toml`, a mark on what you've changed, a reset to the default, search, and a note on settings that matter for safety (`sandbox.network`, `sandbox.confine`, the API listeners). Changes are saved as you make them, keeping the file's comments. `default_model`, `schedules.*`, `home.*` and `api.remote_mcp_stdio` apply from the next run; the rest when tern restarts, which the window offers to do. The same is on the API, owner scope only:
 
@@ -665,6 +693,10 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 - **Effects** are enforced by tern, not the model: `destructive` calls ask every time and `money_movement` / `trade` tools are refused outright, even with `--yes`.
 - **Taint** ([below](#taint)): once a run has read untrusted content, its `write` and `destructive` calls ask, whatever "always" grants say.
 - **"Always allow"** is never offered for destructive tools, for calls in a tainted run, for commands that run other commands (`bash`, `env`, `sudo`, `find`, interpreters, …) or for activating connectors, and allowlisted shell commands can't chain (`;`, `|`, `$( )`, …).
+
+### Signing in
+
+When the agent connects a new service it checks how the service signs in (`auth_discover`), shows you a card to choose between signing in and an API key (`auth_propose`), and then a "Sign in to …" card (`connection_add`) that opens the service's own page in your browser, or a code to enter on any device. OAuth tokens are kept like secrets, refreshed by tern, sent only to the connector's declared hosts, and never shown to the agent. Sign-in addresses the agent found on the web must be on the service's own domain or a known identity provider, and the card says when the service publishes nothing to confirm them. See [`tern connections`](#tern-connections).
 
 ### Taint
 

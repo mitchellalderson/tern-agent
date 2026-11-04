@@ -8,8 +8,10 @@ import 'package:tern_client/tern_client.dart';
 import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
+import 'auth_card.dart';
 import 'channel_view.dart';
 import 'config_editor.dart';
+import 'connections.dart';
 import 'conversation.dart';
 import 'mcp.dart';
 import 'offline.dart';
@@ -114,57 +116,76 @@ class _HomeState extends State<Home> {
   Widget build(BuildContext context) {
     final store = widget.store;
     final body = Scaffold(
-      body: ListenableBuilder(
-        listenable: store,
-        builder: (context, _) {
-          if (store.health == null) {
-            return OfflineView(store: store, onSettings: _settings);
-          }
-          return LayoutBuilder(
-            builder: (context, box) {
-              // Narrow windows drop the panel before the conversation.
-              final panel = _panel && box.maxWidth > 980;
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  SizedBox(width: 260, child: Sidebar(store: store)),
-                  const Hairline(vertical: true),
-                  Expanded(
-                    child: store.page == LibraryPage.mcp && store.hasMcp
-                        ? McpView(
-                            store: store,
-                            panelOpen: panel,
-                            onTogglePanel: _togglePanel,
-                          )
-                        : store.topicOpen
-                        ? ChannelView(
-                            store: store,
-                            panelOpen: panel,
-                            onTogglePanel: _togglePanel,
-                          )
-                        : ConversationView(
-                            store: store,
-                            panelOpen: panel,
-                            onTogglePanel: _togglePanel,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          Positioned.fill(
+            child: ListenableBuilder(
+              listenable: store,
+              builder: (context, _) {
+                if (store.health == null) {
+                  return OfflineView(store: store, onSettings: _settings);
+                }
+                return LayoutBuilder(
+                  builder: (context, box) {
+                    // Narrow windows drop the panel before the conversation.
+                    final panel = _panel && box.maxWidth > 980;
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SizedBox(width: 260, child: Sidebar(store: store)),
+                        const Hairline(vertical: true),
+                        Expanded(
+                          child:
+                              store.page == LibraryPage.connections &&
+                                  store.canManageConnections
+                              ? ConnectionsView(
+                                  store: store,
+                                  panelOpen: panel,
+                                  onTogglePanel: _togglePanel,
+                                )
+                              : store.page == LibraryPage.mcp && store.hasMcp
+                              ? McpView(
+                                  store: store,
+                                  panelOpen: panel,
+                                  onTogglePanel: _togglePanel,
+                                )
+                              : store.topicOpen
+                              ? ChannelView(
+                                  store: store,
+                                  panelOpen: panel,
+                                  onTogglePanel: _togglePanel,
+                                )
+                              : ConversationView(
+                                  store: store,
+                                  panelOpen: panel,
+                                  onTogglePanel: _togglePanel,
+                                ),
+                        ),
+                        // A conversation to read (a History entry, a moved one, a
+                        // post's run) takes the panel's place while it's open.
+                        if (store.thread != null) ...[
+                          const Hairline(vertical: true),
+                          SizedBox(width: 380, child: ThreadPane(store: store)),
+                        ] else if (panel) ...[
+                          const Hairline(vertical: true),
+                          SizedBox(
+                            width: 290,
+                            child: SidePanel(
+                              store: store,
+                              onClose: _togglePanel,
+                            ),
                           ),
-                  ),
-                  // A conversation to read (a History entry, a moved one, a
-                  // post's run) takes the panel's place while it's open.
-                  if (store.thread != null) ...[
-                    const Hairline(vertical: true),
-                    SizedBox(width: 380, child: ThreadPane(store: store)),
-                  ] else if (panel) ...[
-                    const Hairline(vertical: true),
-                    SizedBox(
-                      width: 290,
-                      child: SidePanel(store: store, onClose: _togglePanel),
-                    ),
-                  ],
-                ],
-              );
-            },
-          );
-        },
+                        ],
+                      ],
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+          AuthCardOverlay(store: store),
+        ],
       ),
     );
     // Native menus exist only on macOS; elsewhere the same shortcuts use Ctrl.

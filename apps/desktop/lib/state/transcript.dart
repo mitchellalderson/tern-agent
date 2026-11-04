@@ -453,7 +453,10 @@ class Transcript {
           PostUpdated() ||
           ChannelsChanged() ||
           AgentsChanged() ||
-          OutboxChanged():
+          OutboxChanged() ||
+          AuthPromptOpened() ||
+          AuthPromptClosed() ||
+          ConnectionsChanged():
         return false;
     }
     return true;

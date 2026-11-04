@@ -4,6 +4,7 @@
 // an older app.
 
 import 'channels.dart';
+import 'connections.dart';
 import 'mcp.dart';
 import 'secret_requests.dart';
 
@@ -514,6 +515,15 @@ sealed class TernEvent {
     if (j['secret_requested'] case final Json s) {
       return SecretRequested(SecretRequest.fromJson(s));
     }
+    if (j['auth_prompt'] case final Json a) {
+      return AuthPromptOpened(AuthPrompt.fromJson(a));
+    }
+    if (j['auth_prompt_closed'] case final String id) {
+      return AuthPromptClosed(id);
+    }
+    if (j.containsKey('connections_changed')) {
+      return const ConnectionsChanged();
+    }
     if (j.containsKey('providers_changed')) return const ProvidersChanged();
     if (j['models_changed'] case final Json m) {
       return ModelsChanged(m['provider'] as String? ?? '');
@@ -831,6 +841,23 @@ class ApprovalRequested extends TernEvent {
 class SecretRequested extends TernEvent {
   const SecretRequested(this.request);
   final SecretRequest request;
+}
+
+/// A sign-in or connect card wants the user.
+class AuthPromptOpened extends TernEvent {
+  const AuthPromptOpened(this.prompt);
+  final AuthPrompt prompt;
+}
+
+/// Close that card: answered elsewhere, or the sign-in finished.
+class AuthPromptClosed extends TernEvent {
+  const AuthPromptClosed(this.id);
+  final String id;
+}
+
+/// An account was added, changed or removed; re-read `/v1/connections`.
+class ConnectionsChanged extends TernEvent {
+  const ConnectionsChanged();
 }
 
 /// Providers or the default model changed; re-read them.

@@ -5,6 +5,7 @@ pub mod api;
 pub mod api_agents;
 pub mod api_channels;
 mod api_config;
+mod api_connections;
 pub mod api_lifecycle;
 mod api_mcp;
 mod api_outbox;

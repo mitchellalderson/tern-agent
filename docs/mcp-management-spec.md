@@ -32,7 +32,7 @@ Nothing else touches them:
 - **Secrets inline**: when a server needs `GITHUB_TOKEN` and it's missing, the form asks for it and stores it through the existing secrets path. Secret values never go into `config.toml`.
 - **Paste a config from elsewhere**: most MCP servers document a Claude Desktop / Cursor style `mcpServers` JSON snippet. Pasting it should be enough.
 
-Out of scope: a server registry or catalog, OAuth for MCP servers, sandboxing stdio servers, MCP resources and prompts (tools only, as today), and per-agent MCP scoping (that belongs with agent profiles, gui-spec §7.2).
+Out of scope: a server registry or catalog, OAuth for MCP servers (since built in T4a: personal-agent-tooling-spec §6.7.5, `mcp_add` with `oauth: true` and `connection_add`), sandboxing stdio servers, MCP resources and prompts (tools only, as today), and per-agent MCP scoping (that belongs with agent profiles, gui-spec §7.2).
 
 ## 3. Config changes
 

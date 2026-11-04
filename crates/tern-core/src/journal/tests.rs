@@ -385,3 +385,36 @@ async fn secrets_are_redacted_from_stored_inputs_outputs_and_messages() {
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn connection_tokens_saved_after_startup_are_redacted() {
+    // T4a: a sign-in stores tokens while tern runs; the journal, built
+    // before, still scrubs them, and the old one after a refresh too.
+    let (store, j) = setup();
+    let tmp = tempfile::tempdir().unwrap();
+    let secrets = crate::Secrets::load(&tmp.path().join("secrets.toml")).unwrap();
+    let j = j.with_secrets(secrets.clone());
+    secrets
+        .set_many(&[
+            ("conn/gmail/work/oauth/access_token", "ya29.first-token"),
+            ("conn/gmail/work/oauth/refresh_token", "1//refresh-token"),
+        ])
+        .unwrap();
+    secrets
+        .set("conn/gmail/work/oauth/access_token", "ya29.second-token")
+        .unwrap();
+    let out = "a ya29.first-token b ya29.second-token c 1//refresh-token".to_owned();
+    j.step_with(
+        RUN,
+        0,
+        StepKind::Tool,
+        &json!({}),
+        InFlight::Retry,
+        || async { Ok(StepOutput::new(out)) },
+    )
+    .await
+    .unwrap();
+    let row = store.step(RUN, 0).unwrap().unwrap().output_json.unwrap();
+    assert!(!row.contains("ya29") && !row.contains("1//"), "{row}");
+    assert_eq!(row.matches("[REDACTED]").count(), 3, "{row}");
+}

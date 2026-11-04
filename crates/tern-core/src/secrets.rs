@@ -108,34 +108,71 @@ impl Secrets {
     }
 
     /// Store `name = value` in `secrets.toml` (created with mode 0600 if
-    /// missing), keeping the file's other entries and comments.
+    /// missing), keeping the file's other entries and comments. `name` is a
+    /// plain name or a connection's ([`check_scoped`]).
     pub fn set(&self, name: &str, value: &str) -> Result<(), SecretError> {
-        check_name(name)?;
-        if value.trim().is_empty() {
-            return Err(SecretError::EmptyValue(name.to_owned()));
-        }
-        // Keep redacting a value this one replaces.
-        if let Some(old) = self.file_value(name)
-            && let Ok(mut seen) = self.seen.lock()
-        {
-            seen.insert(old);
+        self.set_many(&[(name, value)])
+    }
+
+    /// Store several values in one write, so a token set (access, refresh,
+    /// expiry) is never half-saved.
+    pub fn set_many(&self, pairs: &[(&str, &str)]) -> Result<(), SecretError> {
+        for (name, value) in pairs {
+            check_any(name)?;
+            if value.trim().is_empty() {
+                return Err(SecretError::EmptyValue((*name).to_owned()));
+            }
+            // Keep redacting a value this one replaces.
+            self.remember_old(name);
         }
         self.edit(|doc| {
-            doc.insert(name, toml_edit::value(value));
+            for (name, value) in pairs {
+                doc.insert(name, toml_edit::value(*value));
+            }
             true
         })
         .map(|_| ())
     }
 
-    /// Remove `name` from `secrets.toml`. Returns whether it was there.
-    pub fn remove(&self, name: &str) -> Result<bool, SecretError> {
-        check_name(name)?;
+    fn remember_old(&self, name: &str) {
         if let Some(old) = self.file_value(name)
             && let Ok(mut seen) = self.seen.lock()
         {
             seen.insert(old);
         }
+    }
+
+    /// Remove `name` from `secrets.toml`. Returns whether it was there.
+    pub fn remove(&self, name: &str) -> Result<bool, SecretError> {
+        check_any(name)?;
+        self.remember_old(name);
         self.edit(|doc| doc.remove(name).is_some())
+    }
+
+    /// Remove every connection-scoped entry starting with `prefix` (for
+    /// example `conn/gmail/work/`). Returns how many there were.
+    pub fn remove_prefix(&self, prefix: &str) -> Result<usize, SecretError> {
+        if !prefix.starts_with(SCOPED_PREFIX) || !prefix.ends_with('/') {
+            return Err(SecretError::InvalidName(prefix.to_owned()));
+        }
+        let names: Vec<String> = self
+            .file_names()
+            .into_iter()
+            .filter(|n| n.starts_with(prefix))
+            .collect();
+        if names.is_empty() {
+            return Ok(0);
+        }
+        for n in &names {
+            self.remember_old(n);
+        }
+        self.edit(|doc| {
+            for n in &names {
+                doc.remove(n);
+            }
+            true
+        })?;
+        Ok(names.len())
     }
 
     /// Apply `change` to the file as it is on disk now, write it back if
@@ -200,7 +237,8 @@ impl Secrets {
             })
         }
         let mut all = BTreeMap::new();
-        for name in self.file_names() {
+        // A connection's credentials are shown with the connection.
+        for name in self.file_names().into_iter().filter(|n| !is_scoped(n)) {
             status(&mut all, &name).in_file = true;
         }
         for (name, user) in uses {
@@ -254,6 +292,11 @@ impl Secrets {
     }
 
     fn lookup(&self, name: &str) -> Option<(String, SecretSource)> {
+        // A connection's credentials live only in the file: an environment
+        // variable can't have that name, and mustn't stand in for a token.
+        if is_scoped(name) {
+            return self.file_value(name).map(|v| (v, SecretSource::File));
+        }
         if let Some(v) = std::env::var(name).ok().filter(|v| !v.is_empty()) {
             return Some((v, SecretSource::Env));
         }
@@ -273,6 +316,60 @@ pub fn check_name(name: &str) -> Result<(), SecretError> {
         Ok(())
     } else {
         Err(SecretError::InvalidName(name.to_owned()))
+    }
+}
+
+/// Connection-scoped names start with this (tooling spec §6.8.1).
+pub const SCOPED_PREFIX: &str = "conn/";
+
+/// Whether `name` belongs to a connection (`conn/<target>/<slug>/…`).
+pub fn is_scoped(name: &str) -> bool {
+    name.starts_with(SCOPED_PREFIX)
+}
+
+/// A connection's credential: `conn/<target>/<slug>/<NAME>` for a key the
+/// connector names, or `conn/<target>/<slug>/oauth/<field>` for its OAuth
+/// tokens. Targets are connector or MCP server names (`[a-z0-9_.-]`, ≤ 64),
+/// slugs `[a-z0-9_-]` (≤ 16).
+pub fn check_scoped(name: &str) -> Result<(), SecretError> {
+    let bad = || SecretError::InvalidName(name.to_owned());
+    let rest = name.strip_prefix(SCOPED_PREFIX).ok_or_else(bad)?;
+    let mut parts = rest.splitn(3, '/');
+    let (Some(target), Some(slug), Some(tail)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(bad());
+    };
+    let ok_target = !target.is_empty()
+        && target.len() <= 64
+        && target
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | '.'));
+    if !ok_target || !valid_slug(slug) {
+        return Err(bad());
+    }
+    match tail.strip_prefix("oauth/") {
+        Some(field)
+            if !field.is_empty() && field.chars().all(|c| c.is_ascii_lowercase() || c == '_') =>
+        {
+            Ok(())
+        }
+        Some(_) => Err(bad()),
+        None => check_name(tail).map_err(|_| bad()),
+    }
+}
+
+/// A connection slug: `[a-z0-9_-]{1,16}`.
+pub fn valid_slug(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 16
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-'))
+}
+
+fn check_any(name: &str) -> Result<(), SecretError> {
+    if is_scoped(name) {
+        check_scoped(name)
+    } else {
+        check_name(name)
     }
 }
 
@@ -507,6 +604,56 @@ mod tests {
             Err(SecretError::EmptyValue(_))
         ));
         assert!(!tmp.path().join("secrets.toml").exists());
+    }
+
+    #[test]
+    fn connection_scoped_names_live_only_in_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = write(tmp.path(), "PLAIN = \"plain-value\"\n", 0o600);
+        let s = Secrets::load(&p).unwrap();
+        s.set_many(&[
+            ("conn/gmail/work/oauth/access_token", "ya29.access-work"),
+            ("conn/gmail/work/oauth/refresh_token", "1//refresh-work"),
+            ("conn/gmail/home/oauth/access_token", "ya29.access-home"),
+            ("conn/github/personal/GITHUB_TOKEN", "ghp_personal"),
+        ])
+        .unwrap();
+        assert_eq!(
+            s.get("conn/gmail/work/oauth/access_token").as_deref(),
+            Some("ya29.access-work")
+        );
+        // Old binaries read the file too: every key is still a string.
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            text.contains("\"conn/gmail/work/oauth/access_token\" = "),
+            "{text}"
+        );
+        assert!(text.contains("PLAIN = \"plain-value\""), "{text}");
+        // Values are redacted like any other secret.
+        assert_eq!(s.redact("t=1//refresh-work"), "t=[REDACTED]");
+        // The Secrets view shows plain names only.
+        let names: Vec<String> = s.statuses(&[]).into_iter().map(|st| st.name).collect();
+        assert_eq!(names, ["PLAIN"]);
+        assert_eq!(s.remove_prefix("conn/gmail/work/").unwrap(), 2);
+        assert_eq!(s.get("conn/gmail/work/oauth/refresh_token"), None);
+        assert!(s.get("conn/gmail/home/oauth/access_token").is_some());
+        assert_eq!(
+            s.redact("1//refresh-work"),
+            "[REDACTED]",
+            "removed values stay redacted"
+        );
+        for bad in [
+            "conn/gmail/work",
+            "conn/Gmail/work/X",
+            "conn/gmail/a-very-long-slug-name/X",
+            "conn/gmail/work/oauth/",
+            "conn/gmail/work/bad-name",
+            "conn//work/X",
+        ] {
+            assert!(s.set(bad, "v").is_err(), "{bad}");
+        }
+        assert!(s.remove_prefix("conn/").is_ok());
+        assert!(s.remove_prefix("PLAIN").is_err());
     }
 
     #[test]

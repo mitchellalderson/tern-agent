@@ -28,7 +28,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::daemon::api::{self, ApiEvent};
-use crate::daemon::manager::ApiSecretRequest;
+use crate::daemon::manager::{ApiAuthPrompt, ApiSecretRequest};
 
 const BASE: &str = "http://tern";
 
@@ -119,11 +119,20 @@ async fn attach(http: reqwest::Client, base: String) -> BackendResult<Attached> 
         .request(remote.http.get(remote.url("/v1/secret-requests")))
         .await
         .unwrap_or_default();
+    let pending_auth: Vec<ApiAuthPrompt> = remote
+        .request(remote.http.get(remote.url("/v1/auth-prompts")))
+        .await
+        .unwrap_or_default();
     {
         let (remote, prompts) = (remote.clone(), prompts_tx.clone());
         tokio::spawn(async move {
             for r in pending {
                 if !forward_secret(&remote, &prompts, r).await {
+                    return;
+                }
+            }
+            for a in pending_auth {
+                if !forward_auth(&remote, &prompts, a).await {
                     return;
                 }
             }
@@ -216,11 +225,61 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                         return;
                     }
                 }
+                Ok(ApiEvent::AuthPrompt { auth_prompt: a }) => {
+                    if !forward_auth(&remote, &prompts, *a).await {
+                        return;
+                    }
+                }
+                Ok(ApiEvent::AuthPromptClosed {
+                    auth_prompt_closed: id,
+                }) => {
+                    if prompts.send(UserPrompt::AuthClosed(id)).await.is_err() {
+                        return;
+                    }
+                }
                 Err(_) => {}
             }
         }
     }
     tracing::warn!("lost the daemon event stream");
+}
+
+/// Show a sign-in card in the TUI and post its answer (owner devices only,
+/// like secrets). Returns false once the TUI has gone.
+async fn forward_auth(
+    remote: &Arc<Remote>,
+    prompts: &mpsc::Sender<UserPrompt>,
+    a: ApiAuthPrompt,
+) -> bool {
+    if !remote.owner {
+        return true;
+    }
+    let (reply, rx) = oneshot::channel();
+    let id = a.prompt.id.clone();
+    if prompts
+        .send(UserPrompt::Auth(tern_tui::PendingAuth {
+            request: a.prompt,
+            reply,
+        }))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let http = remote.http.clone();
+    let url = remote.url(&format!("/v1/auth-prompts/{id}"));
+    tokio::spawn(async move {
+        // Dropped unanswered: answered elsewhere, or the sign-in finished.
+        let Ok(answer) = rx.await else {
+            return;
+        };
+        let _ = http
+            .post(url)
+            .json(&json!({ "answer": answer }))
+            .send()
+            .await;
+    });
+    true
 }
 
 /// Show a secret request in the TUI and post its answer. Devices without
@@ -496,6 +555,27 @@ impl Backend for Remote {
             (format!("/v1/outbox/{id}/reject"), json!({ "note": d.note }))
         };
         self.send_json(reqwest::Method::POST, &path, body)
+    }
+
+    fn connections(&self) -> BackendResult<Vec<String>> {
+        let v: Value = self.get("/v1/connections")?;
+        Ok(v["connections"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|c| {
+                        let mut line = c["title"].as_str().unwrap_or_default().to_owned();
+                        if c["is_default"] == true {
+                            line.push_str(" · default");
+                        }
+                        if let Some(s) = c["status"].as_str().filter(|s| *s != "ok") {
+                            line.push_str(&format!(" · {}", s.replace('_', " ")));
+                        }
+                        line
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     fn resolve_model(&self, model: &str) -> BackendResult<Resolved> {

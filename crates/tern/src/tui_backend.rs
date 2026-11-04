@@ -189,6 +189,16 @@ impl Backend for TuiBackend {
         Ok(self.rt().secret_statuses())
     }
 
+    fn connections(&self) -> BackendResult<Vec<String>> {
+        let conns = &self.rt().connections;
+        conns.reload();
+        Ok(conns
+            .all()
+            .iter()
+            .map(crate::connections_cmd::line)
+            .collect())
+    }
+
     /// Applies to the next model call or tool use; no reload needed.
     fn set_secret(&self, name: &str, value: &str) -> BackendResult<()> {
         self.rt().secrets.set(name, value).map_err(err)
