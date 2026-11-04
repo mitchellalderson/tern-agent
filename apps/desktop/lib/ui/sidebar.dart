@@ -4,6 +4,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
+import 'agent_sheet.dart';
 import 'channel_view.dart';
 import 'providers.dart';
 import 'widgets.dart';
@@ -67,11 +68,15 @@ class _SidebarState extends State<Sidebar> {
             )
           else
             const SizedBox(height: 10),
-          _AgentRow(store: store),
-          const SizedBox(height: 6),
+          // With agent profiles, Home carries tern's avatar instead.
+          if (!store.hasAgents) ...[
+            _AgentRow(store: store),
+            const SizedBox(height: 6),
+          ],
           if (store.hasChannels) ...[
             const SizedBox(height: 4),
             _HomeRow(store: store),
+            if (store.hasAgents) ...agentsSection(context, store),
             ...channelsSection(context, store),
           ],
           if (store.hasMcp) _Library(store: store),
@@ -145,32 +150,188 @@ class _HomeRow extends StatelessWidget {
     final selected = store.homeOpen && store.page == null;
     final waiting = store.pendingApprovals + store.pendingSecrets;
     final running = store.transcripts[TernStore.homeKey]?.activeRun != null;
+    final tern = store.defaultAgent;
+    void edit() => showAgentSheet(context, store, agent: tern);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Material(
         color: selected ? c.selection : Colors.transparent,
         borderRadius: BorderRadius.circular(8),
+        child: GestureDetector(
+          // Home is the default agent's DM: right-click edits it.
+          onSecondaryTapUp: tern == null
+              ? null
+              : (d) async {
+                  final pick = await showMenu<String>(
+                    context: context,
+                    position: RelativeRect.fromLTRB(
+                      d.globalPosition.dx,
+                      d.globalPosition.dy,
+                      d.globalPosition.dx,
+                      d.globalPosition.dy,
+                    ),
+                    items: [
+                      PopupMenuItem(
+                        value: 'edit',
+                        child: Text('Edit ${tern.name}'),
+                      ),
+                    ],
+                  );
+                  if (pick == 'edit' && context.mounted) edit();
+                },
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => store.openHome(),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(
+                children: [
+                  if (tern != null)
+                    AgentAvatar.of(tern, size: 18)
+                  else
+                    Icon(Icons.home_outlined, size: 15, color: c.muted),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Home',
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: selected
+                            ? FontWeight.w500
+                            : FontWeight.w400,
+                      ),
+                    ),
+                  ),
+                  if (waiting > 0)
+                    Tooltip(
+                      message: '$waiting waiting for you',
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: c.warn,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          '$waiting',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    )
+                  else if (running)
+                    SizedBox(
+                      width: 10,
+                      height: 10,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: c.muted,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// AGENTS (agent profiles §7.2): each agent other than the default, whose
+/// DM is Home. A row opens its DM; a badge counts what waits for you, a
+/// spinner shows it working, a dot new routine posts; + makes one.
+List<Widget> agentsSection(BuildContext context, TernStore store) {
+  final c = context.colors;
+  return [
+    Padding(
+      padding: const EdgeInsets.fromLTRB(18, 12, 10, 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'AGENTS',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+          ),
+          SizedBox(
+            height: 24,
+            child: QuietIconButton(
+              icon: Icons.add,
+              size: 15,
+              tooltip: 'New agent',
+              onPressed: () => showAgentSheet(context, store),
+            ),
+          ),
+        ],
+      ),
+    ),
+    for (final a in store.otherAgents) _AgentListRow(store: store, agent: a),
+    if (store.otherAgents.isEmpty)
+      Padding(
+        padding: const EdgeInsets.fromLTRB(18, 2, 18, 4),
+        child: Text(
+          'Agents with their own job, chat and memory.',
+          style: Theme.of(context).textTheme.bodySmall
+              ?.copyWith(color: c.muted),
+        ),
+      ),
+  ];
+}
+
+class _AgentListRow extends StatelessWidget {
+  const _AgentListRow({required this.store, required this.agent});
+
+  final TernStore store;
+  final Agent agent;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final a = agent;
+    final selected =
+        store.channel != null &&
+        store.channel == a.mainChannelId &&
+        store.page == null;
+    final waiting = store.waitingFor(a);
+    final dm = store.dmOf(a);
+    final unread = dm != null && store.unread(dm);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+      child: Material(
+        color: selected ? c.selection : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
         child: InkWell(
           borderRadius: BorderRadius.circular(8),
-          onTap: () => store.openHome(),
+          onTap: () => store.openAgent(a),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             child: Row(
               children: [
-                Icon(Icons.home_outlined, size: 15, color: c.muted),
+                AgentAvatar.of(a, size: 18),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Home',
+                    a.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 13.5,
-                      fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
+                      fontWeight: unread || selected
+                          ? FontWeight.w600
+                          : FontWeight.w400,
                     ),
                   ),
                 ),
                 if (waiting > 0)
                   Tooltip(
-                    message: '$waiting waiting for you',
+                    message:
+                        '$waiting waiting for you (answer here or in Home)',
                     child: Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 6,
@@ -190,7 +351,7 @@ class _HomeRow extends StatelessWidget {
                       ),
                     ),
                   )
-                else if (running)
+                else if (store.agentBusy(a))
                   SizedBox(
                     width: 10,
                     height: 10,
@@ -198,6 +359,11 @@ class _HomeRow extends StatelessWidget {
                       strokeWidth: 1.5,
                       color: c.muted,
                     ),
+                  )
+                else if (unread)
+                  Tooltip(
+                    message: 'New posts',
+                    child: _Dot(color: c.accent),
                   ),
               ],
             ),

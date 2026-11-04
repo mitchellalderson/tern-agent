@@ -31,6 +31,7 @@ class _FakeClient extends TernClient {
     ScheduleLimits? limits,
     bool resume = false,
     String? channel,
+    String? agent,
   }) async {
     updates.add((id: id, limits: limits, enabled: enabled, resume: resume));
     return list.firstWhere((s) => s.id == id, orElse: () => list.first);

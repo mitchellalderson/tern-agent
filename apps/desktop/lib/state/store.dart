@@ -71,30 +71,44 @@ class TernStore extends ChangeNotifier {
   /// Channels, Home first, when the core has them ([hasChannels]).
   List<Channel> channels = [];
 
-  /// The channel open in the centre column: [homeId], or a topic channel.
-  /// Null when a plain conversation ([selected]) is open.
+  /// The channel open in the centre column: [homeId], an agent's DM, or a
+  /// topic channel. Null when a plain conversation ([selected]) is open.
   String? channel;
 
   /// Home's id (and slug).
   static const homeId = 'home';
 
-  /// Where Home's stream lives in [transcripts]: one transcript for all of
-  /// its segments.
-  static const homeKey = '#home';
+  /// Where a main channel's stream lives in [transcripts]: one transcript
+  /// for all of its segments.
+  static String streamKeyOf(String channelId) => '#$channelId';
 
-  /// The sessions whose events belong to Home's stream.
-  final _homeSessions = <String>{};
+  /// Where Home's stream lives. Every approval and secret request is
+  /// there too, whichever stream is open.
+  static final homeKey = streamKeyOf(homeId);
 
-  /// Home's stream as loaded, oldest first, and the cursor for older items.
-  List<StreamItem> _homeItems = [];
+  /// The main channel whose stream is loaded: Home or an agent's DM
+  /// (agent profiles §3). One at a time; opening another reloads.
+  String streamChannel = homeId;
+
+  String get streamKey => streamKeyOf(streamChannel);
+
+  /// The sessions whose events belong to the loaded stream.
+  final _streamSessions = <String>{};
+
+  /// The loaded stream, oldest first, and the cursor for older items.
+  List<StreamItem> _streamItems = [];
   String? homeNext;
 
-  /// Home has changed underneath (a carry-over to show, a post that came
-  /// in mid-run): rebuild it when its run finishes.
-  var _homeDirty = false;
+  /// The stream has changed underneath (a carry-over to show, a post that
+  /// came in mid-run): rebuild it when its run finishes.
+  var _streamDirty = false;
 
-  /// The next send in Home starts a new topic.
+  /// The next send in the open stream starts a new topic.
   bool newTopic = false;
+
+  /// Agent profiles, the default first, when the core has them
+  /// ([hasAgents]).
+  List<Agent> agents = [];
 
   /// Each opened topic channel's posts, oldest first.
   final posts = <String, List<Post>>{};
@@ -132,8 +146,8 @@ class TernStore extends ChangeNotifier {
   var _backoff = const Duration(milliseconds: 500);
   var _disposed = false;
 
-  Transcript? get current => homeOpen
-      ? transcripts[homeKey]
+  Transcript? get current => streamOpen
+      ? transcripts[streamKey]
       : selected == null
       ? null
       : transcripts[selected];
@@ -141,17 +155,70 @@ class TernStore extends ChangeNotifier {
   /// Whether the core has channels and Home's stream (T2).
   bool get hasChannels => health?.features.contains('channels') ?? false;
 
+  /// Whether the core has agent profiles (docs/agent-profiles-design.md).
+  bool get hasAgents => health?.features.contains('agents') ?? false;
+
   bool get homeOpen => channel == homeId;
 
+  /// A main channel's stream is open: Home or an agent's DM.
+  bool get streamOpen =>
+      channel != null &&
+      (channel == homeId ||
+          (channels.where((c) => c.id == channel).firstOrNull?.isMain ??
+              false));
+
   /// A topic channel's timeline is open.
-  bool get topicOpen => channel != null && !homeOpen;
+  bool get topicOpen => channel != null && !streamOpen;
+
+  /// The agent whose DM `channelId` is (the default agent for Home).
+  Agent? agentOf(String channelId) =>
+      agents.where((a) => a.mainChannelId == channelId).firstOrNull;
+
+  /// The agent whose stream is open (the default agent in Home).
+  Agent? get streamAgent => streamOpen ? agentOf(channel!) : null;
+
+  /// Who is asking: a sub-agent's label, else its agent profile's name.
+  String askerName(Approval a) =>
+      a.agentLabel ??
+      agents.where((x) => x.id == a.agentId).firstOrNull?.name ??
+      'tern';
+
+  /// The default agent, `tern`.
+  Agent? get defaultAgent => agents.where((a) => a.isDefault).firstOrNull;
+
+  /// Agents other than the default, for AGENTS in the sidebar.
+  List<Agent> get otherAgents => [
+    for (final a in agents)
+      if (!a.isDefault && !a.archived) a,
+  ];
+
+  /// An agent's DM channel.
+  Channel? dmOf(Agent a) =>
+      channels.where((c) => c.id == a.mainChannelId).firstOrNull;
+
+  /// Someone is working in the agent's DM.
+  bool agentBusy(Agent a) =>
+      a.mainChannelId != null && _activeIn.containsValue(a.mainChannelId);
+
+  /// Approvals and secret requests waiting from `a`'s runs.
+  int waitingFor(Agent a) => {
+    for (final t in transcripts.values)
+      for (final i in t.items)
+        if ((i is ApprovalItem &&
+                i.outcome == null &&
+                (i.approval.agentId ?? Agent.defaultId) == a.id) ||
+            (i is SecretRequestItem &&
+                i.open &&
+                (i.request.agentId ?? Agent.defaultId) == a.id))
+          i,
+  }.length;
 
   Channel? get openChannel =>
       channels.where((c) => c.id == channel).firstOrNull;
 
   List<Channel> get topics => [
     for (final c in channels)
-      if (!c.isHome && !c.archived) c,
+      if (!c.isMain && !c.archived) c,
   ];
 
   /// New posts since this device last looked.
@@ -198,10 +265,13 @@ class TernStore extends ChangeNotifier {
 
   Channel? get home => channels.where((c) => c.isHome).firstOrNull;
 
-  /// The transcript showing `session`: Home's for its segments.
-  Transcript? transcriptOf(String session) =>
-      _homeSessions.contains(session) || session == homeKey
-      ? transcripts[homeKey]
+  /// The main channel whose stream is loaded.
+  Channel? get stream =>
+      channels.where((c) => c.id == streamChannel).firstOrNull;
+
+  /// The transcript showing `session`: the stream's for its segments.
+  Transcript? transcriptOf(String session) => _streamSessions.contains(session)
+      ? transcripts[streamKey]
       : transcripts[session];
 
   /// The thread pane's transcript.
@@ -210,11 +280,13 @@ class TernStore extends ChangeNotifier {
 
   bool get running => current?.activeRun != null;
 
-  /// Approvals waiting anywhere, for badges.
+  /// Approvals waiting anywhere, for badges. A card mirrored into an
+  /// agent's DM is the same item as Home's, counted once.
   int get pendingApprovals => transcripts.values
       .expand((t) => t.items)
       .whereType<ApprovalItem>()
       .where((a) => a.outcome == null)
+      .toSet()
       .length;
 
   /// Secret requests waiting anywhere.
@@ -222,6 +294,7 @@ class TernStore extends ChangeNotifier {
       .expand((t) => t.items)
       .whereType<SecretRequestItem>()
       .where((r) => r.open)
+      .toSet()
       .length;
 
   /// Whether the core can ask for secrets (older ones can't).
@@ -235,10 +308,17 @@ class TernStore extends ChangeNotifier {
   /// core refuses stdio MCP servers unless `api.remote_mcp_stdio` is set.
   bool get remoteCore => health != null && health!.authKind != 'owner';
 
+  /// The session's own model, else its agent's, else the default.
   String? modelFor(String? session) {
-    if (session == null) return draftModel ?? info?.defaultModel;
+    if (session == null) {
+      return draftModel ?? streamAgent?.model.firstOrNull ?? info?.defaultModel;
+    }
     final s = sessions.where((x) => x.id == session).firstOrNull;
-    return s?.model ?? info?.defaultModel;
+    final agent = switch (s?.channelId) {
+      final c? => agentOf(c),
+      null => null,
+    };
+    return s?.model ?? agent?.model.firstOrNull ?? info?.defaultModel;
   }
 
   /// No usable model yet: show provider setup instead of the composer.
@@ -307,13 +387,17 @@ class TernStore extends ChangeNotifier {
     }
     if (hasChannels) {
       channels = await client.channels();
+      if (hasAgents) agents = await client.agents();
       // Home is where the app opens.
       if (channel == null && selected == null && page == null) {
         channel = homeId;
       }
-      if (homeOpen) await _loadHome();
+      if (streamOpen) {
+        streamChannel = channel!;
+        await _loadHome();
+      }
     }
-    if (selected case final id? when !homeOpen) {
+    if (selected case final id? when !streamOpen) {
       await _load(id);
     }
     if (thread case final id?) await _load(id);
@@ -331,13 +415,22 @@ class TernStore extends ChangeNotifier {
     for (final a in await client.pendingApprovals()) {
       _transcriptFor(hasChannels ? homeKey : a.sessionId)
           ?.apply(ApprovalRequested(a));
-      if (hasChannels) _approvalSession[a.runId] = homeKey;
+      if (hasChannels) {
+        _approvalSession[a.runId] = homeKey;
+        _mirror(a.channelId, (i) => i is ApprovalItem && i.approval.id == a.id);
+      }
     }
     if (hasMcp) await loadMcp(notify: false);
     if (hasSecretRequests) {
       try {
         for (final r in await client.secretRequests()) {
           _transcriptFor(_routeSecret(r))?.apply(SecretRequested(r));
+          if (hasChannels) {
+            _mirror(
+              r.channelId,
+              (i) => i is SecretRequestItem && i.request.id == r.id,
+            );
+          }
         }
       } on TernException {
         // Not available to this device: the event stream still delivers.
@@ -377,30 +470,45 @@ class TernStore extends ChangeNotifier {
     }
   }
 
-  /// Rebuild Home's stream from the daemon: the newest page (as many items
-  /// as were loaded), or with `older` the page before what's loaded.
+  /// Show the item of Home's transcript that `matches` (an approval or a
+  /// secret request) in the agent's DM `channelId` too: the same item, so
+  /// answering or expiring it in either place closes both (agent profiles
+  /// §3, open question 1). Home's own requests aren't mirrored.
+  void _mirror(String? channelId, bool Function(Item) matches) {
+    if (channelId == null || channelId == homeId) return;
+    final item = transcripts[homeKey]?.items.where(matches).firstOrNull;
+    if (item == null) return;
+    final t = transcripts.putIfAbsent(streamKeyOf(channelId), Transcript.new);
+    if (!t.items.contains(item)) t.items.add(item);
+  }
+
+  /// Rebuild the open stream (Home or a DM) from the daemon: the newest
+  /// page (as many items as were loaded), or with `older` the page before
+  /// what's loaded.
   Future<void> _loadHome({bool older = false}) async {
-    final head = home?.mainSessionId;
+    final id = streamChannel;
+    final head = stream?.mainSessionId;
     final page = await client.stream(
-      homeId,
+      id,
       before: older ? homeNext : null,
-      limit: older ? 200 : max(200, _homeItems.length + 20),
+      limit: older ? 200 : max(200, _streamItems.length + 20),
     );
+    if (id != streamChannel) return;
     final fresh = page.items.reversed.toList();
-    _homeItems = older ? [...fresh, ..._homeItems] : fresh;
+    _streamItems = older ? [...fresh, ..._streamItems] : fresh;
     homeNext = page.next;
-    _homeSessions
+    _streamSessions
       ..clear()
       ..addAll([
-        for (final i in _homeItems)
+        for (final i in _streamItems)
           if (i
               case StreamMessage(:final sessionId) ||
                   StreamCut(:final sessionId))
             sessionId,
         ?head,
       ]);
-    final previous = transcripts[homeKey];
-    final t = Transcript.fromStream(_homeItems)
+    final previous = transcripts[streamKey];
+    final t = Transcript.fromStream(_streamItems)
       ..activeRun = previous?.activeRun
       ..runSince = previous?.runSince;
     for (final a
@@ -412,8 +520,8 @@ class TernStore extends ChangeNotifier {
             <SecretRequestItem>[]) {
       if (r.open) t.items.add(r);
     }
-    transcripts[homeKey] = t;
-    _homeDirty = false;
+    transcripts[streamKey] = t;
+    _streamDirty = false;
     selected = head;
     draft = head == null;
     if (head == null) return;
@@ -434,16 +542,32 @@ class TernStore extends ChangeNotifier {
 
   /// Open Home's stream in the centre column; with `newTopic`, the next
   /// send starts a new segment.
-  Future<void> openHome({bool newTopic = false}) async {
+  Future<void> openHome({bool newTopic = false}) =>
+      openStream(homeId, newTopic: newTopic);
+
+  /// Open an agent's DM: the same stream view as Home.
+  Future<void> openAgent(Agent a) async {
+    if (a.mainChannelId case final id?) await openStream(id);
+  }
+
+  /// Open a main channel's stream (Home or a DM) in the centre column.
+  Future<void> openStream(String id, {bool newTopic = false}) async {
     page = null;
-    channel = homeId;
+    channel = id;
     error = null;
     this.newTopic = newTopic;
-    selected = home?.mainSessionId;
+    if (streamChannel != id) {
+      streamChannel = id;
+      _streamItems = [];
+      _streamSessions.clear();
+      homeNext = null;
+    }
+    selected = stream?.mainSessionId;
     draft = selected == null;
     notifyListeners();
     try {
       if (channels.isEmpty) channels = await client.channels();
+      if (stream?.lastPostId case final p?) _markRead(id, p);
       await _loadHome();
     } on TernException catch (e) {
       error = e.message;
@@ -467,13 +591,14 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Re-read the channels; follow Home to a new segment started elsewhere.
+  /// Re-read the channels; follow the open stream to a new segment
+  /// started elsewhere.
   Future<void> _refreshChannels() async {
     try {
       channels = await client.channels();
-      final head = home?.mainSessionId;
-      if (homeOpen && head != null && head != selected) {
-        _homeSessions.add(head);
+      final head = stream?.mainSessionId;
+      if (streamOpen && head != null && head != selected) {
+        _streamSessions.add(head);
         await _loadHome();
       }
       notifyListeners();
@@ -482,11 +607,29 @@ class TernStore extends ChangeNotifier {
     }
   }
 
-  /// A post came in: Home shows it where it happened; an open topic
-  /// channel adds it to its timeline.
+  /// Re-read the agents (and the channels, for their DMs).
+  Future<void> _refreshAgents() async {
+    try {
+      agents = await client.agents();
+      channels = await client.channels();
+      notifyListeners();
+    } on TernException {
+      // Refreshed again on reconnect.
+    }
+  }
+
+  /// A post came in: the open stream (Home or a DM) shows it where it
+  /// happened; an open topic channel adds it to its timeline.
   void _onPost(Post post) {
     unawaited(_refreshChannels());
-    if (post.channelId != homeId) {
+    final main =
+        post.channelId == homeId ||
+        (channels.where((c) => c.id == post.channelId).firstOrNull?.isMain ??
+            false);
+    if (main) {
+      if (post.channelId != streamChannel || !streamOpen) return;
+      _markRead(post.channelId, post.id);
+    } else {
       final list = posts[post.channelId];
       if (list != null && !list.any((p) => p.id == post.id)) {
         list.add(post);
@@ -499,14 +642,14 @@ class TernStore extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    final t = transcripts[homeKey];
+    final t = transcripts[streamKey];
     if (t == null) return;
     // Mid-run, appending would split the reply streaming in.
     if (t.activeRun == null) {
       t.items.add(PostItem(post));
       notifyListeners();
     } else {
-      _homeDirty = true;
+      _streamDirty = true;
     }
   }
 
@@ -543,6 +686,80 @@ class TernStore extends ChangeNotifier {
     lastSeen[id] = post;
     onReadChanged?.call();
   }
+
+  // ---- agent profiles (docs/agent-profiles-design.md) ----
+
+  /// Create an agent (and, when given, the routine its template suggests)
+  /// and open its DM. Returns the daemon's reason on failure.
+  Future<String?> createAgent({
+    required String name,
+    AvatarSpec? avatar,
+    required String persona,
+    List<String> model = const [],
+    ToolScope? tools,
+    required String memory,
+    String? template,
+    ({String cron, String prompt})? routine,
+  }) async {
+    try {
+      final a = await client.createAgent(
+        name: name,
+        avatar: avatar,
+        persona: persona,
+        model: model,
+        tools: tools,
+        memory: memory,
+        template: template,
+      );
+      if (routine != null) {
+        await client.createSchedule(
+          cron: routine.cron,
+          prompt: routine.prompt,
+          agent: a.id,
+        );
+        schedules = await client.schedules();
+      }
+      agents = await client.agents();
+      channels = await client.channels();
+      await openAgent(a);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  /// Save an edited agent: the fields that changed, and its persona when
+  /// it did. Applies from its next run. Returns the daemon's reason on
+  /// failure.
+  Future<String?> updateAgent(
+    Agent a, {
+    Map<String, Object?> fields = const {},
+    String? persona,
+  }) async {
+    try {
+      if (fields.isNotEmpty) await client.updateAgent(a.id, fields);
+      if (persona != null) await client.setPersona(a.id, persona);
+      agents = await client.agents();
+      channels = await client.channels();
+      notifyListeners();
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  /// Archive an agent: hidden, its routines paused, nothing deleted.
+  Future<String?> archiveAgent(Agent a) async {
+    final err = await updateAgent(a, fields: {'archived': true});
+    if (err == null && channel == a.mainChannelId) await openHome();
+    return err;
+  }
+
+  /// The routines of `a` (`tern` owns those from before agents).
+  List<Schedule> schedulesOf(Agent a) => [
+    for (final s in schedules)
+      if (s.agentId == a.id) s,
+  ];
 
   /// Create a topic channel and open it. Returns the daemon's reason on
   /// failure.
@@ -691,7 +908,7 @@ class TernStore extends ChangeNotifier {
         final quoted = '${_quote(b.quote)}\n\n$text';
         final started = await client.send(
           quoted,
-          channel: homeId,
+          channel: streamOpen ? streamChannel : homeId,
           branchedFrom: b.from,
         );
         _runSession[started.runId] = started.sessionId;
@@ -701,16 +918,16 @@ class TernStore extends ChangeNotifier {
         t.items.insert(0, UserItem(quoted));
         t.activeRun ??= started.runId;
         // Its card in the stream.
-        if (homeOpen) {
-          if (transcripts[homeKey]?.activeRun == null) {
+        if (streamOpen) {
+          if (transcripts[streamKey]?.activeRun == null) {
             await _loadHome();
           } else {
-            _homeDirty = true;
+            _streamDirty = true;
           }
         }
       } else if (thread case final s?) {
         // Continuing an earlier segment: its run shows here, not in Home.
-        if (s != home?.mainSessionId) _homeSessions.remove(s);
+        if (s != stream?.mainSessionId) _streamSessions.remove(s);
         final t = transcripts.putIfAbsent(s, Transcript.new);
         t.items.add(UserItem(text));
         notifyListeners();
@@ -782,7 +999,7 @@ class TernStore extends ChangeNotifier {
   };
 
   Transcript? _transcriptFor(String session) => transcripts.putIfAbsent(
-    _homeSessions.contains(session) ? homeKey : session,
+    _streamSessions.contains(session) ? streamKey : session,
     Transcript.new,
   );
 
@@ -812,11 +1029,11 @@ class TernStore extends ChangeNotifier {
         session = sessionId;
         _runSession[runId] = sessionId;
         if (e.parentRunId case final p?) _parentOf[runId] = p;
-        // A run in Home we haven't placed: maybe a new segment.
-        if (e.channelId == homeId &&
+        // A run in the open stream we haven't placed: maybe a new segment.
+        if (e.channelId == streamChannel &&
             e.parentRunId == null &&
-            homeOpen &&
-            !_homeSessions.contains(sessionId)) {
+            streamOpen &&
+            !_streamSessions.contains(sessionId)) {
           unawaited(_refreshChannels());
         }
       case SubagentSpawned(
@@ -851,6 +1068,9 @@ class TernStore extends ChangeNotifier {
       case ChannelsChanged():
         unawaited(_refreshChannels());
         return;
+      case AgentsChanged():
+        unawaited(_refreshAgents());
+        return;
       case UnknownEvent():
         return;
     }
@@ -860,6 +1080,21 @@ class TernStore extends ChangeNotifier {
       return;
     }
     var changed = _transcriptFor(session)!.apply(e);
+    if (hasChannels) {
+      switch (e) {
+        case ApprovalRequested(:final approval):
+          _mirror(
+            approval.channelId,
+            (i) => i is ApprovalItem && i.approval.id == approval.id,
+          );
+        case SecretRequested(:final request):
+          _mirror(
+            request.channelId,
+            (i) => i is SecretRequestItem && i.request.id == request.id,
+          );
+        default:
+      }
+    }
     // Home holds every approval and secret request; a run ending closes
     // its own there too.
     if (e is RunFinished && hasChannels && session != homeKey) {
@@ -920,14 +1155,14 @@ class TernStore extends ChangeNotifier {
       !appActive ||
       (selected != session &&
           thread != session &&
-          !(homeOpen && _homeSessions.contains(session)));
+          !(streamOpen && _streamSessions.contains(session)));
 
   void _notifyApproval(Approval a) {
     if (!_unseen(a.sessionId)) return;
     unawaited(
       notifier.show(
         id: a.id,
-        title: '${a.agentLabel ?? 'tern'} wants to run ${a.tool}',
+        title: '${askerName(a)} wants to run ${a.tool}',
         body: [a.headline, ?a.taintNote].join('\n'),
         approval: true,
       ),
@@ -1005,8 +1240,10 @@ class TernStore extends ChangeNotifier {
               .firstOrNull ??
           id;
       unawaited(
-        session == homeKey || _homeSessions.contains(session)
+        session == homeKey
             ? openHome()
+            : _streamSessions.contains(session)
+            ? openStream(streamChannel)
             : open(session),
       );
       return;
@@ -1060,7 +1297,7 @@ class TernStore extends ChangeNotifier {
 
   Future<void> _afterRun(String session, RunFinished e) async {
     try {
-      if (homeOpen && _homeDirty && _homeSessions.contains(session)) {
+      if (streamOpen && _streamDirty && _streamSessions.contains(session)) {
         await _loadHome();
       }
       sessions = await client.sessions();
@@ -1091,9 +1328,10 @@ class TernStore extends ChangeNotifier {
   }
 
   void newConversation() {
-    // With Home, a new conversation is a new topic in its stream.
+    // With Home, a new conversation is a new topic in its stream (or in
+    // the open agent's DM).
     if (hasChannels) {
-      unawaited(openHome(newTopic: true));
+      unawaited(openStream(streamOpen ? channel! : homeId, newTopic: true));
       return;
     }
     page = null;
@@ -1105,7 +1343,7 @@ class TernStore extends ChangeNotifier {
   }
 
   Future<void> send(String text) async {
-    if (homeOpen) return _sendHome(text);
+    if (streamOpen) return _sendHome(text);
     if (topicOpen) return _sendChannel(text);
     error = null;
     final session = selected;
@@ -1136,31 +1374,34 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Send into Home: to the current segment, a new one when the daemon
-  /// cuts (or [newTopic]), or queued for the run already working there.
+  /// Send into the open stream (Home or a DM): to the current segment, a
+  /// new one when the daemon cuts (or [newTopic]), or queued for the run
+  /// already working there.
   Future<void> _sendHome(String text) async {
     error = null;
     final topic = newTopic;
     final item = UserItem(text);
-    final t = transcripts.putIfAbsent(homeKey, Transcript.new);
+    final id = streamChannel;
+    final t = transcripts.putIfAbsent(streamKey, Transcript.new);
     if (!topic) {
       t.items.add(item);
       notifyListeners();
     }
     try {
-      final sent = await client.sendToChannel(homeId, text, newTopic: topic);
+      final sent = await client.sendToChannel(id, text, newTopic: topic);
       newTopic = false;
       _runSession[sent.runId] = sent.sessionId;
-      _homeSessions.add(sent.sessionId);
+      _runChannel[sent.runId] = id;
+      _streamSessions.add(sent.sessionId);
       item.queued = sent.queued;
       if (sent.newSegment || selected != sent.sessionId) {
         // A new segment: show where it was cut. Its carry-over comes with
         // its first run, so look again when that finishes.
         channels = await client.channels();
         await _loadHome();
-        _homeDirty = true;
+        _streamDirty = true;
       }
-      transcripts[homeKey]?.activeRun ??= sent.runId;
+      transcripts[streamKey]?.activeRun ??= sent.runId;
       sessions = await client.sessions();
     } on TernException catch (e) {
       error = e.message;
@@ -1248,6 +1489,7 @@ class TernStore extends ChangeNotifier {
     String? deliverTo,
     ScheduleLimits limits = const ScheduleLimits(),
     String? channel,
+    String? agent,
   }) async {
     try {
       if (id == null) {
@@ -1257,6 +1499,7 @@ class TernStore extends ChangeNotifier {
           deliverTo: deliverTo,
           limits: limits,
           channel: channel,
+          agent: agent,
         );
       } else {
         await client.updateSchedule(
@@ -1266,6 +1509,7 @@ class TernStore extends ChangeNotifier {
           deliverTo: deliverTo ?? 'none',
           limits: limits,
           channel: channel,
+          agent: agent,
         );
       }
       await refreshSchedules();

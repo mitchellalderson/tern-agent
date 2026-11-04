@@ -8,6 +8,7 @@ import '../theme.dart';
 import 'history.dart';
 import 'items.dart';
 import 'model_picker.dart';
+import 'agent_sheet.dart';
 import 'providers.dart';
 import 'widgets.dart';
 
@@ -45,9 +46,13 @@ class _ConversationViewState extends State<ConversationView> {
     // The activity line sits below the newest item (index 0, reversed).
     final extra = phase == null ? 0 : 1;
     // Home: "Load earlier" above the oldest item.
-    final earlier = store.homeOpen && store.homeNext != null ? 1 : 0;
+    final earlier = store.streamOpen && store.homeNext != null ? 1 : 0;
+    // Home keeps its name whatever the default agent is called (agent
+    // profiles open question 7); a DM is its agent's name.
     final title = store.homeOpen
         ? 'Home'
+        : store.streamOpen
+        ? store.streamAgent?.name ?? store.openChannel?.title ?? ''
         : store.sessions
                   .where((s) => s.id == store.selected)
                   .firstOrNull
@@ -104,7 +109,7 @@ class _ConversationViewState extends State<ConversationView> {
                                 : ItemView(
                                     item: item,
                                     store: store,
-                                    branchable: store.homeOpen,
+                                    branchable: store.streamOpen,
                                   ),
                           ),
                         ),
@@ -151,7 +156,10 @@ class _Header extends StatelessWidget {
         alignment: Alignment.center,
         child: Row(
           children: [
-            const AgentAvatar(name: 'tern', size: 24),
+            switch (store.streamAgent) {
+              final a? => AgentAvatar.of(a, size: 24),
+              null => const AgentAvatar(name: 'tern', size: 24),
+            },
             const SizedBox(width: 10),
             Expanded(
               child: Text(
@@ -181,7 +189,13 @@ class _Header extends StatelessWidget {
                 window: contextWindow,
                 compactAt: compactAt,
               ),
-            if (store.homeOpen)
+            if (store.streamAgent case final a? when store.hasAgents)
+              QuietIconButton(
+                icon: Icons.tune,
+                tooltip: 'Edit ${a.name}',
+                onPressed: () => showAgentSheet(context, store, agent: a),
+              ),
+            if (store.streamOpen)
               TextButton.icon(
                 onPressed: () => showHistory(context, store),
                 icon: Icon(Icons.history, size: 15, color: c.muted),
@@ -391,11 +405,11 @@ class _ComposerState extends State<Composer> {
   }
 
   static String _hint(TernStore store) {
-    if (store.homeOpen && store.newTopic) return 'Start a new topic';
+    if (store.streamOpen && store.newTopic) return 'Start a new topic';
     if (store.openChannel case final ch? when store.topicOpen) {
       return 'Message #${ch.slug}';
     }
-    return 'Message tern';
+    return 'Message ${store.streamAgent?.name ?? 'tern'}';
   }
 
   @override
@@ -411,7 +425,7 @@ class _ComposerState extends State<Composer> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (store.homeOpen && store.newTopic)
+            if (store.streamOpen && store.newTopic)
               Padding(
                 padding: const EdgeInsets.only(left: 6, bottom: 6),
                 child: InputChip(
@@ -429,8 +443,8 @@ class _ComposerState extends State<Composer> {
               Padding(
                 padding: const EdgeInsets.only(left: 14, bottom: 6),
                 child: Text(
-                  store.homeOpen || store.topicOpen
-                      ? 'tern will read this at its next step. Stop ends the run.'
+                  store.streamOpen || store.topicOpen
+                      ? '${store.streamAgent?.name ?? 'tern'} will read this at its next step. Stop ends the run.'
                       : 'Sending will stop the current run.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
@@ -450,11 +464,11 @@ class _ComposerState extends State<Composer> {
                   ),
                 ],
               ),
-              padding: EdgeInsets.fromLTRB(store.homeOpen ? 6 : 18, 4, 6, 4),
+              padding: EdgeInsets.fromLTRB(store.streamOpen ? 6 : 18, 4, 6, 4),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  if (store.homeOpen)
+                  if (store.streamOpen)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 4, right: 4),
                       child: QuietIconButton(

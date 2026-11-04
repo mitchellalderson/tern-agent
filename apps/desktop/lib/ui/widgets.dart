@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:tern_client/tern_client.dart';
 import 'package:flutter/services.dart';
 
 import '../theme.dart';
@@ -53,10 +54,48 @@ class WindowDragArea extends StatelessWidget {
 
 /// The agent's face: a rounded shape with two eyes, coloured by name.
 class AgentAvatar extends StatelessWidget {
-  const AgentAvatar({super.key, required this.name, this.size = 28});
+  const AgentAvatar({
+    super.key,
+    required this.name,
+    this.size = 28,
+    this.glyph,
+    this.color,
+  });
 
+  /// An agent profile's avatar: its glyph and colour, or generated from
+  /// its id (gui-spec §8).
+  factory AgentAvatar.of(Agent a, {double size = 28, Key? key}) => AgentAvatar(
+    key: key,
+    name: a.id,
+    size: size,
+    glyph: a.avatar?.glyph,
+    color: a.avatar?.color,
+  );
+
+  /// Picks the colour when [color] is unset.
   final String name;
   final double size;
+
+  /// Shown instead of the eyes.
+  final String? glyph;
+
+  /// One of [colorNames].
+  final String? color;
+
+  /// The eight avatar colours, by the names the API uses.
+  static const colorNames = [
+    'amber',
+    'teal',
+    'violet',
+    'pink',
+    'blue',
+    'orange',
+    'purple',
+    'green',
+  ];
+
+  /// Glyphs offered by the agent sheet.
+  static const glyphs = ['●', '■', '▲', '★', '♥', '♦', '♣', '♠', '☾', '✓'];
 
   static const _palette = [
     Color(0xFFF59E3B),
@@ -69,10 +108,36 @@ class AgentAvatar extends StatelessWidget {
     Color(0xFF5BAE5B),
   ];
 
+  static Color colorFor(String name, [String? color]) {
+    final i = color == null ? -1 : colorNames.indexOf(color);
+    return _palette[i >= 0
+        ? i
+        : name.codeUnits.fold(0, (a, b) => a + b) % _palette.length];
+  }
+
   @override
   Widget build(BuildContext context) {
-    final color =
-        _palette[name.codeUnits.fold(0, (a, b) => a + b) % _palette.length];
+    final color = colorFor(name, this.color);
+    if (glyph case final g?) {
+      return Container(
+        width: size,
+        height: size,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(size * 0.42),
+        ),
+        child: Text(
+          g,
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: size * 0.5,
+            height: 1,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      );
+    }
     final eye = Container(
       width: size * 0.1,
       height: size * 0.26,

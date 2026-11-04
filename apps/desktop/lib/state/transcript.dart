@@ -433,7 +433,8 @@ class Transcript {
           ModelsChanged() ||
           McpChanged() ||
           PostCreated() ||
-          ChannelsChanged():
+          ChannelsChanged() ||
+          AgentsChanged():
         return false;
     }
     return true;

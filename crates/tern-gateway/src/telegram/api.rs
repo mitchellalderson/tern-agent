@@ -48,6 +48,9 @@ pub struct Message {
     pub chat: Chat,
     pub from: Option<User>,
     pub text: Option<String>,
+    /// In a forum supergroup: the topic it was posted in.
+    #[serde(default)]
+    pub message_thread_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +58,9 @@ pub struct Chat {
     pub id: i64,
     #[serde(rename = "type", default)]
     pub kind: String,
+    /// A supergroup with topics enabled.
+    #[serde(default)]
+    pub is_forum: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -167,7 +173,21 @@ impl Api {
         text: &str,
         buttons: Option<&Buttons>,
     ) -> Result<i64, ApiError> {
+        self.send_message_in(chat, None, text, buttons).await
+    }
+
+    /// [`Api::send_message`] into a forum topic (`thread`).
+    pub async fn send_message_in(
+        &self,
+        chat: i64,
+        thread: Option<i64>,
+        text: &str,
+        buttons: Option<&Buttons>,
+    ) -> Result<i64, ApiError> {
         let mut body = json!({ "chat_id": chat, "text": text });
+        if let Some(t) = thread {
+            body["message_thread_id"] = t.into();
+        }
         if buttons.is_some() {
             body["reply_markup"] = Self::markup(buttons);
         }
@@ -207,6 +227,17 @@ impl Api {
         )
         .await
         .map(|_| ())
+    }
+
+    /// Open a topic in a forum supergroup (the bot must be an admin that
+    /// may manage topics). Returns its thread id.
+    pub async fn create_forum_topic(&self, chat: i64, name: &str) -> Result<i64, ApiError> {
+        let v = self
+            .call("createForumTopic", json!({ "chat_id": chat, "name": name }))
+            .await?;
+        v.get("message_thread_id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| ApiError::Http("createForumTopic returned no thread id".into()))
     }
 
     pub async fn typing(&self, chat: i64) {

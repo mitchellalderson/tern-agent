@@ -5,12 +5,13 @@ import '../state/transcript.dart';
 import '../theme.dart';
 import 'agents.dart';
 import 'inspector.dart';
+import 'memory_section.dart';
 import 'routines.dart';
 import 'tools.dart';
 import 'widgets.dart';
 
-/// What the agent is doing (spec §2.3). Routines, connectors and memory
-/// join it once the engine exposes them.
+/// What the agent is doing (spec §2.3): per agent with profiles, its
+/// routines, tools and memory (agent profiles §7.2).
 class SidePanel extends StatelessWidget {
   const SidePanel({super.key, required this.store, required this.onClose});
 
@@ -198,6 +199,10 @@ class SidePanel extends StatelessWidget {
                 ],
                 const SizedBox(height: 22),
                 ToolsSection(store: store),
+                if (store.hasAgents) ...[
+                  const SizedBox(height: 22),
+                  MemorySection(store: store),
+                ],
               ],
             ),
           ),

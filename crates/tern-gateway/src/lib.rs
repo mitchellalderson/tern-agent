@@ -3,6 +3,52 @@
 
 pub mod telegram;
 
+/// Which agent profile a chat talks to (agent profiles §6.4): `/agent` in
+/// a chat (or a forum topic) sets it. Kept in the store, so the daemon
+/// finds the chat's session and the gateway its reply prefix.
+pub mod chat_agents {
+    use tern_store::{DEFAULT_AGENT, Store};
+
+    const NS: &str = "chat_agent";
+
+    /// The agent `chat` (on `source`) talks to: the default agent unless
+    /// `/agent` chose an active other one.
+    pub fn get(store: &Store, source: &str, chat: &str) -> String {
+        store
+            .kv_get(NS, &format!("{source}:{chat}"))
+            .ok()
+            .flatten()
+            .filter(|id| {
+                store
+                    .agent(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|a| a.archived_at.is_none())
+            })
+            .unwrap_or_else(|| DEFAULT_AGENT.into())
+    }
+
+    pub fn set(store: &Store, source: &str, chat: &str, agent: &str) -> tern_store::Result<()> {
+        let key = format!("{source}:{chat}");
+        if agent == DEFAULT_AGENT {
+            store.kv_delete(NS, &key)
+        } else {
+            store.kv_set(NS, &key, agent)
+        }
+    }
+
+    /// The `external_ref` of the chat's sessions with `agent`: the chat
+    /// itself for the default agent (as before profiles), else
+    /// `<chat>|<agent id>`, so each agent has its own stream in the chat.
+    pub fn session_ref(chat: &str, agent: &str) -> String {
+        if agent == DEFAULT_AGENT {
+            chat.to_owned()
+        } else {
+            format!("{chat}|{agent}")
+        }
+    }
+}
+
 use std::sync::Arc;
 
 use async_trait::async_trait;

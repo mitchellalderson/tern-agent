@@ -464,7 +464,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
                 Icon(Icons.front_hand_outlined, size: 16, color: c.warn),
                 const SizedBox(width: 8),
                 Text(
-                  '${a.agentLabel ?? 'tern'} wants to run ${a.tool}',
+                  '${widget.store.askerName(a)} wants to run ${a.tool}',
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),

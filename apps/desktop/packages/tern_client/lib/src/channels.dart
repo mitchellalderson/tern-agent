@@ -14,6 +14,7 @@ class Channel {
     this.needsYou = 0,
     this.activeRuns = 0,
     this.archived = false,
+    this.agentId,
     required this.updatedAt,
   });
 
@@ -28,6 +29,7 @@ class Channel {
     needsYou: j['needs_you'] as int? ?? 0,
     activeRuns: j['active_runs'] as int? ?? 0,
     archived: j['archived'] as bool? ?? false,
+    agentId: j['agent_id'] as String?,
     updatedAt: _time(j['updated_at'] as int? ?? 0),
   );
 
@@ -49,9 +51,20 @@ class Channel {
   /// Runs in progress in its threads.
   final int activeRuns;
   final bool archived;
+
+  /// A main channel: whose DM it is (`tern` for Home); a topic channel:
+  /// its lead.
+  final String? agentId;
   final DateTime updatedAt;
 
-  bool get isHome => kind == 'main';
+  /// The default agent's DM. Older cores have no other main channel.
+  bool get isHome => id == 'home' || (kind == 'main' && agentId == null);
+
+  /// Home or an agent's DM: a stream, not a timeline.
+  bool get isMain => kind == 'main';
+
+  /// An agent's DM other than Home.
+  bool get isDm => isMain && !isHome;
 }
 
 /// What an agent, a routine or the user said in a channel.

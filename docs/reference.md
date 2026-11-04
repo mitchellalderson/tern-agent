@@ -408,6 +408,7 @@ You can have several agents, each with its own job: a name and avatar, a **perso
 - **Routines belong to an agent.** A schedule an agent creates (`schedule_create` in its DM) is its own: it runs as that agent and posts to its DM. The `schedule_*` tools see and change only the calling agent's schedules. Archiving an agent pauses its routines.
 - **Approvals still land in Home**, whichever agent asks; an agent's DM also shows its own (one request, answered in either place).
 - **Edits apply to the next run.** A run freezes its agent's persona, model, tool scope and memory scope when it starts.
+- **In the desktop app**, AGENTS in the sidebar lists your agents under Home (which carries tern's avatar; right-click it to edit tern): a badge counts what waits for you, a spinner shows one working, a dot new routine posts, and **+** creates one. An agent's row opens its DM, the same view as Home (dividers, New topic, History, side chats) with its name and avatar, its model, and **Edit** (the tune icon). The sheet has a template (Research, Inbox, Marketing, Blank; a template's routine can be added with it), name, avatar (glyph and colour), persona with what tern adds to every agent shown read-only beneath, model (a comma-separated list is a fallback chain), tools (built-ins, connectors, MCP servers with their status, skills; **Read-only** in one click), memory (Private / Shared) and Archive. The side panel follows the agent: its routines (**All** shows every agent's), the tools it may use, and its memory with chips for its own and the shared memories (in Home, Shared and each private agent). An approval from an agent's DM shows there as well as in Home: one request, answered in either.
 - **TUI**: `/agent <name>` talks to that agent in its DM (`/new` starts a new topic there, `/agent tern` goes back), `/agents` lists them with what's working and waiting. A sub-agent of the current run with the same label wins.
 - **API** (`agents` in `/v1/health`): `GET/POST /v1/agents`, `PATCH /v1/agents/{id}` (any field, `archived: true`), `GET/PUT /v1/agents/{id}/persona` (GET adds `system_sections`), `GET /v1/agents/templates`, `GET /v1/memories?agent=shared|<agent>&q=`, `GET /v1/schedules?agent=` and `agent` on schedule create/update. `/v1/events` adds `{"agents_changed": {}}`; run events, approvals and secret requests carry `agent_id`, and sessions their `agent_id` when not `tern`.
 
@@ -451,6 +452,8 @@ Channels are topic timelines (`#finances`, `#launch`) over one shared memory; se
 3. Start `tern daemon`, run `tern gateway pair`, and send the printed code to your bot.
 
 Only paired Telegram accounts can talk to the bot or answer its approval buttons.
+
+**Agents in Telegram.** `/agents` lists your [agents](#agents); `/agent research` switches the chat to Research's DM (its replies start `Research · `), and `/agent tern` goes back. Each agent keeps its own stream in the chat, cut by the same rules (`/new` is a new topic with the agent you're talking to). In a group with **topics** enabled, where the bot is an admin that may manage topics, `/agent research` opens a topic named Research instead: everything written there goes to Research. Approvals for a run go to the chat or topic that started it.
 
 ### Remote access
 

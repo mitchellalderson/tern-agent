@@ -397,6 +397,8 @@ class Approval {
     this.agentLabel,
     this.rootSessionId,
     this.taint,
+    this.channelId,
+    this.agentId,
   });
 
   factory Approval.fromJson(Json j) => Approval(
@@ -412,7 +414,14 @@ class Approval {
     agentLabel: j['agent_label'] as String?,
     rootSessionId: j['root_session_id'] as String?,
     taint: j['taint'] as String?,
+    channelId: j['channel_id'] as String?,
+    agentId: j['agent_id'] as String?,
   );
+
+  /// The channel of the conversation the user started (agent profiles):
+  /// an agent's DM shows its card as well as Home.
+  final String? channelId;
+  final String? agentId;
 
   final String id;
   final String runId;
@@ -479,6 +488,7 @@ sealed class TernEvent {
       return PostCreated(Post.fromJson(p['post'] as Json));
     }
     if (j.containsKey('channels_changed')) return const ChannelsChanged();
+    if (j.containsKey('agents_changed')) return const AgentsChanged();
     final run = j['run_id'] as String? ?? '';
     final event = _agentEvent(j, run);
     if (event is RunEvent) {
@@ -794,6 +804,11 @@ class ChannelsChanged extends TernEvent {
   const ChannelsChanged();
 }
 
+/// An agent profile was created, edited or archived.
+class AgentsChanged extends TernEvent {
+  const AgentsChanged();
+}
+
 class UnknownEvent extends TernEvent {
   const UnknownEvent(this.json);
   final Json json;
@@ -817,6 +832,7 @@ class Schedule {
     this.pausedUntil,
     this.pausedReason,
     this.channelId = 'home',
+    this.agentId = 'tern',
   });
 
   factory Schedule.fromJson(Json j) => Schedule(
@@ -835,6 +851,7 @@ class Schedule {
     pausedUntil: _maybeTime(j['paused_until']),
     pausedReason: j['paused_reason'] as String?,
     channelId: j['channel_id'] as String? ?? 'home',
+    agentId: j['agent_id'] as String? ?? 'tern',
   );
 
   final String id;
@@ -868,6 +885,9 @@ class Schedule {
 
   /// The channel its results are posted to.
   final String channelId;
+
+  /// The agent whose job it is.
+  final String agentId;
 
   bool get pausedByBudget => paused == 'budget';
 }

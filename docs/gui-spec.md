@@ -250,7 +250,7 @@ Each phase ends usable, like the engine milestones.
 | G2 | Side panel: activity, routines CRUD, run inspector | schedules API, `runs/{id}/steps` |
 | G3 | Library: connectors (try and activate), MCP, skills, memory, settings | connectors, mcp, skills, memories, allowlist, secrets, config APIs |
 | G4 | Channels: Telegram status, pairing with QR, routing | gateway API |
-| G5 | Agents: sidebar of agent profiles, per-agent routines, memory scope, channel routing | §7.2; [agent-profiles-design.md](agent-profiles-design.md) AP1 |
+| G5 | Agents: sidebar of agent profiles, per-agent routines, memory scope, channel routing | §7.2; [agent-profiles-design.md](agent-profiles-design.md) AP1 (built; topic-channel membership is AP2) |
 | G6 | Polish: menu bar extra, quick switcher, packaging and notarization, Linux build | — |
 
 ## 11. Open questions

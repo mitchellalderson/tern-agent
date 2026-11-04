@@ -251,7 +251,7 @@ pub fn templates() -> Vec<Template> {
             tools: Some(read_only),
             memory: "private",
             routine: None,
-            avatar: ("◕", "blue"),
+            avatar: ("★", "blue"),
         },
         Template {
             id: "inbox",
@@ -267,7 +267,7 @@ pub fn templates() -> Vec<Template> {
                 "0 8 * * 1-5",
                 "Check my inbox and tell me what needs a reply today, most urgent first.",
             )),
-            avatar: ("◔", "amber"),
+            avatar: ("■", "amber"),
         },
         Template {
             id: "marketing",
@@ -280,7 +280,7 @@ pub fn templates() -> Vec<Template> {
                 "0 9 * * 1-5",
                 "Draft today's posts from what's new, ready for me to review.",
             )),
-            avatar: ("◑", "pink"),
+            avatar: ("♥", "pink"),
         },
         Template {
             id: "blank",

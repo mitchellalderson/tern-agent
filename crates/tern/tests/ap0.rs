@@ -99,7 +99,7 @@ async fn agents_are_created_listed_renamed_and_archived_with_their_dms() {
         (Some("tern:research"), Some("research"), Some("private"))
     );
     assert_eq!(a["tools"]["builtins"], "read_only");
-    assert_eq!(a["avatar"]["glyph"], "◕");
+    assert_eq!(a["avatar"]["glyph"], "★");
     let dm = a["main_channel_id"].as_str().unwrap().to_owned();
     let persona = env.tern_home.join("agents/research/persona.md");
     assert!(

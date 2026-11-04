@@ -5,6 +5,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'agent_sheet.dart' show agentAllows;
 import 'mcp.dart';
 import 'widgets.dart';
 
@@ -32,7 +33,14 @@ class _ToolsSectionState extends State<ToolsSection> {
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
-    final tools = widget.store.info?.tools ?? const [];
+    // An agent's own scope (agent profiles §1.2) in its DM.
+    final agent = widget.store.hasAgents ? widget.store.streamAgent : null;
+    final tools = <({String name, String description})>[
+      for (final t
+          in widget.store.info?.tools ??
+              const <({String name, String description})>[])
+        if (agent == null || agentAllows(agent, t.name)) t,
+    ];
     final q = _query.text.trim().toLowerCase();
     final shown = q.isEmpty
         ? tools

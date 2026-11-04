@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'agents.dart';
 import 'channels.dart';
 import 'endpoint.dart';
 import 'lifecycle.dart';
@@ -299,6 +300,72 @@ class TernClient {
           SessionItem.fromJson(s as Json),
       ];
 
+  // ---- agent profiles (docs/agent-profiles-design.md §7.1) ----
+
+  /// Agents, the default first; with `archived`, archived ones too.
+  Future<List<Agent>> agents({bool archived = false}) async => [
+    for (final a
+        in await _json('GET', '/v1/agents${archived ? '?archived=1' : ''}')
+            as List)
+      Agent.fromJson(a as Json),
+  ];
+
+  Future<List<AgentTemplate>> agentTemplates() async => [
+    for (final t in await _json('GET', '/v1/agents/templates') as List)
+      AgentTemplate.fromJson(t as Json),
+  ];
+
+  /// Create an agent and its DM. `model` is one model or a chain. Throws
+  /// [TernException] (409) if the name is taken.
+  Future<Agent> createAgent({
+    required String name,
+    String? slug,
+    AvatarSpec? avatar,
+    String? persona,
+    List<String>? model,
+    ToolScope? tools,
+    String? memory,
+    String? template,
+  }) async => Agent.fromJson(
+    await _json('POST', '/v1/agents', {
+      'name': name,
+      'slug': ?slug,
+      'avatar': ?avatar?.toJson(),
+      'persona': ?persona,
+      if (model != null && model.isNotEmpty)
+        'model': model.length == 1 ? model.first : model,
+      'tools': ?tools?.toJson(),
+      'memory': ?memory,
+      'template': ?template,
+    }),
+  );
+
+  /// Change an agent: `fields` as the API takes them (`null` clears one,
+  /// `archived: true` archives it).
+  Future<Agent> updateAgent(String id, Json fields) async =>
+      Agent.fromJson(await _json('PATCH', '/v1/agents/${_seg(id)}', fields));
+
+  Future<Persona> persona(String id) async =>
+      Persona.fromJson(await _json('GET', '/v1/agents/${_seg(id)}/persona'));
+
+  Future<void> setPersona(String id, String persona) =>
+      _json('PUT', '/v1/agents/${_seg(id)}/persona', {'persona': persona});
+
+  /// Memories: `agent` is `shared`, an agent (its own), or null for all.
+  Future<List<Memory>> memories({String? agent, String? query}) async {
+    final q = [
+      if (agent != null) 'agent=${Uri.encodeQueryComponent(agent)}',
+      if (query != null && query.isNotEmpty)
+        'q=${Uri.encodeQueryComponent(query)}',
+    ].join('&');
+    return [
+      for (final m
+          in await _json('GET', '/v1/memories${q.isEmpty ? '' : '?$q'}')
+              as List)
+        Memory.fromJson(m as Json),
+    ];
+  }
+
   Future<List<Channel>> channels({bool archived = false}) async => [
     for (final c
         in await _json('GET', '/v1/channels${archived ? '?archived=1' : ''}')
@@ -463,12 +530,14 @@ class TernClient {
     String? deliverTo,
     ScheduleLimits? limits,
     String? channel,
+    String? agent,
   }) async => Schedule.fromJson(
     await _json('POST', '/v1/schedules', {
       'cron': cron,
       'prompt': prompt,
       'deliver_to': ?deliverTo,
       'channel': ?channel,
+      'agent': ?agent,
       ...?limits?.toJson(),
     }),
   );
@@ -484,6 +553,7 @@ class TernClient {
     ScheduleLimits? limits,
     bool resume = false,
     String? channel,
+    String? agent,
   }) async => Schedule.fromJson(
     await _json('PATCH', '/v1/schedules/$id', {
       'cron': ?cron,
@@ -491,6 +561,7 @@ class TernClient {
       'enabled': ?enabled,
       'deliver_to': ?deliverTo,
       'channel': ?channel,
+      'agent': ?agent,
       ...?limits?.toJson(),
       if (resume) 'resume': true,
     }),

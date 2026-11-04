@@ -26,8 +26,9 @@ void main() {
     final free = await ServerSocket.bind('127.0.0.1', 0);
     port = free.port;
     await free.close();
-    await File('$home/config.toml')
-        .writeAsString('[api]\nlisten = ["unix", "tcp://127.0.0.1:$port"]\n');
+    await File(
+      '$home/config.toml',
+    ).writeAsString('[api]\nlisten = ["unix", "tcp://127.0.0.1:$port"]\n');
     final script = File('${tmp.path}/script.json');
     await script.writeAsString(
       jsonEncode({

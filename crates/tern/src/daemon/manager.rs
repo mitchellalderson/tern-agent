@@ -735,14 +735,36 @@ impl Manager {
             .is_ok_and(|a| a.values().any(|x| x.run_id == run_id))
     }
 
+    /// The `external_ref` of `chat`'s sessions with the agent it talks to
+    /// (`/agent` in Telegram; agent profiles §6.4).
+    fn chat_key(&self, source: &str, chat: &str) -> (String, String) {
+        let agent = tern_gateway::chat_agents::get(&self.rt.store, source, chat);
+        let key = tern_gateway::chat_agents::session_ref(chat, &agent);
+        (agent, key)
+    }
+
+    /// The chat's current session: the default agent's in Home (as before
+    /// profiles), another agent's in its DM.
     fn chat_session(&self, source: &str, chat: &str) -> anyhow::Result<tern_store::SessionRow> {
-        if let Some(s) = self.rt.store.latest_session_for(source, chat)? {
+        let (agent, key) = self.chat_key(source, chat);
+        if let Some(s) = self.rt.store.latest_session_for(source, &key)? {
             return Ok(s);
+        }
+        if agent != tern_store::DEFAULT_AGENT
+            && let Some(dm) = self.rt.store.agent_channel(&agent)?
+        {
+            return Ok(self.rt.store.create_thread(&tern_store::NewThread {
+                id: &tern_core::agent::new_id(),
+                source,
+                channel_id: &dm.id,
+                external_ref: Some(&key),
+                ..tern_store::NewThread::default()
+            })?);
         }
         Ok(self.rt.store.create_session_with_ref(
             &tern_core::agent::new_id(),
             source,
-            chat,
+            &key,
             None,
         )?)
     }
@@ -827,18 +849,20 @@ impl ChatHost for Chats {
     }
 
     async fn stop(&self, source: &str, chat: &str) -> bool {
-        match self.0.rt.store.latest_session_for(source, chat) {
+        let (_, key) = self.0.chat_key(source, chat);
+        match self.0.rt.store.latest_session_for(source, &key) {
             Ok(Some(s)) => self.0.stop_session(&s.id, false).await,
             _ => false,
         }
     }
 
     async fn status(&self, source: &str, chat: &str) -> String {
+        let (_, key) = self.0.chat_key(source, chat);
         let session = self
             .0
             .rt
             .store
-            .latest_session_for(source, chat)
+            .latest_session_for(source, &key)
             .ok()
             .flatten();
         let model = self

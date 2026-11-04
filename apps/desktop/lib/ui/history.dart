@@ -39,7 +39,7 @@ class _HistoryDialogState extends State<HistoryDialog> {
     try {
       final all = await widget.store.client.sessions(
         limit: 200,
-        channel: TernStore.homeId,
+        channel: widget.store.streamChannel,
       );
       if (mounted) setState(() => _all = all);
     } on TernException catch (e) {
@@ -69,7 +69,7 @@ class _HistoryDialogState extends State<HistoryDialog> {
   Widget build(BuildContext context) {
     final c = context.colors;
     final q = _search.text.trim().toLowerCase();
-    final head = widget.store.home?.mainSessionId;
+    final head = widget.store.stream?.mainSessionId;
     final shown = (_all ?? const <SessionItem>[])
         .where((s) => q.isEmpty || (s.title ?? '').toLowerCase().contains(q))
         .toList();

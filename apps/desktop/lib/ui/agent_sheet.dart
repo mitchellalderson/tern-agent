@@ -1,0 +1,784 @@
+import 'package:flutter/material.dart';
+import 'package:tern_client/tern_client.dart';
+
+import '../state/store.dart';
+import '../theme.dart';
+import 'channel_view.dart' show slugFor;
+import 'widgets.dart';
+
+/// Create an agent (`agent` null) or edit one: the sheet of agent profiles
+/// §7.2. A template only fills the sheet.
+Future<void> showAgentSheet(
+  BuildContext context,
+  TernStore store, {
+  Agent? agent,
+}) => showDialog<void>(
+  context: context,
+  builder: (_) => AgentSheet(store: store, editing: agent),
+);
+
+/// Built-in tools are the tools that don't come from a connector (`lua__`)
+/// or an MCP server (`mcp__`).
+bool isBuiltin(String tool) =>
+    !tool.startsWith('lua__') && !tool.startsWith('mcp__');
+
+/// The connector a `lua__<connector>__<tool>` tool belongs to.
+String? connectorOf(String tool) =>
+    tool.startsWith('lua__') ? tool.substring(5).split('__').firstOrNull : null;
+
+/// What every agent keeps, whatever its scope (§1.2).
+const systemTools = {
+  'channel_read',
+  'channel_post',
+  'history_search',
+  'secret_request',
+  'memory_save',
+  'memory_search',
+  'profile_edit',
+  'session_search',
+};
+
+/// `tools: "read_only"` (the core's list).
+const readOnlyTools = {
+  'read_file',
+  'list_dir',
+  'search_files',
+  'http_fetch',
+  'memory_search',
+  'session_search',
+  'skill_read',
+};
+
+/// Whether agent `a`'s scope lets it use `tool` (a missing scope: all).
+bool agentAllows(Agent a, String tool) {
+  final s = a.tools;
+  if (s == null || systemTools.contains(tool)) return true;
+  if (connectorOf(tool) case final c?) return s.connectors.allows(c);
+  if (tool.startsWith('mcp__')) {
+    final server = tool.substring(5).split('__').firstOrNull ?? '';
+    return s.mcp.allows(server);
+  }
+  return s.builtins.all ||
+      (s.builtins.readOnly && readOnlyTools.contains(tool)) ||
+      s.builtins.names.contains(tool);
+}
+
+class AgentSheet extends StatefulWidget {
+  const AgentSheet({super.key, required this.store, this.editing});
+
+  final TernStore store;
+  final Agent? editing;
+
+  @override
+  State<AgentSheet> createState() => _AgentSheetState();
+}
+
+class _AgentSheetState extends State<AgentSheet> {
+  late final _name = TextEditingController(text: widget.editing?.name);
+  final _persona = TextEditingController();
+  late final _model = TextEditingController(
+    text: widget.editing?.model.join(', '),
+  );
+  String? _personaBefore;
+  String? _system;
+  List<AgentTemplate> _templates = [];
+  String? _template;
+  ({String cron, String prompt})? _routine;
+  var _addRoutine = true;
+  late String _glyph =
+      widget.editing?.avatar?.glyph ?? AgentAvatar.glyphs.first;
+  late String _color =
+      widget.editing?.avatar?.color ??
+      AgentAvatar.colorNames[DateTime.now().millisecond % 8];
+  late String _memory = widget.editing?.memory ?? 'private';
+
+  /// The scope being edited; null = everything (the default agent's).
+  late ToolScope? _tools = widget.editing == null
+      ? _narrow()
+      : widget.editing!.tools;
+  String? _error;
+  var _busy = false;
+
+  bool get _creating => widget.editing == null;
+  bool get _isDefault => widget.editing?.isDefault ?? false;
+
+  List<String> get _builtins => [
+    for (final t in widget.store.info?.tools ?? const [])
+      if (isBuiltin(t.name) && !systemTools.contains(t.name)) t.name,
+  ];
+
+  List<String> get _connectors => {
+    for (final t in widget.store.info?.tools ?? const []) ?connectorOf(t.name),
+  }.toList()..sort();
+
+  /// A new agent's default: built-in tools except `shell`, no connectors,
+  /// no MCP servers, all skills.
+  ToolScope _narrow() => ToolScope(
+    builtins: Pick.names([
+      for (final t in _builtins)
+        if (t != 'shell') t,
+    ]),
+    connectors: const Pick.names([]),
+    mcp: const Pick.names([]),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _name.addListener(() => setState(() {}));
+    _load();
+  }
+
+  Future<void> _load() async {
+    final client = widget.store.client;
+    try {
+      if (widget.editing case final a?) {
+        final p = await client.persona(a.id);
+        if (!mounted) return;
+        setState(() {
+          _persona.text = p.persona;
+          _personaBefore = p.persona;
+          _system = p.systemSections;
+        });
+      } else {
+        final t = await client.agentTemplates();
+        if (!mounted) return;
+        setState(() => _templates = t);
+        _apply(t.where((x) => x.id == 'blank').firstOrNull);
+      }
+    } on TernException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    }
+  }
+
+  /// Fill the sheet from a template; never a blank page.
+  void _apply(AgentTemplate? t) {
+    if (t == null) return;
+    setState(() {
+      _template = t.id;
+      if (t.name.isNotEmpty) _name.text = t.name;
+      final name = _name.text.trim().isEmpty ? 'this agent' : _name.text.trim();
+      _persona.text = t.persona.replaceAll('{name}', name);
+      _memory = t.memory;
+      _tools = t.tools ?? _narrow();
+      _routine = t.routine;
+      if (t.avatar case final a?) {
+        _glyph = a.glyph;
+        _color = a.color;
+      }
+    });
+  }
+
+  List<String> _modelChain() => [
+    for (final m in _model.text.split(','))
+      if (m.trim().isNotEmpty) m.trim(),
+  ];
+
+  Future<void> _save() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final store = widget.store;
+    final avatar = AvatarSpec(glyph: _glyph, color: _color);
+    final String? err;
+    if (widget.editing case final a?) {
+      final model = _modelChain();
+      final fields = <String, Object?>{
+        if (_name.text.trim() != a.name) 'name': _name.text.trim(),
+        'avatar': avatar.toJson(),
+        if (model.join(',') != a.model.join(','))
+          'model': model.isEmpty
+              ? null
+              : model.length == 1
+              ? model.first
+              : model,
+        if (!_isDefault) 'memory': _memory,
+        if (!_isDefault || _tools != null) 'tools': _tools?.toJson(),
+      };
+      err = await store.updateAgent(
+        a,
+        fields: fields,
+        persona: _persona.text.trim() == _personaBefore?.trim()
+            ? null
+            : _persona.text,
+      );
+    } else {
+      err = await store.createAgent(
+        name: _name.text.trim(),
+        avatar: avatar,
+        persona: _persona.text,
+        model: _modelChain(),
+        tools: _tools,
+        memory: _memory,
+        template: _template,
+        routine: _addRoutine ? _routine : null,
+      );
+    }
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() {
+        _busy = false;
+        _error = err;
+      });
+    }
+  }
+
+  Widget _section(String label) => Padding(
+    padding: const EdgeInsets.only(top: 16, bottom: 6),
+    child: Text(label, style: Theme.of(context).textTheme.labelSmall),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final editing = widget.editing;
+    final slug = _isDefault ? 'tern' : editing?.slug ?? slugFor(_name.text);
+    final ok = _name.text.trim().isNotEmpty && slug.isNotEmpty && !_busy;
+    final input = InputDecoration(
+      isDense: true,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+    );
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 760),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 20, 22, 0),
+              child: Row(
+                children: [
+                  AgentAvatar(
+                    name: editing?.id ?? slug,
+                    size: 34,
+                    glyph: _glyph,
+                    color: _color,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          editing == null
+                              ? 'New agent'
+                              : 'Edit ${editing.name}',
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          _isDefault
+                              ? 'Your default agent. Home is its chat.'
+                              : 'Its own job, chat and memory. Changes apply '
+                                    'from its next run.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (_creating && _templates.isNotEmpty) ...[
+                      _section('START FROM'),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: [
+                          for (final t in _templates)
+                            Tooltip(
+                              message: t.description,
+                              child: ChoiceChip(
+                                label: Text(t.name.isEmpty ? 'Blank' : t.name),
+                                selected: _template == t.id,
+                                onSelected: (_) => _apply(t),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                    _section('NAME'),
+                    TextField(
+                      key: const Key('agent-name'),
+                      controller: _name,
+                      autofocus: _creating,
+                      decoration: input.copyWith(
+                        hintText: 'Research',
+                        helperText: slug.isEmpty ? null : '@$slug',
+                      ),
+                    ),
+                    _section('AVATAR'),
+                    _AvatarPicker(
+                      glyph: _glyph,
+                      color: _color,
+                      onGlyph: (g) => setState(() => _glyph = g),
+                      onColor: (v) => setState(() => _color = v),
+                    ),
+                    _section('PERSONA'),
+                    TextField(
+                      key: const Key('agent-persona'),
+                      controller: _persona,
+                      minLines: 6,
+                      maxLines: 12,
+                      style: const TextStyle(fontSize: 13),
+                      decoration: input.copyWith(
+                        hintText: 'Who it is, its job, its tone.',
+                      ),
+                    ),
+                    Theme(
+                      data: Theme.of(context)
+                          .copyWith(dividerColor: Colors.transparent),
+                      child: ExpansionTile(
+                        tilePadding: EdgeInsets.zero,
+                        dense: true,
+                        title: Text(
+                          'tern adds these to every agent',
+                          style: TextStyle(fontSize: 12.5, color: c.muted),
+                        ),
+                        children: [
+                          Container(
+                            width: double.infinity,
+                            constraints: const BoxConstraints(maxHeight: 180),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: c.sidebar,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: SingleChildScrollView(
+                              child: SelectableText(
+                                _system ??
+                                    'Safety, secrets, untrusted content, '
+                                        'memory, the time, the workspace, '
+                                        'sub-agents and who your other agents '
+                                        'are. A persona changes who the agent '
+                                        'is, not these rules.',
+                                style: mono.copyWith(
+                                  fontSize: 11.5,
+                                  color: c.muted,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    _section('MODEL'),
+                    TextField(
+                      controller: _model,
+                      style: const TextStyle(fontSize: 13),
+                      decoration: input.copyWith(
+                        hintText:
+                            widget.store.info?.defaultModel ?? 'provider:model',
+                        helperText: _isDefault
+                            ? 'Your default model.'
+                            : 'Empty: your default model. A list separated '
+                                  'by commas is a fallback chain.',
+                      ),
+                    ),
+                    _section('TOOLS'),
+                    _ToolScopeEditor(
+                      scope: _tools,
+                      builtins: _builtins,
+                      connectors: _connectors,
+                      mcp: widget.store.mcpServers,
+                      onChanged: (t) => setState(() => _tools = t),
+                    ),
+                    _section('MEMORY'),
+                    RadioGroup<String>(
+                      groupValue: _memory,
+                      onChanged: (v) {
+                        if (v != null && !_isDefault) {
+                          setState(() => _memory = v);
+                        }
+                      },
+                      child: Column(
+                        children: [
+                          _MemoryChoice(
+                            value: 'private',
+                            title: 'Private',
+                            line:
+                                'Its own notes and memories. What it knows '
+                                'about you (user.md) is shared.',
+                            enabled: !_isDefault,
+                          ),
+                          _MemoryChoice(
+                            value: 'shared',
+                            title: 'Shared',
+                            line: 'Reads and writes the memory tern uses.',
+                            enabled: !_isDefault,
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_routine case final r? when _creating)
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        value: _addRoutine,
+                        onChanged: (v) =>
+                            setState(() => _addRoutine = v ?? false),
+                        title: Text(
+                          'Add its routine: ${r.prompt}',
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                        subtitle: Text(
+                          r.cron,
+                          style: mono.copyWith(fontSize: 11.5),
+                        ),
+                      ),
+                    if (_error case final e?) ...[
+                      const SizedBox(height: 10),
+                      Text(e, style: TextStyle(color: c.error, fontSize: 12.5)),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const Hairline(),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 10, 22, 14),
+              child: Row(
+                children: [
+                  if (editing != null && !_isDefault)
+                    TextButton(
+                      onPressed: _busy
+                          ? null
+                          : () async {
+                              Navigator.of(context).pop();
+                              await widget.store.archiveAgent(editing);
+                            },
+                      child: Text('Archive', style: TextStyle(color: c.error)),
+                    ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: ok ? _save : null,
+                    child: Text(editing == null ? 'Create' : 'Save'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _persona.dispose();
+    _model.dispose();
+    super.dispose();
+  }
+}
+
+class _MemoryChoice extends StatelessWidget {
+  const _MemoryChoice({
+    required this.value,
+    required this.title,
+    required this.line,
+    required this.enabled,
+  });
+
+  final String value;
+  final String title;
+  final String line;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) => RadioListTile<String>(
+    value: value,
+    enabled: enabled,
+    dense: true,
+    contentPadding: EdgeInsets.zero,
+    title: Text(title, style: const TextStyle(fontSize: 13)),
+    subtitle: Text(line, style: Theme.of(context).textTheme.bodySmall),
+  );
+}
+
+class _AvatarPicker extends StatelessWidget {
+  const _AvatarPicker({
+    required this.glyph,
+    required this.color,
+    required this.onGlyph,
+    required this.onColor,
+  });
+
+  final String glyph;
+  final String color;
+  final ValueChanged<String> onGlyph;
+  final ValueChanged<String> onColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 4,
+          children: [
+            for (final g in AgentAvatar.glyphs)
+              InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => onGlyph(g),
+                child: Container(
+                  width: 30,
+                  height: 30,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: g == glyph ? c.accent : c.hairline,
+                      width: g == glyph ? 1.5 : 1,
+                    ),
+                  ),
+                  child: Text(g, style: const TextStyle(fontSize: 15)),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 6,
+          children: [
+            for (final name in AgentAvatar.colorNames)
+              Tooltip(
+                message: name,
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () => onColor(name),
+                  child: Container(
+                    width: 22,
+                    height: 22,
+                    decoration: BoxDecoration(
+                      color: AgentAvatar.colorFor(name, name),
+                      shape: BoxShape.circle,
+                      border: name == color
+                          ? Border.all(color: c.text, width: 2)
+                          : null,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Grouped checkboxes for a tool scope (§1.2): built-in tools, connectors,
+/// MCP servers (with their status), skills.
+class _ToolScopeEditor extends StatelessWidget {
+  const _ToolScopeEditor({
+    required this.scope,
+    required this.builtins,
+    required this.connectors,
+    required this.mcp,
+    required this.onChanged,
+  });
+
+  /// Null: everything (the default agent).
+  final ToolScope? scope;
+  final List<String> builtins;
+  final List<String> connectors;
+  final List<McpStatus> mcp;
+  final ValueChanged<ToolScope?> onChanged;
+
+  ToolScope get _s => scope ?? const ToolScope();
+
+  bool _builtinOn(String t) =>
+      _s.builtins.all ||
+      (_s.builtins.readOnly && readOnlyTools.contains(t)) ||
+      _s.builtins.names.contains(t);
+
+  List<String> _toggle(List<String> on, String name, bool value) => [
+    for (final n in on)
+      if (n != name) n,
+    if (value) name,
+  ];
+
+  void _setBuiltin(String t, bool v) {
+    final on = [
+      for (final b in builtins)
+        if (_builtinOn(b)) b,
+    ];
+    onChanged(
+      ToolScope(
+        builtins: Pick.names(_toggle(on, t, v)),
+        connectors: _s.connectors,
+        mcp: _s.mcp,
+        skills: _s.skills,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final small = Theme.of(context).textTheme.bodySmall;
+    Widget group(String title, List<Widget> rows, {Widget? trailing}) =>
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  ?trailing,
+                ],
+              ),
+              Wrap(spacing: 2, runSpacing: 0, children: rows),
+            ],
+          ),
+        );
+    Widget box(
+      String label,
+      bool value,
+      ValueChanged<bool> onChanged, {
+      String? note,
+    }) => SizedBox(
+      width: 240,
+      child: CheckboxListTile(
+        dense: true,
+        visualDensity: VisualDensity.compact,
+        contentPadding: EdgeInsets.zero,
+        controlAffinity: ListTileControlAffinity.leading,
+        value: value,
+        onChanged: (v) => onChanged(v ?? false),
+        title: Text(label, style: mono.copyWith(fontSize: 12)),
+        subtitle: note == null
+            ? null
+            : Text(note, style: small?.copyWith(color: c.warn)),
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (scope == null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text(
+              'Every tool, connector, MCP server and skill.',
+              style: small,
+            ),
+          ),
+        group(
+          'Built-in tools',
+          [
+            for (final t in builtins)
+              box(t, _builtinOn(t), (v) => _setBuiltin(t, v)),
+          ],
+          trailing: TextButton(
+            onPressed: () => onChanged(
+              ToolScope(
+                builtins: const Pick.readOnly(),
+                connectors: _s.connectors,
+                mcp: _s.mcp,
+                skills: _s.skills,
+              ),
+            ),
+            child: const Text('Read-only', style: TextStyle(fontSize: 12)),
+          ),
+        ),
+        if (connectors.isNotEmpty)
+          group('Connectors', [
+            for (final n in connectors)
+              box(
+                n,
+                _s.connectors.allows(n),
+                (v) => onChanged(
+                  ToolScope(
+                    builtins: _s.builtins,
+                    connectors: Pick.names(
+                      _toggle(
+                        _s.connectors.all ? connectors : _s.connectors.names,
+                        n,
+                        v,
+                      ),
+                    ),
+                    mcp: _s.mcp,
+                    skills: _s.skills,
+                  ),
+                ),
+              ),
+          ]),
+        if (mcp.isNotEmpty)
+          group('MCP servers', [
+            for (final m in mcp)
+              box(
+                m.name,
+                _s.mcp.allows(m.name),
+                note: switch (m.state) {
+                  McpUnavailable() => 'unavailable',
+                  _ => null,
+                },
+                (v) => onChanged(
+                  ToolScope(
+                    builtins: _s.builtins,
+                    connectors: _s.connectors,
+                    mcp: Pick.names(
+                      _toggle(
+                        _s.mcp.all
+                            ? [for (final x in mcp) x.name]
+                            : _s.mcp.names,
+                        m.name,
+                        v,
+                      ),
+                    ),
+                    skills: _s.skills,
+                  ),
+                ),
+              ),
+          ]),
+        group('Skills', [
+          box(
+            'all skills',
+            _s.skills.all,
+            (v) => onChanged(
+              ToolScope(
+                builtins: _s.builtins,
+                connectors: _s.connectors,
+                mcp: _s.mcp,
+                skills: v ? const Pick.all() : const Pick.names([]),
+              ),
+            ),
+          ),
+        ]),
+        Text(
+          'Always included: reading and posting in channels, history, '
+          'asking for secrets, and its own memory.',
+          style: small,
+        ),
+      ],
+    );
+  }
+}

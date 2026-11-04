@@ -23,6 +23,7 @@ const EDIT_INTERVAL: Duration = Duration::from_secs(1);
 const OFFSET_KEY: &str = "update_offset";
 
 const HELP: &str = "Send me a message and I'll work on it.\n\
+/agents — your agents; /agent <name> — talk to one (/agent tern: back)\n\
 /new — new topic (I keep a summary of this one)\n\
 /model [provider:model] — show or change the model\n\
 /stop — stop the current task\n\
@@ -33,6 +34,10 @@ const UNPAIRED: &str = "This bot is private. On the computer running tern, run `
 #[derive(Default)]
 struct Stream {
     chat: i64,
+    /// A forum topic.
+    thread: Option<i64>,
+    /// `Research · ` when the chat talks to an agent other than the default.
+    prefix: String,
     message_id: Option<i64>,
     text: String,
     dirty: bool,
@@ -60,8 +65,12 @@ impl TelegramGateway {
     }
 
     async fn reply(&self, chat: i64, text: &str) {
+        self.reply_in(chat, None, text).await;
+    }
+
+    async fn reply_in(&self, chat: i64, thread: Option<i64>, text: &str) {
         for chunk in split_message(text, MAX_MESSAGE) {
-            if let Err(e) = self.api.send_message(chat, &chunk, None).await {
+            if let Err(e) = self.api.send_message_in(chat, thread, &chunk, None).await {
                 tracing::warn!(chat, error = %e, "telegram send failed");
             }
         }
@@ -71,8 +80,112 @@ impl TelegramGateway {
         self.store.is_telegram_user_paired(user).unwrap_or(false)
     }
 
+    /// What a reply in `chat_ref` starts with: the agent's name, unless
+    /// it's the default agent.
+    fn prefix(&self, chat_ref: &str) -> String {
+        let id = crate::chat_agents::get(&self.store, SOURCE, chat_ref);
+        match self.store.agent(&id) {
+            Ok(Some(a)) if !a.is_default() => format!("{} · ", a.name),
+            _ => String::new(),
+        }
+    }
+
+    /// `/agents`.
+    fn agents_text(&self, chat_ref: &str) -> String {
+        let current = crate::chat_agents::get(&self.store, SOURCE, chat_ref);
+        let agents = self.store.agents(false).unwrap_or_default();
+        if agents.len() < 2 {
+            return "You have one agent, tern. Create more in the tern app or with `tern agents new`."
+                .into();
+        }
+        let lines: Vec<String> = agents
+            .iter()
+            .map(|a| {
+                let here = if a.id == current { "▸" } else { "·" };
+                format!("{here} {} (/agent {})", a.name, a.slug)
+            })
+            .collect();
+        format!("Your agents:\n{}", lines.join("\n"))
+    }
+
+    /// `/agent <name>`: this chat (or topic) talks to that agent from now
+    /// on. In a forum group, a new topic per agent instead, when the bot
+    /// may create one.
+    async fn switch_agent(&self, msg: &Message, chat_ref: &str, name: &str) {
+        let (chat, thread) = (msg.chat.id, msg.message_thread_id);
+        if name.is_empty() {
+            let text = format!(
+                "{}\n{}",
+                self.prefix_or_tern(chat_ref),
+                self.agents_text(chat_ref)
+            );
+            return self.reply_in(chat, thread, &text).await;
+        }
+        let name = name.trim_start_matches('@');
+        let agent = self
+            .store
+            .agents(false)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|a| a.slug == name || a.id == name || a.name.eq_ignore_ascii_case(name));
+        let Some(agent) = agent else {
+            let text = format!("No agent {name:?}.\n{}", self.agents_text(chat_ref));
+            return self.reply_in(chat, thread, &text).await;
+        };
+        if msg.chat.is_forum && !agent.is_default() {
+            match self.api.create_forum_topic(chat, &agent.name).await {
+                Ok(topic) => {
+                    let topic_ref = format!("{chat}/{topic}");
+                    if let Err(e) =
+                        crate::chat_agents::set(&self.store, SOURCE, &topic_ref, &agent.id)
+                    {
+                        tracing::warn!(error = %e, "could not save the topic's agent");
+                    }
+                    self.reply_in(
+                        chat,
+                        Some(topic),
+                        &format!(
+                            "{} · This topic is my chat. Write here to talk to me.",
+                            agent.name
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+                Err(e) => {
+                    tracing::info!(error = %e, "no forum topic for the agent; switching this one");
+                }
+            }
+        }
+        if let Err(e) = crate::chat_agents::set(&self.store, SOURCE, chat_ref, &agent.id) {
+            return self.reply_in(chat, thread, &format!("Error: {e}")).await;
+        }
+        let text = if agent.is_default() {
+            format!("Back to {}.", agent.name)
+        } else {
+            format!(
+                "{} · You're talking to {} now. /agent tern goes back.",
+                agent.name, agent.name
+            )
+        };
+        self.reply_in(chat, thread, &text).await;
+    }
+
+    fn prefix_or_tern(&self, chat_ref: &str) -> String {
+        let id = crate::chat_agents::get(&self.store, SOURCE, chat_ref);
+        let name = self
+            .store
+            .agent(&id)
+            .ok()
+            .flatten()
+            .map_or_else(|| "tern".to_owned(), |a| a.name);
+        format!("This chat talks to {name}.")
+    }
+
     async fn on_message(&self, host: &Arc<dyn ChatHost>, msg: Message) {
         let chat = msg.chat.id;
+        // In a forum group each topic is its own chat (agent profiles §6.4).
+        let thread = msg.message_thread_id.filter(|_| msg.chat.is_forum);
         let Some(text) = msg.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
             return;
         };
@@ -91,7 +204,10 @@ impl TelegramGateway {
             return;
         }
 
-        let chat_ref = chat.to_string();
+        let chat_ref = match thread {
+            Some(t) => format!("{chat}/{t}"),
+            None => chat.to_string(),
+        };
         let (cmd, arg) = match text.split_once(char::is_whitespace) {
             Some((c, a)) => (c, a.trim()),
             None => (text, ""),
@@ -99,20 +215,31 @@ impl TelegramGateway {
         // Commands may arrive as `/stop@my_bot` in groups.
         let cmd = cmd.split('@').next().unwrap_or(cmd);
         match cmd {
-            "/start" | "/help" => self.reply(chat, HELP).await,
+            "/start" | "/help" => self.reply_in(chat, thread, HELP).await,
+            "/agents" => {
+                let text = self.agents_text(&chat_ref);
+                self.reply_in(chat, thread, &text).await;
+            }
+            "/agent" => self.switch_agent(&msg, &chat_ref, arg).await,
             "/new" => match host.new_session(SOURCE, &chat_ref).await {
                 Ok(()) => {
-                    self.reply(chat, "New topic. I kept a summary of the last one.")
-                        .await
+                    let text = format!(
+                        "{}New topic. I kept a summary of the last one.",
+                        self.prefix(&chat_ref)
+                    );
+                    self.reply_in(chat, thread, &text).await
                 }
-                Err(e) => self.reply(chat, &format!("Error: {e}")).await,
+                Err(e) => self.reply_in(chat, thread, &format!("Error: {e}")).await,
             },
             "/model" => {
                 let set = (!arg.is_empty()).then_some(arg);
                 match host.model(SOURCE, &chat_ref, set).await {
-                    Ok(m) if set.is_some() => self.reply(chat, &format!("Model set to {m}.")).await,
-                    Ok(m) => self.reply(chat, &format!("Model: {m}")).await,
-                    Err(e) => self.reply(chat, &format!("Error: {e}")).await,
+                    Ok(m) if set.is_some() => {
+                        self.reply_in(chat, thread, &format!("Model set to {m}."))
+                            .await
+                    }
+                    Ok(m) => self.reply_in(chat, thread, &format!("Model: {m}")).await,
+                    Err(e) => self.reply_in(chat, thread, &format!("Error: {e}")).await,
                 }
             }
             "/stop" => {
@@ -121,27 +248,34 @@ impl TelegramGateway {
                 } else {
                     "Nothing is running."
                 };
-                self.reply(chat, msg).await;
+                self.reply_in(chat, thread, msg).await;
             }
             "/status" => {
-                self.reply(chat, &host.status(SOURCE, &chat_ref).await)
-                    .await
+                let text = format!(
+                    "{}{}",
+                    self.prefix(&chat_ref),
+                    host.status(SOURCE, &chat_ref).await
+                );
+                self.reply_in(chat, thread, &text).await
             }
             _ => {
                 self.api.typing(chat).await;
                 match host.send(SOURCE, &chat_ref, text).await {
                     // A queued message returns the run already streaming here.
                     Ok(run_id) => {
+                        let prefix = self.prefix(&chat_ref);
                         self.streams
                             .lock()
                             .await
                             .entry(run_id)
                             .or_insert_with(|| Stream {
                                 chat,
+                                thread,
+                                prefix,
                                 ..Stream::default()
                             });
                     }
-                    Err(e) => self.reply(chat, &format!("Error: {e}")).await,
+                    Err(e) => self.reply_in(chat, thread, &format!("Error: {e}")).await,
                 }
             }
         }
@@ -237,7 +371,13 @@ impl TelegramGateway {
                         format!("{}\n\n{note}", s.text.trim_end())
                     };
                     drop(streams);
-                    self.put(s.chat, s.message_id, &text).await;
+                    self.put(
+                        s.chat,
+                        s.thread,
+                        s.message_id,
+                        &format!("{}{text}", s.prefix),
+                    )
+                    .await;
                 }
             }
             _ => {}
@@ -245,7 +385,7 @@ impl TelegramGateway {
     }
 
     /// Show `text` in `message_id` (or a new message), splitting if needed.
-    async fn put(&self, chat: i64, message_id: Option<i64>, text: &str) {
+    async fn put(&self, chat: i64, thread: Option<i64>, message_id: Option<i64>, text: &str) {
         let chunks = split_message(
             if text.trim().is_empty() {
                 "(no response)"
@@ -262,7 +402,7 @@ impl TelegramGateway {
             tracing::warn!(chat, error = %e, "telegram edit failed");
         }
         for chunk in rest {
-            if let Err(e) = self.api.send_message(chat, chunk, None).await {
+            if let Err(e) = self.api.send_message_in(chat, thread, chunk, None).await {
                 tracing::warn!(chat, error = %e, "telegram send failed");
             }
         }
@@ -273,9 +413,13 @@ impl TelegramGateway {
         let mut streams = self.streams.lock().await;
         for s in streams.values_mut().filter(|s| s.dirty) {
             s.dirty = false;
-            let shown = live_view(&s.text);
+            let shown = live_view(&format!("{}{}", s.prefix, s.text));
             match s.message_id {
-                None => match self.api.send_message(s.chat, &shown, None).await {
+                None => match self
+                    .api
+                    .send_message_in(s.chat, s.thread, &shown, None)
+                    .await
+                {
                     Ok(id) => s.message_id = Some(id),
                     Err(e) => tracing::warn!(error = %e, "telegram send failed"),
                 },
@@ -286,6 +430,14 @@ impl TelegramGateway {
                 }
             }
         }
+    }
+}
+
+/// A chat ref: `<chat>` or, for a forum topic, `<chat>/<thread>`.
+fn place(target: &str) -> Option<(i64, Option<i64>)> {
+    match target.split_once('/') {
+        Some((c, t)) => Some((c.parse().ok()?, Some(t.parse().ok()?))),
+        None => Some((target.parse().ok()?, None)),
     }
 }
 
@@ -396,20 +548,28 @@ impl Gateway for TelegramGateway {
     }
 
     async fn deliver(&self, target: &str, run_id: Option<&str>, text: &str) -> Result<(), String> {
-        let chat: i64 = target
-            .parse()
-            .map_err(|_| format!("bad telegram chat id {target:?}"))?;
+        let (chat, thread) =
+            place(target).ok_or_else(|| format!("bad telegram chat id {target:?}"))?;
         let stream = match run_id {
             Some(r) => self.streams.lock().await.remove(r),
             None => None,
         };
-        self.put(chat, stream.and_then(|s| s.message_id), text)
-            .await;
+        let prefix = match &stream {
+            Some(s) => s.prefix.clone(),
+            None => self.prefix(target),
+        };
+        self.put(
+            chat,
+            thread,
+            stream.and_then(|s| s.message_id),
+            &format!("{prefix}{text}"),
+        )
+        .await;
         Ok(())
     }
 
     async fn ask_approval(&self, target: &str, req: &ApprovalRequest) -> Decision {
-        let Ok(chat) = target.parse::<i64>() else {
+        let Some((chat, thread)) = place(target) else {
             return Decision::Deny;
         };
         // Callback data is limited to 64 bytes.
@@ -431,7 +591,7 @@ impl Gateway for TelegramGateway {
         buttons.push(("Deny".into(), format!("ap:{id}:deny")));
         if let Err(e) = self
             .api
-            .send_message(chat, &approval_prompt(req), Some(&buttons))
+            .send_message_in(chat, thread, &approval_prompt(req), Some(&buttons))
             .await
         {
             tracing::warn!(error = %e, "could not send approval request");
@@ -444,8 +604,12 @@ impl Gateway for TelegramGateway {
     }
 
     async fn secret_request_notice(&self, target: &str, req: &SecretRequest) -> Option<String> {
-        let chat = target.parse::<i64>().ok()?;
-        match self.api.send_message(chat, &secret_notice(req), None).await {
+        let (chat, thread) = place(target)?;
+        match self
+            .api
+            .send_message_in(chat, thread, &secret_notice(req), None)
+            .await
+        {
             Ok(id) => Some(id.to_string()),
             Err(e) => {
                 tracing::warn!(error = %e, "could not send secret request notice");
@@ -455,7 +619,7 @@ impl Gateway for TelegramGateway {
     }
 
     async fn secret_request_done(&self, target: &str, handle: &str, text: &str) {
-        let (Ok(chat), Ok(id)) = (target.parse::<i64>(), handle.parse::<i64>()) else {
+        let (Some((chat, _)), Ok(id)) = (place(target), handle.parse::<i64>()) else {
             return;
         };
         if let Err(e) = self.api.edit_message(chat, id, text, None).await {
