@@ -414,6 +414,13 @@ pub enum AgentsCommand {
         #[arg(long)]
         autonomy: Option<String>,
     },
+    /// Give an agent a Telegram bot of its own, or take it away. The token
+    /// is a secret (`tern secrets set <name>`); restart the daemon to apply.
+    Telegram {
+        agent: String,
+        /// The secret holding the BotFather token, or `none` to remove it.
+        secret: String,
+    },
     /// Set or clear an agent's autonomy ceiling.
     Autonomy {
         agent: String,

@@ -12,10 +12,23 @@ pub mod chat_agents {
     use tern_store::{DEFAULT_AGENT, Store};
 
     const NS: &str = "chat_agent";
+    /// Bots that are one agent's own chat, by gateway source.
+    const BOTS: &str = "bot_agent";
+
+    /// Record that every chat on `source` talks to `agent` (an agent's own
+    /// Telegram bot).
+    pub fn bind_bot(store: &Store, source: &str, agent: &str) -> tern_store::Result<()> {
+        store.kv_set(BOTS, source, agent)
+    }
 
     /// The agent `chat` (on `source`) talks to: the default agent unless
     /// `/agent` chose an active other one.
     pub fn get(store: &Store, source: &str, chat: &str) -> String {
+        // An agent's own bot is that agent's chat, archived or not (a run
+        // for an archived agent is refused, never handed to tern).
+        if let Some(agent) = store.kv_get(BOTS, source).ok().flatten() {
+            return agent;
+        }
         store
             .kv_get(NS, &format!("{source}:{chat}"))
             .ok()

@@ -31,6 +31,9 @@ pub struct AgentRow {
     /// The most autonomy its runs may have: `readonly`, `supervised`,
     /// `autonomous` or `yolo`; `None` = no ceiling beyond the configured one.
     pub autonomy: Option<String>,
+    /// JSON `{bot_token_secret, api_url?}`: a Telegram bot of its own
+    /// (AP3); `None` = it is reached through the main bot's `/agent`.
+    pub telegram: Option<String>,
     pub archived_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -80,11 +83,12 @@ pub struct AgentChange {
     pub delegates: Option<Option<String>>,
     pub egress: Option<Option<String>>,
     pub autonomy: Option<Option<String>>,
+    pub telegram: Option<Option<String>>,
     pub archived: Option<bool>,
 }
 
 const AGENT_COLS: &str = "id, slug, name, avatar, model, subagent_model, tools, memory, delegates, \
-    archived_at, created_at, updated_at, egress, autonomy";
+    archived_at, created_at, updated_at, egress, autonomy, telegram";
 
 fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
     Ok(AgentRow {
@@ -102,6 +106,7 @@ fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
         updated_at: r.get(11)?,
         egress: r.get(12)?,
         autonomy: r.get(13)?,
+        telegram: r.get(14)?,
     })
 }
 
@@ -121,7 +126,7 @@ impl Store {
         tx.execute(
             &format!(
                 "INSERT INTO agents ({AGENT_COLS})
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10, ?11, ?12)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10, ?11, ?12, ?13)"
             ),
             params![
                 a.id,
@@ -135,7 +140,8 @@ impl Store {
                 a.delegates,
                 now,
                 a.egress,
-                a.autonomy
+                a.autonomy,
+                a.telegram
             ],
         )?;
         tx.execute(
@@ -263,6 +269,23 @@ impl Store {
                 format!(
                     "agent {id}: autonomy ceiling {}",
                     v.as_deref().unwrap_or("none (the configured autonomy)")
+                ),
+            )
+            .detail(serde_json::json!({ "value": v }));
+            crate::ledger_repo::append_on(&tx, &e)?;
+        }
+        if let Some(v) = &ch.telegram {
+            set("telegram", v.as_deref())?;
+            // The secret's name only, never a token.
+            let e = crate::LedgerEntry::new(
+                "telegram.agent",
+                id,
+                format!(
+                    "agent {id}: telegram bot {}",
+                    match v.as_deref() {
+                        Some(_) => "set (takes effect when the daemon restarts)",
+                        None => "removed",
+                    }
                 ),
             )
             .detail(serde_json::json!({ "value": v }));

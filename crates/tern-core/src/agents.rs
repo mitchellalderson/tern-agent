@@ -231,6 +231,24 @@ pub fn scope_allows_skill(scope: Option<&[String]>, name: &str) -> bool {
     scope.is_none_or(|s| crate::tool::in_scope(Some(s), &format!("skill:{name}")))
 }
 
+/// An agent's own Telegram bot (`agents.telegram`, agent profiles §6.4,
+/// AP3): the name of the secret that holds its token (never the token),
+/// and a Bot API URL that only tests and self-hosted API servers change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTelegram {
+    pub bot_token_secret: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
+}
+
+impl AgentTelegram {
+    /// The stored JSON, if it is one.
+    pub fn parse(stored: Option<&str>) -> Option<Self> {
+        stored.and_then(|t| serde_json::from_str(t).ok())
+    }
+}
+
 /// The routing call's instructions ("Let agents decide", agent profiles
 /// §5.2): one cheap call that only picks who answers.
 pub const ROUTER_SYSTEM: &str = "You route a user's message in a group chat to the agents best placed to answer it. \

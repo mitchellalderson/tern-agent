@@ -127,6 +127,13 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
         gateways.insert(g.name().to_owned(), g.clone());
         telegram = Some(g);
     }
+    let agent_bots = agent_bots(&rt, home);
+    for g in &agent_bots {
+        if gateways.contains_key(g.name()) {
+            continue;
+        }
+        gateways.insert(g.name().to_owned(), g.clone() as Arc<dyn Gateway>);
+    }
     let lua = lua_gateways(&rt).await;
     for g in &lua {
         gateways.insert(g.name().to_owned(), g.clone());
@@ -172,6 +179,7 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     let running = telegram
         .map(|g| g as Arc<dyn Gateway>)
         .into_iter()
+        .chain(agent_bots.into_iter().map(|g| g as Arc<dyn Gateway>))
         .chain(lua.into_iter().map(|g| g as Arc<dyn Gateway>));
     for g in running {
         let host: Arc<dyn tern_gateway::ChatHost> = Arc::new(manager::Chats(manager.clone()));
@@ -222,6 +230,56 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(&bind);
     Ok(ExitCode::SUCCESS)
+}
+
+/// A Telegram bot for each active agent that has its own (agent profiles
+/// §6.4, AP3): one poller per token, named `telegram-<slug>`. One whose
+/// secret isn't set, or that shares a token with another bot, is skipped
+/// with a warning (`tern doctor` says so too); the rest still start.
+fn agent_bots(rt: &Runtime, home: &TernHome) -> Vec<Arc<TelegramGateway>> {
+    let Ok(agents) = rt.store.agents(false) else {
+        return Vec::new();
+    };
+    let secrets = tern_core::Secrets::load(&home.secrets_path()).ok();
+    let main = rt
+        .config
+        .gateway
+        .telegram
+        .as_ref()
+        .filter(|t| t.enabled)
+        .map(|t| t.bot_token_secret.clone());
+    let mut used: Vec<String> = main.into_iter().collect();
+    let mut out = Vec::new();
+    for a in agents {
+        let Some(bot) = tern_core::agents::AgentTelegram::parse(a.telegram.as_deref()) else {
+            continue;
+        };
+        if used.contains(&bot.bot_token_secret) {
+            tracing::warn!(agent = %a.slug, secret = %bot.bot_token_secret, "telegram bot skipped: another bot uses the same token");
+            continue;
+        }
+        let Some(token) = secrets.as_ref().and_then(|s| s.get(&bot.bot_token_secret)) else {
+            tracing::warn!(agent = %a.slug, secret = %bot.bot_token_secret, "telegram bot skipped: the secret isn't set");
+            continue;
+        };
+        match TelegramGateway::for_agent(
+            &a.slug,
+            &a.id,
+            bot.api_url.as_deref().unwrap_or(DEFAULT_API_URL),
+            &token,
+            rt.store.clone(),
+        ) {
+            Ok(g) => {
+                tracing::info!(agent = %a.slug, "telegram bot started for an agent");
+                used.push(bot.bot_token_secret);
+                out.push(g);
+            }
+            Err(e) => {
+                tracing::warn!(agent = %a.slug, error = %e, "telegram bot not started");
+            }
+        }
+    }
+    out
 }
 
 /// The gateway connectors `[gateway.connectors]` enables (tooling spec

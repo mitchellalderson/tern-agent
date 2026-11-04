@@ -255,3 +255,180 @@ async fn let_agents_decide_routes_a_post_to_the_right_members() {
     let sent = send(&s, "plain", "What does Acme charge?").await;
     assert_eq!(sent["woke"][0]["agent_id"], "tern", "{sent:#}");
 }
+
+// ---- 4. a Telegram bot per agent ----
+
+/// The fake Bot API (`tests/fixtures/fake_telegram.py`); one per bot.
+struct FakeTelegram {
+    _proc: subagents_env::Killed,
+    url: String,
+    http: reqwest::Client,
+}
+
+const CHAT: i64 = 7070;
+
+impl FakeTelegram {
+    fn start() -> Self {
+        use std::io::BufRead;
+        let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fake_telegram.py");
+        let mut child = std::process::Command::new("python3")
+            .arg(script)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        Self {
+            _proc: subagents_env::Killed(child),
+            url: format!("http://127.0.0.1:{}", line.trim()),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    async fn says(&self, user: i64, text: &str) {
+        self.http
+            .post(format!("{}/control/message", self.url))
+            .json(&json!({ "chat_id": CHAT, "user_id": user, "text": text }))
+            .send()
+            .await
+            .unwrap();
+    }
+
+    /// The first bot message containing `needle`.
+    async fn wait_for(&self, needle: &str) -> Value {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let all: Vec<Value> = self
+                .http
+                .get(format!("{}/control/messages", self.url))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            if let Some(m) = all
+                .iter()
+                .find(|m| m["text"].as_str().unwrap_or("").contains(needle))
+            {
+                return m.clone();
+            }
+            assert!(
+                std::time::Instant::now() < end,
+                "no bot message with {needle:?}: {all:#?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_with_its_own_bot_is_its_own_contact_and_pairing_is_shared() {
+    let main_bot = FakeTelegram::start();
+    let research_bot = FakeTelegram::start();
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "matches": "Look into Acme", "turns": [{ "text": "Acme moved to Stripe." }] },
+            { "matches": "Hello tern", "turns": [{ "text": "tern here." }] }
+        ]}),
+        &format!(
+            "[gateway.telegram]\nenabled = true\nbot_token_secret = \"MAIN_TOKEN\"\napi_url = \"{}\"\n",
+            main_bot.url
+        ),
+    );
+    let secrets = env.tern_home.join("secrets.toml");
+    std::fs::write(
+        &secrets,
+        "MAIN_TOKEN = \"TEST:TOKEN\"\nRESEARCH_TOKEN = \"TEST:TOKEN\"\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    // The CLI sets it up without a daemon: an unknown or shared secret, and
+    // the default agent's bot, are refused.
+    let run = |args: &[&str]| env.cmd(args).output().unwrap();
+    assert!(run(&["agents", "new", "Research", "--template", "research"]).status.success());
+    assert!(run(&["agents", "new", "Other"]).status.success());
+    assert!(!run(&["agents", "telegram", "tern", "RESEARCH_TOKEN"]).status.success());
+    assert!(!run(&["agents", "telegram", "research", "MAIN_TOKEN"]).status.success());
+    let ok = run(&["agents", "telegram", "research", "RESEARCH_TOKEN"]);
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    assert!(!run(&["agents", "telegram", "other", "RESEARCH_TOKEN"]).status.success());
+    let list = String::from_utf8_lossy(&run(&["agents"]).stdout).into_owned();
+    assert!(list.lines().any(|l| l.contains("@research") && l.contains("own bot")), "{list}");
+    // Tests point it at the fake: the API refuses an api_url, so write it.
+    env.db()
+        .execute(
+            "UPDATE agents SET telegram = ?1 WHERE slug = 'research'",
+            [json!({ "bot_token_secret": "RESEARCH_TOKEN", "api_url": research_bot.url })
+                .to_string()],
+        )
+        .unwrap();
+
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    // The API shows it, and won't take a shared token or an api_url.
+    let (_, agents) = get(&s, "/v1/agents").await;
+    let r = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["slug"] == "research")
+        .unwrap();
+    assert_eq!(r["telegram"]["bot_token_secret"], "RESEARCH_TOKEN");
+    for bad in [
+        json!({ "telegram": { "bot_token_secret": "MAIN_TOKEN" } }),
+        json!({ "telegram": { "bot_token_secret": "RESEARCH_TOKEN" } }),
+        json!({ "telegram": { "bot_token_secret": "NEW_TOKEN", "api_url": "http://evil" } }),
+        json!({ "telegram": { "bot_token_secret": "not a name" } }),
+    ] {
+        let (code, body) = patch(&s, "/v1/agents/other", bad.clone()).await;
+        assert_eq!(code, 400, "{bad}: {body}");
+    }
+
+    // Pair once on the main bot...
+    let out = env.cmd(&["gateway", "pair"]).output().unwrap();
+    main_bot
+        .says(1, String::from_utf8_lossy(&out.stdout).trim())
+        .await;
+    main_bot.wait_for("Paired.").await;
+    // ...and the agent's bot already knows you; a stranger gets nothing.
+    research_bot.says(2, "Look into Acme").await;
+    research_bot.wait_for("This bot is private").await;
+    research_bot.says(1, "Look into Acme").await;
+    // The bot is Research: no name prefix, and the chat is its own thread
+    // of Research's DM.
+    let m = research_bot.wait_for("Acme moved to Stripe.").await;
+    assert_eq!(m["text"], "Acme moved to Stripe.", "{m}");
+    let (channel, agent): (String, String) = env
+        .db()
+        .query_row(
+            "SELECT channel_id, agent_id FROM sessions WHERE source = 'telegram-research'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(agent, "tern:research");
+    let dm: String = env.query("SELECT id FROM channels WHERE slug = 'dm-research'");
+    assert_eq!(channel, dm);
+    // Nothing to switch on it.
+    research_bot.says(1, "/agent tern").await;
+    research_bot.wait_for("This bot is Research's own chat").await;
+    // The main bot is unchanged.
+    main_bot.says(1, "Hello tern").await;
+    main_bot.wait_for("tern here.").await;
+    let main_sessions: i64 = env.query("SELECT COUNT(*) FROM sessions WHERE source = 'telegram'");
+    assert_eq!(main_sessions, 1);
+    // Removing the bot is recorded.
+    let (code, a) = patch(&s, "/v1/agents/research", json!({ "telegram": null })).await;
+    assert_eq!(code, 200, "{a}");
+    assert_eq!(a.get("telegram"), None);
+    let n: i64 = env.query("SELECT COUNT(*) FROM ledger WHERE kind = 'telegram.agent'");
+    assert!(n >= 2, "ledger entries: {n}");
+}

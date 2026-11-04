@@ -46,6 +46,55 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
                 tern_core::agents::persona_path(home, &a.id).display()
             );
         }
+        AgentsCommand::Telegram { agent, secret } => {
+            let a = find(&rt, &agent)?;
+            if a.is_default() {
+                bail!("the default agent's bot is [gateway.telegram] in config.toml");
+            }
+            let value = match secret.as_str() {
+                "none" => None,
+                name => {
+                    tern_core::secrets::check_name(name)?;
+                    if rt
+                        .config
+                        .gateway
+                        .telegram
+                        .as_ref()
+                        .is_some_and(|g| g.bot_token_secret == name)
+                    {
+                        bail!("{name} is the main bot's token; an agent's bot needs its own");
+                    }
+                    for other in rt.store.agents(true)? {
+                        if other.id != a.id
+                            && tern_core::agents::AgentTelegram::parse(other.telegram.as_deref())
+                                .is_some_and(|o| o.bot_token_secret == name)
+                        {
+                            bail!("@{} already uses {name}", other.slug);
+                        }
+                    }
+                    Some(serde_json::to_string(&tern_core::agents::AgentTelegram {
+                        bot_token_secret: name.to_owned(),
+                        api_url: None,
+                    })?)
+                }
+            };
+            let set = value.is_some();
+            rt.store.update_agent(
+                &a.id,
+                &AgentChange {
+                    telegram: Some(value),
+                    ..AgentChange::default()
+                },
+            )?;
+            if set {
+                println!(
+                    "@{} gets its own Telegram bot from the token in secret {secret}; set it with `tern secrets set {secret}`, then restart the daemon. Pair once with `tern gateway pair`: it works on every bot.",
+                    a.slug
+                );
+            } else {
+                println!("@{} has no bot of its own; restart the daemon to apply", a.slug);
+            }
+        }
         AgentsCommand::Autonomy { agent, level } => {
             let a = find(&rt, &agent)?;
             let ceiling = match level.as_str() {
@@ -118,13 +167,14 @@ fn list(rt: &Runtime, all: bool) -> anyhow::Result<()> {
         } else {
             ""
         };
+        let bot = if a.telegram.is_some() { "  own bot" } else { "" };
         let cap = a
             .autonomy
             .as_deref()
             .map(|c| format!("  max {c}"))
             .unwrap_or_default();
         println!(
-            "@{:<16} {:<16} {:<8} memory  {model}  {routines} routine(s){cap}{archived}",
+            "@{:<16} {:<16} {:<8} memory  {model}  {routines} routine(s){cap}{bot}{archived}",
             a.slug, a.name, a.memory
         );
     }
