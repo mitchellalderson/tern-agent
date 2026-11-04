@@ -5,10 +5,12 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'mcp.dart';
 import 'widgets.dart';
 
 /// The side panel's tool list: filter by name or description, click one for
-/// its spec.
+/// its spec. `mcp__*` tools sit under their server, which links to its
+/// page.
 class ToolsSection extends StatefulWidget {
   const ToolsSection({super.key, required this.store});
 
@@ -41,6 +43,7 @@ class _ToolsSectionState extends State<ToolsSection> {
                     t.description.toLowerCase().contains(q),
               )
               .toList();
+    final groups = _groups(shown);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -85,32 +88,110 @@ class _ToolsSectionState extends State<ToolsSection> {
             ),
           ),
         for (final t in shown)
-          InkWell(
-            borderRadius: BorderRadius.circular(6),
-            onTap: () => showDialog<void>(
-              context: context,
-              builder: (_) => ToolDialog(store: widget.store, name: t.name),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 2),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(t.name, style: mono.copyWith(fontSize: 12)),
-                  if (t.description.isNotEmpty)
-                    Text(
-                      t.description.split('\n').first,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 11.5, color: c.muted),
-                    ),
-                ],
+          if (!t.name.startsWith('mcp__')) _tool(context, t.name, t),
+        for (final MapEntry(key: server, value: list) in groups.entries)
+          if (q.isEmpty || list.isNotEmpty) ...[
+            _serverRow(context, server, list.length),
+            for (final (short, t) in list)
+              Padding(
+                padding: const EdgeInsets.only(left: 14),
+                child: _tool(context, short, t),
               ),
-            ),
-          ),
+          ],
       ],
     );
   }
+
+  /// Tools by MCP server, in the daemon's server order. Every enabled
+  /// server gets a group, so one that's down still shows (and links).
+  Map<String, List<(String, ({String name, String description}))>> _groups(
+    Iterable<({String name, String description})> tools,
+  ) {
+    final servers = widget.store.mcpServers;
+    final out = {
+      for (final s in servers)
+        if (s.config.enabled)
+          s.name: <(String, ({String name, String description}))>[],
+    };
+    for (final t in tools) {
+      if (!t.name.startsWith('mcp__')) continue;
+      final rest = t.name.substring(5);
+      final known = servers
+          .where((s) => rest.startsWith('${s.name}__'))
+          .firstOrNull
+          ?.name;
+      final cut = rest.indexOf('__');
+      final server = known ?? (cut > 0 ? rest.substring(0, cut) : 'mcp');
+      final short = rest.startsWith('${server}__')
+          ? rest.substring(server.length + 2)
+          : rest;
+      (out[server] ??= []).add((short, t));
+    }
+    return out;
+  }
+
+  Widget _serverRow(BuildContext context, String name, int count) {
+    final c = context.colors;
+    final s = widget.store.mcpServers.where((s) => s.name == name).firstOrNull;
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: s == null ? null : () => widget.store.openMcp(name),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(2, 8, 2, 3),
+        child: Row(
+          children: [
+            if (s != null) ...[McpStateDot(s.state), const SizedBox(width: 6)],
+            Text(
+              name,
+              style: mono.copyWith(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                s == null || s.state is McpRunning
+                    ? '$count'
+                    : mcpStateText(s.state),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: s?.state is McpUnavailable ? c.error : c.muted,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _tool(
+    BuildContext context,
+    String label,
+    ({String name, String description}) t,
+  ) => InkWell(
+    borderRadius: BorderRadius.circular(6),
+    onTap: () => showDialog<void>(
+      context: context,
+      builder: (_) => ToolDialog(store: widget.store, name: t.name),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: mono.copyWith(fontSize: 12)),
+          if (t.description.isNotEmpty)
+            Text(
+              t.description.split('\n').first,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11.5, color: context.colors.muted),
+            ),
+        ],
+      ),
+    ),
+  );
 }
 
 /// One tool's spec, as the model sees it.

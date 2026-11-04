@@ -15,6 +15,7 @@ import 'package:tern_desktop/state/store.dart';
 import 'package:tern_desktop/state/transcript.dart';
 import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/home.dart';
+import 'package:tern_desktop/ui/mcp_sheet.dart';
 
 Future<void> _font(String family, List<String> paths) async {
   for (final p in paths) {
@@ -307,6 +308,30 @@ TernStore demoStore() {
   return store;
 }
 
+/// Answers the add sheet's calls without a daemon.
+class _McpClient extends TernClient {
+  _McpClient() : super(const Endpoint.unix('/nonexistent'));
+
+  @override
+  Future<List<SecretStatus>> secrets() async => const [];
+
+  @override
+  Future<McpVerifyResult> verifyMcp(
+    String name,
+    McpServerConfig config, {
+    Map<String, String> secrets = const {},
+  }) async => const McpVerifyResult(
+    error: McpVerifyError(
+      kind: 'exited_early',
+      message: 'failed to start: connection closed',
+      stderrTail: [
+        'GitHub MCP Server running on stdio',
+        'Error: GITHUB_TOKEN is invalid (401 Bad credentials)',
+      ],
+    ),
+  );
+}
+
 void main() {
   setUpAll(() async {
     await _font('.AppleSystemUIFont', [
@@ -370,6 +395,112 @@ void main() {
         await out.create(recursive: true);
         await out.writeAsBytes(png!.buffer.asUint8List());
       });
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    testWidgets('mcp ${dark ? 'dark' : 'light'}', (tester) async {
+      tester.view.physicalSize = const Size(1280, 800) * 2;
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.reset);
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      final c = dark ? TernColors.dark : TernColors.light;
+      final theme = ternTheme(c, dark ? Brightness.dark : Brightness.light);
+      final key = GlobalKey();
+      final now = DateTime.now();
+      final store = demoStore()
+        ..health = const Health(pid: 1, version: '0.1.0', features: {'mcp'})
+        ..page = LibraryPage.mcp
+        ..mcpServers = [
+          McpStatus(
+            name: 'github',
+            config: const McpServerConfig(
+              command: 'github-mcp-server',
+              args: ['stdio'],
+              envSecrets: ['GITHUB_TOKEN'],
+            ),
+            state: McpRunning(tools: 23, since: now),
+          ),
+          const McpStatus(
+            name: 'linear',
+            config: McpServerConfig(
+              transport: McpTransport.http,
+              url: 'https://mcp.linear.app/mcp',
+              enabled: false,
+            ),
+            state: McpDisabled(),
+          ),
+          McpStatus(
+            name: 'postgres',
+            config: const McpServerConfig(command: 'pg-mcp'),
+            state: McpUnavailable(
+              error:
+                  'failed to start: connection closed (`FATAL: password '
+                  'authentication failed for user "app"`)',
+              retryAt: now.add(const Duration(seconds: 12)),
+              failures: 3,
+            ),
+          ),
+          const McpStatus(
+            name: 'filesystem',
+            config: McpServerConfig(command: 'fs-mcp'),
+            state: McpNotStarted(),
+          ),
+        ];
+      Future<void> shot(String name) => tester.runAsync(() async {
+        final boundary =
+            key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+        final image = await boundary.toImage(pixelRatio: 2);
+        final png = await image.toByteData(format: ui.ImageByteFormat.png);
+        final out = File(
+          'build/screenshots/${name}_${dark ? 'dark' : 'light'}.png',
+        );
+        await out.create(recursive: true);
+        await out.writeAsBytes(png!.buffer.asUint8List());
+      });
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: key,
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: theme.copyWith(
+              textTheme: theme.textTheme.apply(
+                fontFamily: '.AppleSystemUIFont',
+              ),
+            ),
+            home: Home(store: store),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.takeException(), isNull);
+      await shot('mcp');
+
+      final sheetStore = TernStore(_McpClient())
+        ..health = store.health
+        ..mcpServers = store.mcpServers;
+      showMcpSheet(
+        tester.element(find.byType(Home)),
+        sheetStore,
+        drafts: const [
+          ImportedServer(
+            name: 'github',
+            config: McpServerConfig(
+              command: 'npx',
+              args: ['-y', '@modelcontextprotocol/server-github'],
+              env: {'LOG_LEVEL': 'warn'},
+              envSecrets: ['GITHUB_TOKEN'],
+            ),
+            secrets: {'GITHUB_TOKEN': 'ghp_pasted'},
+          ),
+        ],
+      );
+      // Not pumpAndSettle: the retry countdown ticks every second.
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('Test connection'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tester.takeException(), isNull);
+      await shot('mcp_add');
       debugDefaultTargetPlatformOverride = null;
     });
   }

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
 import 'conversation.dart';
+import 'mcp.dart';
 import 'offline.dart';
 import 'providers.dart';
 import 'quit.dart';
@@ -85,11 +86,17 @@ class _HomeState extends State<Home> {
                   SizedBox(width: 260, child: Sidebar(store: store)),
                   const Hairline(vertical: true),
                   Expanded(
-                    child: ConversationView(
-                      store: store,
-                      panelOpen: panel,
-                      onTogglePanel: _togglePanel,
-                    ),
+                    child: store.page == LibraryPage.mcp && store.hasMcp
+                        ? McpView(
+                            store: store,
+                            panelOpen: panel,
+                            onTogglePanel: _togglePanel,
+                          )
+                        : ConversationView(
+                            store: store,
+                            panelOpen: panel,
+                            onTogglePanel: _togglePanel,
+                          ),
                   ),
                   if (panel) ...[
                     const Hairline(vertical: true),

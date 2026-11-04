@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'endpoint.dart';
 import 'lifecycle.dart';
+import 'mcp.dart';
 import 'models.dart';
 import 'providers.dart';
 import 'secret_requests.dart';
@@ -191,6 +192,93 @@ class TernClient {
     }) as Json;
     return Resolved.fromJson(j, model);
   }
+
+  /// Configured MCP servers with their state. Check `features` in
+  /// [health] for `mcp` first.
+  Future<List<McpStatus>> mcpServers() async => [
+    for (final s in await _json('GET', '/v1/mcp') as List)
+      McpStatus.fromJson(s as Json),
+  ];
+
+  /// One server, including its stderr tail.
+  Future<McpStatus> mcpServer(String name) async =>
+      McpStatus.fromJson(await _json('GET', '/v1/mcp/${_seg(name)}'));
+
+  /// Test-connect a draft with `secrets` typed but not yet saved. Saves
+  /// nothing; a failed connection is a result, not an exception. A paired
+  /// device gets 403 for a stdio config unless the host allows it.
+  Future<McpVerifyResult> verifyMcp(
+    String name,
+    McpServerConfig config, {
+    Map<String, String> secrets = const {},
+  }) async => McpVerifyResult.fromJson(
+    await _json('POST', '/v1/mcp/verify', {
+      'name': name,
+      'config': config.toJson(),
+      if (secrets.isNotEmpty) 'secrets': secrets,
+    }),
+  );
+
+  /// Read a pasted `mcpServers` snippet into drafts. Saves nothing; 400
+  /// when nothing in it could be imported.
+  Future<List<ImportedServer>> importMcp(String text) async => [
+    for (final s
+        in await _json('POST', '/v1/mcp/import', {'text': text}) as List)
+      ImportedServer.fromJson(s as Json),
+  ];
+
+  /// Store `secrets`, write the server and start it. 409 if the name is
+  /// taken.
+  Future<McpStatus> addMcp(
+    String name,
+    McpServerConfig config, {
+    Map<String, String> secrets = const {},
+  }) async => McpStatus.fromJson(
+    await _json('POST', '/v1/mcp', {
+      'name': name,
+      'config': config.toJson(),
+      if (secrets.isNotEmpty) 'secrets': secrets,
+    }),
+  );
+
+  /// Replace `old`'s config; a different `name` renames it.
+  Future<McpStatus> updateMcp(
+    String old, {
+    String? name,
+    required McpServerConfig config,
+    Map<String, String> secrets = const {},
+  }) async => McpStatus.fromJson(
+    await _json('PUT', '/v1/mcp/${_seg(old)}', {
+      'name': ?name,
+      'config': config.toJson(),
+      if (secrets.isNotEmpty) 'secrets': secrets,
+    }),
+  );
+
+  /// The quick toggles; fields left null don't change.
+  Future<McpStatus> patchMcp(
+    String name, {
+    bool? enabled,
+    List<String>? disabledTools,
+    bool? requiresApproval,
+    bool? idempotent,
+  }) async => McpStatus.fromJson(
+    await _json('PATCH', '/v1/mcp/${_seg(name)}', {
+      'enabled': ?enabled,
+      'disabled_tools': ?disabledTools,
+      'requires_approval': ?requiresApproval,
+      'idempotent': ?idempotent,
+    }),
+  );
+
+  /// Remove a server and, with `removeSecrets`, the secrets nothing else
+  /// uses.
+  Future<void> removeMcp(String name, {bool removeSecrets = false}) =>
+      _json('DELETE', '/v1/mcp/${_seg(name)}?remove_secrets=$removeSecrets');
+
+  /// Reconnect now, clearing any backoff.
+  Future<McpStatus> restartMcp(String name) async =>
+      McpStatus.fromJson(await _json('POST', '/v1/mcp/${_seg(name)}/restart'));
 
   Future<List<SessionItem>> sessions({int limit = 50}) async => [
     for (final s in await _json('GET', '/v1/sessions?limit=$limit') as List)
@@ -459,6 +547,8 @@ class TernClient {
     out.onCancel = () => http.close(force: true);
     return out.stream;
   }
+
+  static String _seg(String s) => Uri.encodeComponent(s);
 
   Future<dynamic> _json(String method, String path, [Object? body]) =>
       _request(method, path, body);

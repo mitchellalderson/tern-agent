@@ -63,6 +63,7 @@ class _SidebarState extends State<Sidebar> {
           ),
           _AgentRow(store: store),
           const SizedBox(height: 6),
+          if (store.hasMcp) _Library(store: store),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -78,7 +79,7 @@ class _SidebarState extends State<Sidebar> {
                   for (final s in group.$2)
                     _SessionRow(
                       session: s,
-                      selected: s.id == store.selected,
+                      selected: s.id == store.selected && store.page == null,
                       transcript: store.transcripts[s.id],
                       onTap: () => store.open(s.id),
                     ),
@@ -198,6 +199,79 @@ class _AgentRow extends StatelessWidget {
                     ),
                   ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Library (gui-spec §4.2): what the agent can use, opened in the centre
+/// column. Hidden against cores without the API for it.
+class _Library extends StatelessWidget {
+  const _Library({required this.store});
+
+  final TernStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final selected = store.page == LibraryPage.mcp;
+    final down = store.mcpServers.where((s) => s.state is McpUnavailable);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 10, 10, 4),
+            child: Text(
+              'LIBRARY',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+          ),
+          Material(
+            color: selected ? c.selection : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => store.openMcp(),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 7,
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.extension_outlined, size: 14, color: c.muted),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'MCP servers',
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: selected
+                              ? FontWeight.w500
+                              : FontWeight.w400,
+                        ),
+                      ),
+                    ),
+                    if (down.isNotEmpty)
+                      Tooltip(
+                        message:
+                            '${down.map((s) => s.name).join(', ')} '
+                            'unavailable',
+                        child: _Dot(color: c.error),
+                      )
+                    else if (store.mcpServers.isNotEmpty)
+                      Text(
+                        '${store.mcpServers.length}',
+                        style: TextStyle(fontSize: 11.5, color: c.muted),
+                      ),
+                  ],
+                ),
+              ),
             ),
           ),
         ],

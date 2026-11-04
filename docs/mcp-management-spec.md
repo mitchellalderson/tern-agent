@@ -1,6 +1,6 @@
 # MCP server management
 
-Status: M0 (engine and API) built; M1 (TUI, CLI) and M2 (desktop) not started. Covers the engine, TUI, desktop app and CLI. See §11 for how M0 was built.
+Status: M0 (engine and API) and M2 (desktop) built; M1 (TUI, CLI) in progress. Covers the engine, TUI, desktop app and CLI. See §11 for how M0 was built.
 
 ## 1. Problem
 
@@ -289,3 +289,12 @@ tern mcp enable|disable|restart|rm NAME
 - **`tern doctor`** test-connects each enabled server; `--offline` (the existing flag) skips that and checks only the command on `PATH`. There's no separate `--quick`.
 - **Config writes** go through `ConfigFile::upsert_mcp_server` / `remove_mcp_server`: fields left at their defaults are dropped from the table, and comments on the fields that stay are kept. Maps (`env`, `header_secrets`, `effects`) are written as inline tables.
 - **Not yet**: rename doesn't warn about allowlist entries for `mcp__old__*` (that's a client-side message for M1/M2); the `tern_client` and `RemoteBackend` methods come with M1/M2.
+
+## 11. As built (M2)
+
+- **Client**: `tern_client/lib/src/mcp.dart` mirrors `tern_core::mcp` (`McpState` is a sealed class per `kind`; times are `DateTime`s). `McpServerConfig.toJson` leaves out defaults and the other transport's fields, since the daemon refuses unknown and mixed fields. `verifyMcp` returns `McpVerifyResult` (one of `verified` / `error`); 403/409 surface as `TernException.status`. `mcp_changed` decodes to `McpChanged(name, state?)`.
+- **Store**: loads `/v1/mcp` on every resync when `/v1/health` has `mcp`, and again (with `/v1/info` for the tool list) on each `mcp_changed`. `page` / `mcpSelected` put the MCP page in the centre column; opening a conversation clears them.
+- **UI** (`ui/mcp.dart`, `ui/mcp_sheet.dart`): Library → MCP servers in the sidebar, hidden without the `mcp` feature; write controls are hidden below Owner scope. The add sheet is a dialog; pasted servers are tabs and the sheet closes once every tab is saved. Each tool's schema opens in the existing `ToolDialog` (enabled tools only, since hidden ones aren't in `/v1/tools`). The side panel groups `mcp__*` tools under every enabled server, including ones that are down, and the group header opens the server's page.
+- **Secrets**: the form reads `/v1/secrets` to show `NAME ✓ set (env)`; Test refuses client-side while a needed secret is neither set nor typed. Rename shows the allowlist warning.
+- **Remote cores**: "remote" is `health.auth.kind != owner`. The API doesn't say whether the host has `api.remote_mcp_stdio`, so the Local command card is always off over a paired device (a pasted stdio draft can't be tested or saved there). A `mcp_stdio` health feature or field would let the app enable it.
+- **Not yet**: no live run against a real daemon from the app (widget tests and screenshots only; `build/screenshots/mcp*.png`).

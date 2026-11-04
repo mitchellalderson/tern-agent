@@ -8,6 +8,9 @@ import 'transcript.dart';
 
 enum Link { connecting, online, offline }
 
+/// A Library page shown in the centre column instead of a conversation.
+enum LibraryPage { mcp }
+
 /// Everything the app knows, fed by the daemon. Widgets listen to it.
 ///
 /// The daemon owns all state: this is a cache rebuilt on every (re)connect,
@@ -52,6 +55,13 @@ class TernStore extends ChangeNotifier {
   List<ProviderModels>? modelLists;
   bool loadingModels = false;
 
+  /// MCP servers, when the core has them ([hasMcp]).
+  List<McpStatus> mcpServers = [];
+
+  /// The Library page in the centre column, and the MCP server open in it.
+  LibraryPage? page;
+  String? mcpSelected;
+
   /// The model a new conversation will use, when chosen before sending.
   String? draftModel;
   String? error;
@@ -83,6 +93,13 @@ class TernStore extends ChangeNotifier {
   /// Whether the core can ask for secrets (older ones can't).
   bool get hasSecretRequests =>
       health?.features.contains('secret_requests') ?? false;
+
+  /// Whether the core manages MCP servers over the API (older ones can't).
+  bool get hasMcp => health?.features.contains('mcp') ?? false;
+
+  /// Reached as a paired device rather than the local owner socket, so the
+  /// core refuses stdio MCP servers unless `api.remote_mcp_stdio` is set.
+  bool get remoteCore => health != null && health!.authKind != 'owner';
 
   String? modelFor(String? session) {
     if (session == null) return draftModel ?? info?.defaultModel;
@@ -163,6 +180,7 @@ class TernStore extends ChangeNotifier {
     for (final a in await client.pendingApprovals()) {
       _transcriptFor(a.sessionId)?.apply(ApprovalRequested(a));
     }
+    if (hasMcp) await loadMcp(notify: false);
     if (hasSecretRequests) {
       try {
         for (final r in await client.secretRequests()) {
@@ -287,6 +305,11 @@ class TernStore extends ChangeNotifier {
       case ModelsChanged():
         // Only re-fetch lists someone is looking at.
         if (modelLists != null) unawaited(loadModels());
+        return;
+      case McpChanged():
+        // State changes also add or drop tools.
+        unawaited(loadMcp());
+        unawaited(refreshInfo());
         return;
       case UnknownEvent():
         return;
@@ -494,6 +517,7 @@ class TernStore extends ChangeNotifier {
   }
 
   Future<void> open(String id) async {
+    page = null;
     selected = id;
     draft = false;
     error = null;
@@ -507,6 +531,7 @@ class TernStore extends ChangeNotifier {
   }
 
   void newConversation() {
+    page = null;
     selected = null;
     draft = true;
     draftModel = null;
@@ -739,6 +764,35 @@ class TernStore extends ChangeNotifier {
     } finally {
       loadingModels = false;
       if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// Show the MCP servers page, at `server`'s details when given.
+  void openMcp([String? server]) {
+    page = LibraryPage.mcp;
+    mcpSelected = server;
+    notifyListeners();
+  }
+
+  Future<void> loadMcp({bool notify = true}) async {
+    try {
+      mcpServers = await client.mcpServers();
+    } on TernException catch (e) {
+      if (notify) error = e.message;
+    }
+    if (notify && !_disposed) notifyListeners();
+  }
+
+  /// Run an MCP write and re-read the list. Returns the daemon's reason on
+  /// failure.
+  Future<String?> mcpWrite(Future<Object?> Function(TernClient c) write) async {
+    try {
+      await write(client);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    } finally {
+      await loadMcp();
     }
   }
 

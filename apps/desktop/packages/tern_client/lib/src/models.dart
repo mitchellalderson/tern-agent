@@ -3,6 +3,7 @@
 // event types decode to [UnknownEvent], so a newer daemon doesn't break
 // an older app.
 
+import 'mcp.dart';
 import 'secret_requests.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -438,6 +439,12 @@ sealed class TernEvent {
     if (j['models_changed'] case final Json m) {
       return ModelsChanged(m['provider'] as String? ?? '');
     }
+    if (j['mcp_changed'] case final Json m) {
+      return McpChanged(
+        m['name'] as String? ?? '',
+        m['state'] is Json ? McpState.fromJson(m['state'] as Json) : null,
+      );
+    }
     final run = j['run_id'] as String? ?? '';
     final event = _agentEvent(j, run);
     if (event is RunEvent) {
@@ -726,6 +733,14 @@ class ProvidersChanged extends TernEvent {
 class ModelsChanged extends TernEvent {
   const ModelsChanged(this.provider);
   final String provider;
+}
+
+/// An MCP server changed state or config; [state] is null once it's
+/// removed. Re-read `/v1/mcp` (and the tool list).
+class McpChanged extends TernEvent {
+  const McpChanged(this.name, this.state);
+  final String name;
+  final McpState? state;
 }
 
 class UnknownEvent extends TernEvent {

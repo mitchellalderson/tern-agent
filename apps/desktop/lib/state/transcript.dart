@@ -430,7 +430,8 @@ class Transcript {
       case UsageEvent() ||
           UnknownEvent() ||
           ProvidersChanged() ||
-          ModelsChanged():
+          ModelsChanged() ||
+          McpChanged():
         return false;
     }
     return true;
