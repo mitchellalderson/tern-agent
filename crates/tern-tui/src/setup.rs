@@ -2,8 +2,11 @@
 //! remove providers. Choose a kind, give a key (checked before it is
 //! saved), pick a model. Network calls run as [`Task`]s off the input loop.
 
+use std::collections::BTreeMap;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tern_core::config::ProviderKind;
+use tern_core::config::{McpServerConfig, ProviderKind};
+use tern_core::mcp::{McpStatus, McpVerified, McpVerifyError};
 use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
 use tern_core::secrets::keys::mask_key;
 
@@ -28,6 +31,18 @@ pub enum Task {
         existing: Option<String>,
         default_model: Option<String>,
     },
+    McpVerify {
+        name: String,
+        cfg: Box<McpServerConfig>,
+        secrets: BTreeMap<String, String>,
+    },
+    McpSave {
+        old: Option<String>,
+        name: String,
+        cfg: Box<McpServerConfig>,
+        secrets: BTreeMap<String, String>,
+    },
+    McpRestart(String),
 }
 
 /// A finished [`Task`].
@@ -36,6 +51,9 @@ pub enum TaskDone {
     Models(BackendResult<Vec<ProviderModels>>),
     Verified(BackendResult<Verified>),
     Saved(BackendResult<ProviderStatus>),
+    McpVerified(BackendResult<Result<McpVerified, McpVerifyError>>),
+    McpSaved(BackendResult<McpStatus>),
+    McpRestarted(String, BackendResult<McpStatus>),
 }
 
 impl Task {
@@ -52,6 +70,19 @@ impl Task {
                 existing,
                 default_model,
             } => TaskDone::Saved(backend.save_provider(draft, existing, default_model).await),
+            Task::McpVerify { name, cfg, secrets } => {
+                TaskDone::McpVerified(backend.verify_mcp(name, *cfg, secrets).await)
+            }
+            Task::McpSave {
+                old,
+                name,
+                cfg,
+                secrets,
+            } => TaskDone::McpSaved(backend.save_mcp(old, name, *cfg, secrets).await),
+            Task::McpRestart(name) => {
+                let r = backend.restart_mcp(name.clone()).await;
+                TaskDone::McpRestarted(name, r)
+            }
         }
     }
 }

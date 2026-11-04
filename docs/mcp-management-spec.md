@@ -1,6 +1,6 @@
 # MCP server management
 
-Status: M0 (engine and API) and M2 (desktop) built; M1 (TUI, CLI) in progress. Covers the engine, TUI, desktop app and CLI. See §11 for how M0 was built.
+Status: M0 (engine and API), M1 (TUI, CLI) and M2 (desktop) built. Covers the engine, TUI, desktop app and CLI. See §11 for how each phase was built.
 
 ## 1. Problem
 
@@ -290,7 +290,15 @@ tern mcp enable|disable|restart|rm NAME
 - **Config writes** go through `ConfigFile::upsert_mcp_server` / `remove_mcp_server`: fields left at their defaults are dropped from the table, and comments on the fields that stay are kept. Maps (`env`, `header_secrets`, `effects`) are written as inline tables.
 - **Not yet**: rename doesn't warn about allowlist entries for `mcp__old__*` (that's a client-side message for M1/M2); the `tern_client` and `RemoteBackend` methods come with M1/M2.
 
-## 11. As built (M2)
+## 11.1 As built (M1)
+
+- **TUI**: `/mcp` opens `McpPanel` (`crates/tern-tui/src/mcp.rs`, drawn by `ui_mcp.rs`) with list, detail, form and paste modes. Shortcuts: `/mcp add`, `/mcp paste` (or `import`), `/mcp restart|enable|disable NAME`. `/tools` ends with each server's state and a pointer to `/mcp`.
+- **Form**: one screen of fields (transport toggled with Space), then a Secrets step only for secrets that aren't set or came from a paste, then Testing, then the tool checklist. `args`, `env` and header secrets are typed shell-style (`KEY=value`, quotes group). An `env` value that looks like a key is moved to `env_secrets` automatically on Enter, with its value carried to the Secrets step: that's the "one action" of §6.3.
+- **No `mcp_changed` subscription in the TUI**: the TUI's event bus carries agent events only, so the panel polls `mcp_servers()` once a second for 20 s after a save, toggle or restart, stopping early once nothing is connecting.
+- **Backend**: `set_mcp_enabled` became `patch_mcp(name, &McpPatch)`, which also covers hidden tools. `verify_mcp` returns `Result<Result<McpVerified, McpVerifyError>, String>`: the outer error is the backend, the inner one the server. `save_mcp`, `verify_mcp` and `restart_mcp` are async and run as `Task`s.
+- **CLI**: `tern mcp list|show|add|import|test|enable|disable|restart|rm`. A missing secret without a terminal is an error that points at `/secrets`, since there's no `tern secrets` command. Rename isn't offered in the CLI.
+
+## 11.2 As built (M2)
 
 - **Client**: `tern_client/lib/src/mcp.dart` mirrors `tern_core::mcp` (`McpState` is a sealed class per `kind`; times are `DateTime`s). `McpServerConfig.toJson` leaves out defaults and the other transport's fields, since the daemon refuses unknown and mixed fields. `verifyMcp` returns `McpVerifyResult` (one of `verified` / `error`); 403/409 surface as `TernException.status`. `mcp_changed` decodes to `McpChanged(name, state?)`.
 - **Store**: loads `/v1/mcp` on every resync when `/v1/health` has `mcp`, and again (with `/v1/info` for the tool list) on each `mcp_changed`. `page` / `mcpSelected` put the MCP page in the centre column; opening a conversation clears them.

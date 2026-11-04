@@ -14,7 +14,7 @@ use tern_tui::Backend;
 
 use crate::cli::{ProviderKindArg, ProvidersCommand};
 
-fn with_backend<T>(
+pub(crate) fn with_backend<T>(
     home: &TernHome,
     f: impl AsyncFnOnce(Arc<dyn Backend>) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
@@ -171,7 +171,7 @@ fn read_key(kind: ProviderKind) -> anyhow::Result<String> {
     read_hidden(prompt)
 }
 
-fn read_hidden(prompt: &str) -> anyhow::Result<String> {
+pub(crate) fn read_hidden(prompt: &str) -> anyhow::Result<String> {
     use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, read};
     let mut err = std::io::stderr();
     write!(err, "{prompt}")?;

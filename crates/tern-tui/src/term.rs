@@ -127,7 +127,7 @@ async fn event_loop(
                 effects = app.on_run_done(result);
             }
             Some(done) = task_rx.recv() => effects = app.on_task_done(done),
-            _ = tick.tick(), if app.is_running() || app.is_busy() => {}
+            _ = tick.tick(), if app.is_running() || app.is_busy() => app.on_tick(),
         }
     }
 }

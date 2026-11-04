@@ -1,6 +1,7 @@
 //! The TUI's view of a running daemon, over its Unix socket API, or over
 //! HTTPS with a device token (`tern --remote <url>`).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +13,9 @@ use serde_json::{Value, json};
 use tern_core::SecretStatus;
 use tern_core::agent::RunOutcome;
 use tern_core::approval::{ApprovalRequest, Decision, SecretRequest};
+use tern_core::config::McpServerConfig;
 use tern_core::events::AgentEvent;
+use tern_core::mcp::{ImportedServer, McpPatch, McpStatus, McpVerified, McpVerifyError};
 use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
 use tern_core::subagent::ChildRun;
 use tern_core::types::{Role, ToolCall, Usage};
@@ -548,6 +551,70 @@ impl Backend for Remote {
             json!({ "value": value }),
         )
         .map(|_| ())
+    }
+
+    fn mcp_servers(&self) -> BackendResult<Vec<McpStatus>> {
+        self.get("/v1/mcp")
+    }
+
+    async fn verify_mcp(
+        &self,
+        name: String,
+        cfg: McpServerConfig,
+        secrets: BTreeMap<String, String>,
+    ) -> BackendResult<Result<McpVerified, McpVerifyError>> {
+        let body = json!({ "name": name, "config": cfg, "secrets": secrets });
+        let v: Value = self
+            .request(self.http.post(self.url("/v1/mcp/verify")).json(&body))
+            .await?;
+        let bad = |e: serde_json::Error| format!("daemon: {e}");
+        Ok(if v["ok"] == true {
+            Ok(serde_json::from_value(v["verified"].clone()).map_err(bad)?)
+        } else {
+            Err(serde_json::from_value(v["error"].clone()).map_err(bad)?)
+        })
+    }
+
+    fn import_mcp(&self, text: &str) -> BackendResult<Vec<ImportedServer>> {
+        self.send_json(
+            reqwest::Method::POST,
+            "/v1/mcp/import",
+            json!({ "text": text }),
+        )
+    }
+
+    async fn save_mcp(
+        &self,
+        old: Option<String>,
+        name: String,
+        cfg: McpServerConfig,
+        secrets: BTreeMap<String, String>,
+    ) -> BackendResult<McpStatus> {
+        let body = json!({ "name": name, "config": cfg, "secrets": secrets });
+        let req = match old {
+            Some(old) => self.http.put(self.url(&format!("/v1/mcp/{old}"))),
+            None => self.http.post(self.url("/v1/mcp")),
+        };
+        self.request(req.json(&body)).await
+    }
+
+    fn patch_mcp(&self, name: &str, patch: &McpPatch) -> BackendResult<McpStatus> {
+        let body = serde_json::to_value(patch).map_err(|e| e.to_string())?;
+        self.send_json(reqwest::Method::PATCH, &format!("/v1/mcp/{name}"), body)
+    }
+
+    fn remove_mcp(&self, name: &str, remove_secrets: bool) -> BackendResult<()> {
+        self.send_json::<Value>(
+            reqwest::Method::DELETE,
+            &format!("/v1/mcp/{name}?remove_secrets={remove_secrets}"),
+            json!({}),
+        )
+        .map(|_| ())
+    }
+
+    async fn restart_mcp(&self, name: String) -> BackendResult<McpStatus> {
+        self.request(self.http.post(self.url(&format!("/v1/mcp/{name}/restart"))))
+            .await
     }
 
     fn children(&self, run_id: &str) -> BackendResult<Vec<ChildRun>> {

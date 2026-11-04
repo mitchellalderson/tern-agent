@@ -92,6 +92,12 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<ProvidersCommand>,
     },
+    /// List, add, test and manage MCP servers. Changes apply to a running
+    /// daemon at once.
+    Mcp {
+        #[command(subcommand)]
+        command: Option<McpCommand>,
+    },
     /// List the models each provider offers.
     Models {
         /// Only this provider.
@@ -167,6 +173,73 @@ pub enum ProvidersCommand {
         name: String,
         #[arg(long)]
         keep_key: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum McpCommand {
+    /// Configured servers and their state.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// One server: config, state, tools and its recent stderr.
+    Show { name: String },
+    /// Add a server: `tern mcp add github -- github-mcp-server stdio`, or
+    /// `tern mcp add linear --url https://mcp.linear.app/mcp`. It's tested
+    /// first, and missing secrets are asked for (hidden).
+    Add {
+        name: String,
+        /// Endpoint of a streamable HTTP server (instead of a command).
+        #[arg(long, conflicts_with = "command")]
+        url: Option<String>,
+        /// Plain environment for the command: `--env LOG_LEVEL=warn`.
+        #[arg(long = "env", value_name = "K=V")]
+        env: Vec<String>,
+        /// A secret passed to the command's environment: `--secret GITHUB_TOKEN`.
+        #[arg(long = "secret", value_name = "NAME")]
+        secrets: Vec<String>,
+        /// Working directory for the command.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// A secret sent as `Authorization: Bearer …` (with --url).
+        #[arg(long, value_name = "NAME", requires = "url")]
+        bearer_secret: Option<String>,
+        /// A header filled from a secret: `--header-secret X-API-Key=FOO_KEY`.
+        #[arg(long = "header-secret", value_name = "H=NAME", requires = "url")]
+        header_secrets: Vec<String>,
+        /// Ask before each of its tool calls.
+        #[arg(long)]
+        approve: bool,
+        /// Save without starting it first.
+        #[arg(long)]
+        no_test: bool,
+        /// The command and its arguments, after `--`.
+        #[arg(last = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// Add the servers in a pasted `mcpServers` JSON snippet (from FILE, or
+    /// stdin when FILE is omitted).
+    Import {
+        file: Option<std::path::PathBuf>,
+        /// Save without starting them first.
+        #[arg(long)]
+        no_test: bool,
+    },
+    /// Start a configured server and list its tools, without changing it.
+    Test { name: String },
+    /// Turn a server on.
+    Enable { name: String },
+    /// Turn a server off without removing it.
+    Disable { name: String },
+    /// Reconnect now.
+    Restart { name: String },
+    /// Remove a server and, unless --keep-secrets, the secrets only it uses.
+    Rm {
+        name: String,
+        #[arg(long)]
+        keep_secrets: bool,
     },
 }
 
