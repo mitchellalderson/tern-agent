@@ -4596,6 +4596,7 @@ dependencies = [
  "serde_json",
  "smappservice-rs",
  "tempfile",
+ "tern-auth",
  "tern-core",
  "tern-gateway",
  "tern-lua",
@@ -4623,6 +4624,7 @@ dependencies = [
 name = "tern-auth"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "aws-lc-rs",
  "psl",
  "reqwest",

@@ -874,6 +874,9 @@ fn build_tools(
         store: store.clone(),
         checks: Some(checks),
     }));
+    // Signing in (tooling spec §6.7).
+    let auth = Arc::new(tern_auth::tools::AuthHost::new(&config.auth));
+    registry.register(Arc::new(tern_auth::tools::AuthDiscover { host: auth }));
     registry.register(Arc::new(tern_lua::tools::ConnectorWrite {
         host: lua.clone(),
         dirs: dirs.clone(),

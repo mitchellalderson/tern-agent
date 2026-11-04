@@ -347,7 +347,11 @@ pub fn check_scoped(name: &str) -> Result<(), SecretError> {
         return Err(bad());
     }
     match tail.strip_prefix("oauth/") {
-        Some(field) if !field.is_empty() && field.chars().all(|c| c.is_ascii_lowercase() || c == '_') => Ok(()),
+        Some(field)
+            if !field.is_empty() && field.chars().all(|c| c.is_ascii_lowercase() || c == '_') =>
+        {
+            Ok(())
+        }
         Some(_) => Err(bad()),
         None => check_name(tail).map_err(|_| bad()),
     }
@@ -620,7 +624,10 @@ mod tests {
         );
         // Old binaries read the file too: every key is still a string.
         let text = std::fs::read_to_string(&p).unwrap();
-        assert!(text.contains("\"conn/gmail/work/oauth/access_token\" = "), "{text}");
+        assert!(
+            text.contains("\"conn/gmail/work/oauth/access_token\" = "),
+            "{text}"
+        );
         assert!(text.contains("PLAIN = \"plain-value\""), "{text}");
         // Values are redacted like any other secret.
         assert_eq!(s.redact("t=1//refresh-work"), "t=[REDACTED]");
@@ -630,7 +637,11 @@ mod tests {
         assert_eq!(s.remove_prefix("conn/gmail/work/").unwrap(), 2);
         assert_eq!(s.get("conn/gmail/work/oauth/refresh_token"), None);
         assert!(s.get("conn/gmail/home/oauth/access_token").is_some());
-        assert_eq!(s.redact("1//refresh-work"), "[REDACTED]", "removed values stay redacted");
+        assert_eq!(
+            s.redact("1//refresh-work"),
+            "[REDACTED]",
+            "removed values stay redacted"
+        );
         for bad in [
             "conn/gmail/work",
             "conn/Gmail/work/X",

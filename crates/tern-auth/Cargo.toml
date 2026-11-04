@@ -12,6 +12,7 @@ workspace = true
 tern-core.workspace = true
 tern-store.workspace = true
 
+async-trait.workspace = true
 aws-lc-rs.workspace = true
 psl.workspace = true
 reqwest.workspace = true

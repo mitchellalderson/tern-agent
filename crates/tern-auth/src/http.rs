@@ -21,6 +21,8 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 pub struct Guard {
     /// `scheme://host[:port]` origins from `[auth] local_issuers`.
     local: Vec<String>,
+    /// Sends nothing at all (tests).
+    offline: bool,
 }
 
 impl Guard {
@@ -31,6 +33,16 @@ impl Guard {
                 .filter_map(|o| Url::parse(o).ok())
                 .map(|u| origin(&u))
                 .collect(),
+            offline: false,
+        }
+    }
+
+    /// A guard that refuses every request, for tests that must not reach
+    /// the network.
+    pub fn offline() -> Self {
+        Self {
+            local: Vec::new(),
+            offline: true,
         }
     }
 
@@ -41,6 +53,9 @@ impl Guard {
 
     /// A client for one request to `url`, after the checks above.
     pub async fn client(&self, url: &Url) -> Result<reqwest::Client, AuthError> {
+        if self.offline {
+            return Err(AuthError::Refused("offline".into()));
+        }
         let local = self.is_local(url);
         if url.scheme() != "https" && !(local && url.scheme() == "http") {
             return Err(AuthError::Refused(format!(

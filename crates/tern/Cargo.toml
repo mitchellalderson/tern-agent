@@ -26,6 +26,7 @@ tray = [
 python = ["dep:tern-python", "dep:monty-alloc"]
 
 [dependencies]
+tern-auth.workspace = true
 tern-core.workspace = true
 tern-gateway.workspace = true
 tern-lua.workspace = true
