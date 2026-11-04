@@ -6,7 +6,7 @@ members = ["crates/*", "xtask"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.89"
+rust-version = "1.96"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -22,6 +22,7 @@ tern-lua = { path = "crates/tern-lua" }
 tern-mcp = { path = "crates/tern-mcp" }
 tern-store = { path = "crates/tern-store" }
 tern-providers = { path = "crates/tern-providers" }
+tern-python = { path = "crates/tern-python" }
 tern-tools = { path = "crates/tern-tools" }
 tern-tui = { path = "crates/tern-tui" }
 tern-sandbox = { path = "crates/tern-sandbox" }
@@ -42,6 +43,10 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "json", "stream"] }
 qrcode = { version = "0.14.1", default-features = false }
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+# Monty (docs/python-tool-spec.md): pinned exactly; it releases weekly.
+monty = "=1.4.0"
+monty-fs = "=1.4.0"
+monty-types = "=1.4.0"
 mlua = { version = "0.12.2", features = ["luau", "async", "serialize", "send"] }
 ratatui = "0.30.2"
 rmcp = { version = "3.8.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
@@ -89,3 +94,18 @@ strip = true
 inherits = "release"
 lto = true
 codegen-units = 1
+
+# Monty (the `python` tool) is most of a megabyte per crate at -O3, and
+# scripts are small: optimize its interpreter, parser and tables for size.
+[profile.dist.package.monty]
+opt-level = "s"
+[profile.dist.package.monty-types]
+opt-level = "s"
+[profile.dist.package.monty-fs]
+opt-level = "s"
+[profile.dist.package.ruff_python_parser]
+opt-level = "s"
+[profile.dist.package.ruff_python_ast]
+opt-level = "s"
+[profile.dist.package.unicode_names2]
+opt-level = "s"

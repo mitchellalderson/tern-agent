@@ -986,7 +986,7 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 **Sandboxed compute (PY0–PY3), alongside stage 2.** A `python` tool on Monty whose scripts call tern's tools as
 functions, each call journaled and checked like a direct one, so compute that needs many lookups doesn't go through
 `shell` and around a connector's allowlist, taint and journal. Read-only first (PY1), writes through approvals and the
-outbox later (PY2). See [python-tool-spec.md](python-tool-spec.md).
+outbox later (PY2). **PY0 is built** (read-only, in-process). See [python-tool-spec.md](python-tool-spec.md).
 
 Why this order:
 - **Stage 1** delivers visible quality of life immediately: quiet routines, cost caps, easy stop. It costs almost

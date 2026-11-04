@@ -34,6 +34,10 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 - **MCP management** from the TUI (`/mcp`), the CLI (`tern mcp`) and the desktop app, with no restart and no
   `config.toml` editing ([mcp-management-spec.md](docs/mcp-management-spec.md) M0–M2).
 - `tern reset` clears all local data.
+- **Sandboxed compute**: a `python` tool on Monty, a Python subset in Rust, whose scripts call tern's read-only tools
+  as functions, each call checked and journaled, so loops over a connector don't go through `shell`
+  ([python-tool-spec.md](docs/python-tool-spec.md) PY0; isolation in a helper process, approvals and writes from
+  scripts are PY1–PY2).
 
 ## Next: the rest of Stage 1
 
@@ -49,10 +53,6 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 | 4. Connections | OAuth-first sign-in, several accounts per service (T4a). Webhook triggers (T1c). Chat channels as Luau gateway connectors: ntfy, then Slack (T4b-ii). | tooling §6 |
 | 5. Ecosystem | Recipes (morning brief, follow-ups, meeting prep) and goals (T6c). Signed bundles, `import openclaw` (T4b-iii). `tern mcp serve` (T6d). Faster connector authoring (T4c). Tray on Linux (T8c). Native browser behind a feature flag (T7b). | tooling §6.5, §9, §10 |
 | 6. Multiplayer | Group rooms, then several members on one core, then hosted workspaces. | tooling §15 |
-
-**Sandboxed compute** ([python-tool-spec.md](docs/python-tool-spec.md)): a `python` tool on Monty, a Python subset in
-Rust, whose scripts call tern's tools as functions, so loops over a connector stay inside its approvals, taint and
-journal instead of going through `shell` (PY0–PY3, alongside stage 2).
 
 **Running it elsewhere** ([deployment-spec.md](docs/deployment-spec.md) §12): event replay and an async store (D0),
 container image and server guides (D2), Postgres (D3), a mobile app with push (D4), a hosted tier with export and

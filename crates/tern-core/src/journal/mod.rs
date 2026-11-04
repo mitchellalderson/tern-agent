@@ -36,6 +36,9 @@ pub enum StepKind {
     /// Shows posts other agents and routines made in the run's channel
     /// since it last looked (docs/channels-design.md §3).
     Channel,
+    /// A tool call made by a script (the `python` tool), journaled after
+    /// the script's own `tool` step (docs/python-tool-spec.md §3.3).
+    PyCall,
 }
 
 impl StepKind {
@@ -49,6 +52,7 @@ impl StepKind {
             StepKind::MemoryFlush => "memory_flush",
             StepKind::Carry => "carry",
             StepKind::Channel => "channel",
+            StepKind::PyCall => "py_call",
         }
     }
 
@@ -62,6 +66,7 @@ impl StepKind {
             "memory_flush" => StepKind::MemoryFlush,
             "carry" => StepKind::Carry,
             "channel" => StepKind::Channel,
+            "py_call" => StepKind::PyCall,
             _ => return None,
         })
     }

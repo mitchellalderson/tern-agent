@@ -1,7 +1,7 @@
 //! `tern runs ...` and `tern sessions ...`: read-only views of the database.
 
 use anyhow::Context;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tern_core::TernHome;
 use tern_core::types::{AssistantTurn, ContentBlock};
 use tern_store::{StepRow, Store};
@@ -175,12 +175,23 @@ fn describe(step: &StepRow) -> String {
 }
 
 fn describe_kind(step: &StepRow) -> String {
-    let input: Value = serde_json::from_str(&step.input_json).unwrap_or(Value::Null);
+    let mut input: Value = serde_json::from_str(&step.input_json).unwrap_or(Value::Null);
     let output: Option<Value> = step
         .output_json
         .as_deref()
         .and_then(|o| serde_json::from_str(o).ok());
-    match step.kind.as_str() {
+    // A script's tool call (docs/python-tool-spec.md §3.3): shown like a
+    // tool step, marked as the script's.
+    let mut kind = step.kind.as_str();
+    if kind == "py_call" {
+        if input["env"] == true {
+            return format!("↳ script environment (step {})", input["in"]);
+        }
+        let call = input["call"].take();
+        input = json!({ "id": "", "name": call["name"], "input": call["input"] });
+        kind = "tool";
+    }
+    match kind {
         "llm" => {
             let Some(turn) = output.and_then(|o| serde_json::from_value::<AssistantTurn>(o).ok())
             else {
