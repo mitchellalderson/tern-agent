@@ -192,7 +192,9 @@ Event changes:
 - Add an `id` to each SSE event, ready for `Last-Event-ID` replay later.
 - Built: `tool_output` (live output chunks of a running tool, matched to `tool_started` by `id`; never replayed), and for sub-agents ([subagents-design.md](subagents-design.md) §3.1) `subagent_spawned` (on the parent's run), `subagent_message` (`question`, `answer` or `message` between runs of a tree), `parent_run_id` and `root_session_id` on every event of a sub-agent run, and `parent_run_id`, `agent_label`, `root_session_id` on a sub-agent's `approval_requested` and in `/v1/approvals`. `/v1/health` reports the `subagents` feature.
 
-### 7.2 Agents (P1, design separately)
+### 7.2 Agents (P1)
+
+Detailed design: [agent-profiles-design.md](agent-profiles-design.md) (profiles, per-agent DMs as channels, agents owning routines, agents in topic channels, phases AP0–AP3). The sketch below is kept for context.
 
 The reference's sidebar is a list of agents with different jobs. tern has one agent with many sessions. Proposal: an **agent profile** is a name, avatar, persona (Markdown), default model, and a tool scope (which connectors, MCP servers and skills it can use). Sessions, schedules and channel routes gain an `agent_id`; the existing setup becomes the default agent, so nothing breaks. This is also where the planned per-role models (a fast main agent handing harder work to heavier sub-agents) would live.
 
@@ -248,12 +250,12 @@ Each phase ends usable, like the engine milestones.
 | G2 | Side panel: activity, routines CRUD, run inspector | schedules API, `runs/{id}/steps` |
 | G3 | Library: connectors (try and activate), MCP, skills, memory, settings | connectors, mcp, skills, memories, allowlist, secrets, config APIs |
 | G4 | Channels: Telegram status, pairing with QR, routing | gateway API |
-| G5 | Agents: sidebar of agent profiles, per-agent routines, memory scope, channel routing | §7.2 |
+| G5 | Agents: sidebar of agent profiles, per-agent routines, memory scope, channel routing | §7.2; [agent-profiles-design.md](agent-profiles-design.md) AP1 |
 | G6 | Polish: menu bar extra, quick switcher, packaging and notarization, Linux build | — |
 
 ## 11. Open questions
 
-1. **Agents**: is a first-class agent profile (§7.2) the direction, or should the sidebar stay a list of conversations? It's the biggest change this spec implies for the engine.
+1. **Agents**: is a first-class agent profile (§7.2) the direction, or should the sidebar stay a list of conversations? It's the biggest change this spec implies for the engine. Proposed answer: yes, designed in [agent-profiles-design.md](agent-profiles-design.md).
 2. **"Channels"**: Telegram-style transports (as specced in §3), Claude Duet-style information streams, or both? If the latter, what does a stream contain and who writes to it?
 3. **Bundling**: should the app ship the `tern` binary and manage the daemon itself, or assume a separate install?
 4. **Platforms**: macOS-only for v1, or is Linux a requirement from the start?
