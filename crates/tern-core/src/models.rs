@@ -111,6 +111,11 @@ pub enum Change {
     /// A connection (account) was added, removed, renamed, signed in again
     /// or changed status; re-read `/v1/connections`.
     ConnectionsChanged {},
+    /// A routine was created, changed or deleted, by a tool or the API;
+    /// re-read `/v1/schedules`.
+    SchedulesChanged {
+        id: String,
+    },
 }
 
 /// What a client fills in to add or change a provider.

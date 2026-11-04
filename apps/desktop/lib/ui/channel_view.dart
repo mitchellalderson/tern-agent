@@ -3,9 +3,11 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
+import '../state/transcript.dart';
 import '../theme.dart';
 import 'agent_face.dart';
 import 'conversation.dart';
+import 'routines.dart';
 import 'widgets.dart';
 
 /// A topic channel's timeline (docs/channels-design.md §5.2): its posts,
@@ -72,7 +74,10 @@ class ChannelView extends StatelessWidget {
                                 line: lines[extra - 1 - i],
                                 store: store,
                               )
-                            : _timelinePost(shown, shown.length - 1 - (i - extra)),
+                            : _timelinePost(
+                                shown,
+                                shown.length - 1 - (i - extra),
+                              ),
                       ),
                     ),
                   ),
@@ -273,6 +278,7 @@ class _ChannelHeader extends StatelessWidget {
                   window: contextWindow,
                   compactAt: compactAt,
                 ),
+            _RoutinesButton(store: store, channel: channel),
             QuietIconButton(
               icon: Icons.tune,
               tooltip: 'Channel settings',
@@ -286,6 +292,39 @@ class _ChannelHeader extends StatelessWidget {
               onPressed: onTogglePanel,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The routines that post to a topic channel, from its header: a clock
+/// with their count.
+class _RoutinesButton extends StatelessWidget {
+  const _RoutinesButton({required this.store, required this.channel});
+
+  final TernStore store;
+  final Channel channel;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final n = store.schedulesIn(channel.id).length;
+    return Tooltip(
+      message: n == 0 ? 'Routines' : '$n routine${n == 1 ? '' : 's'} post here',
+      child: TextButton.icon(
+        key: const ValueKey('channel-routines'),
+        onPressed: () => showChannelRoutines(context, store, channel),
+        style: TextButton.styleFrom(
+          foregroundColor: c.muted,
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          minimumSize: const Size(0, 30),
+          visualDensity: VisualDensity.compact,
+        ),
+        icon: const Icon(Icons.schedule, size: 16),
+        label: Text(
+          n == 0 ? 'Routines' : '$n',
+          style: const TextStyle(fontSize: 12.5),
         ),
       ),
     );
@@ -567,11 +606,14 @@ class TimelinePost extends StatelessWidget {
               MarkdownBody(
                 data: markMentions(post.text, slugs),
                 selectable: true,
+                onTapLink: (_, href, _) => openTernLink(context, store, href),
                 styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
                   p: theme.textTheme.bodyMedium,
                   a: TextStyle(color: c.accent, fontWeight: FontWeight.w600),
                 ),
               ),
+              for (final id in routineLinksIn(post.text))
+                RoutineCard(item: RoutineItem(id), store: store),
               Row(
                 children: [
                   // An outbox item: decide it here (topic channels have no

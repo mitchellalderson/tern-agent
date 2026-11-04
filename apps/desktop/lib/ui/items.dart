@@ -13,6 +13,7 @@ import 'agents.dart';
 import 'channel_items.dart';
 import 'inspector.dart';
 import 'move_dialog.dart';
+import 'routines.dart';
 
 /// One transcript item.
 class ItemView extends StatelessWidget {
@@ -36,6 +37,7 @@ class ItemView extends StatelessWidget {
     AssistantItem(:final text, :final streaming) => _AssistantMessage(
       text,
       streaming: streaming,
+      store: store,
     ),
     final WorkItem w => WorkCard(
       work: w,
@@ -53,6 +55,7 @@ class ItemView extends StatelessWidget {
     final PillItem p => _Pill(p),
     final ApprovalItem a => ApprovalCard(item: a, store: store),
     final SecretRequestItem r => SecretRequestCard(item: r, store: store),
+    final RoutineItem r => RoutineCard(item: r, store: store),
     final RunEndItem r => _RunEnd(r, store: store),
     final CutItem c => CutDivider(
       item: c,
@@ -111,10 +114,15 @@ class _UserMessage extends StatelessWidget {
 }
 
 class _AssistantMessage extends StatelessWidget {
-  const _AssistantMessage(this.text, {required this.streaming});
+  const _AssistantMessage(
+    this.text, {
+    required this.streaming,
+    required this.store,
+  });
 
   final String text;
   final bool streaming;
+  final TernStore store;
 
   @override
   Widget build(BuildContext context) {
@@ -124,6 +132,7 @@ class _AssistantMessage extends StatelessWidget {
     return MarkdownBody(
       data: streaming ? '$text ▍' : text,
       selectable: true,
+      onTapLink: (_, href, _) => openTernLink(context, store, href),
       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
         p: body,
         h1: body.copyWith(fontSize: 20, fontWeight: FontWeight.w600),

@@ -336,7 +336,15 @@ pub(super) async fn create_row(m: &Shared, mut b: CreateBody) -> Result<Schedule
     }
     join_channel(&m, &row)?;
     set_autonomy(&m, &mut row, b.autonomy.as_deref())?;
+    changed(&m, &row.id);
     Ok(row)
+}
+
+/// Tell clients the routines changed.
+fn changed(m: &Shared, id: &str) {
+    let _ =
+        m.rt.changes
+            .send(tern_core::models::Change::SchedulesChanged { id: id.to_owned() });
 }
 
 /// A routine posting to a topic channel makes its agent a member there
@@ -440,11 +448,13 @@ async fn update(
     }
     join_channel(&m, &s)?;
     set_autonomy(&m, &mut s, b.autonomy.as_deref())?;
+    changed(&m, &s.id);
     Ok(Json(view(&m, s)))
 }
 
 async fn delete(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Value> {
     if m.rt.store.delete_schedule(&id).map_err(internal)? {
+        changed(&m, &id);
         Ok(Json(json!({ "ok": true })))
     } else {
         Err(not_found("schedule"))

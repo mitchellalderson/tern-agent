@@ -548,6 +548,9 @@ sealed class TernEvent {
     if (j['outbox_changed'] case final Json o) {
       return OutboxChanged(o['id'] as int, o['state'] as String? ?? '');
     }
+    if (j['schedules_changed'] case final Json s) {
+      return SchedulesChanged(s['id'] as String? ?? '');
+    }
     final run = j['run_id'] as String? ?? '';
     final event = _agentEvent(j, run);
     if (event is RunEvent) {
@@ -914,6 +917,13 @@ class OutboxChanged extends TernEvent {
   const OutboxChanged(this.id, this.state);
   final int id;
   final String state;
+}
+
+/// A routine was created, changed or deleted (by an agent's tool or the
+/// API); re-read the routines.
+class SchedulesChanged extends TernEvent {
+  const SchedulesChanged(this.id);
+  final String id;
 }
 
 class UnknownEvent extends TernEvent {

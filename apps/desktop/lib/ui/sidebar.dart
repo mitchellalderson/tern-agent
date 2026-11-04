@@ -79,8 +79,7 @@ class _SidebarState extends State<Sidebar> {
             if (store.hasAgents) ...agentsSection(context, store),
             ...channelsSection(context, store),
           ],
-          if (store.hasMcp || store.canManageConnections)
-            _Library(store: store),
+          _Library(store: store),
           // With channels, conversations live in Home's History.
           if (store.hasChannels)
             const Spacer()
@@ -577,6 +576,18 @@ class _Library extends StatelessWidget {
               'LIBRARY',
               style: Theme.of(context).textTheme.labelSmall,
             ),
+          ),
+          _LibraryRow(
+            icon: Icons.schedule,
+            label: 'Routines',
+            selected: store.page == LibraryPage.routines,
+            onTap: store.openRoutines,
+            trailing: store.schedules.isNotEmpty
+                ? Text(
+                    '${store.schedules.length}',
+                    style: TextStyle(fontSize: 11.5, color: c.muted),
+                  )
+                : null,
           ),
           if (store.hasMcp)
             _LibraryRow(
