@@ -8,6 +8,7 @@
 //! | PATCH | `/v1/channels/{id}` | `{title?, instructions?, archived?}` (`instructions: null` clears them) |
 //! | GET | `/v1/channels/{id}/posts?before=&limit=` | `[Post]`, newest first |
 //! | GET | `/v1/channels/{id}/stream?before=&limit=` | a main channel's stream: its segments' messages, its posts and its side chats, interleaved, newest first, with a `cut` item where each segment starts (`next`: the cursor for older items) |
+//! | POST | `/v1/posts/{id}/resolve` | mark a `needs_you` post or its Home `pointer` done (both close) |
 //! | POST | `/v1/channels/{id}/posts` | send `{text, reply_to?, new_topic?, model?}` → `{post?, run_id, session_id, queued, new_segment}` |
 
 use axum::extract::{Path as UrlPath, Query, State};
@@ -27,6 +28,7 @@ pub fn routes() -> Router<Shared> {
         .route("/v1/channels/{id}", axum::routing::patch(update))
         .route("/v1/channels/{id}/posts", get(posts).post(send))
         .route("/v1/channels/{id}/stream", get(stream))
+        .route("/v1/posts/{id}/resolve", axum::routing::post(resolve))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +45,8 @@ pub struct Channel {
     pub main_session_id: Option<String>,
     #[serde(default)]
     pub last_post_id: Option<i64>,
-    /// Home: approvals and secret requests waiting for an answer.
+    /// Open `needs_you` posts (Home: pointers to them), and in Home the
+    /// approvals and secret requests waiting for an answer.
     #[serde(default)]
     pub needs_you: usize,
     /// Runs in progress in the channel's threads.
@@ -64,10 +67,13 @@ pub(super) fn channel_view(m: &Shared, c: ChannelRow) -> Channel {
             })
         })
         .count();
+    // Open needs-you posts (Home: their pointers), plus in Home the
+    // approvals and secret requests waiting for an answer.
+    let open = m.rt.store.open_needs_you(&c.id).unwrap_or(0);
     let needs_you = if c.kind == "main" {
-        m.routes.api.pending().len() + m.routes.secrets.pending().len()
+        open + m.routes.api.pending().len() + m.routes.secrets.pending().len()
     } else {
-        0
+        open
     };
     Channel {
         last_post_id: m.rt.store.last_post_id(&c.id).ok().flatten(),
@@ -206,6 +212,17 @@ async fn posts(
     Ok(Json(
         rows.into_iter().map(|p| view(&m.rt.store, p)).collect(),
     ))
+}
+
+async fn resolve(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<i64>,
+) -> ApiResult<serde_json::Value> {
+    if !m.rt.store.resolve_post(id).map_err(internal)? {
+        return Err(not_found("open needs-you post"));
+    }
+    m.channels_changed();
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]

@@ -597,9 +597,13 @@ impl Subagents {
         let model = self
             .pick_model(req.model.as_deref(), &parent)
             .map_err(anyhow::Error::msg)?;
-        let scope = self
+        let mut scope = self
             .scope_for(req.tools.as_ref(), depth)
             .map_err(anyhow::Error::msg)?;
+        // A posting child gets the tool to post with, whatever its preset.
+        if req.post && !scope.iter().any(|t| t == "channel_post") {
+            scope.push("channel_post".into());
+        }
         let limits = child_limits(&self.limits, &req);
         let (max_iterations, budget) = (limits.max_iterations, limits.budget_tokens);
 
@@ -645,6 +649,9 @@ impl Subagents {
                 },
                 &input,
             )?;
+            if req.post {
+                self.store.set_run_can_post(&run_id)?;
+            }
             queued
         };
         let status = if queued { "queued" } else { "running" };
@@ -1350,6 +1357,7 @@ mod tests {
             model: None,
             max_iterations: iters,
             budget_tokens: budget,
+            post: false,
         };
         let got = child_limits(&limits, &req(None, None));
         assert_eq!((got.max_iterations, got.budget_tokens), (30, Some(400_000)));

@@ -8,6 +8,9 @@ use crate::{MessageHit, Result, SessionRow, Store, fts_query, now_ms};
 /// Home's id (and slug). Created by the migration; never archived.
 pub const HOME: &str = "home";
 
+/// Most characters of a post a Home pointer repeats.
+pub const POINTER_CHARS: usize = 280;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ChannelRow {
     pub id: String,
@@ -44,6 +47,8 @@ pub struct PostRow {
     pub tainted: bool,
     pub dedupe_key: Option<String>,
     pub created_at: i64,
+    /// A `needs_you` post or a pointer the user marked done.
+    pub resolved_at: Option<i64>,
 }
 
 /// Values for a new post.
@@ -84,7 +89,7 @@ pub struct NewThread<'a> {
 const CHANNEL_COLS: &str = "id, slug, title, kind, instructions, main_session_id, created_by, \
     archived_at, created_at, updated_at";
 const POST_COLS: &str = "id, channel_id, session_id, run_id, author_kind, author_id, author, kind, \
-    text, reply_to, points_to, tainted, dedupe_key, created_at";
+    text, reply_to, points_to, tainted, dedupe_key, created_at, resolved_at";
 
 fn channel_row(r: &Row<'_>) -> rusqlite::Result<ChannelRow> {
     Ok(ChannelRow {
@@ -117,6 +122,7 @@ fn post_row(r: &Row<'_>) -> rusqlite::Result<PostRow> {
         tainted: r.get::<_, i64>(11)? != 0,
         dedupe_key: r.get(12)?,
         created_at: r.get(13)?,
+        resolved_at: r.get(14)?,
     })
 }
 
@@ -377,44 +383,124 @@ impl Store {
 
     /// Write a post. With a `dedupe_key` already used, nothing is written
     /// and the earlier post comes back with `false`.
+    ///
+    /// A new `needs_you` post outside Home also gets a `pointer` in Home
+    /// (`points_to` it, key `pointer:<id>`) in the same transaction, so
+    /// whatever writes one (`channel_post`, a sub-agent, later the outbox)
+    /// puts it where the user acts (docs/channels-design.md §2.3).
     pub fn add_post(&self, p: &NewPost<'_>) -> Result<(PostRow, bool)> {
         let now = now_ms();
-        let conn = self.conn()?;
-        let n = conn.execute(
-            "INSERT INTO posts (channel_id, session_id, run_id, author_kind, author_id, author, kind,
-               text, reply_to, points_to, dedupe_key, created_at, tainted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-             ON CONFLICT (dedupe_key) DO NOTHING",
-            params![
-                p.channel_id,
-                p.session_id,
-                p.run_id,
-                p.author_kind,
-                p.author_id,
-                p.author,
-                p.kind,
-                p.text,
-                p.reply_to,
-                p.points_to,
-                p.dedupe_key,
-                now,
-                p.tainted,
-            ],
-        )?;
-        let sql = format!("SELECT {POST_COLS} FROM posts WHERE id = ?1");
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let insert = |tx: &rusqlite::Transaction<'_>, p: &NewPost<'_>| -> rusqlite::Result<usize> {
+            tx.execute(
+                "INSERT INTO posts (channel_id, session_id, run_id, author_kind, author_id, author, kind,
+                   text, reply_to, points_to, dedupe_key, created_at, tainted)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 ON CONFLICT (dedupe_key) DO NOTHING",
+                params![
+                    p.channel_id,
+                    p.session_id,
+                    p.run_id,
+                    p.author_kind,
+                    p.author_id,
+                    p.author,
+                    p.kind,
+                    p.text,
+                    p.reply_to,
+                    p.points_to,
+                    p.dedupe_key,
+                    now,
+                    p.tainted,
+                ],
+            )
+        };
+        let n = insert(&tx, p)?;
         let row = if n > 0 {
-            conn.query_row(&sql, [conn.last_insert_rowid()], post_row)?
+            let sql = format!("SELECT {POST_COLS} FROM posts WHERE id = ?1");
+            tx.query_row(&sql, [tx.last_insert_rowid()], post_row)?
         } else {
             let sql = format!("SELECT {POST_COLS} FROM posts WHERE dedupe_key = ?1");
-            conn.query_row(&sql, [p.dedupe_key], post_row)?
+            tx.query_row(&sql, [p.dedupe_key], post_row)?
         };
         if n > 0 {
-            conn.execute(
+            tx.execute(
                 "UPDATE channels SET updated_at = ?2 WHERE id = ?1",
                 params![p.channel_id, now],
             )?;
+            if p.kind == "needs_you" && p.channel_id != HOME {
+                let text: String = p.text.chars().take(POINTER_CHARS).collect();
+                let key = format!("pointer:{}", row.id);
+                insert(
+                    &tx,
+                    &NewPost {
+                        channel_id: HOME,
+                        session_id: None,
+                        run_id: p.run_id,
+                        kind: "pointer",
+                        text: &text,
+                        reply_to: None,
+                        points_to: Some(row.id),
+                        dedupe_key: Some(&key),
+                        ..p.clone()
+                    },
+                )?;
+            }
         }
+        tx.commit()?;
         Ok((row, n > 0))
+    }
+
+    /// The pointer in Home to post `id`, if it has one.
+    pub fn pointer_to(&self, id: i64) -> Result<Option<PostRow>> {
+        self.post_by_key(&format!("pointer:{id}"))
+    }
+
+    /// Mark a `needs_you` post or a pointer done, with its counterpart.
+    /// False if there's no such open item.
+    pub fn resolve_post(&self, id: i64) -> Result<bool> {
+        let now = now_ms();
+        let Some(p) = self.post(id)? else {
+            return Ok(false);
+        };
+        if !matches!(p.kind.as_str(), "needs_you" | "pointer") || p.resolved_at.is_some() {
+            return Ok(false);
+        }
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE posts SET resolved_at = ?2
+             WHERE resolved_at IS NULL AND (id = ?1 OR id = ?3 OR points_to = ?1)",
+            params![id, now, p.points_to],
+        )?;
+        Ok(true)
+    }
+
+    /// Open `needs_you` posts and pointers in a channel.
+    pub fn open_needs_you(&self, channel_id: &str) -> Result<usize> {
+        let n: i64 = self.conn()?.query_row(
+            "SELECT count(*) FROM posts
+             WHERE channel_id = ?1 AND kind IN ('needs_you', 'pointer') AND resolved_at IS NULL",
+            [channel_id],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// Whether a sub-agent run may post (spawned with `"post": true`).
+    pub fn run_can_post(&self, run_id: &str) -> Result<bool> {
+        Ok(self
+            .conn()?
+            .query_row("SELECT can_post FROM runs WHERE id = ?1", [run_id], |r| {
+                r.get::<_, i64>(0)
+            })
+            .optional()?
+            .is_some_and(|v| v != 0))
+    }
+
+    pub fn set_run_can_post(&self, run_id: &str) -> Result<()> {
+        self.conn()?
+            .execute("UPDATE runs SET can_post = 1 WHERE id = ?1", [run_id])?;
+        Ok(())
     }
 
     pub fn post(&self, id: i64) -> Result<Option<PostRow>> {
@@ -596,11 +682,12 @@ impl Store {
         )? > 0)
     }
 
-    /// Top-level runs that finished at or after `since` (unix ms), for
+    /// Top-level runs (and sub-agents that post) that finished at or after `since` (unix ms), for
     /// writing answer posts a crash may have skipped.
     pub fn top_runs_finished_since(&self, since: i64) -> Result<Vec<crate::RunRow>> {
         let sql = format!(
-            "SELECT {} FROM runs WHERE parent_run_id IS NULL AND finished_at >= ?1 ORDER BY finished_at",
+            "SELECT {} FROM runs WHERE (parent_run_id IS NULL OR can_post = 1) AND finished_at >= ?1
+             ORDER BY finished_at",
             crate::repo::RUN_COLS
         );
         let conn = self.conn()?;
@@ -712,6 +799,62 @@ mod tests {
             )
             .unwrap();
         assert_eq!(fts, 1);
+    }
+
+    #[test]
+    fn needs_you_outside_home_points_from_home_until_resolved() {
+        let s = Store::open_in_memory().unwrap();
+        let c = topic(&s, "fin");
+        let ask = |key: &'static str| NewPost {
+            kind: "needs_you",
+            author_kind: "agent",
+            author_id: "tern",
+            author: "tern",
+            ..post(&c.id, "Approve paying Acme?", Some(key))
+        };
+        let (p, _) = s.add_post(&ask("k1")).unwrap();
+        // Again (a replay): still one pointer.
+        s.add_post(&ask("k1")).unwrap();
+        let ptr = s.pointer_to(p.id).unwrap().unwrap();
+        assert_eq!(
+            (
+                ptr.channel_id.as_str(),
+                ptr.kind.as_str(),
+                ptr.points_to,
+                ptr.author_id.as_str()
+            ),
+            (HOME, "pointer", Some(p.id), "tern")
+        );
+        assert_eq!(s.posts(HOME, None, 10).unwrap().len(), 1);
+        assert_eq!(
+            (
+                s.open_needs_you(&c.id).unwrap(),
+                s.open_needs_you(HOME).unwrap()
+            ),
+            (1, 1)
+        );
+        // Resolving the pointer closes the post too.
+        assert!(s.resolve_post(ptr.id).unwrap());
+        assert!(!s.resolve_post(ptr.id).unwrap());
+        assert_eq!(
+            (
+                s.open_needs_you(&c.id).unwrap(),
+                s.open_needs_you(HOME).unwrap()
+            ),
+            (0, 0)
+        );
+        assert!(s.post(p.id).unwrap().unwrap().resolved_at.is_some());
+        // Ordinary posts and Home's own needs_you get no pointer.
+        let (plain, _) = s.add_post(&post(&c.id, "fyi", None)).unwrap();
+        assert!(s.pointer_to(plain.id).unwrap().is_none());
+        assert!(!s.resolve_post(plain.id).unwrap());
+        let (home, _) = s
+            .add_post(&NewPost {
+                kind: "needs_you",
+                ..post(HOME, "in Home already", None)
+            })
+            .unwrap();
+        assert!(s.pointer_to(home.id).unwrap().is_none());
     }
 
     #[test]

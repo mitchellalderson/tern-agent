@@ -107,6 +107,10 @@ pub struct SpawnRequest {
     pub max_iterations: Option<u32>,
     #[serde(default)]
     pub budget_tokens: Option<u64>,
+    /// May post to the channel (`channel_post`), and its report is posted
+    /// when it finishes (docs/channels-design.md §2.4, open question 4).
+    #[serde(default)]
+    pub post: bool,
 }
 
 /// `"all"`, `"read_only"`, or a list of tool names.

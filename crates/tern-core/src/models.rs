@@ -90,7 +90,8 @@ pub enum Change {
     },
     /// A post was written to a channel's timeline.
     PostCreated {
-        post: crate::channels::Post,
+        /// Boxed: a post is much bigger than the other changes.
+        post: Box<crate::channels::Post>,
     },
     /// A channel was created, renamed, archived, or got a new main thread.
     ChannelsChanged {},

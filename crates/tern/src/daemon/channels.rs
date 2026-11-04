@@ -52,15 +52,22 @@ pub fn view(store: &Store, row: tern_store::PostRow) -> Post {
         .ok()
         .and_then(|c| c.first().map(|(_, n)| *n))
         .unwrap_or(0);
+    let points_to_channel = row
+        .points_to
+        .and_then(|id| store.post(id).ok().flatten())
+        .map(|p| p.channel_id);
     Post {
         replies,
+        points_to_channel,
         ..Post::from(row)
     }
 }
 
 impl Manager {
     pub(super) fn publish(&self, post: Post) {
-        let _ = self.rt.changes.send(Change::PostCreated { post });
+        let _ = self.rt.changes.send(Change::PostCreated {
+            post: Box::new(post),
+        });
     }
 
     pub(super) fn channels_changed(&self) {
@@ -320,7 +327,13 @@ impl Manager {
         let Some(run) = store.run(run_id)? else {
             return Ok(None);
         };
-        if run.parent_run_id.is_some() || run.quiet {
+        if run.quiet {
+            return Ok(None);
+        }
+        // A sub-agent reports to its parent; one spawned with `"post": true`
+        // also posts its report (§2.4).
+        let posting_child = run.parent_run_id.is_some() && store.run_can_post(&run.id)?;
+        if run.parent_run_id.is_some() && !posting_child {
             return Ok(None);
         }
         let text = match run.status.as_str() {
@@ -336,6 +349,31 @@ impl Manager {
         }
         // A tainted run's answer may carry what it read (tooling spec §5.3).
         let tainted = run.taint.is_some();
+        if posting_child {
+            let Some(channel) = store.session_channel(&run.session_id)? else {
+                return Ok(None);
+            };
+            let who = author::subagent(run.label.as_deref().unwrap_or("agent"));
+            let key = format!("answer:{}", run.id);
+            let (row, created) = store.add_post(&NewPost {
+                channel_id: &channel.id,
+                session_id: Some(&run.session_id),
+                run_id: Some(&run.id),
+                author_kind: "subagent",
+                author_id: &who,
+                author: &who,
+                kind: "update",
+                text: &text,
+                dedupe_key: Some(&key),
+                tainted,
+                ..NewPost::default()
+            })?;
+            let post = view(store, row);
+            if created {
+                self.publish(post.clone());
+            }
+            return Ok(Some(post));
+        }
         let key = format!("answer:{}", run.id);
         let schedule = (run.trigger == "cron")
             .then(|| store.schedule_for_session(&run.session_id))

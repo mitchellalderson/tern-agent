@@ -173,6 +173,8 @@ class ActiveRun {
     required this.sessionId,
     this.parentRunId,
     this.label,
+    this.channelId,
+    this.authorId,
   });
 
   factory ActiveRun.fromJson(Json j) => ActiveRun(
@@ -180,6 +182,8 @@ class ActiveRun {
     sessionId: j['session_id'] as String,
     parentRunId: j['parent_run_id'] as String?,
     label: j['label'] as String?,
+    channelId: j['channel_id'] as String?,
+    authorId: j['author_id'] as String?,
   );
 
   final String runId;
@@ -188,6 +192,12 @@ class ActiveRun {
   /// Set for sub-agents.
   final String? parentRunId;
   final String? label;
+
+  /// The channel of its session.
+  final String? channelId;
+
+  /// Who is working, as posts name them: `tern`, `tern/<label>`.
+  final String? authorId;
 }
 
 class SessionItem {

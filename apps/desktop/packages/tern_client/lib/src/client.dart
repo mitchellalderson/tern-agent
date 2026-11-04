@@ -370,6 +370,9 @@ class TernClient {
     }),
   );
 
+  /// Mark a `needs_you` post or its pointer in Home done (both close).
+  Future<void> resolvePost(int id) => _json('POST', '/v1/posts/$id/resolve');
+
   /// A page of a main channel's stream, newest first.
   Future<StreamPage> stream(
     String channel, {

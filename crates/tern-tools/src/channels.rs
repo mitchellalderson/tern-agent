@@ -206,11 +206,18 @@ impl Tool for ChannelPost {
             Ok(None) => return ToolResult::error("run not found"),
             Err(e) => return ToolResult::error(e.to_string()),
         };
-        if run.parent_run_id.is_some() {
+        // A sub-agent posts only when its parent spawned it with
+        // `"post": true`, under its own name (`tern/<label>`).
+        let sub = run.parent_run_id.is_some();
+        if sub && !self.store.run_can_post(&run.id).unwrap_or(false) {
             return ToolResult::error(
-                "sub-agents can't post to channels yet; report to your parent instead",
+                "you weren't started to post to the channel; report to your parent instead",
             );
         }
+        let (author_kind, author_id) = match (&run.label, sub) {
+            (Some(label), true) => ("subagent", author::subagent(label)),
+            _ => ("agent", author::AGENT.to_owned()),
+        };
         let channel = match channel_for(&self.store, ctx, a.channel.as_deref()) {
             Ok(c) => c,
             Err(e) => return ToolResult::error(e),
@@ -236,9 +243,9 @@ impl Tool for ChannelPost {
             channel_id: &channel.id,
             session_id: Some(&ctx.session_id),
             run_id: Some(&run.id),
-            author_kind: "agent",
-            author_id: author::AGENT,
-            author: author::AGENT,
+            author_kind,
+            author_id: &author_id,
+            author: &author_id,
             kind: if a.needs_you { "needs_you" } else { "update" },
             text,
             dedupe_key: Some(&key),
@@ -249,7 +256,12 @@ impl Tool for ChannelPost {
             Ok((row, created)) => {
                 let id = row.id;
                 if created && let Some(f) = &self.on_post {
+                    // A `needs_you` outside Home also got its pointer there.
+                    let pointer = self.store.pointer_to(id).ok().flatten();
                     f(row);
+                    if let Some(p) = pointer {
+                        f(p);
+                    }
                 }
                 let place = if channel.kind == "main" {
                     channel.title.clone()
@@ -379,7 +391,8 @@ mod tests {
             .call(&ctx, json!({ "limit": 3 }))
             .await;
         assert!(!read.untrusted);
-        assert!(read.content.starts_with("post 8 "), "{}", read.content);
+        // Post 2 is the first one's pointer in Home.
+        assert!(read.content.starts_with("post 9 "), "{}", read.content);
         assert_eq!(
             store.posts("c", None, 50).unwrap().last().unwrap().kind,
             "needs_you"

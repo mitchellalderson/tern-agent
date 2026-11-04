@@ -70,6 +70,8 @@ class Post {
     this.pointsTo,
     this.tainted = false,
     this.replies = 0,
+    this.resolvedAt,
+    this.pointsToChannel,
     required this.createdAt,
   });
 
@@ -87,6 +89,11 @@ class Post {
     pointsTo: j['points_to'] as int?,
     tainted: j['tainted'] as bool? ?? false,
     replies: j['replies'] as int? ?? 0,
+    resolvedAt: switch (j['resolved_at']) {
+      final int t => _time(t),
+      _ => null,
+    },
+    pointsToChannel: j['points_to_channel'] as String?,
     createdAt: _time(j['created_at'] as int),
   );
 
@@ -115,9 +122,38 @@ class Post {
 
   /// Posts replying to this one in a side thread.
   final int replies;
+
+  /// A `needs_you` post or pointer the user marked done.
+  final DateTime? resolvedAt;
+
+  /// A pointer: the channel of the post it points to.
+  final String? pointsToChannel;
   final DateTime createdAt;
 
   bool get mine => authorKind == 'user';
+
+  /// Waiting on the user: a `needs_you` post, or its pointer in Home.
+  bool get needsYou =>
+      (kind == 'needs_you' || kind == 'pointer') && resolvedAt == null;
+
+  Post resolved() => Post(
+    id: id,
+    channelId: channelId,
+    sessionId: sessionId,
+    runId: runId,
+    authorKind: authorKind,
+    authorId: authorId,
+    author: author,
+    kind: kind,
+    text: text,
+    replyTo: replyTo,
+    pointsTo: pointsTo,
+    tainted: tainted,
+    replies: replies,
+    resolvedAt: DateTime.now(),
+    pointsToChannel: pointsToChannel,
+    createdAt: createdAt,
+  );
 }
 
 /// One entry of a main channel's stream.

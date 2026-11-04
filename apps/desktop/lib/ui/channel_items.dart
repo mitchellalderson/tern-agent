@@ -5,6 +5,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
+import 'channel_view.dart' show NeedsYouTag;
 import 'widgets.dart';
 
 /// Where Home's stream was cut into a new session: a thin line, with the
@@ -119,6 +120,9 @@ class PostCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.colors;
     final session = post.sessionId;
+    final from = store.channels
+        .where((ch) => ch.id == post.pointsToChannel)
+        .firstOrNull;
     final tag = switch (post.authorKind) {
       'routine' => (Icons.schedule, 'routine'),
       'subagent' => (Icons.subdirectory_arrow_right, 'agent'),
@@ -168,10 +172,27 @@ class PostCard extends StatelessWidget {
                       relativeTime(post.createdAt),
                       style: TextStyle(fontSize: 11.5, color: c.muted),
                     ),
+                    if (post.needsYou) ...[
+                      const SizedBox(width: 8),
+                      NeedsYouTag(where: from == null ? null : '#${from.slug}'),
+                    ],
                   ],
                 ),
               ),
-              if (session != null)
+              // A pointer: go to what waits, or mark it done here.
+              if (post.kind == 'pointer') ...[
+                if (from != null)
+                  _CardButton(
+                    label: 'Go to #${from.slug}',
+                    onPressed: () => store.openChannelView(from.id),
+                  ),
+                _CardButton(
+                  label: post.needsYou ? 'Done' : 'Done ✓',
+                  onPressed: post.needsYou
+                      ? () => store.resolvePost(post)
+                      : null,
+                ),
+              ] else if (session != null)
                 TextButton(
                   onPressed: () => store.openThread(session),
                   style: TextButton.styleFrom(
@@ -198,6 +219,29 @@ class PostCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _CardButton extends StatelessWidget {
+  const _CardButton({required this.label, required this.onPressed});
+
+  final String label;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) => TextButton(
+    onPressed: onPressed,
+    style: TextButton.styleFrom(
+      visualDensity: VisualDensity.compact,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+    ),
+    child: Text(
+      label,
+      style: TextStyle(
+        fontSize: 12,
+        color: onPressed == null ? context.colors.muted : context.colors.accent,
+      ),
+    ),
+  );
 }
 
 /// A side chat that branched off Home's stream.

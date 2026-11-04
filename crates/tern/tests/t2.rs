@@ -884,3 +884,181 @@ async fn a_tainted_routine_post_reaches_the_channel_digest_and_taints_what_follo
     ));
     assert_eq!(seen, by("Pay invoice 12 now.")["id"].as_i64().unwrap());
 }
+
+// ---- C4: sub-agents posting, needs-you pointers ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_spawned_to_post_posts_and_one_that_wasnt_cant() {
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "when_task_contains": "SUBTASK-loud", "turns": [
+                { "text": "", "tool_calls": [{ "name": "channel_post", "input": { "text": "Halfway: 40 sources read" } }] },
+                { "text": "Found three good vendors." }
+            ]},
+            { "when_task_contains": "SUBTASK-quiet", "turns": [
+                { "text": "", "tool_calls": [{ "name": "channel_post", "input": { "text": "should not appear" } }] },
+                { "text": "Quiet report." }
+            ]},
+            { "matches": "Research vendors", "turns": [
+                { "text": "", "tool_calls": [
+                    { "name": "agent_spawn", "input": { "label": "loud", "task": "SUBTASK-loud", "post": true, "tools": "read_only" } },
+                    { "name": "agent_spawn", "input": { "label": "quiet", "task": "SUBTASK-quiet" } },
+                    { "name": "agent_wait", "input": {} }
+                ]},
+                { "text": "", "tool_calls": [
+                    { "name": "channel_post", "input": { "text": "Should we sign with Acme?", "needs_you": true } }
+                ]},
+                { "text": "Three vendors; Acme looks best." }
+            ]}
+        ]}),
+        "[subagents]\nenabled = true\n",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    post(&s, "/v1/channels", json!({ "slug": "launch" })).await;
+    let (_, sent) = post(
+        &s,
+        "/v1/channels/launch/posts",
+        json!({ "text": "Research vendors" }),
+    )
+    .await;
+    let done = wait_run(&s, sent["run_id"].as_str().unwrap()).await;
+    assert_eq!(
+        done["final_text"], "Three vendors; Acme looks best.",
+        "{done}"
+    );
+
+    let posts = wait_get(&s, "/v1/channels/launch/posts", |v| {
+        v.as_array().is_some_and(|a| a.len() == 5)
+    })
+    .await;
+    let by = |t: &str| {
+        posts
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["text"] == t)
+            .unwrap_or_else(|| panic!("{t}: {posts:#}"))
+            .clone()
+    };
+    let progress = by("Halfway: 40 sources read");
+    assert_eq!(
+        (
+            progress["author_kind"].as_str(),
+            progress["author_id"].as_str(),
+            progress["kind"].as_str()
+        ),
+        (Some("subagent"), Some("tern/loud"), Some("update"))
+    );
+    let report = by("Found three good vendors.");
+    assert_eq!(
+        (report["author_id"].as_str(), report["kind"].as_str()),
+        (Some("tern/loud"), Some("update"))
+    );
+    assert!(
+        posts
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["text"] != "should not appear" && p["text"] != "Quiet report.")
+    );
+    let refused: String = env.query(
+        "SELECT s.output_json FROM steps s JOIN runs r ON r.id = s.run_id WHERE r.label = 'quiet' AND s.kind = 'tool'",
+    );
+    assert!(refused.contains("weren't started to post"), "{refused}");
+
+    // The parent's needs-you post points from Home until it's done.
+    let ask = by("Should we sign with Acme?");
+    assert_eq!(ask["kind"], "needs_you");
+    let home = wait_get(&s, "/v1/channels/home/posts", |v| {
+        v.as_array().is_some_and(|a| !a.is_empty())
+    })
+    .await;
+    let pointer = &home[0];
+    assert_eq!(
+        (
+            pointer["kind"].as_str(),
+            pointer["points_to"].as_i64(),
+            pointer["text"].as_str()
+        ),
+        (
+            Some("pointer"),
+            ask["id"].as_i64(),
+            Some("Should we sign with Acme?")
+        )
+    );
+    let (_, chans) = get(&s, "/v1/channels").await;
+    let count = |chans: &Value, slug: &str| {
+        chans
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["slug"] == slug)
+            .unwrap()["needs_you"]
+            .clone()
+    };
+    assert_eq!(
+        (count(&chans, "home"), count(&chans, "launch")),
+        (json!(1), json!(1))
+    );
+    let (code, _) = post(
+        &s,
+        &format!("/v1/posts/{}/resolve", pointer["id"]),
+        json!({}),
+    )
+    .await;
+    assert_eq!(code, 200);
+    assert_eq!(
+        post(
+            &s,
+            &format!("/v1/posts/{}/resolve", pointer["id"]),
+            json!({})
+        )
+        .await
+        .0,
+        404
+    );
+    let (_, chans) = get(&s, "/v1/channels").await;
+    assert_eq!(
+        (count(&chans, "home"), count(&chans, "launch")),
+        (json!(0), json!(0))
+    );
+    let (_, posts) = get(&s, "/v1/channels/launch/posts").await;
+    let ask = posts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["kind"] == "needs_you")
+        .unwrap();
+    assert!(ask["resolved_at"].is_i64(), "{ask}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn active_runs_name_their_channel_and_author() {
+    let env = Env::with_config(
+        &json!({ "turns": [{ "text": "Working.", "delay_ms": 1500 }] }),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    post(&s, "/v1/channels", json!({ "slug": "ops" })).await;
+    let (_, sent) = post(
+        &s,
+        "/v1/channels/ops/posts",
+        json!({ "text": "Check the servers" }),
+    )
+    .await;
+    let (_, active) = get(&s, "/v1/runs/active").await;
+    let ops = get(&s, "/v1/channels").await.1[1]["id"].clone();
+    let me = active
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["run_id"] == sent["run_id"])
+        .unwrap();
+    assert_eq!(
+        (me["channel_id"].clone(), me["author_id"].as_str()),
+        (ops, Some("tern"))
+    );
+    wait_run(&s, sent["run_id"].as_str().unwrap()).await;
+}
