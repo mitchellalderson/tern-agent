@@ -139,6 +139,8 @@ impl Provider for Script {
                 .messages
                 .iter()
                 .filter(|m| m.role == Role::User)
+                // A carried-over summary is of another session's turns.
+                .filter(|m| !m.text().contains(crate::channels::CARRY_HEADER))
                 .map(|m| turns_in(&m.text()))
                 .sum::<usize>();
         let reply = self
@@ -1800,4 +1802,165 @@ async fn no_reply_marks_a_scheduled_run_quiet_and_a_replay_agrees() {
             .unwrap()
             .quiet
     );
+}
+
+// ---- channels: the carry step and queued user messages ----
+
+/// A finished exchange in session `s`, as runs leave it.
+fn exchange(h: &Harness, session: &str, run: &str, you: &str, tern: &str) {
+    h.store
+        .create_run(
+            &tern_store::NewRun {
+                id: run,
+                session_id: session,
+                trigger: "user",
+                model: "script:m",
+                system_prompt: "system",
+                ..tern_store::NewRun::default()
+            },
+            &Journal::new(h.store.clone())
+                .to_row(&Message::user_text(you))
+                .unwrap(),
+        )
+        .unwrap();
+    h.store.start_step(run, 0, "llm", "h", "{}").unwrap();
+    let reply = Journal::new(h.store.clone())
+        .to_row(&Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text: tern.into() }],
+        })
+        .unwrap();
+    h.store
+        .complete_step(run, 0, "null", None, &[reply])
+        .unwrap();
+    h.store.set_run_status(run, "completed", None).unwrap();
+}
+
+/// A harness whose session `s2` is a new segment after `s1`.
+fn segmented() -> Harness {
+    let h = Harness::new();
+    exchange(
+        &h,
+        "s1",
+        "old1",
+        "Which invoices are open?",
+        "Acme and Northwind.",
+    );
+    exchange(
+        &h,
+        "s1",
+        "old2",
+        "Let's hold the Northwind one.",
+        "Holding it. I'll remind you Friday.",
+    );
+    h.store
+        .create_thread(&tern_store::NewThread {
+            id: "s2",
+            source: "api",
+            channel_id: tern_store::HOME,
+            prev_session_id: Some("s1"),
+            segment_reason: Some("idle"),
+            ..tern_store::NewThread::default()
+        })
+        .unwrap();
+    Harness {
+        store: h.store,
+        session: "s2".into(),
+    }
+}
+
+#[tokio::test]
+async fn the_first_run_of_a_new_segment_carries_the_last_one_over_once() {
+    let h = segmented();
+    let script = Arc::new(Script::new(vec![
+        Reply::Text("Northwind is on hold."),
+        Reply::Text("Sure."),
+    ]));
+    let agent = h.agent(script.clone(), vec![], Arc::new(AutoApprove));
+    let run = h.start(&agent, "and the other one?");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.final_text, "Northwind is on hold.");
+    assert_eq!(h.kinds(&run), ["carry:completed", "llm:completed"]);
+    assert_eq!(script.summaries.load(Ordering::SeqCst), 1);
+
+    // The model saw the user's message, then the carry-over: a summary of
+    // the old segment, and its last exchanges verbatim.
+    let seen = script.seen.lock().unwrap().clone();
+    let req = seen.iter().find(|r| r.system == "system").unwrap();
+    let first = req.messages[0].text();
+    assert!(first.starts_with("and the other one?"), "{first}");
+    assert!(first.contains(crate::channels::CARRY_HEADER), "{first}");
+    assert!(first.contains("Summary: summary turns=2"), "{first}");
+    assert!(
+        first.contains(
+            "you: Let's hold the Northwind one.\n  tern: Holding it. I'll remind you Friday."
+        ),
+        "{first}"
+    );
+    let step = h.store.step(&run, 0).unwrap().unwrap();
+    let recorded: CarryOutput = serde_json::from_str(step.output_json.as_deref().unwrap()).unwrap();
+    assert_eq!(recorded.prev_session_id, "s1");
+    assert_eq!(recorded.carry.last.len(), 2);
+
+    // Replaying doesn't summarize again.
+    h.store.set_run_status(&run, "running", None).unwrap();
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(script.summaries.load(Ordering::SeqCst), 1);
+    assert_eq!(h.kinds(&run), ["carry:completed", "llm:completed"]);
+
+    // The segment's second run has it in context already.
+    let second = h.start(&agent, "thanks");
+    agent
+        .drive(&second, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(h.kinds(&second), ["llm:completed"]);
+    assert_eq!(script.summaries.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn sessions_that_continue_nothing_carry_nothing() {
+    let h = Harness::new();
+    let script = Arc::new(Script::new(vec![Reply::Text("hi")]));
+    let agent = h.agent(script.clone(), vec![], Arc::new(AutoApprove));
+    let run = h.start(&agent, "hello");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(h.kinds(&run), ["llm:completed"]);
+    assert_eq!(script.summaries.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_message_queued_while_the_run_works_reaches_its_next_model_call() {
+    let h = Harness::new();
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("count", json!({})),
+        Reply::Text("Done, and noted: use EUR."),
+    ]));
+    let tool = Counter::new("count", true, false);
+    let agent = h.agent(script.clone(), vec![Arc::new(tool)], Arc::new(AutoApprove));
+    let run = h.start(&agent, "tally up");
+    // Queued before the run gets going: no sub-agent host is needed.
+    h.store
+        .post_mail(&tern_store::NewMail {
+            to_run_id: &run,
+            from_run_id: None,
+            kind: "message",
+            body: &json!({ "text": "in EUR please" }).to_string(),
+            dedupe_key: "user:q1",
+        })
+        .unwrap();
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.final_text, "Done, and noted: use EUR.");
+    assert_eq!(
+        h.kinds(&run),
+        [
+            "inbox:completed",
+            "llm:completed",
+            "tool:completed",
+            "llm:completed"
+        ]
+    );
+    let seen = script.seen.lock().unwrap().clone();
+    assert!(seen[0].messages[0].text().contains("in EUR please"));
+    assert!(h.store.pending_mail(&run).unwrap().is_empty(), "consumed");
 }

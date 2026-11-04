@@ -8,6 +8,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
+import 'channel_view.dart';
 import 'conversation.dart';
 import 'mcp.dart';
 import 'offline.dart';
@@ -17,6 +18,7 @@ import 'secrets.dart';
 import 'settings.dart';
 import 'side_panel.dart';
 import 'sidebar.dart';
+import 'thread_pane.dart';
 import 'where_to_run.dart';
 import 'widgets.dart';
 
@@ -124,13 +126,26 @@ class _HomeState extends State<Home> {
                             panelOpen: panel,
                             onTogglePanel: _togglePanel,
                           )
+                        : store.topicOpen
+                        ? ChannelView(
+                            store: store,
+                            panelOpen: panel,
+                            onTogglePanel: _togglePanel,
+                          )
                         : ConversationView(
                             store: store,
                             panelOpen: panel,
                             onTogglePanel: _togglePanel,
                           ),
                   ),
-                  if (panel) ...[
+                  // A thread (History, a side chat, a post's) takes the
+                  // panel's place while it's open.
+                  if (store.thread != null ||
+                      store.branch != null ||
+                      store.replying != null) ...[
+                    const Hairline(vertical: true),
+                    SizedBox(width: 380, child: ThreadPane(store: store)),
+                  ] else if (panel) ...[
                     const Hairline(vertical: true),
                     SizedBox(
                       width: 290,
@@ -236,7 +251,7 @@ class _HomeState extends State<Home> {
           label: 'File',
           menus: [
             PlatformMenuItem(
-              label: 'New Conversation',
+              label: store.hasChannels ? 'New Topic' : 'New Conversation',
               shortcut: const SingleActivator(
                 LogicalKeyboardKey.keyN,
                 meta: true,

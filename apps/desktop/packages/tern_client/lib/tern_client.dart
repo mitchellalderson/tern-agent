@@ -4,6 +4,7 @@
 /// app, or tests.
 library;
 
+export 'src/channels.dart';
 export 'src/client.dart';
 export 'src/endpoint.dart';
 export 'src/lifecycle.dart';

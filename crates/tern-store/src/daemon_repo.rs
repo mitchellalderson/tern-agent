@@ -28,10 +28,13 @@ pub struct ScheduleRow {
     /// When the user last resumed it; daily caps count from here or the
     /// start of the day, whichever is later.
     pub budget_since: Option<i64>,
+    /// The channel its results are posted to; `None` = Home.
+    pub channel_id: Option<String>,
 }
 
 const SCHEDULE_COLS: &str = "id, cron, prompt, session_id, deliver_to, enabled, next_run_at, last_run_at, \
-    quiet_hours, urgent, runs_per_day, usd_per_day, tokens_per_run, paused_until, paused_reason, budget_since";
+    quiet_hours, urgent, runs_per_day, usd_per_day, tokens_per_run, paused_until, paused_reason, budget_since, \
+    channel_id";
 
 fn schedule_row(r: &Row<'_>) -> rusqlite::Result<ScheduleRow> {
     Ok(ScheduleRow {
@@ -51,6 +54,7 @@ fn schedule_row(r: &Row<'_>) -> rusqlite::Result<ScheduleRow> {
         paused_until: r.get(13)?,
         paused_reason: r.get(14)?,
         budget_since: r.get(15)?,
+        channel_id: r.get(16)?,
     })
 }
 
@@ -80,7 +84,8 @@ impl Store {
         self.conn()?.execute(
             &format!(
                 "INSERT INTO schedules ({SCHEDULE_COLS})
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                   COALESCE(?17, 'home'))"
             ),
             params![
                 s.id,
@@ -98,7 +103,8 @@ impl Store {
                 tokens(s.tokens_per_run),
                 s.paused_until,
                 s.paused_reason,
-                s.budget_since
+                s.budget_since,
+                s.channel_id
             ],
         )?;
         Ok(())

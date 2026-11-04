@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'channels.dart';
 import 'endpoint.dart';
 import 'lifecycle.dart';
 import 'mcp.dart';
@@ -75,11 +76,13 @@ class TernClient {
     );
     final client = TernClient(bootstrap);
     try {
-      final j = await client._request('POST', '/v1/auth/pair', {
-        'code': link.code,
-        'device_name': deviceName,
-        'platform': ?platform,
-      }, auth: false) as Json;
+      final j =
+          await client._request('POST', '/v1/auth/pair', {
+                'code': link.code,
+                'device_name': deviceName,
+                'platform': ?platform,
+              }, auth: false)
+              as Json;
       return Pairing(
         deviceId: j['device_id'] as String,
         scope: j['scope'] as String,
@@ -172,11 +175,13 @@ class TernClient {
     String? defaultModel,
   }) async {
     final body = {...draft.toJson(), 'default_model': ?defaultModel};
-    final j = await _json(
-      existing == null ? 'POST' : 'PATCH',
-      existing == null ? '/v1/providers' : '/v1/providers/$existing',
-      body,
-    ) as Json;
+    final j =
+        await _json(
+              existing == null ? 'POST' : 'PATCH',
+              existing == null ? '/v1/providers' : '/v1/providers/$existing',
+              body,
+            )
+            as Json;
     return ProviderStatus.fromJson(j['provider'] as Json);
   }
 
@@ -187,9 +192,9 @@ class TernClient {
 
   /// Make `model` the default for new conversations.
   Future<Resolved> setDefaultModel(String model) async {
-    final j = await _json('PUT', '/v1/config/default_model', {
-      'model': model,
-    }) as Json;
+    final j =
+        await _json('PUT', '/v1/config/default_model', {'model': model})
+            as Json;
     return Resolved.fromJson(j, model);
   }
 
@@ -280,10 +285,103 @@ class TernClient {
   Future<McpStatus> restartMcp(String name) async =>
       McpStatus.fromJson(await _json('POST', '/v1/mcp/${_seg(name)}/restart'));
 
-  Future<List<SessionItem>> sessions({int limit = 50}) async => [
-    for (final s in await _json('GET', '/v1/sessions?limit=$limit') as List)
-      SessionItem.fromJson(s as Json),
+  /// Recent conversations; with `channel`, that channel's threads (for
+  /// Home: its History).
+  Future<List<SessionItem>> sessions({int limit = 50, String? channel}) async =>
+      [
+        for (final s
+            in await _json(
+                  'GET',
+                  '/v1/sessions?limit=$limit'
+                      '${channel == null ? '' : '&channel=${_seg(channel)}'}',
+                )
+                as List)
+          SessionItem.fromJson(s as Json),
+      ];
+
+  Future<List<Channel>> channels({bool archived = false}) async => [
+    for (final c
+        in await _json('GET', '/v1/channels${archived ? '?archived=1' : ''}')
+            as List)
+      Channel.fromJson(c as Json),
   ];
+
+  /// A topic channel. Throws [TernException] (409) if the slug is taken.
+  Future<Channel> createChannel({
+    required String slug,
+    String? title,
+    String? instructions,
+  }) async => Channel.fromJson(
+    await _json('POST', '/v1/channels', {
+      'slug': slug,
+      'title': ?title,
+      'instructions': ?instructions,
+    }),
+  );
+
+  /// `clearInstructions` removes them; `instructions` sets them.
+  Future<Channel> updateChannel(
+    String id, {
+    String? title,
+    String? instructions,
+    bool clearInstructions = false,
+    bool? archived,
+  }) async => Channel.fromJson(
+    await _json('PATCH', '/v1/channels/${_seg(id)}', {
+      'title': ?title,
+      if (clearInstructions)
+        'instructions': null
+      else
+        'instructions': ?instructions,
+      'archived': ?archived,
+    }),
+  );
+
+  /// A page of a channel's posts, newest first.
+  Future<List<Post>> posts(
+    String channel, {
+    int? before,
+    int limit = 50,
+  }) async => [
+    for (final p
+        in await _json(
+              'GET',
+              '/v1/channels/${_seg(channel)}/posts?limit=$limit'
+                  '${before == null ? '' : '&before=$before'}',
+            )
+            as List)
+      Post.fromJson(p as Json),
+  ];
+
+  /// Send into a channel: Home's stream, or a topic channel's main thread
+  /// (a side thread with `replyTo`). A run already working there gets the
+  /// text as a message instead of being stopped; `newTopic` starts a new
+  /// segment of Home.
+  Future<Sent> sendToChannel(
+    String channel,
+    String text, {
+    int? replyTo,
+    bool newTopic = false,
+  }) async => Sent.fromJson(
+    await _json('POST', '/v1/channels/${_seg(channel)}/posts', {
+      'text': text,
+      'reply_to': ?replyTo,
+      if (newTopic) 'new_topic': true,
+    }),
+  );
+
+  /// A page of a main channel's stream, newest first.
+  Future<StreamPage> stream(
+    String channel, {
+    String? before,
+    int limit = 200,
+  }) async => StreamPage.fromJson(
+    await _json(
+      'GET',
+      '/v1/channels/${_seg(channel)}/stream?limit=$limit'
+          '${before == null ? '' : '&before=${Uri.encodeQueryComponent(before)}'}',
+    ),
+  );
 
   Future<SessionDetail> session(String id) async =>
       SessionDetail.fromJson(await _json('GET', '/v1/sessions/$id'));
@@ -294,16 +392,24 @@ class TernClient {
   Future<Usage> usage(String session) async =>
       Usage.fromJson(await _json('GET', '/v1/sessions/$session/usage'));
 
-  /// Send a message. Without `session` the daemon starts a new one. A run
-  /// already in progress in that session is cancelled first.
-  Future<Started> send(String text, {String? session, String? model}) async =>
-      Started.fromJson(
-        await _json('POST', '/v1/runs', {
-          'text': text,
-          'session_id': ?session,
-          'model': ?model,
-        }),
-      );
+  /// Send a message. Without `session` the daemon starts a new one (in
+  /// `channel`, as a side chat with `branchedFrom`). A run already in
+  /// progress in that session is cancelled first.
+  Future<Started> send(
+    String text, {
+    String? session,
+    String? model,
+    String? channel,
+    String? branchedFrom,
+  }) async => Started.fromJson(
+    await _json('POST', '/v1/runs', {
+      'text': text,
+      'session_id': ?session,
+      'model': ?model,
+      'channel': ?channel,
+      'branched_from': ?branchedFrom,
+    }),
+  );
 
   Future<bool> cancel(String run) async =>
       (await _json('POST', '/v1/runs/$run/cancel'))['cancelled'] as bool;
@@ -356,11 +462,13 @@ class TernClient {
     required String prompt,
     String? deliverTo,
     ScheduleLimits? limits,
+    String? channel,
   }) async => Schedule.fromJson(
     await _json('POST', '/v1/schedules', {
       'cron': cron,
       'prompt': prompt,
       'deliver_to': ?deliverTo,
+      'channel': ?channel,
       ...?limits?.toJson(),
     }),
   );
@@ -375,12 +483,14 @@ class TernClient {
     String? deliverTo,
     ScheduleLimits? limits,
     bool resume = false,
+    String? channel,
   }) async => Schedule.fromJson(
     await _json('PATCH', '/v1/schedules/$id', {
       'cron': ?cron,
       'prompt': ?prompt,
       'enabled': ?enabled,
       'deliver_to': ?deliverTo,
+      'channel': ?channel,
       ...?limits?.toJson(),
       if (resume) 'resume': true,
     }),
@@ -404,11 +514,13 @@ class TernClient {
   /// A conversation's runs; with [subagents], the runs they started too.
   Future<List<RunItem>> runs(String session, {bool subagents = false}) async =>
       [
-        for (final r in await _json(
-          'GET',
-          '/v1/sessions/$session/runs'
-              '${subagents ? '?include=subagents' : ''}',
-        ) as List)
+        for (final r
+            in await _json(
+                  'GET',
+                  '/v1/sessions/$session/runs'
+                      '${subagents ? '?include=subagents' : ''}',
+                )
+                as List)
           RunItem.fromJson(r as Json),
       ];
 

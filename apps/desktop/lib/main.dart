@@ -43,19 +43,23 @@ class TernApp extends StatefulWidget {
 }
 
 class _TernAppState extends State<TernApp> {
-  late TernStore _store = _storeFor(widget.endpoint);
+  late TernStore _store = _storeFor(widget.endpoint, widget.prefs);
   late final _connections = Connections(
     prefs: widget.prefs,
     tokens: widget.tokens,
     apply: _switchTo,
   );
 
-  static TernStore _storeFor(Endpoint e) =>
-      TernStore(TernClient(e), notifier: Notifier.platform())..connect();
+  static TernStore _storeFor(Endpoint e, AppPrefs prefs) => TernStore(
+    TernClient(e),
+    notifier: Notifier.platform(),
+    lastSeen: prefs.read,
+    onReadChanged: prefs.save,
+  )..connect();
 
   void _switchTo(Endpoint e) {
     final old = _store;
-    setState(() => _store = _storeFor(e));
+    setState(() => _store = _storeFor(e, widget.prefs));
     // After the frame that stops using it.
     WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
   }

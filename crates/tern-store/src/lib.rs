@@ -1,11 +1,13 @@
 //! SQLite storage: connection setup, schema migrations, and repositories.
 
+mod channels_repo;
 mod daemon_repo;
 mod devices_repo;
 mod migrations;
 mod repo;
 mod subagents_repo;
 
+pub use channels_repo::{ChannelRow, HOME, NewPost, NewThread, PostRow};
 pub use daemon_repo::{HeldDelivery, ScheduleRow, TokenCounts};
 pub use devices_repo::{DeviceGrant, DeviceRow};
 pub use subagents_repo::{MailRow, NewMail};
@@ -125,7 +127,7 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         let c = s.conn().unwrap();
         c.execute_batch(
-            "INSERT INTO sessions VALUES ('s1', NULL, 'cli', NULL, NULL, 0, 0);
+            "INSERT INTO sessions (id, source, created_at, updated_at) VALUES ('s1', 'cli', 0, 0);
              INSERT INTO messages (session_id, role, content_json, text, created_at)
                VALUES ('s1', 'user', '[]', 'the quick brown fox', 0);
              INSERT INTO memories (content, tags, created_at)

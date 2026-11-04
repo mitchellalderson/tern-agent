@@ -4,9 +4,12 @@
 //! | Method | Path | |
 //! |---|---|---|
 //! | GET | `/v1/schedules` | all schedules, with their last run's status |
-//! | POST | `/v1/schedules` | create `{cron, prompt, deliver_to?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
+//! | POST | `/v1/schedules` | create `{cron, prompt, deliver_to?, channel?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
 //! | POST | `/v1/schedules/preview` | `{cron}` → normalized form and next 3 runs |
 //! | PATCH | `/v1/schedules/{id}` | change any of those, `enabled`, or `resume: true` (lift a budget pause); `null` returns a cap or `quiet_hours` to the default |
+//!
+//! `channel` (slug or id) is where the routine's results are posted
+//! (docs/channels-design.md §2.5); Home by default.
 //! | DELETE | `/v1/schedules/{id}` | delete |
 //! | POST | `/v1/schedules/{id}/run` | run now, without moving the next run |
 
@@ -71,6 +74,13 @@ pub struct Schedule {
     /// Which cap paused it: `runs_per_day` or `usd_per_day`.
     #[serde(default)]
     pub paused_reason: Option<String>,
+    /// The channel its results are posted to.
+    #[serde(default = "home")]
+    pub channel_id: String,
+}
+
+fn home() -> String {
+    tern_store::HOME.into()
 }
 
 fn view(m: &Shared, s: ScheduleRow) -> Schedule {
@@ -99,6 +109,7 @@ fn view(m: &Shared, s: ScheduleRow) -> Schedule {
         paused: paused_until.map(|_| "budget".to_owned()),
         paused_reason: paused_until.and(s.paused_reason),
         paused_until,
+        channel_id: s.channel_id.unwrap_or_else(home),
     }
 }
 
@@ -113,8 +124,18 @@ struct CreateBody {
     prompt: String,
     /// `none` (default) or `telegram:<chat_id>`.
     deliver_to: Option<String>,
+    channel: Option<String>,
     #[serde(flatten)]
     limits: ScheduleLimits,
+}
+
+/// A channel for routine results: any but an archived one.
+fn channel_id(m: &Shared, c: &str) -> Result<String, ApiError> {
+    let c = super::api_channels::find(m, c)?;
+    if c.archived_at.is_some() {
+        return Err(bad(format!("#{} is archived", c.slug)));
+    }
+    Ok(c.id)
 }
 
 fn target(t: Option<&str>) -> Result<Option<String>, ApiError> {
@@ -132,7 +153,12 @@ async fn create(
     Json(b): Json<CreateBody>,
 ) -> Result<(StatusCode, Json<Schedule>), ApiError> {
     let deliver_to = target(b.deliver_to.as_deref())?;
-    let row = tern_tools::schedule::create_schedule(
+    let channel = b
+        .channel
+        .as_deref()
+        .map(|c| channel_id(&m, c))
+        .transpose()?;
+    let mut row = tern_tools::schedule::create_schedule(
         &m.rt.store,
         &b.cron,
         &b.prompt,
@@ -140,6 +166,12 @@ async fn create(
         &b.limits,
     )
     .map_err(bad)?;
+    if let Some(c) = channel {
+        m.rt.store
+            .set_schedule_channel(&row.id, &c)
+            .map_err(internal)?;
+        row.channel_id = Some(c);
+    }
     Ok((StatusCode::CREATED, Json(view(&m, row))))
 }
 
@@ -165,6 +197,7 @@ struct UpdateBody {
     prompt: Option<String>,
     enabled: Option<bool>,
     deliver_to: Option<String>,
+    channel: Option<String>,
     #[serde(default)]
     resume: bool,
     #[serde(flatten)]
@@ -180,6 +213,11 @@ async fn update(
         Some(t) => Some(target(Some(t))?),
         None => None,
     };
+    let channel = b
+        .channel
+        .as_deref()
+        .map(|c| channel_id(&m, c))
+        .transpose()?;
     let ch = ScheduleChange {
         cron: b.cron,
         prompt: b.prompt,
@@ -188,9 +226,15 @@ async fn update(
         limits: b.limits,
         resume: b.resume,
     };
-    let s = tern_tools::schedule::update_schedule(&m.rt.store, &id, &ch)
+    let mut s = tern_tools::schedule::update_schedule(&m.rt.store, &id, &ch)
         .map_err(bad)?
         .ok_or_else(|| not_found("schedule"))?;
+    if let Some(c) = channel {
+        m.rt.store
+            .set_schedule_channel(&s.id, &c)
+            .map_err(internal)?;
+        s.channel_id = Some(c);
+    }
     Ok(Json(view(&m, s)))
 }
 

@@ -7,7 +7,7 @@
 //! | GET | `/v1/info` | default model and tools |
 //! | GET | `/v1/tools` | full tool specs: `[{name, description, input_schema, effect, untrusted}]` |
 //! | POST | `/v1/models/check` | validate `{model}` |
-//! | POST | `/v1/runs` | send a message: `{text, session_id?, model?}` |
+//! | POST | `/v1/runs` | send a message: `{text, session_id?, model?, channel?, branched_from?}` (`channel`: a new thread there; `branched_from`: a side chat) |
 //! | GET | `/v1/runs/active` | runs in progress: `[{run_id, session_id, parent_run_id?, label?}]` |
 //! | POST | `/v1/runs/{id}/resume` | resume an interrupted run |
 //! | POST | `/v1/runs/{id}/cancel` | cancel a run and its sub-agents |
@@ -15,7 +15,7 @@
 //! | GET | `/v1/runs/{id}/session` | the run's session id |
 //! | GET | `/v1/runs/{id}/children[?recursive=1]` | its sub-agents: `[ChildRun]` (`api_subagents.rs`) |
 //! | POST | `/v1/runs/{id}/message` | `{text}` from the user to a running sub-agent (`api_subagents.rs`) |
-//! | GET | `/v1/sessions[?source=]` | recent sessions; sub-agent sessions only with `?source=subagent` |
+//! | GET | `/v1/sessions[?source=][&channel=]` | recent sessions; sub-agent sessions only with `?source=subagent`; `channel`: that channel's threads |
 //! | GET | `/v1/sessions/{id}` | a session and its messages |
 //! | PUT | `/v1/sessions/{id}/model` | set `{model}` |
 //! | GET | `/v1/sessions/{id}/usage[?include=subagents]` | token usage (with sub-agents': the run trees) and how full the context is |
@@ -35,7 +35,8 @@
 //! `subagent_message` (docs/subagents-design.md §3.1). Approvals of a
 //! sub-agent's calls carry `parent_run_id`, `agent_label` and
 //! `root_session_id`.
-//! Schedules are in `api_schedules.rs`; session runs and journal steps in
+//! Agent events also carry `channel_id`, the channel of the run's session.
+//! Channels and posts are in `api_channels.rs`; schedules in `api_schedules.rs`; session runs and journal steps in
 //! `api_runs.rs`; sub-agent runs and messages in `api_subagents.rs`;
 //! secrets in `api_secrets.rs`; providers, model lists and the default model
 //! in `api_providers.rs`; MCP servers in `api_mcp.rs`.
@@ -171,6 +172,7 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/events", get(events))
         .route("/v1/approvals", get(pending_approvals))
         .route("/v1/approvals/{id}", post(approve))
+        .merge(super::api_channels::routes())
         .merge(super::api_schedules::routes())
         .merge(super::api_runs::routes())
         .merge(super::api_subagents::routes())
@@ -255,6 +257,14 @@ pub struct StartBody {
     pub text: String,
     pub session_id: Option<String>,
     pub model: Option<String>,
+    /// Without `session_id`: start a new thread in this channel (slug or
+    /// id) instead of a new conversation in Home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// With `channel`: a side chat branched from `message:<id>` or
+    /// `post:<id>` (docs/channels-design.md §2.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branched_from: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -265,9 +275,34 @@ pub struct Started {
 }
 
 async fn start_run(State(m): State<Shared>, Json(b): Json<StartBody>) -> ApiResult<Started> {
+    let thread = match (&b.session_id, &b.channel) {
+        (None, Some(c)) => {
+            let c = super::api_channels::find(&m, c)?;
+            if let Some(b) = &b.branched_from {
+                let ok = b.split_once(':').is_some_and(|(k, id)| {
+                    matches!(k, "message" | "post") && id.parse::<i64>().is_ok()
+                });
+                if !ok {
+                    return Err(bad("branched_from must be message:<id> or post:<id>"));
+                }
+            }
+            let s =
+                m.rt.store
+                    .create_thread(&tern_store::NewThread {
+                        id: &tern_core::agent::new_id(),
+                        source: "api",
+                        channel_id: &c.id,
+                        branched_from: b.branched_from.as_deref(),
+                        ..tern_store::NewThread::default()
+                    })
+                    .map_err(internal)?;
+            Some(s.id)
+        }
+        _ => b.session_id.clone(),
+    };
     let s = m
         .start(
-            b.session_id.as_deref(),
+            thread.as_deref(),
             b.model.as_deref(),
             &b.text,
             "api",
@@ -342,25 +377,7 @@ async fn wait_run(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiR
                 .map_err(internal)?
                 .ok_or_else(|| not_found("run"))?;
         if run.status != "running" && run.status != "queued" && !m.is_active(&id) {
-            let messages =
-                m.rt.store
-                    .session_messages(&run.session_id)
-                    .map_err(internal)?;
-            let final_text = messages
-                .iter()
-                .rev()
-                .find(|msg| msg.run_id.as_deref() == Some(id.as_str()) && msg.role == "assistant")
-                .and_then(|msg| serde_json::from_str::<Vec<ContentBlock>>(&msg.content_json).ok())
-                .map(|blocks| {
-                    blocks
-                        .into_iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text),
-                            _ => None,
-                        })
-                        .collect::<String>()
-                })
-                .unwrap_or_default();
+            let final_text = super::channels::final_text(&m.rt.store, &run).map_err(internal)?;
             let status =
                 serde_json::from_value(Value::String(run.status.clone())).map_err(internal)?;
             return Ok(Json(RunOutcome {
@@ -405,6 +422,8 @@ struct SessionsQuery {
     /// Only sessions from this source; without it, every source but
     /// `subagent`.
     source: Option<String>,
+    /// Only threads of this channel (slug or id): for Home, its History.
+    channel: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -416,30 +435,61 @@ pub struct SessionItem {
     pub messages: i64,
     pub runs: i64,
     pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    /// A segment of a stream: the one it continues, and why it was cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segment_reason: Option<String>,
+    /// A side thread: `message:<id>` or `post:<id>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branched_from: Option<String>,
+}
+
+impl SessionItem {
+    pub(super) fn new(s: tern_store::SessionRow, messages: i64, runs: i64) -> Self {
+        Self {
+            id: s.id,
+            title: s.title,
+            source: s.source,
+            model: s.model,
+            messages,
+            runs,
+            updated_at: s.updated_at,
+            channel_id: s.channel_id,
+            prev_session_id: s.prev_session_id,
+            segment_reason: s.segment_reason,
+            branched_from: s.branched_from,
+        }
+    }
 }
 
 async fn sessions(
     State(m): State<Shared>,
     Query(q): Query<SessionsQuery>,
 ) -> ApiResult<Vec<SessionItem>> {
+    let limit = q.limit.unwrap_or(20).min(200);
+    if let Some(c) = q.channel.as_deref().filter(|c| !c.is_empty()) {
+        let c = super::api_channels::find(&m, c)?;
+        let rows =
+            m.rt.store
+                .channel_sessions(&c.id, limit)
+                .map_err(internal)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for s in rows {
+            let (messages, runs) = m.rt.store.session_counts(&s.id).map_err(internal)?;
+            out.push(SessionItem::new(s, messages, runs));
+        }
+        return Ok(Json(out));
+    }
     let list =
         m.rt.store
-            .list_sessions_from(
-                q.limit.unwrap_or(20).min(200),
-                q.source.as_deref().filter(|s| !s.is_empty()),
-            )
+            .list_sessions_from(limit, q.source.as_deref().filter(|s| !s.is_empty()))
             .map_err(internal)?;
     Ok(Json(
         list.into_iter()
-            .map(|s| SessionItem {
-                id: s.session.id,
-                title: s.session.title,
-                source: s.session.source,
-                model: s.session.model,
-                messages: s.messages,
-                runs: s.runs,
-                updated_at: s.session.updated_at,
-            })
+            .map(|s| SessionItem::new(s.session, s.messages, s.runs))
             .collect(),
     ))
 }
@@ -628,6 +678,7 @@ async fn events(State(m): State<Shared>) -> Sse<impl Stream<Item = Result<Event,
 #[derive(Clone)]
 struct RunPlace {
     session_id: String,
+    channel_id: Option<String>,
     /// Sub-agents only: their parent run and the session at the top of
     /// their tree.
     parent: Option<(String, String)>,
@@ -644,8 +695,10 @@ fn run_place(m: &Shared, run_id: &str) -> Option<RunPlace> {
         }
         None => None,
     };
+    let channel_id = store.session(&r.session_id).ok()??.channel_id;
     Some(RunPlace {
         session_id: r.session_id,
+        channel_id,
         parent,
     })
 }
@@ -674,6 +727,9 @@ fn with_session(m: &Shared, cache: &mut HashMap<String, RunPlace>, data: &mut Va
     };
     obj.entry("session_id")
         .or_insert_with(|| Value::String(place.session_id));
+    if let Some(c) = place.channel_id {
+        obj.entry("channel_id").or_insert_with(|| Value::String(c));
+    }
     if let Some((parent, root_session)) = place.parent {
         obj.entry("parent_run_id")
             .or_insert_with(|| Value::String(parent));

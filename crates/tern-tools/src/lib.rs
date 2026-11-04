@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod fs;
+pub mod history;
 pub mod http;
 pub mod memory;
 pub mod paths;
@@ -63,6 +64,7 @@ pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> R
     registry.register(Arc::new(schedule::ScheduleDelete {
         store: opts.store.clone(),
     }));
+    registry.register(Arc::new(history::HistorySearch::new(opts.store.clone())));
     registry.register(Arc::new(memory::SessionSearch::new(opts.store)));
     registry.register(Arc::new(skills::SkillRead::new(opts.skills_dir)));
     Ok(())

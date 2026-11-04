@@ -413,6 +413,40 @@ impl Manager {
         Ok(started)
     }
 
+    /// If a run is working in `session`, give it `text` as a message from
+    /// the user (read at its next model call) instead of stopping it, and
+    /// return that run's id and the mail id. Checked and posted under the
+    /// lock that a finishing run takes to leave, so the message is either
+    /// read by the run or found by [`Manager::follow_up_queued`].
+    pub fn queue_message(
+        &self,
+        session: &str,
+        text: &str,
+    ) -> anyhow::Result<Option<(String, i64)>> {
+        let Ok(active) = self.active.lock() else {
+            return Ok(None);
+        };
+        let Some(run_id) = active.get(session).map(|x| x.run_id.clone()) else {
+            return Ok(None);
+        };
+        let key = format!("user:{run_id}:{}", tern_core::agent::new_id());
+        self.rt.store.post_mail(&tern_store::NewMail {
+            to_run_id: &run_id,
+            from_run_id: None,
+            kind: "message",
+            body: &serde_json::json!({ "text": text }).to_string(),
+            dedupe_key: &key,
+        })?;
+        let id = self
+            .rt
+            .store
+            .mail_by_key(&key)?
+            .map(|m| m.id)
+            .unwrap_or_default();
+        tracing::info!(run = %run_id, "queued the user's message for the run in progress");
+        Ok(Some((run_id, id)))
+    }
+
     /// Start a run of schedule `s` in its session, with its token cap.
     /// Daily caps are the scheduler's job; "Run now" doesn't check them.
     pub async fn start_scheduled(
@@ -460,12 +494,21 @@ impl Manager {
             } else {
                 me.rt.agent.drive(&run_id, cancel).await
             };
+            // Before the run stops counting as active, so `/wait` sees it.
+            if result.is_ok()
+                && let Err(e) = me.post_run_result(&run_id)
+            {
+                tracing::warn!(run = %run_id, error = %e, "writing the run's post failed");
+            }
             if let Ok(mut a) = me.active.lock()
                 && a.get(&session_id).is_some_and(|x| x.run_id == run_id)
             {
                 a.remove(&session_id);
             }
             let _ = done_tx.send(true);
+            if let Err(e) = me.follow_up_queued(&run_id).await {
+                tracing::warn!(run = %run_id, error = %e, "answering queued messages failed");
+            }
             match result {
                 Ok(outcome) => me.deliver(&outcome).await,
                 Err(e) => tracing::error!(run = %run_id, error = %e, "run could not be driven"),
@@ -688,8 +731,15 @@ pub struct Chats(pub Arc<Manager>);
 
 #[async_trait]
 impl ChatHost for Chats {
+    /// The chat is a stream like Home (docs/channels-design.md §2.6): a
+    /// message goes to the run working there, else to the current segment
+    /// or, after idle hours or a new day, to a new one.
     async fn send(&self, source: &str, chat: &str, text: &str) -> Result<String, String> {
         let session = self.0.chat_session(source, chat).map_err(err)?;
+        if let Some((run_id, _)) = self.0.queue_message(&session.id, text).map_err(err)? {
+            return Ok(run_id);
+        }
+        let session = self.0.cut(&session, false).map_err(err)?.unwrap_or(session);
         let target = format!("{source}:{chat}");
         let started = self
             .0
@@ -699,24 +749,13 @@ impl ChatHost for Chats {
         Ok(started.run_id)
     }
 
+    /// `/new`: New topic. The run in progress is stopped (its answer would
+    /// land after "Started a new conversation."), and the next message
+    /// starts a segment that carries this one's summary over.
     async fn new_session(&self, source: &str, chat: &str) -> Result<(), String> {
-        if let Ok(Some(old)) = self.0.rt.store.latest_session_for(source, chat) {
-            self.0.stop_session(&old.id, true).await;
-        }
-        let model = self
-            .0
-            .rt
-            .store
-            .latest_session_for(source, chat)
-            .ok()
-            .flatten()
-            .and_then(|s| s.model);
-        self.0
-            .rt
-            .store
-            .create_session_with_ref(&tern_core::agent::new_id(), source, chat, model.as_deref())
-            .map(|_| ())
-            .map_err(err)
+        let old = self.0.chat_session(source, chat).map_err(err)?;
+        self.0.stop_session(&old.id, true).await;
+        self.0.cut(&old, true).map(|_| ()).map_err(err)
     }
 
     async fn model(&self, source: &str, chat: &str, set: Option<&str>) -> Result<String, String> {

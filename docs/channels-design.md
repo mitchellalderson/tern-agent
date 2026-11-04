@@ -1,6 +1,6 @@
 # tern channels: shared timelines for many agents
 
-Status: proposed (2026-11-03), not built. Home is one continuous stream (§2.6, decided §7.1). This is the detailed design for phase T2 in
+Status: C0–C2 built (2026-11-03); C3 waits for a taint slice of T3. Home is one continuous stream (§2.6, decided §7.1). This is the detailed design for phase T2 in
 [personal-agent-tooling-spec.md](personal-agent-tooling-spec.md) §4.2, which it follows and extends. Related:
 [subagents-design.md](subagents-design.md) (child runs, the `inbox` step and `agent_mail`, which this reuses; its
 option C, "agents as peers posting to channels", is the idea this revisits), [gui-spec.md](gui-spec.md) §2.1 (sidebar)
@@ -321,9 +321,9 @@ otherwise `#slug ·` prefixes in the one chat. A reply in a topic goes to that c
 
 | Phase | Scope | Shippable on its own? |
 |---|---|---|
-| C0 | Migration, `home` backfill, channels and posts API, posts written for sends, answers and routines. Send into a channel's main thread (cancelling, as today). | Yes, API only |
-| C1 | Home's stream: segment cutting, the `carry` step, `history_search`, the stream endpoint, queue-instead-of-cancel. Desktop Home view with dividers, New topic, History, side chats. Telegram `/new` as New topic. | Yes: the direct chat changes shape |
-| C2 | Desktop topic channels: sidebar, timeline, thread pane, new-channel dialog, routines choosing a channel. Approvals and secret requests move to Home. | Yes: the channel view |
+| C0 | Migration, `home` backfill, channels and posts API, posts written for sends, answers and routines. Send into a channel's main thread (cancelling, as today). **Built** (DECISIONS.md "T2 C0"). | Yes, API only |
+| C1 | Home's stream: segment cutting, the `carry` step, `history_search`, the stream endpoint, queue-instead-of-cancel. Desktop Home view with dividers, New topic, History, side chats. Telegram `/new` as New topic. **Built** (DECISIONS.md "T2 C1"). | Yes: the direct chat changes shape |
+| C2 | Desktop topic channels: sidebar, timeline, thread pane, new-channel dialog, routines choosing a channel. Approvals and secret requests move to Home. **Built** (DECISIONS.md "T2 C2"). | Yes: the channel view |
 | C3 | The `channel` step, `channel_read`, `channel_post`, taint on posts. | Yes: agents now actually share the channel |
 | C4 | Sub-agents posting, `needs_you` pointers into Home, live member lines. | Yes |
 | C5 | `channel_suggest`, TUI `/channel`, Telegram topics. | Yes |

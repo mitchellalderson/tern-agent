@@ -62,6 +62,9 @@ class _RoutineRow extends StatelessWidget {
         : s.lastQuiet
         ? 'Last run quiet · ${cronInWords(s.cron)}'
         : cronInWords(s.cron);
+    final postsTo = store.channels
+        .where((ch) => ch.id == s.channelId && !ch.isHome)
+        .firstOrNull;
     final next = s.nextRunAt;
     final tip = budget
         ? 'A daily cap (${s.pausedReason ?? 'budget'}) was reached. '
@@ -73,7 +76,10 @@ class _RoutineRow extends StatelessWidget {
         : 'Next run ${whenInWords(next)} · ${s.cron}';
     return InkWell(
       borderRadius: BorderRadius.circular(8),
-      onTap: () => store.open(s.sessionId),
+      // Its own conversation: beside Home or a channel, with channels.
+      onTap: () => store.hasChannels
+          ? store.openThread(s.sessionId)
+          : store.open(s.sessionId),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: Row(
@@ -100,7 +106,7 @@ class _RoutineRow extends StatelessWidget {
                   Tooltip(
                     message: tip,
                     child: Text(
-                      detail,
+                      postsTo == null ? detail : '$detail · #${postsTo.slug}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -221,6 +227,12 @@ class _RoutineSheetState extends State<RoutineSheet> {
     text: widget.editing?.deliverTo?.replaceFirst('telegram:', ''),
   );
   late var _telegram = widget.editing?.deliverTo != null;
+
+  /// Where results are posted: Home, or a topic channel (the one open when
+  /// a new routine is made there).
+  late var _channel =
+      widget.editing?.channelId ??
+      (widget.store.topicOpen ? widget.store.channel! : TernStore.homeId);
   late final _limits = widget.editing?.limits ?? const ScheduleLimits();
 
   /// `null` = the daemon's default, `none`, or a custom window.
@@ -342,6 +354,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
       prompt: _prompt.text.trim(),
       deliverTo: _telegram ? 'telegram:${_chat.text.trim()}' : null,
       limits: _newLimits,
+      channel: widget.store.hasChannels ? _channel : null,
     );
     if (!mounted) return;
     if (err == null) {
@@ -517,6 +530,26 @@ class _RoutineSheetState extends State<RoutineSheet> {
               const SizedBox(height: 16),
               Text('RESULTS', style: labels),
               const SizedBox(height: 6),
+              if (widget.store.hasChannels) ...[
+                DropdownButtonFormField<String>(
+                  initialValue: _channel,
+                  isDense: true,
+                  decoration: _box(context),
+                  items: [
+                    for (final ch in widget.store.channels)
+                      if (!ch.archived || ch.id == _channel)
+                        DropdownMenuItem(
+                          value: ch.id,
+                          child: Text(
+                            ch.isHome ? 'Post to Home' : 'Post to #${ch.slug}',
+                          ),
+                        ),
+                  ],
+                  onChanged: (v) =>
+                      setState(() => _channel = v ?? TernStore.homeId),
+                ),
+                const SizedBox(height: 8),
+              ],
               SegmentedButton<bool>(
                 segments: const [
                   ButtonSegment(value: false, label: Text('Keep in tern')),

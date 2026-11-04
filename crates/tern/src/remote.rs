@@ -401,6 +401,8 @@ impl Backend for Remote {
                     model: i.model,
                     created_at: i.updated_at,
                     updated_at: i.updated_at,
+                    channel_id: i.channel_id,
+                    ..SessionRow::default()
                 },
                 messages: i.messages,
                 runs: i.runs,

@@ -30,6 +30,9 @@ pub enum StepKind {
     Inbox,
     /// Saves durable facts before a compaction (T5a).
     MemoryFlush,
+    /// Carries a summary of the previous segment into a new one
+    /// (docs/channels-design.md §2.6).
+    Carry,
 }
 
 impl StepKind {
@@ -41,6 +44,7 @@ impl StepKind {
             StepKind::Compaction => "compaction",
             StepKind::Inbox => "inbox",
             StepKind::MemoryFlush => "memory_flush",
+            StepKind::Carry => "carry",
         }
     }
 
@@ -52,6 +56,7 @@ impl StepKind {
             "compaction" => StepKind::Compaction,
             "inbox" => StepKind::Inbox,
             "memory_flush" => StepKind::MemoryFlush,
+            "carry" => StepKind::Carry,
             _ => return None,
         })
     }
