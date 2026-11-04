@@ -100,6 +100,12 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<ConnectorsCommand>,
     },
+    /// Bundles of connectors, skills and routines: signed, hash-pinned,
+    /// installed only after you've seen everything they can do.
+    Bundle {
+        #[command(subcommand)]
+        command: Option<BundleCommand>,
+    },
     /// Accounts of connectors and MCP servers: list, add (sign in), and
     /// remove them, or pick the default.
     Connections {
@@ -480,6 +486,23 @@ pub enum HooksCommand {
 pub enum ConnectorsCommand {
     List,
     Test { name: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BundleCommand {
+    /// Make your signing key (bundles/signing.key) for `tern bundle export`.
+    Keygen,
+    /// Trust a signing key (minisign format, `RW…`, or a .pub file), or
+    /// list the trusted keys.
+    Trust {
+        /// The key, or a path to a .pub file.
+        key: Option<String>,
+        /// Whose key it is.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Stop trusting a key (by key, key id or name).
+    Untrust { key: String },
 }
 
 #[derive(Debug, Subcommand)]

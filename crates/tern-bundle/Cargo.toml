@@ -1,0 +1,36 @@
+[package]
+name = "tern-bundle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Signed, hash-pinned bundles of connectors, skills and routines (tooling spec §6.5)"
+
+[lints]
+workspace = true
+
+[dependencies]
+tern-auth.workspace = true
+tern-core.workspace = true
+tern-lua.workspace = true
+tern-store.workspace = true
+tern-tools.workspace = true
+
+aws-lc-rs.workspace = true
+blake2.workspace = true
+chrono.workspace = true
+psl.workspace = true
+reqwest.workspace = true
+ruzstd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio-util.workspace = true
+wiremock.workspace = true
