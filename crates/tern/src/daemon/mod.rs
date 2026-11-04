@@ -13,8 +13,10 @@ mod api_runs;
 mod api_schedules;
 mod api_secrets;
 mod api_subagents;
+mod api_webhooks;
 pub mod auth;
 pub mod channels;
+pub mod hooks;
 pub mod listen;
 pub mod manager;
 pub mod outbox;
@@ -95,6 +97,7 @@ pub fn run(home: &TernHome) -> anyhow::Result<ExitCode> {
 
 async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow::Result<ExitCode> {
     listen::check(&rt.config.api)?;
+    hooks::check(&rt.config)?;
     let shutdown = CancellationToken::new();
 
     let mut gateways: HashMap<String, Arc<dyn Gateway>> = HashMap::new();
@@ -158,6 +161,7 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     let bind = home.socket_bind_path();
     let api = api::serve(manager.clone(), &socket, &bind, shutdown.clone()).await?;
     let tcp = listen::serve(manager.clone(), home, &rt.config.api, shutdown.clone()).await?;
+    let webhooks = hooks::serve(manager.clone(), home, &rt.config, shutdown.clone()).await?;
     eprintln!(
         "tern daemon running (pid {}), API on {}",
         std::process::id(),
@@ -165,6 +169,9 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
     );
     for (addr, _) in &tcp {
         eprintln!("  and on tcp://{addr} (device tokens required; pair with `tern devices pair`)");
+    }
+    for (addr, _) in &webhooks {
+        eprintln!("  webhooks on tcp://{addr} (each routine's own secret; never device tokens)");
     }
     if !tcp.is_empty() && rt.config.sandbox.backend == tern_core::config::SandboxBackendKind::Host {
         tracing::warn!(

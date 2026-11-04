@@ -323,6 +323,10 @@ trust_proxy = false    # honour X-Forwarded-For/Proto from a reverse proxy on lo
   `hyper-util`, or `axum-server` with its rustls feature if that's maintained and on our axum/hyper versions. Same
   router for both listeners. An `Auth` extension on the request carries `Owner | Device { id, scope } | CloudUser {..}`.
 - `GET /healthz` (no auth, no details) for orchestrators. `/v1/health` (auth required on TCP) keeps the details.
+- **Webhooks (T1c) have their own listener**, `[webhooks] listen`, which serves only `POST /v1/hooks/<routine-id>`
+  and `/healthz` and takes only per-routine secrets, never device tokens. It follows `[api] tls` unless
+  `[webhooks] tls` says otherwise, under the same plain-HTTP rule. Exposing it (a tunnel to that one port) doesn't
+  expose the API. See DECISIONS.md, T1c.
 
 ### 6.2 Device pairing and tokens
 

@@ -1814,6 +1814,34 @@ class TernStore extends ChangeNotifier {
     }
   }
 
+  /// Create a webhook routine (T1c). Returns its hook, secret included
+  /// (shown once), or the daemon's reason on failure.
+  Future<({Webhook? webhook, String? error})> createWebhook({
+    required String prompt,
+    required String auth,
+    String? deliverTo,
+    ScheduleLimits limits = const ScheduleLimits(),
+    String? channel,
+    String? agent,
+    RoutineOptions? options,
+  }) async {
+    try {
+      final created = await client.createWebhook(
+        prompt: prompt,
+        auth: auth,
+        deliverTo: deliverTo,
+        limits: limits,
+        channel: channel,
+        agent: agent,
+        options: options,
+      );
+      await refreshSchedules();
+      return (webhook: created.webhook, error: null);
+    } on TernException catch (e) {
+      return (webhook: null, error: e.message);
+    }
+  }
+
   /// Pause or resume a routine. Resuming also lifts a budget pause.
   Future<void> setScheduleEnabled(Schedule s, bool enabled) async {
     try {

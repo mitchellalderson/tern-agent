@@ -223,22 +223,50 @@ fn gate_body(code: &str) -> String {
 }
 
 fn gate_source(connector_source: Option<&str>, code: &str) -> String {
+    gate_source_with(
+        connector_source,
+        code,
+        "routine",
+        "return {{ pass = __r and true or false }}",
+    )
+}
+
+/// A webhook gate: `routine` and `event` in scope. `false`/`nil` drops the
+/// event, `true` keeps it, anything else replaces it.
+fn webhook_gate_source(connector_source: Option<&str>, code: &str) -> String {
+    gate_source_with(
+        connector_source,
+        code,
+        "args",
+        "if __r == true then return {{ keep = true }} end
+    if not __r then return {{ keep = false }} end
+    return {{ keep = true, event = __r }}",
+    )
+}
+
+fn gate_source_with(connector_source: Option<&str>, code: &str, arg: &str, ret: &str) -> String {
     let prelude = match connector_source {
         Some(src) => connector_prelude(src),
         None => "local __c = { name = \"gate\", description = \"routine gate\" }\n".to_owned(),
+    };
+    let unpack = if arg == "args" {
+        "local routine, event = args.routine, args.event\n"
+    } else {
+        ""
     };
     format!(
         "{prelude}if type(__c) ~= \"table\" then error(\"the file must `return` a table\") end
 local connector = __c
 return {{ name = __c.name, description = __c.description or \"gate\", capabilities = __c.capabilities,
-  tools = {{ gate = {{ description = \"routine gate\", effect = \"read\", run = function(ctx, routine)
-    local __r = (function()
+  tools = {{ gate = {{ description = \"routine gate\", effect = \"read\", run = function(ctx, {arg})
+    {unpack}local __r = (function()
 {body}
     end)()
-    return {{ pass = __r and true or false }}
+    {ret}
   end }} }} }}
 ",
-        body = gate_body(code)
+        body = gate_body(code),
+        ret = ret.replace("{{", "{").replace("}}", "}"),
     )
 }
 
@@ -271,6 +299,37 @@ pub async fn gate(
         .map_err(|e| e.to_string())?;
     let out = parse_json(&vm.call("gate", routine).await?)?;
     Ok(out["pass"] == true)
+}
+
+/// Run a webhook routine's gate on `event` (T1c): `None` drops it, else
+/// the event to run with (the same one, or what the gate returned instead).
+/// Capabilities as for [`gate`].
+pub async fn webhook_gate(
+    host: &Host,
+    dir: &Path,
+    connector: Option<&str>,
+    code: &str,
+    routine: &Value,
+    event: &Value,
+) -> Result<Option<Value>, String> {
+    let source = connector.map(|c| active_source(host, dir, c)).transpose()?;
+    let vm = Vm::load(
+        host,
+        "gate.luau",
+        &webhook_gate_source(source.as_deref(), code),
+    )
+    .map_err(|e| e.to_string())?;
+    let out = parse_json(
+        &vm.call("gate", &json!({ "routine": routine, "event": event }))
+            .await?,
+    )?;
+    if out["keep"] != true {
+        return Ok(None);
+    }
+    Ok(Some(match out.get("event") {
+        Some(e) => e.clone(),
+        None => event.clone(),
+    }))
 }
 
 #[cfg(test)]
@@ -482,5 +541,34 @@ return {
         assert!(check_gate(&host, &dir, None, "true and").is_err());
         assert!(check_gate(&host, &dir, Some("github"), "true").is_ok());
         assert!(check_gate(&host, &dir, Some("nope"), "true").is_err());
+    }
+
+    #[tokio::test]
+    async fn webhook_gates_drop_keep_or_reshape_an_event() {
+        let (host, tmp) = host();
+        let dir = tmp.path().join("connectors");
+        let routine = json!({ "id": "sch_1" });
+        let event =
+            json!({ "headers": { "x-github-event": "push" }, "body": { "ref": "main", "n": 3 } });
+        let run = |code: &'static str| {
+            let (host, dir, routine, event) =
+                (host.clone(), dir.clone(), routine.clone(), event.clone());
+            async move { webhook_gate(&host, &dir, None, code, &routine, &event).await }
+        };
+        assert_eq!(
+            run("event.headers['x-github-event'] == 'pull_request'")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(run("nil").await.unwrap(), None);
+        assert_eq!(run("true").await.unwrap(), Some(event.clone()));
+        assert_eq!(
+            run("return { ref = event.body.ref, routine = routine.id }")
+                .await
+                .unwrap(),
+            Some(json!({ "ref": "main", "routine": "sch_1" }))
+        );
+        assert!(run("error('boom')").await.unwrap_err().contains("boom"));
     }
 }

@@ -489,6 +489,20 @@ pub(crate) fn watch_input(
     )
 }
 
+/// A webhook routine's run input (T1c): its prompt, then the delivery,
+/// wrapped as untrusted. Webhook events never batch, so there is one.
+pub(crate) fn webhook_input(prompt: &str, events: &[tern_store::RoutineEvent]) -> String {
+    let body = events
+        .iter()
+        .map(|e| e.payload.as_str())
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!(
+        "{prompt}\n\nA webhook delivered this event:\n{}",
+        tern_core::agent::taint::wrap("webhook", &body)
+    )
+}
+
 pub struct Manager {
     pub rt: Arc<Runtime>,
     pub routes: Arc<Routes>,
@@ -599,9 +613,18 @@ impl Manager {
         s: &tern_store::ScheduleRow,
         events: &[tern_store::RoutineEvent],
     ) -> anyhow::Result<crate::runtime::StartedRun> {
-        let watch = s.watch.as_deref().unwrap_or("watch");
-        let text = watch_input(&s.prompt, watch, events);
-        let reason = format!("started by watch {watch}");
+        let (text, reason) = if s.trigger() == "webhook" {
+            (
+                webhook_input(&s.prompt, events),
+                super::hooks::TAINT.to_owned(),
+            )
+        } else {
+            let watch = s.watch.as_deref().unwrap_or("watch");
+            (
+                watch_input(&s.prompt, watch, events),
+                format!("started by watch {watch}"),
+            )
+        };
         let started = self.rt.start_run_tainted(
             Some(&s.session_id),
             None,

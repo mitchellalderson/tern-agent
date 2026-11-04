@@ -1,0 +1,12 @@
+{
+  "routine_id": "sch_7c1e9a3f0b2d4e5",
+  "auth": "hmac",
+  "path": "/v1/hooks/sch_7c1e9a3f0b2d4e5",
+  "url": "https://hooks.example.com/v1/hooks/sch_7c1e9a3f0b2d4e5",
+  "active": true,
+  "secret": "tern_whk_0123456789abcdefghijABCDEFGHIJ0123456",
+  "created_at": 1793750400000,
+  "rotated_at": null,
+  "revoked_at": null,
+  "last_delivery_at": 1793754000000
+}

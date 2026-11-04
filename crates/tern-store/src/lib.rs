@@ -9,6 +9,7 @@ mod migrations;
 mod outbox_repo;
 mod repo;
 mod subagents_repo;
+mod webhooks_repo;
 
 pub use agents_repo::{AgentChange, AgentRow, DEFAULT_AGENT, dm_slug};
 pub use channels_repo::{ChannelRow, HOME, Moved, NewPost, NewThread, PostRow};
@@ -17,6 +18,7 @@ pub use devices_repo::{DeviceGrant, DeviceRow};
 pub use members_repo::{ChannelWakes, Member, mention_slugs};
 pub use outbox_repo::{NewOutbox, OutboxRow};
 pub use subagents_repo::{MailRow, NewMail};
+pub use webhooks_repo::WebhookRow;
 
 pub use repo::{
     MemoryRow, MessageHit, MessageRow, NewMessage, NewRun, RunRow, SPAWNED_BY_TAINTED, SessionRow,

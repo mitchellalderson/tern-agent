@@ -244,6 +244,13 @@ async fn poll_once(
     })
 }
 
+/// Start runs for waiting events now rather than at the next tick: a
+/// webhook delivery calls this once its event is recorded.
+pub async fn start_waiting_now(manager: &Arc<Manager>) -> anyhow::Result<()> {
+    let defaults = manager.rt.live().schedules;
+    start_waiting(manager, &defaults, Local::now()).await
+}
+
 /// Start a run for routines with events waiting: one at a time per
 /// routine, since its runs share a session. Caps apply as for cron runs.
 async fn start_waiting(
@@ -251,6 +258,10 @@ async fn start_waiting(
     defaults: &SchedulesConfig,
     now: DateTime<Local>,
 ) -> anyhow::Result<()> {
+    // The tick and webhook deliveries both start events; one at a time, so
+    // an event can't be handed to two runs.
+    static STARTING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _one = STARTING.lock().await;
     let store = &manager.rt.store;
     let busy: HashSet<String> = manager
         .active_runs()
@@ -278,7 +289,7 @@ async fn start_waiting(
                 // at worst, never lost.
                 let keys: Vec<String> = events.into_iter().map(|e| e.key).collect();
                 store.mark_events_started(&id, &keys, &started.run_id)?;
-                tracing::info!(schedule = %id, events = keys.len(), run = %started.run_id, "watch run started");
+                tracing::info!(schedule = %id, events = keys.len(), run = %started.run_id, trigger = s.trigger(), "event run started");
             }
             Err(e) => {
                 tracing::error!(schedule = %id, error = %e, "watch run failed to start");
@@ -292,7 +303,7 @@ async fn start_waiting(
 /// watch's next poll, never for a `once` routine.
 fn next_slot(s: &ScheduleRow, now: DateTime<Local>) -> Result<i64, String> {
     match s.trigger() {
-        "once" => Ok(i64::MAX),
+        "once" | "webhook" => Ok(i64::MAX),
         "watch" => Ok(now.timestamp_millis()
             + 1000
                 * s.every_secs

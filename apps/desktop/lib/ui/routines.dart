@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:tern_client/tern_client.dart';
 
 import '../state/cron_words.dart';
@@ -140,6 +141,11 @@ class _RoutineRow extends StatelessWidget {
                 'event starts a run, and nothing found costs nothing.',
             if (s.lastCheck case final c?) 'Last check: $c.',
           ].join(' ')
+        : s.trigger == 'webhook'
+        ? [
+            'Each delivery to its webhook starts a run, read as untrusted.',
+            if (s.lastCheck case final c?) 'Last: $c.',
+          ].join(' ')
         : next == null
         ? when
         : [
@@ -161,6 +167,8 @@ class _RoutineRow extends StatelessWidget {
                   ? Icons.pause_circle_outline
                   : s.trigger == 'watch'
                   ? Icons.sensors
+                  : s.trigger == 'webhook'
+                  ? Icons.webhook
                   : Icons.schedule,
               size: 16,
               color: active ? c.accent : c.muted,
@@ -279,6 +287,7 @@ Future<void> showRoutineSheet(
 String routineWhen(Schedule s) => switch (s.trigger) {
   'once' => s.at == null ? 'Once' : 'Once, ${whenInWords(s.at!)}',
   'watch' => 'On ${s.watch} events',
+  'webhook' => 'On webhook deliveries',
   _ => cronInWords(s.cron),
 };
 
@@ -338,8 +347,15 @@ class _RoutineSheetState extends State<RoutineSheet> {
   );
   late var _telegram = widget.editing?.deliverTo != null;
 
-  /// `cron`, `once` or `watch`.
+  /// `cron`, `once`, `watch` or `webhook`.
   late var _trigger = widget.editing?.trigger ?? 'cron';
+
+  /// A new webhook routine's auth: `hmac` or `bearer`.
+  var _auth = 'hmac';
+
+  /// The hook of the webhook routine being edited, once loaded.
+  Webhook? _hook;
+  String? _hookError;
   late final _at = TextEditingController(text: _atBefore);
 
   /// The reminder's time as it was, `YYYY-MM-DD HH:MM`.
@@ -423,6 +439,41 @@ class _RoutineSheetState extends State<RoutineSheet> {
       c.addListener(() => setState(() {}));
     }
     _checkCron();
+    if (widget.editing?.trigger == 'webhook') _loadHook();
+  }
+
+  Future<void> _loadHook() async {
+    try {
+      final all = await widget.store.client.webhooks();
+      if (!mounted) return;
+      setState(
+        () => _hook = all
+            .where((w) => w.routineId == widget.editing!.id)
+            .firstOrNull,
+      );
+    } on TernException catch (e) {
+      if (mounted) setState(() => _hookError = e.message);
+    }
+  }
+
+  Future<void> _rotate() async {
+    try {
+      final w = await widget.store.client.rotateWebhook(widget.editing!.id);
+      if (!mounted) return;
+      setState(() => _hook = w);
+      await showWebhookSecret(context, w, created: false);
+    } on TernException catch (e) {
+      if (mounted) setState(() => _hookError = e.message);
+    }
+  }
+
+  Future<void> _revoke() async {
+    try {
+      await widget.store.client.revokeWebhook(widget.editing!.id);
+      await _loadHook();
+    } on TernException catch (e) {
+      if (mounted) setState(() => _hookError = e.message);
+    }
   }
 
   @override
@@ -503,6 +554,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
   bool get _triggerValid => switch (_trigger) {
     'once' => _atPattern.hasMatch(_at.text.trim()),
     'watch' => _watchPattern.hasMatch(_watch.text.trim()),
+    'webhook' => true,
     _ => _preview != null,
   };
 
@@ -537,6 +589,28 @@ class _RoutineSheetState extends State<RoutineSheet> {
       _busy = true;
       _error = null;
     });
+    if (widget.editing == null && _trigger == 'webhook') {
+      final r = await widget.store.createWebhook(
+        prompt: _prompt.text.trim(),
+        auth: _auth,
+        deliverTo: _telegram ? 'telegram:${_chat.text.trim()}' : null,
+        limits: _newLimits,
+        channel: widget.store.hasChannels ? _channel : null,
+        agent: widget.store.hasAgents ? _agent : null,
+        options: _options,
+      );
+      if (!mounted) return;
+      if (r.webhook case final w?) {
+        await showWebhookSecret(context, w, created: true);
+        if (mounted) Navigator.pop(context);
+      } else {
+        setState(() {
+          _busy = false;
+          _error = r.error;
+        });
+      }
+      return;
+    }
     final err = await widget.store.saveSchedule(
       id: widget.editing?.id,
       cron: _trigger == 'cron' ? _cron.text.trim() : '',
@@ -661,10 +735,83 @@ class _RoutineSheetState extends State<RoutineSheet> {
         ),
         const SizedBox(height: 4),
         Text(
-          'Checked before each run at no cost; false skips that run. With a '
-          'connector it can call its tools, e.g. '
-          '#connector.tools.unread.run(ctx, {}) > 0.',
+          _trigger == 'webhook'
+              ? 'Checked on each delivery at no cost: false drops it, a table '
+                    'replaces it, e.g. event.body.action == "opened" or '
+                    'return { title = event.body.issue.title }.'
+              : 'Checked before each run at no cost; false skips that run. '
+                    'With a connector it can call its tools, e.g. '
+                    '#connector.tools.unread.run(ctx, {}) > 0.',
           style: small,
+        ),
+      ],
+    ];
+  }
+
+  /// A new webhook's auth choice, or an existing one's URL, state, and
+  /// rotate and revoke.
+  List<Widget> _webhookSection(BuildContext context) {
+    final c = context.colors;
+    final small = TextStyle(fontSize: 12, color: c.muted);
+    if (widget.editing == null) {
+      return [
+        SegmentedButton<String>(
+          key: const Key('routine-webhook-auth'),
+          segments: const [
+            ButtonSegment(value: 'hmac', label: Text('Signed (HMAC)')),
+            ButtonSegment(value: 'bearer', label: Text('Secret in header')),
+          ],
+          selected: {_auth},
+          showSelectedIcon: false,
+          onSelectionChanged: (v) => setState(() => _auth = v.first),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'You get a URL and a secret once it is made. Each delivery starts a '
+          'run with the event read as untrusted, so its writes ask first. '
+          'Senders reach it only when tern has a [webhooks] listener.',
+          style: small,
+        ),
+      ];
+    }
+    final w = _hook;
+    return [
+      if (_hookError case final e?)
+        Text(e, style: TextStyle(fontSize: 12, color: c.error))
+      else if (w == null)
+        Text('Loading its webhook…', style: small)
+      else ...[
+        SelectableText(
+          w.url ?? w.path,
+          key: const Key('routine-webhook-url'),
+          style: mono.copyWith(fontSize: 12.5),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          [
+            if (!w.active) 'Revoked: the URL answers 404 until you rotate it.',
+            if (w.url == null)
+              'No [webhooks] listener yet: only `tern hooks fire` reaches it.',
+            w.howToSign,
+          ].join(' '),
+          style: small,
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            OutlinedButton(
+              key: const Key('routine-webhook-rotate'),
+              onPressed: _rotate,
+              child: Text(w.active ? 'Rotate secret…' : 'New secret…'),
+            ),
+            const SizedBox(width: 8),
+            if (w.active)
+              TextButton(
+                key: const Key('routine-webhook-revoke'),
+                onPressed: _revoke,
+                child: const Text('Revoke'),
+              ),
+          ],
         ),
       ],
     ];
@@ -714,18 +861,33 @@ class _RoutineSheetState extends State<RoutineSheet> {
               const SizedBox(height: 16),
               Text('WHEN', style: labels),
               const SizedBox(height: 6),
-              SegmentedButton<String>(
-                key: const Key('routine-trigger'),
-                segments: const [
-                  ButtonSegment(value: 'cron', label: Text('Repeating')),
-                  ButtonSegment(value: 'once', label: Text('Once')),
-                  ButtonSegment(value: 'watch', label: Text('On events')),
-                ],
-                selected: {_trigger},
-                showSelectedIcon: false,
-                onSelectionChanged: (v) => setState(() => _trigger = v.first),
-              ),
+              // A webhook routine keeps its trigger (its secret goes with
+              // it); others can't become one, since that needs a secret.
+              if (widget.editing?.trigger != 'webhook')
+                SegmentedButton<String>(
+                  key: const Key('routine-trigger'),
+                  segments: [
+                    const ButtonSegment(
+                      value: 'cron',
+                      label: Text('Repeating'),
+                    ),
+                    const ButtonSegment(value: 'once', label: Text('Once')),
+                    const ButtonSegment(
+                      value: 'watch',
+                      label: Text('On events'),
+                    ),
+                    if (widget.editing == null)
+                      const ButtonSegment(
+                        value: 'webhook',
+                        label: Text('Webhook'),
+                      ),
+                  ],
+                  selected: {_trigger},
+                  showSelectedIcon: false,
+                  onSelectionChanged: (v) => setState(() => _trigger = v.first),
+                ),
               const SizedBox(height: 8),
+              if (_trigger == 'webhook') ..._webhookSection(context),
               if (_trigger == 'once') ...[
                 TextField(
                   key: const Key('routine-at'),
@@ -952,6 +1114,68 @@ class _RoutineSheetState extends State<RoutineSheet> {
     );
   }
 }
+
+/// Show a webhook's URL and secret, the one time the daemon gives it.
+Future<void> showWebhookSecret(
+  BuildContext context,
+  Webhook w, {
+  required bool created,
+}) => showDialog<void>(
+  context: context,
+  builder: (context) {
+    final c = context.colors;
+    Widget field(String label, String value, Key key) => Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: Theme.of(context).textTheme.labelSmall),
+              SelectableText(
+                value,
+                key: key,
+                style: mono.copyWith(fontSize: 12.5),
+              ),
+            ],
+          ),
+        ),
+        IconButton(
+          tooltip: 'Copy',
+          icon: const Icon(Icons.copy, size: 16),
+          onPressed: () => Clipboard.setData(ClipboardData(text: value)),
+        ),
+      ],
+    );
+    return AlertDialog(
+      title: Text(created ? 'Webhook created' : 'New webhook secret'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            field('URL', w.url ?? w.path, const Key('webhook-url')),
+            const SizedBox(height: 10),
+            field('SECRET', w.secret ?? '', const Key('webhook-secret')),
+            const SizedBox(height: 10),
+            Text(w.howToSign, style: TextStyle(fontSize: 12, color: c.muted)),
+            const SizedBox(height: 6),
+            Text(
+              'This is the only time the secret is shown. Lost it? Rotate it.',
+              style: TextStyle(fontSize: 12, color: c.muted),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Done'),
+        ),
+      ],
+    );
+  },
+);
 
 InputDecoration _box(BuildContext context, {String? hint, String? error}) {
   final c = context.colors;
