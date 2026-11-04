@@ -6,6 +6,7 @@ import '../state/transcript.dart';
 import '../theme.dart';
 import 'agent_sheet.dart';
 import 'channel_view.dart';
+import 'manage.dart';
 import 'providers.dart';
 import 'widgets.dart';
 
@@ -284,6 +285,20 @@ List<Widget> agentsSection(BuildContext context, TernStore store) {
   ];
 }
 
+/// A right-click menu at the pointer: `items` are (value, label).
+Future<String?> _contextMenu(
+  BuildContext context,
+  Offset at,
+  List<(String, String)> items,
+) => showMenu<String>(
+  context: context,
+  position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+  items: [
+    for (final (value, label) in items)
+      PopupMenuItem(value: value, child: Text(label)),
+  ],
+);
+
 class _AgentListRow extends StatelessWidget {
   const _AgentListRow({required this.store, required this.agent});
 
@@ -306,7 +321,17 @@ class _AgentListRow extends StatelessWidget {
       child: Material(
         color: selected ? c.selection : Colors.transparent,
         borderRadius: BorderRadius.circular(8),
-        child: InkWell(
+        child: GestureDetector(
+          onSecondaryTapUp: (d) async {
+            final pick = await _contextMenu(context, d.globalPosition, [
+              ('edit', 'Edit ${a.name}'),
+              ('delete', 'Delete ${a.name}…'),
+            ]);
+            if (!context.mounted) return;
+            if (pick == 'edit') showAgentSheet(context, store, agent: a);
+            if (pick == 'delete') showDeleteAgent(context, store, a);
+          },
+          child: InkWell(
           borderRadius: BorderRadius.circular(8),
           onTap: () => store.openAgent(a),
           child: Padding(
@@ -348,6 +373,7 @@ class _AgentListRow extends StatelessWidget {
             ),
           ),
         ),
+        ),
       ),
     );
   }
@@ -388,7 +414,17 @@ List<Widget> channelsSection(BuildContext context, TernStore store) {
               ? c.selection
               : Colors.transparent,
           borderRadius: BorderRadius.circular(8),
-          child: InkWell(
+          child: GestureDetector(
+            onSecondaryTapUp: (d) async {
+              final pick = await _contextMenu(context, d.globalPosition, [
+                ('edit', 'Edit #${ch.slug}'),
+                ('delete', 'Delete #${ch.slug}…'),
+              ]);
+              if (!context.mounted) return;
+              if (pick == 'edit') showChannelSettings(context, store, ch);
+              if (pick == 'delete') showDeleteChannel(context, store, ch);
+            },
+            child: InkWell(
             borderRadius: BorderRadius.circular(8),
             onTap: () => store.openChannelView(ch.id),
             child: Padding(
@@ -430,6 +466,7 @@ List<Widget> channelsSection(BuildContext context, TernStore store) {
               ),
             ),
           ),
+          ),
         ),
       ),
     if (store.topics.isEmpty)
@@ -440,6 +477,25 @@ List<Widget> channelsSection(BuildContext context, TernStore store) {
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ),
+    Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 2),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton(
+          key: const Key('archived-link'),
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize: const Size(0, 26),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          onPressed: () => showArchived(context, store),
+          child: Text(
+            'Archived…',
+            style: TextStyle(fontSize: 12, color: c.muted),
+          ),
+        ),
+      ),
+    ),
   ];
 }
 

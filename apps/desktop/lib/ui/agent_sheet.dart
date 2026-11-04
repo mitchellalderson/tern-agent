@@ -6,6 +6,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../theme.dart';
 import 'channel_view.dart' show slugFor;
+import 'manage.dart';
 import 'model_picker.dart' show ModelList;
 import 'widgets.dart';
 
@@ -106,6 +107,7 @@ class _AgentSheetState extends State<AgentSheet> {
   late ToolScope? _tools = widget.editing == null
       ? _narrow()
       : widget.editing!.tools;
+  late final _slugCtl = TextEditingController(text: widget.editing?.slug);
   String? _error;
   var _busy = false;
 
@@ -136,6 +138,7 @@ class _AgentSheetState extends State<AgentSheet> {
   void initState() {
     super.initState();
     _name.addListener(() => setState(() {}));
+    _slugCtl.addListener(() => setState(() {}));
     _load();
   }
 
@@ -198,6 +201,8 @@ class _AgentSheetState extends State<AgentSheet> {
       final model = _model;
       final fields = <String, Object?>{
         if (_name.text.trim() != a.name) 'name': _name.text.trim(),
+        if (!_isDefault && _slugCtl.text.trim() != a.slug)
+          'slug': _slugCtl.text.trim().replaceFirst('@', ''),
         'avatar': avatar.toJson(),
         // The default agent's model is `default_model`: send the model,
         // and the daemon keeps that setting's fallbacks.
@@ -252,7 +257,11 @@ class _AgentSheetState extends State<AgentSheet> {
   Widget build(BuildContext context) {
     final c = context.colors;
     final editing = widget.editing;
-    final slug = _isDefault ? 'tern' : editing?.slug ?? slugFor(_name.text);
+    final slug = _isDefault
+        ? 'tern'
+        : editing != null
+        ? _slugCtl.text.trim().replaceFirst('@', '')
+        : slugFor(_name.text);
     final ok = _name.text.trim().isNotEmpty && slug.isNotEmpty && !_busy;
     final input = InputDecoration(
       isDense: true,
@@ -334,9 +343,24 @@ class _AgentSheetState extends State<AgentSheet> {
                       autofocus: _creating,
                       decoration: input.copyWith(
                         hintText: 'Research',
-                        helperText: slug.isEmpty ? null : '@$slug',
+                        helperText: slug.isEmpty || editing != null
+                            ? null
+                            : '@$slug',
                       ),
                     ),
+                    if (editing != null && !_isDefault) ...[
+                      _section('@NAME'),
+                      TextField(
+                        key: const Key('agent-slug'),
+                        controller: _slugCtl,
+                        decoration: input.copyWith(
+                          prefixText: '@',
+                          helperText:
+                              'For @mentions and its chat (#dm-$slug). Its '
+                              'history keeps pointing at it.',
+                        ),
+                      ),
+                    ],
                     _section('AVATAR'),
                     _AvatarPicker(
                       glyph: _glyph,
@@ -524,6 +548,26 @@ class _AgentSheetState extends State<AgentSheet> {
                             },
                       child: Text('Archive', style: TextStyle(color: c.error)),
                     ),
+                  if (editing != null && !_isDefault)
+                    TextButton(
+                      key: const Key('delete-agent'),
+                      onPressed: _busy
+                          ? null
+                          : () async {
+                              final nav = Navigator.of(context);
+                              await showDeleteAgent(
+                                context,
+                                widget.store,
+                                editing,
+                              );
+                              // Deleted: there is nothing left to edit.
+                              if (mounted &&
+                                  widget.store.agentById(editing.id) == null) {
+                                nav.pop();
+                              }
+                            },
+                      child: Text('Delete…', style: TextStyle(color: c.error)),
+                    ),
                   const Spacer(),
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(),
@@ -546,6 +590,7 @@ class _AgentSheetState extends State<AgentSheet> {
   @override
   void dispose() {
     _name.dispose();
+    _slugCtl.dispose();
     _persona.dispose();
     super.dispose();
   }
