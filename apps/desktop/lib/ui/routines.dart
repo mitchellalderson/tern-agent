@@ -641,7 +641,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
       final r = await widget.store.createWebhook(
         prompt: _prompt.text.trim(),
         auth: _auth,
-        deliverTo: _telegram ? 'telegram:${_chat.text.trim()}' : null,
+        deliverTo: _push ? '$_gateway:${_chat.text.trim()}' : null,
         limits: _newLimits,
         channel: widget.store.hasChannels ? _channel : null,
         agent: widget.store.hasAgents ? _agent : null,
