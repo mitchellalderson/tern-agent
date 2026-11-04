@@ -47,6 +47,10 @@ impl TernHome {
     pub fn user_path(&self) -> PathBuf {
         self.root.join("user.md")
     }
+    /// Core facts the agent keeps (spec §7), injected like `user.md`.
+    pub fn memory_path(&self) -> PathBuf {
+        self.root.join("memory.md")
+    }
     pub fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
     }

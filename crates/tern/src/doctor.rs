@@ -168,6 +168,9 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
     r.section("Schedules");
     check_schedules(&mut r, home, &config);
 
+    r.section("Memory");
+    check_memory(&mut r, home, &config);
+
     r.section("Sandbox");
     match config.sandbox.backend {
         SandboxBackendKind::Host => {
@@ -497,6 +500,41 @@ fn check_schedules(r: &mut Report, home: &TernHome, config: &Config) {
         r.check(
             Status::Info,
             format!("{n} delivery(ies) held until quiet hours end"),
+            None,
+        );
+    }
+}
+
+/// `user.md` and `memory.md` against their caps (spec §7, T5a).
+fn check_memory(r: &mut Report, home: &TernHome, config: &Config) {
+    use tern_core::memory;
+    for s in memory::statuses(home, &config.memory) {
+        let name = s.file.file_name();
+        match s.tokens {
+            None | Some(0) => r.check(Status::Info, format!("{name}: empty"), None),
+            Some(t) if s.over() => r.check(
+                Status::Warn,
+                format!(
+                    "{name} is about {t} tokens, over its cap of {}: only the first {} are in the prompt",
+                    s.cap, s.cap
+                ),
+                Some(&format!(
+                    "Shorten {}, ask tern to consolidate it, or raise [memory].{} in config.toml.",
+                    s.file.path(home).display(),
+                    s.file.cap_key()
+                )),
+            ),
+            Some(t) => r.check(
+                Status::Ok,
+                format!("{name}: about {t} of {} tokens", s.cap),
+                None,
+            ),
+        }
+    }
+    if !config.memory.flush {
+        r.check(
+            Status::Info,
+            "flush before compaction is off ([memory].flush = false)",
             None,
         );
     }

@@ -27,6 +27,9 @@ struct Script {
     delay: Duration,
     seen: Mutex<Vec<ChatRequest>>,
     summaries: AtomicU32,
+    flushes: AtomicU32,
+    /// Memory flush calls fail (permanently) instead of saving a fact.
+    flush_fails: bool,
 }
 
 fn turns_in(text: &str) -> usize {
@@ -51,6 +54,8 @@ impl Script {
             delay: Duration::ZERO,
             seen: Mutex::new(Vec::new()),
             summaries: AtomicU32::new(0),
+            flushes: AtomicU32::new(0),
+            flush_fails: false,
         }
     }
 }
@@ -80,6 +85,36 @@ impl Provider for Script {
                 () = tokio::time::sleep(self.delay) => {}
                 () = cancel.cancelled() => return Err(ProviderError::Cancelled),
             }
+        }
+        if req.system == crate::memory::FLUSH_SYSTEM_PROMPT {
+            let n = self.flushes.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.flush_fails {
+                return Err(ProviderError::Http {
+                    status: 400,
+                    body: "no".into(),
+                    retry_after: None,
+                });
+            }
+            let id = format!("flush_{n}");
+            let evs = vec![
+                Ok(StreamEvent::ToolUseStart {
+                    id: id.clone(),
+                    name: "memory_save".into(),
+                }),
+                Ok(StreamEvent::ToolUseInputDelta {
+                    id,
+                    partial_json: json!({ "content": format!("fact {n}") }).to_string(),
+                }),
+                Ok(StreamEvent::MessageStop {
+                    usage: Usage {
+                        input_tokens: 5,
+                        output_tokens: 1,
+                        ..Usage::default()
+                    },
+                    stop_reason: StopReason::ToolUse,
+                }),
+            ];
+            return Ok(Box::pin(futures::stream::iter(evs)));
         }
         if req.system == crate::compaction::SYSTEM_PROMPT {
             self.summaries.fetch_add(1, Ordering::SeqCst);
@@ -1458,6 +1493,161 @@ async fn a_run_with_live_children_waits_for_them_before_finishing() {
         "{}",
         inbox.input_json
     );
+}
+
+// ---- memory flush before compaction (T5a) ----
+
+fn flushing_agent(
+    h: &Harness,
+    script: Arc<Script>,
+    tools: Vec<Arc<dyn Tool>>,
+    flush: bool,
+) -> Agent {
+    let mut reg = ToolRegistry::new();
+    for t in tools {
+        reg.register(t);
+    }
+    let p: Arc<dyn Provider> = script;
+    Agent::new(
+        Journal::new(h.store.clone()),
+        Arc::new(move |_| Ok(p.clone())),
+        Arc::new(reg),
+        Arc::new(AutoApprove),
+        AgentConfig {
+            retry_base: Duration::from_millis(1),
+            max_iterations: 10,
+            default_context_window: TINY_WINDOW,
+            memory_flush: flush,
+            ..AgentConfig::default()
+        },
+    )
+}
+
+fn count_kind(h: &Harness, run: &str, kind: &str) -> usize {
+    h.kinds(run).iter().filter(|k| *k == kind).count()
+}
+
+#[tokio::test]
+async fn a_flush_saves_facts_before_each_compaction_and_replays_without_saving_again() {
+    let h = Harness::new();
+    let count = Arc::new(Counter::new("count", true, false));
+    let save = Arc::new(Counter::new("memory_save", false, false));
+    let script = Arc::new(Script::new(eight_tool_turns()));
+    let agent = flushing_agent(&h, script.clone(), vec![count.clone(), save.clone()], true);
+    let run = h.start(&agent, "go");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(
+        (out.status, out.final_text.as_str()),
+        (RunStatus::Completed, "finished")
+    );
+
+    let kinds = h.kinds(&run);
+    let flushes = count_kind(&h, &run, "memory_flush:completed");
+    assert!(flushes >= 1, "{kinds:?}");
+    assert_eq!(flushes, count_kind(&h, &run, "compaction:completed"));
+    for (i, k) in kinds.iter().enumerate() {
+        if k == "compaction:completed" {
+            assert_eq!(kinds[i - 1], "memory_flush:completed", "{kinds:?}");
+        }
+    }
+    assert_eq!(save.calls.load(Ordering::SeqCst) as usize, flushes);
+    assert_eq!(count.calls.load(Ordering::SeqCst), 8);
+
+    let seen = script.seen.lock().unwrap().clone();
+    let flush_reqs: Vec<_> = seen
+        .iter()
+        .filter(|r| r.system == crate::memory::FLUSH_SYSTEM_PROMPT)
+        .collect();
+    assert_eq!(flush_reqs.len(), flushes);
+    for r in &flush_reqs {
+        assert_eq!(tool_names(r), ["memory_save"], "only the memory tool");
+        assert!(r.messages[0].text().contains("### assistant"));
+    }
+    // Silent: the agent's own conversation never sees the flush.
+    for r in seen.iter().filter(|r| r.system == "system") {
+        let text: String = r.messages.iter().map(|m| m.text()).collect();
+        assert!(!text.contains("fact 1"), "{text}");
+        assert!(last_tool_result(r).is_none_or(|(c, _)| !c.contains("count=0")));
+    }
+    // Flush usage counts toward the run: 9 agent turns at 2 output tokens
+    // each, plus 1 per flush.
+    assert_eq!(out.usage.output_tokens, 18 + flushes as u64);
+
+    h.store.set_run_status(&run, "running", None).unwrap();
+    let again = Arc::new(Script::new(eight_tool_turns()));
+    let agent = flushing_agent(&h, again.clone(), vec![count.clone(), save.clone()], true);
+    let out2 = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out2.status, RunStatus::Completed);
+    assert_eq!(
+        again.flushes.load(Ordering::SeqCst),
+        0,
+        "replayed, not re-asked"
+    );
+    assert_eq!(save.calls.load(Ordering::SeqCst) as usize, flushes);
+    assert_eq!(out2.usage, out.usage);
+}
+
+#[tokio::test]
+async fn a_failed_flush_never_stops_compaction() {
+    let h = Harness::new();
+    let save = Arc::new(Counter::new("memory_save", false, false));
+    let mut script = Script::new(eight_tool_turns());
+    script.flush_fails = true;
+    let script = Arc::new(script);
+    let agent = flushing_agent(
+        &h,
+        script.clone(),
+        vec![Arc::new(Counter::new("count", true, false)), save.clone()],
+        true,
+    );
+    let run = h.start(&agent, "go");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    assert!(script.flushes.load(Ordering::SeqCst) >= 1);
+    assert!(count_kind(&h, &run, "compaction:completed") >= 1);
+    assert_eq!(
+        count_kind(&h, &run, "memory_flush:completed"),
+        count_kind(&h, &run, "compaction:completed")
+    );
+    assert_eq!(save.calls.load(Ordering::SeqCst), 0);
+    let step = h
+        .store
+        .steps(&run)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.kind == "memory_flush")
+        .unwrap();
+    let flush: crate::memory::FlushOutput =
+        serde_json::from_str(step.output_json.as_deref().unwrap()).unwrap();
+    assert!(flush.error.unwrap().contains("400"));
+}
+
+#[tokio::test]
+async fn no_flush_when_off_without_the_memory_tool_or_for_scheduled_runs() {
+    let cases: [(&str, bool, bool); 3] = [
+        ("off", false, true),
+        ("no tool", true, false),
+        ("cron", true, true),
+    ];
+    for (name, flush, with_save) in cases {
+        let h = Harness::new();
+        let script = Arc::new(Script::new(eight_tool_turns()));
+        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Counter::new("count", true, false))];
+        if with_save {
+            tools.push(Arc::new(Counter::new("memory_save", false, false)));
+        }
+        let agent = flushing_agent(&h, script.clone(), tools, flush);
+        let run = if name == "cron" {
+            start_cron(&h, &agent, "sched", None)
+        } else {
+            h.start(&agent, "go")
+        };
+        let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+        assert_eq!(out.status, RunStatus::Completed, "{name}");
+        assert!(count_kind(&h, &run, "compaction:completed") >= 1, "{name}");
+        assert_eq!(count_kind(&h, &run, "memory_flush:completed"), 0, "{name}");
+        assert_eq!(script.flushes.load(Ordering::SeqCst), 0, "{name}");
+    }
 }
 
 // ---- scheduled runs (T1a) ----

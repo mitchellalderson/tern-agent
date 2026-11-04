@@ -9,6 +9,7 @@ pub mod events;
 pub mod home;
 pub mod journal;
 pub mod mcp;
+pub mod memory;
 pub mod models;
 pub mod net;
 pub mod prompt;

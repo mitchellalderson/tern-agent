@@ -614,6 +614,15 @@ M2 already has memory tools, compaction and FTS5 `session_search`. Additions:
   agent may offer once: "Save this as a skill?" Accepting writes `skills/<slug>/SKILL.md` as a draft for review. It is
   never automatic, so there is no quiet drift. Skills use the agentskills.io format already in use.
 
+**Status (T5a shipped).** The flush is a journaled `memory_flush` step just before the `compaction` step: one call
+with only `memory_save`, at most 10 saves, never failing the run (an error is recorded and compaction goes ahead).
+It runs for top-level, non-scheduled runs whose token budget can cover it; its tokens count toward run and schedule
+budgets. `user.md` and `memory.md` are capped at `[memory].user_md_tokens` / `memory_md_tokens` (1500 each) and written
+through a new `profile_edit` tool (read/append/replace; not for sub-agents). Until routines exist (T1b) there is no
+queued consolidation run: a write over the cap is refused with a request to consolidate in the same run, a file
+edited by hand past its cap is cut in the prompt with a visible note asking for consolidation, and `tern doctor`
+warns. The `system` consolidation routine comes with T1b. DECISIONS.md, T5a, has the details.
+
 ## 8. Ledger, budgets, models, hardening (T6)
 
 ### 8.1 Activity ledger

@@ -158,7 +158,7 @@ fn long_runs_are_compacted() {
         .map(|i| json!({ "tool_calls": [{ "name": "write_file", "input": { "path": format!("f{i}.txt"), "content": "x".repeat(400) } }] }))
         .collect();
     turns.push(json!({ "text": "wrote ten files" }));
-    let env = Env::new(json!({ "turns": turns }));
+    let env = Env::new(json!({ "turns": turns, "memory_flush": ["User keeps drafts in f0.txt"] }));
     std::fs::create_dir_all(&env.tern_home).unwrap();
     // Built-in tool specs alone are ~1k tokens; leave room for a few turns.
     std::fs::write(env.tern_home.join("config.toml"), "context_window = 2000\n").unwrap();
@@ -182,6 +182,53 @@ fn long_runs_are_compacted() {
     for i in 0..10 {
         assert!(env.home.join(format!("tern-workspace/f{i}.txt")).exists());
     }
+    // The flush before compaction saved its fact (T5a).
+    assert!(show.contains("memory_flush"), "{show}");
+    env.set_script(json!({ "turns": [
+        { "tool_calls": [{ "name": "memory_search", "input": { "query": "drafts" } }] },
+        { "text": "f0." }
+    ]}));
+    let o = env.tern(&["run", "where are my drafts?"]);
+    let (run, _) = ids(&text(&o).1);
+    let show = text(&env.tern(&["runs", "show", &run])).0;
+    assert!(show.contains("User keeps drafts in f0.txt"), "{show}");
+}
+
+#[test]
+fn profile_edit_keeps_memory_md_under_its_cap_and_doctor_reports_it() {
+    let env = Env::new(json!({ "turns": [
+        { "tool_calls": [{ "name": "profile_edit", "input": { "file": "memory", "mode": "append", "content": "Son: Sam" } }] },
+        { "tool_calls": [{ "name": "profile_edit", "input": { "file": "memory", "mode": "append", "content": "x".repeat(200) } }] },
+        { "text": "Saved one." }
+    ]}));
+    std::fs::create_dir_all(&env.tern_home).unwrap();
+    std::fs::write(
+        env.tern_home.join("config.toml"),
+        "[memory]\nmemory_md_tokens = 20\n",
+    )
+    .unwrap();
+    let o = env.tern(&["run", "remember things"]);
+    let (run, _) = ids(&text(&o).1);
+    let show = text(&env.tern(&["runs", "show", &run])).0;
+    assert!(
+        show.contains("✗ not saved: memory.md would be about 53 tokens"),
+        "{show}"
+    );
+    let memory = env.tern_home.join("memory.md");
+    assert_eq!(std::fs::read_to_string(&memory).unwrap(), "Son: Sam\n");
+    let doctor = text(&env.tern(&["doctor", "--offline"])).0;
+    assert!(
+        doctor.contains("memory.md: about 2 of 20 tokens"),
+        "{doctor}"
+    );
+
+    // Edited by hand past the cap: doctor warns.
+    std::fs::write(&memory, "y".repeat(400)).unwrap();
+    let doctor = text(&env.tern(&["doctor", "--offline"])).0;
+    assert!(
+        doctor.contains("memory.md is about 100 tokens, over its cap of 20"),
+        "{doctor}"
+    );
 }
 
 #[cfg(unix)]

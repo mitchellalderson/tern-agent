@@ -7,6 +7,7 @@ use chrono::{DateTime, Local};
 
 use crate::defaults;
 use crate::home::TernHome;
+use crate::memory::{self, MemoryConfig, ProfileFile};
 
 /// Who the prompt is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +45,8 @@ pub struct PromptInputs<'a> {
     pub skills: &'a [(String, String)],
     /// One line per connected MCP server or Luau connector.
     pub integrations: &'a [String],
+    /// Caps on the injected `user.md` and `memory.md`.
+    pub memory: &'a MemoryConfig,
 }
 
 pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
@@ -63,9 +66,24 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
         AgentRole::Main => {}
     }
 
-    if let Some(user) = read_nonempty(&inp.home.user_path()) {
+    let cfg = inp.memory;
+    if let Some(user) = memory::read_capped(inp.home, ProfileFile::User, cfg.user_md_tokens) {
         out.push_str("\n\n## About the user\n\n");
         out.push_str(&user);
+    }
+
+    let core = memory::read_capped(inp.home, ProfileFile::Memory, cfg.memory_md_tokens);
+    if !matches!(inp.role, AgentRole::Subagent { .. }) {
+        out.push_str("\n\n");
+        out.push_str(
+            &MEMORY
+                .replace("{user}", &cfg.user_md_tokens.to_string())
+                .replace("{memory}", &cfg.memory_md_tokens.to_string()),
+        );
+    }
+    if let Some(core) = core {
+        out.push_str("\n\n## What you remember\n\n");
+        out.push_str(&core);
     }
 
     out.push_str("\n\n## Current time\n\n");
@@ -192,6 +210,11 @@ say what you checked and what you didn't.
 Sub-agents can't talk to the user except through approval prompts, which the user sees with the sub-agent's name. \
 {nest}";
 
+const MEMORY: &str = "## Memory\n\n`user.md` (about the user, above) and `memory.md` (core facts, below) are in \
+this prompt in every conversation, capped at {user} and {memory} tokens. Keep them short and current with \
+`profile_edit`: only what every conversation needs. Save everything else that's durable with `memory_save`; \
+`memory_search` finds it later.";
+
 const SUBAGENT_ROLE: &str = "## You are a sub-agent
 
 The main tern agent started you, as \"{label}\", to do one task, described in the first message. The user doesn't see \
@@ -240,7 +263,7 @@ fn read_nonempty(path: &Path) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-fn strip_html_comments(s: &str) -> String {
+pub(crate) fn strip_html_comments(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(start) = rest.find("<!--") {
@@ -274,6 +297,7 @@ mod tests {
             integrations: &integrations,
             role: AgentRole::Main,
             subagents: None,
+            memory: &MemoryConfig::default(),
         };
         let p = system_prompt(&inp);
         assert!(p.starts_with("I am tern."));
@@ -299,6 +323,7 @@ mod tests {
             integrations: &[],
             role: AgentRole::Main,
             subagents: None,
+            memory: &MemoryConfig::default(),
         });
         assert!(p.starts_with("You are tern"));
         assert!(!p.contains("## Skills"));
@@ -317,6 +342,7 @@ mod tests {
             models: vec!["fast (anthropic:claude-haiku-5-5)".to_owned()],
             can_nest: false,
         };
+        let memory = MemoryConfig::default();
         let inp = |role, subagents| PromptInputs {
             home: &home,
             now: Local::now(),
@@ -325,6 +351,7 @@ mod tests {
             integrations: &[],
             role,
             subagents,
+            memory: &memory,
         };
 
         let main = system_prompt(&inp(AgentRole::Main, Some(&sub)));
@@ -353,5 +380,39 @@ mod tests {
         assert!(scheduled.contains("answer with exactly `NO_REPLY`"));
         assert!(!scheduled.contains('{'));
         assert!(!main.contains("NO_REPLY"));
+    }
+
+    #[test]
+    fn profile_files_are_injected_within_their_caps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = TernHome::new(tmp.path());
+        let facts: String = (0..300).map(|i| format!("- fact {i}\n")).collect();
+        std::fs::write(home.user_path(), "Name: Sam").unwrap();
+        std::fs::write(home.memory_path(), &facts).unwrap();
+        let memory = MemoryConfig {
+            memory_md_tokens: 100,
+            ..MemoryConfig::default()
+        };
+        let inp = |role| PromptInputs {
+            home: &home,
+            now: Local::now(),
+            workspace: Path::new("/ws"),
+            skills: &[],
+            integrations: &[],
+            role,
+            subagents: None,
+            memory: &memory,
+        };
+        let p = system_prompt(&inp(AgentRole::Main));
+        assert!(p.contains("## About the user\n\nName: Sam"));
+        assert!(p.contains("capped at 1500 and 100 tokens"), "{p}");
+        let core = p.split("## What you remember\n\n").nth(1).unwrap();
+        let core = core.split("\n\n## ").next().unwrap();
+        assert!(core.starts_with("- fact 0\n"));
+        assert!(memory::tokens(core) <= 100, "{}", memory::tokens(core));
+        assert!(core.contains("memory.md is over its 100-token cap"));
+
+        let child = system_prompt(&inp(AgentRole::Subagent { label: "x" }));
+        assert!(child.contains("## What you remember") && !child.contains("## Memory\n"));
     }
 }

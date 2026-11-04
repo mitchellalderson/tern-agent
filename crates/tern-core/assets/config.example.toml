@@ -72,6 +72,14 @@ docker_pids = 512          # 0 for no limit
 # max_iterations = 30         # per sub-agent
 # budget_tokens = 400000      # per sub-agent: input + output + cache tokens
 
+# Memory: user.md and memory.md are in every system prompt, each within a
+# token cap (chars / 4). Writes past a cap are refused with a request to
+# consolidate; a file edited by hand past its cap is cut, with a note.
+# [memory]
+# user_md_tokens = 1500
+# memory_md_tokens = 1500
+# flush = true                 # before compacting, let the agent save durable facts (memory_save)
+
 # Scheduled prompts (schedule_create, the app's routines). Each schedule can
 # override these.
 # [schedules]
