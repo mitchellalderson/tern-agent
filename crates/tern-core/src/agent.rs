@@ -214,6 +214,13 @@ impl Agent {
         &self.journal
     }
 
+    /// The provider (a fallback chain where configured) that serves
+    /// `model`, for one-off calls outside a run, such as a routine's
+    /// notification gate (T1b).
+    pub fn provider(&self, model: &ModelRef) -> Result<Arc<dyn Provider>, ProviderError> {
+        (self.providers)(model)
+    }
+
     pub fn tools(&self) -> &ToolRegistry {
         &self.tools
     }

@@ -266,7 +266,7 @@ async fn a_no_reply_run_delivers_nothing_and_is_recorded_quiet() {
         { "matches": "Watch the build", "turns": [{ "text": "The build is green." }] }
     ]}));
     let _daemon = env.daemon();
-    let common = json!({ "cron": "0 3 * * *", "deliver_to": target(), "quiet_hours": "none" });
+    let common = json!({ "cron": "0 3 * * *", "deliver_to": target(), "initiative": "interrupt", "quiet_hours": "none" });
     let mut quiet = common.clone();
     quiet["prompt"] = "Watch the inbox".into();
     let quiet = env.create(quiet).await;
@@ -318,7 +318,7 @@ async fn quiet_hours_hold_deliveries_across_a_restart_and_urgent_bypasses_them()
         ("Server down?", true),
     ] {
         let s = env
-            .create(json!({ "cron": "0 3 * * *", "prompt": prompt, "deliver_to": target(), "urgent": urgent }))
+            .create(json!({ "cron": "0 3 * * *", "prompt": prompt, "deliver_to": target(), "initiative": "interrupt", "urgent": urgent }))
             .await;
         assert_eq!(s["urgent"], urgent);
         ids.push(s["id"].as_str().unwrap().to_owned());
@@ -374,7 +374,7 @@ async fn runs_per_day_pauses_the_schedule_with_exactly_one_notice() {
     let _daemon = env.daemon();
     let s = env
         .create(
-            json!({ "cron": "* * * * *", "prompt": "Check the feed", "deliver_to": target(),
+            json!({ "cron": "* * * * *", "prompt": "Check the feed", "deliver_to": target(), "initiative": "interrupt",
             "quiet_hours": "none", "runs_per_day": 2 }),
         )
         .await;
@@ -443,7 +443,7 @@ async fn tokens_per_run_stops_a_run_as_failed() {
     let _daemon = env.daemon();
     let s = env
         .create(
-            json!({ "cron": "0 3 * * *", "prompt": "Dig through everything", "deliver_to": target(),
+            json!({ "cron": "0 3 * * *", "prompt": "Dig through everything", "deliver_to": target(), "initiative": "interrupt",
             "tokens_per_run": 100 }),
         )
         .await;
@@ -471,7 +471,7 @@ async fn usd_per_day_is_ignored_without_a_price_and_applies_with_one() {
     env.script(json!({ "turns": [{ "text": "Spent a little." }] }));
     let daemon = env.daemon();
     let s = env
-        .create(json!({ "cron": "* * * * *", "prompt": "Spend", "deliver_to": target() }))
+        .create(json!({ "cron": "* * * * *", "prompt": "Spend", "deliver_to": target(), "initiative": "interrupt" }))
         .await;
     let id = s["id"].as_str().unwrap().to_owned();
     let runs = "SELECT count(*) FROM runs WHERE trigger = 'cron' AND status = 'completed'";

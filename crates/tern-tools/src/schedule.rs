@@ -66,6 +66,9 @@ pub struct ScheduleLimits {
     /// The active connector whose hosts, secrets and tools the gate gets.
     #[serde(default, deserialize_with = "some")]
     pub gate_connector: Option<Option<String>>,
+    /// `silent`, `digest`, `notify`, `interrupt`, or `default`/`null`.
+    #[serde(default, deserialize_with = "some")]
+    pub initiative: Option<Option<String>>,
 }
 
 impl ScheduleLimits {
@@ -108,6 +111,19 @@ impl ScheduleLimits {
                 .filter(|v| !v.is_empty())
                 .map(str::to_owned)
         };
+        if let Some(i) = &self.initiative {
+            row.initiative = match i.as_deref().map(str::trim) {
+                None | Some("default") | Some("") => None,
+                Some(i) => Some(
+                    tern_core::initiative::Initiative::parse(i)
+                        .ok_or_else(|| {
+                            format!("initiative {i:?} must be silent, digest, notify, interrupt or default")
+                        })?
+                        .as_str()
+                        .to_owned(),
+                ),
+            };
+        }
         if let Some(g) = &self.gate {
             row.gate = blank(g);
         }
@@ -389,6 +405,7 @@ fn limit_properties() -> serde_json::Map<String, Value> {
     let props = json!({
         "quiet_hours": { "type": "string", "description": "local \"HH:MM-HH:MM\" when results wait until the window ends, \"none\", or \"default\" (the user's setting, normally 22:00-07:30). Only set it when the user asks." },
         "urgent": { "type": "boolean", "description": "deliver even during quiet hours. Only when the user says it's urgent." },
+        "initiative": { "type": ["string", "null"], "description": "how the result reaches the chat (it is always posted to the channel): \"interrupt\" sends it at once, for reminders and anything the user asked to receive at a time; \"notify\" sends it only when a quick check finds it worth interrupting for, else in the digest (monitoring); \"digest\" (the default) batches it into the next digest (08:30 and 17:30); \"silent\" never sends." },
         "runs_per_day": { "type": ["integer", "null"], "description": "cap; when reached the schedule pauses until tomorrow" },
         "usd_per_day": { "type": ["number", "null"], "description": "spend cap per day, in USD" },
         "tokens_per_run": { "type": ["integer", "null"], "description": "a run that uses more tokens is stopped" },
@@ -574,6 +591,9 @@ pub fn describe_limits(s: &ScheduleRow) -> String {
     }
     if let Some(q) = &s.quiet_hours {
         parts.push(format!("quiet hours {q}"));
+    }
+    if let Some(i) = &s.initiative {
+        parts.push(i.clone());
     }
     if s.urgent {
         parts.push("urgent".into());
@@ -1209,9 +1229,25 @@ mod tests {
                 .await
                 .is_error
         );
-        let r = update.call(&ctx, json!({"id": s.id, "gate": null})).await;
+        assert!(
+            update
+                .call(&ctx, json!({"id": s.id, "initiative": "loud"}))
+                .await
+                .is_error
+        );
+        let r = update
+            .call(&ctx, json!({"id": s.id, "initiative": "Notify"}))
+            .await;
+        assert!(!r.is_error && r.content.contains("notify"), "{}", r.content);
+        let r = update
+            .call(
+                &ctx,
+                json!({"id": s.id, "gate": null, "initiative": "default"}),
+            )
+            .await;
         assert!(!r.is_error, "{}", r.content);
-        assert_eq!(store.schedule(&s.id).unwrap().unwrap().gate, None);
+        let row = store.schedule(&s.id).unwrap().unwrap();
+        assert_eq!((row.gate, row.initiative), (None, None));
     }
 
     #[tokio::test]

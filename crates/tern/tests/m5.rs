@@ -255,7 +255,8 @@ async fn a_schedule_created_from_telegram_runs_and_delivers_there() {
     env.script(json!({ "conversations": [
         { "matches": "Every weekday at 8am", "turns": [
             { "tool_calls": [{ "name": "schedule_create", "input": {
-                "cron": "0 8 * * 1-5", "prompt": "Summarize my unread GitHub notifications" } }] },
+                "cron": "0 8 * * 1-5", "prompt": "Summarize my unread GitHub notifications",
+                "initiative": "interrupt" } }] },
             { "text": "Scheduled for weekdays at 8:00." }
         ]},
         { "matches": "Summarize my unread GitHub notifications", "turns": [

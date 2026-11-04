@@ -111,6 +111,10 @@ docker_pids = 512          # 0 for no limit
 # usd_per_day = 1.0             # needs the model's price (see `prices` below)
 # tokens_per_run = 200000       # a run that uses more is stopped and fails
 # max_events_per_poll = 20      # new watch events that each start a run; the rest share one run
+# initiative = "digest"         # how results reach the chat: silent | digest | notify | interrupt (a routine can set its own)
+# initiative_dial = "normal"    # every routine one level "quieter" or "louder", or "vacation" (nothing pushed)
+# digest_times = ["08:30", "17:30"]  # local times digest results are sent, as one message
+# gate_model = "openrouter:cheap-model"  # decides if a "notify" result is worth a push (default: the cheapest priced model)
 #
 # Home (and each Telegram chat) is one stream cut into sessions. A message
 # starts a new one, with a summary of the last carried over, after:

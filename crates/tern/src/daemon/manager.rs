@@ -688,12 +688,96 @@ impl Manager {
             })
             .flatten();
         match schedule {
-            Some(s) => self.hold_or_send(&s, &target, Some(&run.id), &text).await,
+            Some(s) => {
+                let failed = outcome.status == RunStatus::Failed;
+                self.deliver_routine(&s, &run, &target, &text, failed).await
+            }
             None => {
                 if let Err(e) = self.send_to(&target, Some(&run.id), &text).await {
                     tracing::warn!(target, error = %e, "delivery failed");
                 }
             }
+        }
+    }
+
+    /// Push a routine's result by its initiative (tooling spec §4.1): the
+    /// routine's own level or the default, moved by the global dial.
+    /// `silent` sends nothing, `digest` holds it for the next digest time,
+    /// `notify` asks the gate model and pushes only on yes (else digest),
+    /// `interrupt` pushes (quiet hours still hold it unless `urgent`). A
+    /// failed run isn't put to the gate model: `notify` pushes it.
+    async fn deliver_routine(
+        &self,
+        s: &tern_store::ScheduleRow,
+        run: &tern_store::RunRow,
+        target: &str,
+        text: &str,
+        failed: bool,
+    ) {
+        use tern_core::initiative::Initiative;
+        let cfg = self.rt.live().schedules;
+        let own = s
+            .initiative
+            .as_deref()
+            .and_then(Initiative::parse)
+            .unwrap_or(cfg.initiative);
+        let level = cfg.initiative_dial.apply(own);
+        match level {
+            Initiative::Silent => {
+                tracing::info!(schedule = %s.id, run = %run.id, "silent routine: posted, not pushed");
+            }
+            Initiative::Digest => self.hold_for_digest(s, target, &run.id, text),
+            Initiative::Notify if failed => {
+                self.hold_or_send(s, target, Some(&run.id), text).await;
+            }
+            Initiative::Notify => {
+                let model = run.model.as_deref().unwrap_or_default();
+                match crate::routines::ask_gate(&self.rt, &s.prompt, model, text).await {
+                    Ok(a) if a.interrupt => {
+                        tracing::info!(schedule = %s.id, headline = %a.headline, "gate model: interrupt");
+                        let text = if a.headline.is_empty() {
+                            text.to_owned()
+                        } else {
+                            format!("{}\n\n{text}", a.headline)
+                        };
+                        self.hold_or_send(s, target, Some(&run.id), &text).await;
+                    }
+                    Ok(_) => {
+                        tracing::info!(schedule = %s.id, "gate model: not now; into the digest");
+                        self.hold_for_digest(s, target, &run.id, text);
+                    }
+                    Err(e) => {
+                        tracing::warn!(schedule = %s.id, error = %e, "gate model failed; into the digest");
+                        self.hold_for_digest(s, target, &run.id, text);
+                    }
+                }
+            }
+            Initiative::Interrupt => self.hold_or_send(s, target, Some(&run.id), text).await,
+        }
+    }
+
+    /// Hold a routine's result until the next digest time (or the end of
+    /// quiet hours, if that time falls in them).
+    fn hold_for_digest(&self, s: &tern_store::ScheduleRow, target: &str, run_id: &str, text: &str) {
+        let cfg = self.rt.live().schedules;
+        let quiet = s
+            .quiet_hours
+            .as_deref()
+            .and_then(|q| q.parse::<tern_core::quiet::QuietHours>().ok())
+            .unwrap_or(cfg.quiet_hours);
+        let at = cfg.digest_times.next_after(chrono::Local::now());
+        let at = quiet.release_at(at).unwrap_or(at);
+        let label = super::scheduler::title(s);
+        match self.rt.store.hold_delivery_as(
+            target,
+            Some(run_id),
+            Some(&label),
+            text,
+            at.timestamp_millis(),
+            "digest",
+        ) {
+            Ok(()) => tracing::info!(schedule = %s.id, until = %at, "held for the digest"),
+            Err(e) => tracing::warn!(schedule = %s.id, error = %e, "could not hold for the digest"),
         }
     }
 

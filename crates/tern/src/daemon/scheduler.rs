@@ -423,12 +423,21 @@ async fn release_held(manager: &Manager) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One message for everything held for a target.
+/// One message for everything held for a target: a digest if any of it
+/// was held for one, else what quiet hours held.
 fn combine(items: &[&HeldDelivery]) -> String {
+    let digest = items.iter().any(|h| h.kind == "digest");
     if let [one] = items {
-        return one.text.clone();
+        return match (&one.label, digest) {
+            (Some(label), true) => format!("Digest · ▸ {label}\n{}", one.text.trim_end()),
+            _ => one.text.clone(),
+        };
     }
-    let mut out = format!("{} updates from quiet hours:", items.len());
+    let mut out = if digest {
+        format!("Digest · {} updates:", items.len())
+    } else {
+        format!("{} updates from quiet hours:", items.len())
+    };
     for h in items {
         out.push_str("\n\n");
         if let Some(label) = &h.label {
@@ -462,6 +471,13 @@ mod tests {
         assert_eq!(
             combine(&[&a, &b]),
             "2 updates from quiet hours:\n\n▸ Inbox\n2 new\n\ndone"
+        );
+        let mut d = held(3, Some("Build"), "green");
+        d.kind = "digest".into();
+        assert_eq!(combine(&[&d]), "Digest · ▸ Build\ngreen");
+        assert_eq!(
+            combine(&[&a, &d]),
+            "Digest · 2 updates:\n\n▸ Inbox\n2 new\n\n▸ Build\ngreen"
         );
     }
 

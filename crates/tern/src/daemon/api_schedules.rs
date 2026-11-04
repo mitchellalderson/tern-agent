@@ -4,7 +4,7 @@
 //! | Method | Path | |
 //! |---|---|---|
 //! | GET | `/v1/schedules[?agent=]` | all schedules (or one agent's), with their last run's status |
-//! | POST | `/v1/schedules` | create `{cron | at | watch (+ every, backfill, include_self), prompt, gate?, gate_connector?, agent?, deliver_to?, channel?, autonomy?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
+//! | POST | `/v1/schedules` | create `{cron | at | watch (+ every, backfill, include_self), prompt, gate?, gate_connector?, initiative?, agent?, deliver_to?, channel?, autonomy?, quiet_hours?, urgent?, runs_per_day?, usd_per_day?, tokens_per_run?}` |
 //! | POST | `/v1/schedules/preview` | `{cron}` → normalized form and next 3 runs |
 //! | PATCH | `/v1/schedules/{id}` | change any of those, `enabled`, or `resume: true` (lift a budget pause); `null` returns a cap or `quiet_hours` to the default |
 //!
@@ -114,6 +114,9 @@ pub struct Schedule {
     pub gate: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_connector: Option<String>,
+    /// `silent`, `digest`, `notify` or `interrupt`; absent = the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiative: Option<String>,
 }
 
 fn cron() -> String {
@@ -174,6 +177,7 @@ fn view(m: &Shared, s: ScheduleRow) -> Schedule {
         last_check_at: s.last_check_at,
         gate: s.gate,
         gate_connector: s.gate_connector,
+        initiative: s.initiative,
     }
 }
 

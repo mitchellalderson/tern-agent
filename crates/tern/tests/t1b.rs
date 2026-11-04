@@ -450,3 +450,113 @@ async fn a_gate_skips_runs_without_a_model_call() {
     .await;
     assert_eq!(env.schedule(id).await["last_check"], "gate: passed");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn initiative_levels_decide_the_push_and_the_dial_quiets_them() {
+    let tg = FakeTelegram::start();
+    let env = Env::new(Some(&tg), "[schedules]\nquiet_hours = \"none\"\n");
+    env.script(json!({ "conversations": [
+        // The gate model's question names the routine's prompt.
+        { "matches": "The task:\nCheck the build", "turns": [{ "text": "{\"interrupt\": true, \"headline\": \"Build is red\"}" }] },
+        { "matches": "The task:\nCheck the news", "turns": [{ "text": "{\"interrupt\": false, \"headline\": \"Nothing big\"}" }] },
+        { "matches": "Silent check", "turns": [{ "text": "Silent result." }] },
+        { "matches": "Digest one", "turns": [{ "text": "Digest result one." }] },
+        { "matches": "Check the build", "turns": [{ "text": "The build failed on main." }] },
+        { "matches": "Check the news", "turns": [{ "text": "Some news." }] },
+        { "matches": "Ping me", "turns": [{ "text": "Ping result." }] }
+    ]}));
+    let daemon = env.daemon();
+    let mk = |prompt: &str, initiative: Option<&str>| {
+        let mut b = json!({ "cron": "0 3 * * *", "prompt": prompt, "deliver_to": target() });
+        if let Some(i) = initiative {
+            b["initiative"] = i.into();
+        }
+        b
+    };
+    let bad = env
+        .api()
+        .post("http://tern/v1/schedules")
+        .json(&mk("x", Some("loud")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+    let silent = env.create(mk("Silent check", Some("silent"))).await;
+    let digest = env.create(mk("Digest one", None)).await;
+    assert!(digest["initiative"].is_null(), "the default: digest");
+    let build = env.create(mk("Check the build", Some("notify"))).await;
+    let news = env.create(mk("Check the news", Some("notify"))).await;
+    let ping = env.create(mk("Ping me", Some("interrupt"))).await;
+    let done = "SELECT count(*) FROM runs WHERE trigger = 'cron' AND status = 'completed'";
+    for (n, s) in [&silent, &digest, &build, &news, &ping]
+        .into_iter()
+        .enumerate()
+    {
+        env.due(s["id"].as_str().unwrap());
+        env.wait_count(done, n as i64 + 1, 15).await;
+    }
+    // interrupt: at once. notify + yes: at once, with the headline.
+    tg.wait_for("Ping result.", 15).await;
+    let red = tg.wait_for("The build failed on main.", 15).await;
+    assert!(red.starts_with("Build is red\n\n"), "{red}");
+    // digest, and notify + no: held for the next digest time.
+    env.wait_count(
+        "SELECT count(*) FROM held_deliveries WHERE kind = 'digest'",
+        2,
+        15,
+    )
+    .await;
+    ticks().await;
+    assert_eq!(tg.texts().await.len(), 2, "{:?}", tg.texts().await);
+    // silent: posted to its channel, never pushed.
+    assert_eq!(
+        env.query("SELECT count(*) FROM posts WHERE text LIKE '%Silent result.%'"),
+        1
+    );
+    let release = env.query("SELECT min(release_at) FROM held_deliveries");
+    assert!(release > tern_store::now_ms(), "held until a digest time");
+    // Digest time: one message with both.
+    env.db()
+        .execute(
+            "UPDATE held_deliveries SET release_at = ?1",
+            [tern_store::now_ms() - 1000],
+        )
+        .unwrap();
+    let digest_msg = tg.wait_for("Digest · 2 updates", 15).await;
+    assert!(
+        digest_msg.contains("▸ Digest one\nDigest result one.")
+            && digest_msg.contains("▸ Check the news\nSome news."),
+        "{digest_msg}"
+    );
+    assert_eq!(tg.count("Silent result.").await, 0);
+
+    // Vacation: even an interrupt routine only posts.
+    let res = env
+        .api()
+        .put("http://tern/v1/initiative")
+        .json(&json!({ "dial": "vacation" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.text().await.unwrap());
+    let status: Value = env
+        .api()
+        .get("http://tern/v1/status")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["initiative"], "vacation");
+    let config = std::fs::read_to_string(env.tern_home.join("config.toml")).unwrap();
+    assert!(
+        config.contains("initiative_dial = \"vacation\""),
+        "{config}"
+    );
+    env.due(ping["id"].as_str().unwrap());
+    env.wait_count(done, 6, 15).await;
+    ticks().await;
+    assert_eq!(tg.count("Ping result.").await, 1, "not pushed on vacation");
+    drop(daemon);
+}

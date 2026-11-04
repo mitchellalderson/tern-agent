@@ -9,6 +9,7 @@ pub mod config;
 pub mod cron;
 pub mod events;
 pub mod home;
+pub mod initiative;
 pub mod journal;
 pub mod mcp;
 pub mod memory;

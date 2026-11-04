@@ -5,6 +5,10 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use futures::StreamExt;
+use tern_core::config::ModelRef;
+use tern_core::initiative::{GATE_SYSTEM, GateAnswer, gate_prompt, parse_gate_answer};
+use tern_core::types::{ChatRequest, Message, StreamEvent};
 use tern_store::Store;
 use tern_tools::schedule::{RoutineChecks, WatchSummary};
 
@@ -55,4 +59,69 @@ impl RoutineChecks for LuaChecks {
 /// A Luau host for routines: the same store and secrets as connectors.
 pub fn lua_host(store: &Store, secrets: &tern_core::Secrets) -> anyhow::Result<tern_lua::Host> {
     Ok(tern_lua::Host::new(store.clone(), secrets.clone())?)
+}
+
+/// The model for the notification gate (tooling spec §4.1, §8.3):
+/// `[schedules] gate_model` if set; else the cheapest configured model with
+/// a known price (input plus output per million tokens), among every model
+/// in a model setting or chain; else the routine run's own model.
+pub fn gate_model(rt: &crate::runtime::Runtime, run_model: &str) -> anyhow::Result<ModelRef> {
+    let config = rt.live();
+    if let Some(m) = &config.schedules.gate_model {
+        return Ok(m.primary().parse()?);
+    }
+    let mut candidates: Vec<String> = config
+        .model_chains()
+        .into_iter()
+        .flat_map(|(_, c)| c.entries().to_vec())
+        .collect();
+    candidates.push(run_model.to_owned());
+    let cheapest = candidates
+        .iter()
+        .filter(|m| {
+            m.parse::<ModelRef>()
+                .is_ok_and(|r| rt.mock || config.providers.contains_key(&r.provider))
+        })
+        .filter_map(|m| rt.price_of(m).map(|p| (p.input + p.output, m)))
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, m)| m.clone());
+    Ok(cheapest.as_deref().unwrap_or(run_model).parse()?)
+}
+
+/// Ask the gate model whether a `notify` routine's result is worth a push
+/// now: one short call, no tools, answered as `{"interrupt", "headline"}`.
+pub async fn ask_gate(
+    rt: &crate::runtime::Runtime,
+    purpose: &str,
+    run_model: &str,
+    result: &str,
+) -> anyhow::Result<GateAnswer> {
+    let model = gate_model(rt, run_model)?;
+    let provider = rt.agent.provider(&model)?;
+    let req = ChatRequest {
+        model: model.model.clone(),
+        system: GATE_SYSTEM.into(),
+        messages: vec![Message::user_text(gate_prompt(purpose, result))],
+        tools: Vec::new(),
+        max_tokens: 200,
+        forbid_tool_calls: false,
+    };
+    let call = async {
+        let mut stream = provider
+            .stream(req, tokio_util::sync::CancellationToken::new())
+            .await?;
+        let mut text = String::new();
+        while let Some(ev) = stream.next().await {
+            if let StreamEvent::TextDelta(t) = ev? {
+                text.push_str(&t);
+            }
+        }
+        anyhow::Ok(text)
+    };
+    let text = tokio::time::timeout(std::time::Duration::from_secs(60), call)
+        .await
+        .map_err(|_| anyhow::anyhow!("the gate model took over a minute"))??;
+    tracing::debug!(model = %model, answer = %text, "gate model answered");
+    parse_gate_answer(&text)
+        .ok_or_else(|| anyhow::anyhow!("the gate model answered {text:?}, not the JSON asked for"))
 }
