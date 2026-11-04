@@ -1,0 +1,31 @@
+{
+  "bundles": [
+    {
+      "connectors": [
+        "gmail",
+        "notion"
+      ],
+      "installed_at": "2026-11-04T13:30:27-07:00",
+      "key": "RWTKb9OToTJc3Pw8sMuZvsgVLBhSwGGz3FwFKNGKAhP0dmrTVHcbnUJC",
+      "key_trusted": false,
+      "name": "notion-recipe",
+      "routines": [
+        {
+          "id": "sch_3f8fcf31d15d",
+          "name": "morning"
+        },
+        {
+          "id": "sch_652dddd6dee8",
+          "name": "on-change"
+        }
+      ],
+      "sha256": "73c54c23c0446f5fd4e7a4c5b4aa558a53936103585495802ea48cab01d11ee4",
+      "signature": "signed by DC5C32A193D36FCA",
+      "skills": [
+        "notion-brief"
+      ],
+      "source": "/tmp/v1.tar.zst",
+      "version": "1.0.0"
+    }
+  ]
+}

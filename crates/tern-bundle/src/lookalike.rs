@@ -101,11 +101,11 @@ pub fn check(connector: &str, entries: &[String]) -> Vec<String> {
     let name = connector.to_ascii_lowercase();
     if let Some((brand, sites)) = KNOWN.iter().find(|(b, _)| name.contains(b)) {
         for host in &hosts {
-            let Some(site) = registrable(host) else {
+            if registrable(host).is_none() {
                 continue;
-            };
+            }
             let already = out.iter().any(|w| w.starts_with(host.as_str()));
-            if !already && !sites.contains(&site.as_str()) {
+            if !already && !on(host, sites) {
                 out.push(format!(
                     "{host} isn't {brand}'s site ({}), though the connector is named {connector}: check why it needs it",
                     sites.join(", ")
@@ -138,9 +138,19 @@ pub fn check(connector: &str, entries: &[String]) -> Vec<String> {
     out
 }
 
+/// Whether `host` is on one of `sites` (or a subdomain). By suffix, not
+/// registrable domain: the public suffix list's private section makes
+/// `googleapis.com` and `github.io` suffixes, so `gmail.googleapis.com` is
+/// its own "site" there.
+fn on(host: &str, sites: &[&str]) -> bool {
+    sites
+        .iter()
+        .any(|s| host == *s || host.ends_with(&format!(".{s}")))
+}
+
 /// Whether `host` (on site `site`) looks like a known service it isn't.
 fn imitates(host: &str, site: &str) -> Option<String> {
-    if KNOWN.iter().any(|(_, sites)| sites.contains(&site)) {
+    if KNOWN.iter().any(|(_, sites)| on(host, sites)) {
         return None;
     }
     let site_label = label(site);
@@ -209,6 +219,8 @@ mod tests {
     fn honest_hosts_pass() {
         assert!(check("notion", &v(&["api.notion.com", "*.notion.so/v1/*"])).is_empty());
         assert!(check("github", &v(&["api.github.com/repos/*"])).is_empty());
+        assert!(check("gmail", &v(&["gmail.googleapis.com"])).is_empty());
+        assert!(check("google_calendar", &v(&["www.googleapis.com/calendar/v3/*"])).is_empty());
         assert!(check("weather", &v(&["api.open-meteo.com"])).is_empty());
     }
 

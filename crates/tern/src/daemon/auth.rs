@@ -64,6 +64,8 @@ pub const FEATURES: &[&str] = &[
     // `/v1/connections`, `/v1/auth-prompts` and their events (tooling spec
     // §6.7–6.8).
     "connections",
+    // `/v1/bundles`: preview, install, remove (tooling spec §6.5).
+    "bundles",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";
@@ -125,6 +127,8 @@ const OWNER_ONLY: &[&str] = &[
     "/v1/channels/move",
     // Webhook secrets let the internet start (tainted) runs.
     "/v1/webhooks",
+    // Installing code and routines, and fetching URLs from this machine.
+    "/v1/bundles",
 ];
 
 /// Paths a `chat` device may change. Any other non-GET route is owner-only,

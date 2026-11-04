@@ -377,7 +377,13 @@ fn connector_plan(
         name: name.to_owned(),
         description: s.description.clone(),
         hosts: c.http.clone(),
-        auth: c.auth.iter().map(tern_lua::Auth::describe).collect(),
+        // OAuth entries are the `oauth` line's sign-in, not a secret sent.
+        auth: c
+            .auth
+            .iter()
+            .filter(|a| !a.secrets().iter().all(|s| s.starts_with("oauth:")))
+            .map(tern_lua::Auth::describe)
+            .collect(),
         auth_secrets: c
             .auth_secrets()
             .into_iter()
