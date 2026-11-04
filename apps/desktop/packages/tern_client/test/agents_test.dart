@@ -93,4 +93,51 @@ void main() {
     });
     expect(old.isHome, isTrue);
   });
+
+  test('impacts of deleting an agent or a channel, and deleted agents', () {
+    final a = AgentImpact.fromJson({
+      'id': 'tern:research',
+      'slug': 'research',
+      'name': 'Research',
+      'routines': [
+        {'id': 'r1', 'label': 'morning brief'},
+      ],
+      'led_channels': [
+        {'id': 'c1', 'label': 'launch'},
+      ],
+      'member_channels': <Object>[],
+      'conversations': 4,
+      'memories': 2,
+      'running_runs': 1,
+      'pending_outbox': 0,
+      'blockers': ['1 run(s) of @research are in progress'],
+    });
+    expect(a.routines.single.label, 'morning brief');
+    expect(a.ledChannels.single.label, 'launch');
+    expect((a.conversations, a.memories, a.runningRuns), (4, 2, 1));
+    expect(a.blockers, hasLength(1));
+    final c = ChannelImpact.fromJson({
+      'id': 'c1',
+      'slug': 'launch',
+      'title': 'Launch',
+      'posts': 12,
+      'conversations': 3,
+      'routines': <Object>[],
+      'members': 1,
+      'running_runs': 0,
+      'blockers': <String>[],
+    });
+    expect((c.posts, c.conversations), (12, 3));
+    expect(c.blockers, isEmpty);
+    final gone = Agent.fromJson({
+      'id': 'tern:old',
+      'slug': '~tern:old',
+      'name': 'Old',
+      'memory': 'private',
+      'archived': true,
+      'deleted': true,
+      'updated_at': 0,
+    });
+    expect((gone.deleted, gone.archived), (true, true));
+  });
 }

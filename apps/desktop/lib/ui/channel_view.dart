@@ -10,6 +10,7 @@ import 'channel_items.dart' show SuggestionActions;
 import 'conversation.dart';
 import 'routines.dart';
 import 'items.dart';
+import 'manage.dart';
 import 'widgets.dart';
 
 /// A topic channel's timeline (docs/channels-design.md §5.2): its posts,
@@ -822,6 +823,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
       ? null
       : widget.editing!.lead;
   late bool _wakes = widget.editing?.agents?.agentWakes ?? false;
+  late final _slugCtl = TextEditingController(text: widget.editing?.slug);
   String? _error;
   var _busy = false;
 
@@ -829,16 +831,20 @@ class _ChannelDialogState extends State<ChannelDialog> {
   void initState() {
     super.initState();
     _title.addListener(() => setState(() {}));
+    _slugCtl.addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
     _title.dispose();
+    _slugCtl.dispose();
     _instructions.dispose();
     super.dispose();
   }
 
-  String get _slug => slugFor(_title.text);
+  String get _slug => widget.editing == null
+      ? slugFor(_title.text)
+      : _slugCtl.text.trim().replaceFirst('#', '');
 
   Future<void> _save() async {
     setState(() {
@@ -856,6 +862,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
           )
         : await widget.store.updateChannel(
             editing.id,
+            slug: _slug == editing.slug ? null : _slug,
             title: _title.text.trim(),
             instructions: _instructions.text.trim(),
             lead: _lead == editing.lead ? null : _lead,
@@ -884,7 +891,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 460),
+        constraints: const BoxConstraints(maxWidth: 520),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(22, 20, 22, 16),
           child: Column(
@@ -921,6 +928,25 @@ class _ChannelDialogState extends State<ChannelDialog> {
                       : null,
                 ),
               ),
+              if (editing != null && editing.kind == 'topic') ...[
+                const SizedBox(height: 14),
+                Text('#NAME', style: labels),
+                const SizedBox(height: 6),
+                TextField(
+                  key: const Key('channel-slug'),
+                  controller: _slugCtl,
+                  decoration: InputDecoration(
+                    prefixText: '#',
+                    isDense: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    helperText:
+                        'Lowercase letters, digits and dashes. Its posts and '
+                        'routines follow the rename.',
+                  ),
+                ),
+              ],
               const SizedBox(height: 14),
               Text('INSTRUCTIONS', style: labels),
               const SizedBox(height: 6),
@@ -1010,6 +1036,27 @@ class _ChannelDialogState extends State<ChannelDialog> {
                               await widget.store.archiveChannel(editing.id);
                             },
                       child: Text('Archive', style: TextStyle(color: c.error)),
+                    ),
+                  if (editing != null && editing.kind == 'topic')
+                    TextButton(
+                      key: const Key('delete-channel'),
+                      onPressed: _busy
+                          ? null
+                          : () async {
+                              final nav = Navigator.of(context);
+                              await showDeleteChannel(
+                                context,
+                                widget.store,
+                                editing,
+                              );
+                              if (mounted &&
+                                  !widget.store.channels.any(
+                                    (x) => x.id == editing.id,
+                                  )) {
+                                nav.pop();
+                              }
+                            },
+                      child: Text('Delete…', style: TextStyle(color: c.error)),
                     ),
                   const Spacer(),
                   TextButton(

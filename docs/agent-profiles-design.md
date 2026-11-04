@@ -344,7 +344,8 @@ the agent scope: a private agent's memory is personal to the owner. Nothing in t
 |---|---|---|
 | GET | `/v1/agents` | `[{id, slug, name, avatar, model, subagent_model, tools, memory, delegates, main_channel_id, last_activity, needs_you, active_runs}]` |
 | POST | `/v1/agents` | `{name, slug?, avatar?, persona?, model?, tools?, memory?, template?}`; creates the DM channel |
-| PATCH | `/v1/agents/{id}` | any field; `archived: true` archives |
+| PATCH | `/v1/agents/{id}` | any field; `archived: true` archives, `false` restores |
+| DELETE / GET | `/v1/agents/{id}?confirm=true[&reassign_to=\|&delete_routines=true]` / `/v1/agents/{id}/impact` | delete an agent (a tombstone: its history stays readable under its name; never the default agent), and what that touches. DECISIONS.md "Editing and deleting" |
 | GET / PUT | `/v1/agents/{id}/persona` | the Markdown; GET also returns the engine-owned sections as `system_sections` for the read-only preview |
 | GET / POST / DELETE | `/v1/channels/{id}/agents[/{agent}]` | members; PATCH `/v1/channels/{id}` gains `lead`, `agent_wakes`, `max_hops`, `wakes_per_hour` |
 | GET | `/v1/schedules?agent=` | an agent's jobs; create and update take `agent` |

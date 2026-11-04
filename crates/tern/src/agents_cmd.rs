@@ -118,6 +118,13 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
             }
         }
         AgentsCommand::Edit { agent } => edit(&rt, &agent)?,
+        AgentsCommand::Rename { agent, name, slug } => rename(&rt, &agent, name, slug)?,
+        AgentsCommand::Delete {
+            agent,
+            reassign_to,
+            delete_routines,
+            yes,
+        } => return delete(&rt, &agent, reassign_to, delete_routines, yes),
         AgentsCommand::Archive { agent, undo } => {
             let a = find(&rt, &agent)?;
             if a.is_default() {
@@ -237,4 +244,52 @@ fn edit(rt: &Runtime, agent: &str) -> anyhow::Result<()> {
         a.name
     );
     Ok(())
+}
+
+/// `tern agents rename <agent> [name] [--slug s]`.
+fn rename(
+    rt: &Runtime,
+    agent: &str,
+    name: Option<String>,
+    slug: Option<String>,
+) -> anyhow::Result<()> {
+    let a = find(rt, agent)?;
+    let a = rt.rename_agent(&a, name.as_deref(), slug.as_deref())?;
+    println!("@{} is now {} (id {} is unchanged)", a.slug, a.name, a.id);
+    Ok(())
+}
+
+/// `tern agents delete`: show what it touches, ask, then delete.
+fn delete(
+    rt: &Runtime,
+    agent: &str,
+    reassign_to: Option<String>,
+    delete_routines: bool,
+    yes: bool,
+) -> anyhow::Result<ExitCode> {
+    let a = find(rt, agent)?;
+    let impact = rt.agent_impact(&a)?;
+    println!("{}", impact.describe());
+    if !impact.blockers.is_empty() {
+        return Ok(ExitCode::FAILURE);
+    }
+    if !yes && !crate::manage::confirm_cli(&a.slug)? {
+        println!("Nothing was deleted.");
+        return Ok(ExitCode::FAILURE);
+    }
+    rt.delete_agent(
+        &a,
+        &crate::manage::DeleteAgent {
+            reassign_to,
+            delete_routines,
+        },
+    )?;
+    println!("deleted @{}; its history stays readable", a.slug);
+    if let Some(secret) = impact.telegram_bot {
+        println!(
+            "its Telegram bot is dropped (the secret {secret} is yours to keep or remove); a \
+             running daemon stops polling it at its next restart"
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }

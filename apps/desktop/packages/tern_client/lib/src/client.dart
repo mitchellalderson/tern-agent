@@ -318,6 +318,32 @@ class TernClient {
       Agent.fromJson(a as Json),
   ];
 
+  /// Every agent including archived and deleted ones (marked), so history
+  /// can still name what a deleted agent wrote.
+  Future<List<Agent>> agentsIncludingDeleted() async => [
+    for (final a in await _json('GET', '/v1/agents?deleted=1') as List)
+      Agent.fromJson(a as Json),
+  ];
+
+  /// What deleting an agent touches, and what stops it.
+  Future<AgentImpact> agentImpact(String id) async => AgentImpact.fromJson(
+    await _json('GET', '/v1/agents/${_seg(id)}/impact') as Json,
+  );
+
+  /// Delete an agent for good (its history stays). `reassignTo` hands its
+  /// routines and led channels to another agent; `deleteRoutines` deletes
+  /// them. Throws [TernException] (409) when it can't be done.
+  Future<void> deleteAgent(
+    String id, {
+    String? reassignTo,
+    bool deleteRoutines = false,
+  }) => _json(
+    'DELETE',
+    '/v1/agents/${_seg(id)}?confirm=true'
+    '${reassignTo == null ? '' : '&reassign_to=${Uri.encodeQueryComponent(reassignTo)}'}'
+    '${deleteRoutines ? '&delete_routines=true' : ''}',
+  );
+
   Future<List<AgentTemplate>> agentTemplates() async => [
     for (final t in await _json('GET', '/v1/agents/templates') as List)
       AgentTemplate.fromJson(t as Json),
@@ -409,9 +435,22 @@ class TernClient {
     }),
   );
 
-  /// `clearInstructions` removes them; `instructions` sets them.
+  /// What deleting a topic channel touches, and what stops it.
+  Future<ChannelImpact> channelImpact(String id) async =>
+      ChannelImpact.fromJson(
+        await _json('GET', '/v1/channels/${_seg(id)}/impact') as Json,
+      );
+
+  /// Delete a topic channel for good: its posts go, its conversations stay
+  /// in History. Throws [TernException] (409) when it can't be done.
+  Future<void> deleteChannel(String id) =>
+      _json('DELETE', '/v1/channels/${_seg(id)}?confirm=true');
+
+  /// `clearInstructions` removes them; `instructions` sets them; `slug`
+  /// renames a topic channel's #name.
   Future<Channel> updateChannel(
     String id, {
+    String? slug,
     String? title,
     String? instructions,
     bool clearInstructions = false,
@@ -422,6 +461,7 @@ class TernClient {
     int? wakesPerHour,
   }) async => Channel.fromJson(
     await _json('PATCH', '/v1/channels/${_seg(id)}', {
+      'slug': ?slug,
       'title': ?title,
       if (clearInstructions)
         'instructions': null

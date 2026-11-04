@@ -398,3 +398,99 @@ async fn an_agent_exports_and_installs_elsewhere_without_its_private_settings() 
     assert_eq!(got.autonomy.as_deref(), Some("supervised"));
     assert_eq!(got.model, None);
 }
+
+#[tokio::test]
+async fn deleting_a_bundles_agent_leaves_no_dangling_record_and_installs_again() {
+    let e = env();
+    let i = Installer::new(&e.home);
+    let src = write(
+        e._tmp.path(),
+        "a.tar.zst",
+        assemble(header("1.0.0"), files(AGENT), None).unwrap(),
+    );
+    let p = prepare(&e, &i, &src).await;
+    i.install(&p, &e.store, &InstallOptions::default()).unwrap();
+    assert_eq!(
+        i.installed("researcher-kit").unwrap().unwrap().agents.len(),
+        1
+    );
+
+    // The user deletes the agent (routines with it): the bundle forgets it.
+    e.store
+        .delete_agent("tern:researcher", &tern_store::RoutineFate::Delete)
+        .unwrap();
+    let touched = tern_bundle::forget_agent(&e.home, "tern:researcher").unwrap();
+    assert_eq!(touched, ["researcher-kit"]);
+    assert!(
+        i.installed("researcher-kit")
+            .unwrap()
+            .unwrap()
+            .agents
+            .is_empty()
+    );
+    assert!(
+        tern_bundle::forget_agent(&e.home, "tern:researcher")
+            .unwrap()
+            .is_empty()
+    );
+
+    // Updating the bundle makes the agent again, with a fresh id (the old
+    // one still names the deleted agent's history).
+    let src2 = write(
+        e._tmp.path(),
+        "b.tar.zst",
+        assemble(header("1.1.0"), files(AGENT), None).unwrap(),
+    );
+    let p2 = prepare(&e, &i, &src2).await;
+    assert!(p2.plan.conflicts().is_empty());
+    i.install(&p2, &e.store, &InstallOptions::default())
+        .unwrap();
+    let again = e.store.agent("researcher").unwrap().unwrap();
+    assert_eq!(again.id, "tern:researcher-2");
+    assert_eq!(
+        i.installed("researcher-kit").unwrap().unwrap().agents[0].id,
+        "tern:researcher-2"
+    );
+
+    // Removing the bundle archives only the live agent.
+    let out = i.remove("researcher-kit", &e.store).unwrap();
+    assert!(
+        out.lines
+            .iter()
+            .any(|l| l.contains("@researcher: archived")),
+        "{out:?}"
+    );
+}
+
+#[tokio::test]
+async fn removing_a_bundle_whose_agent_was_deleted_says_it_is_gone() {
+    let e = env();
+    let i = Installer::new(&e.home);
+    let src = write(
+        e._tmp.path(),
+        "a.tar.zst",
+        assemble(header("1.0.0"), files(AGENT), None).unwrap(),
+    );
+    let p = prepare(&e, &i, &src).await;
+    i.install(&p, &e.store, &InstallOptions::default()).unwrap();
+    // Deleted without the lockfile being told (the CLI with the home
+    // read-only, say): remove still copes.
+    e.store
+        .delete_agent("tern:researcher", &tern_store::RoutineFate::Delete)
+        .unwrap();
+    let out = i.remove("researcher-kit", &e.store).unwrap();
+    assert!(
+        out.lines
+            .iter()
+            .any(|l| l.contains("@researcher: already gone")),
+        "{out:?}"
+    );
+    assert!(
+        e.store
+            .agent_or_deleted("tern:researcher")
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some()
+    );
+}

@@ -79,6 +79,22 @@ pub struct ChannelInfo {
     pub active_runs: usize,
 }
 
+/// What `/agents` and `/channel` can rename and delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Managed {
+    Agent,
+    Channel,
+}
+
+/// What to do with a deleted agent's routines.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeleteChoice {
+    /// Hand its routines (and led channels) to this agent.
+    pub reassign_to: Option<String>,
+    /// Delete its routines instead.
+    pub delete_routines: bool,
+}
+
 /// A post, as the TUI prints it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostLine {
@@ -285,6 +301,26 @@ pub trait Backend: Send + Sync + 'static {
     /// Create topic channel `slug`.
     fn create_channel(&self, _slug: &str, _title: Option<&str>) -> BackendResult<ChannelInfo> {
         Err(NO_CHANNELS.into())
+    }
+    /// Rename agent or topic channel `id`: a new @name / #name (`slug`)
+    /// and/or display name (`title`). What changed, in words.
+    fn rename(
+        &self,
+        _what: Managed,
+        _id: &str,
+        _slug: Option<&str>,
+        _title: Option<&str>,
+    ) -> BackendResult<String> {
+        Err("this backend can't rename".into())
+    }
+    /// What deleting `id` would touch, in words; an error when it can't
+    /// be deleted now (and why).
+    fn delete_preview(&self, _what: Managed, _id: &str) -> BackendResult<String> {
+        Err("this backend can't delete".into())
+    }
+    /// Delete `id` (the user confirmed). What happened, in words.
+    fn delete(&self, _what: Managed, _id: &str, _choice: &DeleteChoice) -> BackendResult<String> {
+        Err("this backend can't delete".into())
     }
     /// Post `text` in topic channel `id`: the lead (or whoever it
     /// @mentions) answers; the started run is the first's.

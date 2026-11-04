@@ -6,6 +6,9 @@ mod connections_repo;
 mod daemon_repo;
 mod devices_repo;
 mod ledger_repo;
+mod manage_repo;
+#[cfg(test)]
+mod manage_tests;
 mod members_repo;
 mod migrations;
 mod outbox_repo;
@@ -25,6 +28,7 @@ pub use ledger_repo::{
     ACTOR_OWNER, ACTOR_TERN, GENESIS, LedgerBreak, LedgerCheck, LedgerEntry, LedgerFilter,
     LedgerRow, entry_hash,
 };
+pub use manage_repo::{AgentUse, ChannelUse, RoutineFate};
 pub use members_repo::{ChannelWakes, Member, mention_slugs};
 pub use outbox_repo::{NewOutbox, OutboxRow};
 pub use skill_offers_repo::SkillOfferRow;
@@ -55,6 +59,9 @@ pub enum StoreError {
     TooNew { found: u32, supported: u32 },
     #[error("database connection lock poisoned")]
     Poisoned,
+    /// A change the store refuses (deleting the default agent, say).
+    #[error("{0}")]
+    Invalid(String),
 }
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;

@@ -5,7 +5,9 @@
 //! |---|---|---|
 //! | GET | `/v1/channels[?archived=1]` | `[Channel]`: Home first, with `last_post_id`, `needs_you`, `active_runs` |
 //! | POST | `/v1/channels` | create `{slug, title?, kind?: "topic", instructions?}` |
-//! | PATCH | `/v1/channels/{id}` | `{title?, instructions?, archived?, lead?, agent_wakes?, max_hops?, wakes_per_hour?, let_agents_decide?}` (`instructions: null` clears them; the last five: topic channels) |
+//! | DELETE | `/v1/channels/{id}?confirm=true` | delete a topic channel: its posts go, its conversations stay in History (under Home), routines posting there post to their agent's DM; refused (409) for Home and DMs and while a run is in progress there |
+//! | GET | `/v1/channels/{id}/impact` | what deleting it touches: `{posts, conversations, routines, members, running_runs, blockers}` |
+//! | PATCH | `/v1/channels/{id}` | `{slug?, title?, instructions?, archived?, lead?, agent_wakes?, max_hops?, wakes_per_hour?, let_agents_decide?}` (`instructions: null` clears them; the last five: topic channels) |
 //! | GET | `/v1/channels/{id}/agents` | a topic channel's `{members: [{agent_id, lead?, added_at}], agent_wakes, max_hops, wakes_per_hour}` (also on `Channel` as `agents`) |
 //! | POST | `/v1/channels/{id}/agents` | add `{agent}` (id or slug), with a "Name joined" note |
 //! | DELETE | `/v1/channels/{id}/agents/{agent}` | take an agent out (not the lead or `tern`) |
@@ -24,12 +26,17 @@ use tern_core::channels::{Post, check_slug};
 use tern_store::ChannelRow;
 
 use super::api::{ApiError, ApiResult, Shared, bad, internal, not_found};
+use super::api_agents::manage_err;
 use super::channels::{Sent, view};
 
 pub fn routes() -> Router<Shared> {
     Router::new()
         .route("/v1/channels", get(list).post(create))
-        .route("/v1/channels/{id}", axum::routing::patch(update))
+        .route(
+            "/v1/channels/{id}",
+            axum::routing::patch(update).delete(delete),
+        )
+        .route("/v1/channels/{id}/impact", get(impact))
         .route("/v1/channels/{id}/posts", get(posts).post(send))
         .route("/v1/channels/{id}/stream", get(stream))
         .route("/v1/channels/{id}/agents", get(members).post(add_member))
@@ -240,6 +247,8 @@ fn double_option<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<String
 
 #[derive(Deserialize)]
 struct UpdateBody {
+    /// A topic channel's new `#name`.
+    slug: Option<String>,
     title: Option<String>,
     #[serde(default, deserialize_with = "double_option")]
     instructions: Option<Option<String>>,
@@ -292,6 +301,9 @@ async fn update(
     if b.wakes_per_hour.is_some_and(|n| !(0..=120).contains(&n)) {
         return Err(bad("wakes_per_hour is 0 to 120"));
     }
+    if let Some(slug) = b.slug.as_deref() {
+        m.rt.rename_channel_slug(&c, slug).map_err(manage_err)?;
+    }
     m.rt.store
         .update_channel(&c.id, title, instructions, b.archived)
         .map_err(internal)?;
@@ -310,6 +322,40 @@ async fn update(
     }
     m.channels_changed();
     Ok(Json(channel_view(&m, find(&m, &c.id)?)))
+}
+
+async fn impact(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<crate::manage::ChannelImpact> {
+    let c = find(&m, &id)?;
+    m.rt.channel_impact(&c).map(Json).map_err(manage_err)
+}
+
+#[derive(Deserialize)]
+struct DeleteQuery {
+    confirm: Option<String>,
+}
+
+/// Delete a topic channel. Needs `confirm=true`.
+async fn delete(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<DeleteQuery>,
+) -> ApiResult<crate::manage::ChannelImpact> {
+    let c = find(&m, &id)?;
+    if !matches!(q.confirm.as_deref(), Some("1" | "true")) {
+        return Err(bad(format!(
+            "deleting #{} can't be undone: pass confirm=true (GET /v1/channels/{}/impact shows what it touches)",
+            c.slug, c.slug
+        )));
+    }
+    let done = m.rt.delete_channel(&c).map_err(manage_err)?;
+    m.channels_changed();
+    let _ =
+        m.rt.changes
+            .send(tern_core::models::Change::SchedulesChanged { id: String::new() });
+    Ok(Json(done))
 }
 
 /// An active agent by id or slug.

@@ -37,6 +37,9 @@ pub struct AgentRow {
     pub archived_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Set when the agent was deleted: the row stays so that ids in
+    /// history still resolve, but nothing else sees it.
+    pub deleted_at: Option<i64>,
 }
 
 impl AgentRow {
@@ -88,7 +91,7 @@ pub struct AgentChange {
 }
 
 const AGENT_COLS: &str = "id, slug, name, avatar, model, subagent_model, tools, memory, delegates, \
-    archived_at, created_at, updated_at, egress, autonomy, telegram";
+    archived_at, created_at, updated_at, egress, autonomy, telegram, deleted_at";
 
 fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
     Ok(AgentRow {
@@ -107,6 +110,7 @@ fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
         egress: r.get(12)?,
         autonomy: r.get(13)?,
         telegram: r.get(14)?,
+        deleted_at: r.get(15)?,
     })
 }
 
@@ -126,7 +130,7 @@ impl Store {
         tx.execute(
             &format!(
                 "INSERT INTO agents ({AGENT_COLS})
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10, ?11, ?12, ?13)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10, ?11, ?12, ?13, NULL)"
             ),
             params![
                 a.id,
@@ -164,7 +168,7 @@ impl Store {
     /// Agents, the default first, then by name; archived ones only if asked.
     pub fn agents(&self, include_archived: bool) -> Result<Vec<AgentRow>> {
         let sql = format!(
-            "SELECT {AGENT_COLS} FROM agents WHERE ?1 OR archived_at IS NULL
+            "SELECT {AGENT_COLS} FROM agents WHERE (?1 OR archived_at IS NULL) AND deleted_at IS NULL
              ORDER BY id = 'tern' DESC, name COLLATE NOCASE"
         );
         let conn = self.conn()?;
@@ -173,13 +177,35 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// An agent by id or slug.
+    /// An agent by id or slug. Deleted agents aren't found; see
+    /// [`Self::agent_or_deleted`].
     pub fn agent(&self, id_or_slug: &str) -> Result<Option<AgentRow>> {
-        let sql = format!("SELECT {AGENT_COLS} FROM agents WHERE id = ?1 OR slug = ?1");
+        let sql = format!(
+            "SELECT {AGENT_COLS} FROM agents WHERE (id = ?1 OR slug = ?1) AND deleted_at IS NULL"
+        );
         Ok(self
             .conn()?
             .query_row(&sql, [id_or_slug], agent_row)
             .optional()?)
+    }
+
+    /// An agent by id, deleted ones included: for showing who wrote
+    /// something in history.
+    pub fn agent_or_deleted(&self, id: &str) -> Result<Option<AgentRow>> {
+        let sql = format!("SELECT {AGENT_COLS} FROM agents WHERE id = ?1");
+        Ok(self.conn()?.query_row(&sql, [id], agent_row).optional()?)
+    }
+
+    /// Every deleted agent, newest first: history resolves their ids to
+    /// names with these.
+    pub fn deleted_agents(&self) -> Result<Vec<AgentRow>> {
+        let sql = format!(
+            "SELECT {AGENT_COLS} FROM agents WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
+        );
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([], agent_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Apply `ch` to agent `id`; a new slug renames its DM channel too, a

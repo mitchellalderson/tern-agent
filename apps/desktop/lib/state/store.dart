@@ -1136,6 +1136,64 @@ class TernStore extends ChangeNotifier {
     return err;
   }
 
+  /// Delete an agent for good. Its conversations stay in History; its
+  /// routines go to `reassignTo` or are deleted (`deleteRoutines`), as the
+  /// impact said. Returns the daemon's reason on failure.
+  Future<String?> deleteAgent(
+    Agent a, {
+    String? reassignTo,
+    bool deleteRoutines = false,
+  }) async {
+    try {
+      await client.deleteAgent(
+        a.id,
+        reassignTo: reassignTo,
+        deleteRoutines: deleteRoutines,
+      );
+      final viewing = channel == a.mainChannelId;
+      agents = await client.agents();
+      channels = await client.channels();
+      schedules = await client.schedules();
+      if (viewing) {
+        await openHome();
+      } else {
+        notifyListeners();
+      }
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  /// Bring an archived agent back (its routines stay paused).
+  Future<String?> unarchiveAgent(Agent a) async {
+    try {
+      await client.updateAgent(a.id, {'archived': false});
+      agents = await client.agents();
+      channels = await client.channels();
+      notifyListeners();
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  /// Archived agents and topic channels, for the Archived list.
+  Future<({List<Agent> agents, List<Channel> channels})> archivedItems() async {
+    final a = await client.agents(archived: true);
+    final c = await client.channels(archived: true);
+    return (
+      agents: [
+        for (final x in a)
+          if (x.archived && !x.isDefault) x,
+      ],
+      channels: [
+        for (final x in c)
+          if (x.archived && !x.isMain) x,
+      ],
+    );
+  }
+
   /// The routines of `a` (`tern` owns those from before agents).
   List<Schedule> schedulesOf(Agent a) => [
     for (final s in schedules)
@@ -1172,6 +1230,7 @@ class TernStore extends ChangeNotifier {
   /// Rename a channel or change its instructions (empty clears them).
   Future<String?> updateChannel(
     String id, {
+    String? slug,
     String? title,
     String? instructions,
     String? lead,
@@ -1180,6 +1239,7 @@ class TernStore extends ChangeNotifier {
     try {
       await client.updateChannel(
         id,
+        slug: slug,
         title: title,
         instructions: instructions?.trim().isEmpty ?? false
             ? null
@@ -1208,6 +1268,36 @@ class TernStore extends ChangeNotifier {
       error = e.message;
     }
     notifyListeners();
+  }
+
+  /// Delete a topic channel for good: its posts go, its conversations stay
+  /// in History. Returns the daemon's reason on failure.
+  Future<String?> deleteChannel(String id) async {
+    try {
+      await client.deleteChannel(id);
+      channels = await client.channels();
+      schedules = await client.schedules();
+      if (channel == id) {
+        await openHome();
+      } else {
+        notifyListeners();
+      }
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  /// Bring an archived channel back.
+  Future<String?> unarchiveChannel(String id) async {
+    try {
+      await client.updateChannel(id, archived: false);
+      channels = await client.channels();
+      notifyListeners();
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
   }
 
   /// Send into the open topic channel: a post and a run in its main

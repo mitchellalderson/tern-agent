@@ -18,6 +18,7 @@ class Agent {
     this.needsYou = 0,
     this.activeRuns = 0,
     this.archived = false,
+    this.deleted = false,
     this.isDefault = false,
     this.delegates,
   });
@@ -41,6 +42,7 @@ class Agent {
     needsYou: j['needs_you'] as int? ?? 0,
     activeRuns: j['active_runs'] as int? ?? 0,
     archived: j['archived'] as bool? ?? false,
+    deleted: j['deleted'] as bool? ?? false,
     isDefault: j['is_default'] as bool? ?? j['id'] == defaultId,
     delegates: switch (j['delegates']) {
       final List<dynamic> l => [for (final d in l) d as String],
@@ -83,6 +85,10 @@ class Agent {
   final int needsYou;
   final int activeRuns;
   final bool archived;
+
+  /// Deleted: only listed by `agents(deleted: true)`, so history can still
+  /// name what it wrote.
+  final bool deleted;
   final bool isDefault;
 
   /// Agent ids it may hand work to (`agent_spawn {agent}`). Null: every
@@ -321,4 +327,132 @@ class AgentWork {
   final DateTime startedAt;
   final DateTime? finishedAt;
   final int? postId;
+}
+
+/// A routine or channel an impact names: a routine's prompt, a channel's
+/// slug.
+class Named {
+  const Named({required this.id, required this.label});
+
+  factory Named.fromJson(Json j) =>
+      Named(id: j['id'] as String, label: j['label'] as String);
+
+  final String id;
+  final String label;
+}
+
+List<Named> _named(Object? v) => [
+  if (v is List<dynamic>)
+    for (final n in v) Named.fromJson(n as Json),
+];
+
+/// What deleting an agent touches (`GET /v1/agents/{id}/impact`).
+class AgentImpact {
+  const AgentImpact({
+    required this.id,
+    required this.slug,
+    required this.name,
+    this.routines = const [],
+    this.ledChannels = const [],
+    this.memberChannels = const [],
+    this.conversations = 0,
+    this.memories = 0,
+    this.runningRuns = 0,
+    this.pendingOutbox = 0,
+    this.telegramBot,
+    this.bundles = const [],
+    this.blockers = const [],
+  });
+
+  factory AgentImpact.fromJson(Json j) => AgentImpact(
+    id: j['id'] as String,
+    slug: j['slug'] as String,
+    name: j['name'] as String,
+    routines: _named(j['routines']),
+    ledChannels: _named(j['led_channels']),
+    memberChannels: _named(j['member_channels']),
+    conversations: j['conversations'] as int? ?? 0,
+    memories: j['memories'] as int? ?? 0,
+    runningRuns: j['running_runs'] as int? ?? 0,
+    pendingOutbox: j['pending_outbox'] as int? ?? 0,
+    telegramBot: j['telegram_bot'] as String?,
+    bundles: [for (final b in j['bundles'] as List<dynamic>? ?? []) b as String],
+    blockers: [
+      for (final b in j['blockers'] as List<dynamic>? ?? []) b as String,
+    ],
+  );
+
+  final String id;
+  final String slug;
+  final String name;
+
+  /// Handed to another agent or deleted with it.
+  final List<Named> routines;
+
+  /// Topic channels it leads: the lead moves on.
+  final List<Named> ledChannels;
+  final List<Named> memberChannels;
+
+  /// They stay in History under its name.
+  final int conversations;
+
+  /// Its private memories: deleted with it.
+  final int memories;
+  final int runningRuns;
+  final int pendingOutbox;
+
+  /// The secret naming its own Telegram bot's token: the bot stops, the
+  /// secret stays.
+  final String? telegramBot;
+
+  /// Bundles that installed it and stop tracking it.
+  final List<String> bundles;
+
+  /// Why it can't be deleted now; empty when it can.
+  final List<String> blockers;
+}
+
+/// What deleting a topic channel touches (`GET /v1/channels/{id}/impact`).
+class ChannelImpact {
+  const ChannelImpact({
+    required this.id,
+    required this.slug,
+    required this.title,
+    this.posts = 0,
+    this.conversations = 0,
+    this.routines = const [],
+    this.members = 0,
+    this.runningRuns = 0,
+    this.blockers = const [],
+  });
+
+  factory ChannelImpact.fromJson(Json j) => ChannelImpact(
+    id: j['id'] as String,
+    slug: j['slug'] as String,
+    title: j['title'] as String,
+    posts: j['posts'] as int? ?? 0,
+    conversations: j['conversations'] as int? ?? 0,
+    routines: _named(j['routines']),
+    members: j['members'] as int? ?? 0,
+    runningRuns: j['running_runs'] as int? ?? 0,
+    blockers: [
+      for (final b in j['blockers'] as List<dynamic>? ?? []) b as String,
+    ],
+  );
+
+  final String id;
+  final String slug;
+  final String title;
+
+  /// Deleted with the channel.
+  final int posts;
+
+  /// They stay in History, under Home.
+  final int conversations;
+
+  /// Routines that post here: they post to their agent's DM instead.
+  final List<Named> routines;
+  final int members;
+  final int runningRuns;
+  final List<String> blockers;
 }

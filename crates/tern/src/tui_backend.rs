@@ -372,6 +372,116 @@ impl Backend for TuiBackend {
         })
     }
 
+    fn rename(
+        &self,
+        what: tern_tui::Managed,
+        id: &str,
+        slug: Option<&str>,
+        title: Option<&str>,
+    ) -> BackendResult<String> {
+        let rt = self.rt();
+        match what {
+            tern_tui::Managed::Agent => {
+                let a = rt
+                    .store
+                    .agent(id.trim_start_matches('@'))
+                    .map_err(err)?
+                    .ok_or_else(|| format!("no agent {id:?}"))?;
+                let a = rt.rename_agent(&a, title, slug).map_err(err)?;
+                Ok(format!("@{} is now {}", a.slug, a.name))
+            }
+            tern_tui::Managed::Channel => {
+                let c = rt
+                    .store
+                    .channel(id.trim_start_matches('#'))
+                    .map_err(err)?
+                    .ok_or_else(|| format!("no channel {id:?}"))?;
+                if let Some(s) = slug {
+                    rt.rename_channel_slug(&c, s).map_err(err)?;
+                }
+                if let Some(t) = title.map(str::trim).filter(|t| !t.is_empty()) {
+                    rt.store
+                        .update_channel(&c.id, Some(t), None, None)
+                        .map_err(err)?;
+                }
+                let c = rt
+                    .store
+                    .channel(&c.id)
+                    .map_err(err)?
+                    .ok_or("the channel is gone")?;
+                Ok(format!("#{} ({})", c.slug, c.title))
+            }
+        }
+    }
+
+    fn delete_preview(&self, what: tern_tui::Managed, id: &str) -> BackendResult<String> {
+        let rt = self.rt();
+        let (text, blockers) = match what {
+            tern_tui::Managed::Agent => {
+                let a = rt
+                    .store
+                    .agent(id.trim_start_matches('@'))
+                    .map_err(err)?
+                    .ok_or_else(|| format!("no agent {id:?}"))?;
+                let i = rt.agent_impact(&a).map_err(err)?;
+                (i.describe(), i.blockers)
+            }
+            tern_tui::Managed::Channel => {
+                let c = rt
+                    .store
+                    .channel(id.trim_start_matches('#'))
+                    .map_err(err)?
+                    .ok_or_else(|| format!("no channel {id:?}"))?;
+                let i = rt.channel_impact(&c).map_err(err)?;
+                (i.describe(), i.blockers)
+            }
+        };
+        if blockers.is_empty() {
+            Ok(text)
+        } else {
+            Err(blockers.join("; "))
+        }
+    }
+
+    fn delete(
+        &self,
+        what: tern_tui::Managed,
+        id: &str,
+        choice: &tern_tui::DeleteChoice,
+    ) -> BackendResult<String> {
+        let rt = self.rt();
+        match what {
+            tern_tui::Managed::Agent => {
+                let a = rt
+                    .store
+                    .agent(id.trim_start_matches('@'))
+                    .map_err(err)?
+                    .ok_or_else(|| format!("no agent {id:?}"))?;
+                rt.delete_agent(
+                    &a,
+                    &crate::manage::DeleteAgent {
+                        reassign_to: choice.reassign_to.clone(),
+                        delete_routines: choice.delete_routines,
+                    },
+                )
+                .map_err(err)?;
+                Ok(format!("deleted @{}; its history stays readable", a.slug))
+            }
+            tern_tui::Managed::Channel => {
+                let c = rt
+                    .store
+                    .channel(id.trim_start_matches('#'))
+                    .map_err(err)?
+                    .ok_or_else(|| format!("no channel {id:?}"))?;
+                rt.delete_channel(&c).map_err(err)?;
+                Ok(format!(
+                    "deleted #{}; its conversations stay in History",
+                    c.slug
+                ))
+            }
+        }
+    }
+
     fn channel_posts(&self, id: &str, limit: usize) -> BackendResult<Vec<tern_tui::PostLine>> {
         let store = &self.rt().store;
         let mut rows = store.posts(id, None, limit).map_err(err)?;

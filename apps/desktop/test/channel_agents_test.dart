@@ -161,6 +161,7 @@ class _FakeClient extends TernClient {
   @override
   Future<Channel> updateChannel(
     String id, {
+    String? slug,
     String? title,
     String? instructions,
     bool clearInstructions = false,

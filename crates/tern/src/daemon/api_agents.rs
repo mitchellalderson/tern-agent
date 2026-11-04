@@ -3,9 +3,11 @@
 //!
 //! | Method | Path | |
 //! |---|---|---|
-//! | GET | `/v1/agents[?archived=1]` | `[Agent]`: the default first, with `main_channel_id`, `last_activity`, `needs_you`, `active_runs` |
+//! | GET | `/v1/agents[?archived=1\|deleted=1]` | `[Agent]` (`deleted=1`: archived and deleted ones too, deleted marked `deleted`, so history can name them): the default first, with `main_channel_id`, `last_activity`, `needs_you`, `active_runs` |
 //! | POST | `/v1/agents` | create `{name, slug?, avatar?, persona?, model?, subagent_model?, tools?, memory?, egress?, autonomy?, template?}`, with its DM channel |
 //! | PATCH | `/v1/agents/{id}` | any of those but `template` and `persona`, plus `telegram` (`{bot_token_secret}`: a bot of its own, from the next daemon start; `null` removes it), and `delegates` (agents it may hand work to; `null`: all for the default agent, none for others); `archived: true` archives (not the default agent) |
+//! | DELETE | `/v1/agents/{id}?confirm=true[&reassign_to=<agent>\|&delete_routines=true]` | delete it (never the default agent): its conversations stay in History under its name; refused (409) while it has runs in progress or writes in the outbox, or routines that `reassign_to` or `delete_routines` doesn't place |
+//! | GET | `/v1/agents/{id}/impact` | what deleting it touches: `{routines, led_channels, member_channels, conversations, memories, running_runs, pending_outbox, blockers}` |
 //! | GET / PUT | `/v1/agents/{id}/persona` | `{persona}`; GET adds `system_sections`, what tern adds to every persona |
 //! | GET | `/v1/agents/templates` | `[Template]` for the create sheet |
 //! | GET | `/v1/agents/{id}/work?limit=` | its recent work, newest first: delegated batches (`delegated` posts in its DM) and routine runs |
@@ -34,7 +36,11 @@ pub fn routes() -> Router<Shared> {
     Router::new()
         .route("/v1/agents", get(list).post(create))
         .route("/v1/agents/templates", get(templates))
-        .route("/v1/agents/{id}", axum::routing::patch(update))
+        .route(
+            "/v1/agents/{id}",
+            axum::routing::patch(update).delete(delete),
+        )
+        .route("/v1/agents/{id}/impact", get(impact))
         .route("/v1/agents/{id}/persona", get(persona).put(set_persona))
         .route("/v1/agents/{id}/work", get(work))
         .route("/v1/memories", get(memories))
@@ -94,9 +100,20 @@ pub struct Agent {
     pub active_runs: usize,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
+    /// Deleted: only listed with `?deleted=1`, so history can name it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deleted: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_default: bool,
     pub updated_at: i64,
+}
+
+/// A refused change is the caller's to fix (409); the rest is ours.
+pub(super) fn manage_err(e: crate::manage::ManageError) -> ApiError {
+    match e {
+        crate::manage::ManageError::Refused(m) => ApiError(StatusCode::CONFLICT, m),
+        crate::manage::ManageError::Other(e) => internal(format!("{e:#}")),
+    }
 }
 
 pub(super) fn agent_view(m: &Shared, a: AgentRow) -> Agent {
@@ -164,6 +181,7 @@ pub(super) fn agent_view(m: &Shared, a: AgentRow) -> Agent {
         autonomy: a.autonomy.as_deref().and_then(Autonomy::parse),
         telegram: AgentTelegram::parse(a.telegram.as_deref()),
         archived: a.archived_at.is_some(),
+        deleted: a.deleted_at.is_some(),
         is_default: a.is_default(),
         id: a.id,
         slug: a.slug,
@@ -189,11 +207,19 @@ fn changed(m: &Shared) {
 #[derive(Deserialize)]
 struct ListQuery {
     archived: Option<String>,
+    deleted: Option<String>,
 }
 
 async fn list(State(m): State<Shared>, Query(q): Query<ListQuery>) -> ApiResult<Vec<Agent>> {
-    let all = matches!(q.archived.as_deref(), Some("1" | "true"));
-    let rows = m.rt.store.agents(all).map_err(internal)?;
+    let yes = |v: &Option<String>| matches!(v.as_deref(), Some("1" | "true"));
+    let deleted = yes(&q.deleted);
+    let mut rows =
+        m.rt.store
+            .agents(deleted || yes(&q.archived))
+            .map_err(internal)?;
+    if deleted {
+        rows.extend(m.rt.store.deleted_agents().map_err(internal)?);
+    }
     Ok(Json(rows.into_iter().map(|a| agent_view(&m, a)).collect()))
 }
 
@@ -425,6 +451,76 @@ async fn update(
     m.rt.store.update_agent(&a.id, &ch).map_err(internal)?;
     changed(&m);
     Ok(Json(agent_view(&m, find(&m, &a.id)?)))
+}
+
+/// Stop the poller of a deleted agent's own Telegram bot (`telegram-<slug>`,
+/// started with the daemon), so it doesn't keep taking messages for an
+/// agent that is gone. Returns whether one was running.
+pub(super) fn stop_bot(m: &Shared, slug: &str) -> bool {
+    let name = format!("{}-{slug}", tern_gateway::telegram::SOURCE);
+    let Ok(mut tasks) = m.routes.lifecycle.gateway_tasks.lock() else {
+        return false;
+    };
+    let mut stopped = false;
+    tasks.retain(|(n, task)| {
+        if *n == name {
+            task.abort();
+            stopped = true;
+            false
+        } else {
+            true
+        }
+    });
+    stopped
+}
+
+#[derive(Deserialize)]
+struct DeleteQuery {
+    confirm: Option<String>,
+    reassign_to: Option<String>,
+    delete_routines: Option<String>,
+}
+
+async fn impact(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<crate::manage::AgentImpact> {
+    let a = find(&m, &id)?;
+    m.rt.agent_impact(&a).map(Json).map_err(manage_err)
+}
+
+/// Delete an agent. Needs `confirm=true`; what to do with its routines is
+/// `reassign_to=<agent>` or `delete_routines=true`.
+async fn delete(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+    Query(q): Query<DeleteQuery>,
+) -> ApiResult<crate::manage::AgentImpact> {
+    let a = find(&m, &id)?;
+    if !matches!(q.confirm.as_deref(), Some("1" | "true")) {
+        return Err(bad(format!(
+            "deleting @{} can't be undone: pass confirm=true (GET /v1/agents/{}/impact shows what it touches)",
+            a.slug, a.slug
+        )));
+    }
+    let bot = agents::AgentTelegram::parse(a.telegram.as_deref()).map(|_| a.slug.clone());
+    let done =
+        m.rt.delete_agent(
+            &a,
+            &crate::manage::DeleteAgent {
+                reassign_to: q.reassign_to.filter(|r| !r.is_empty()),
+                delete_routines: matches!(q.delete_routines.as_deref(), Some("1" | "true")),
+            },
+        )
+        .map_err(manage_err)?;
+    if let Some(slug) = bot {
+        stop_bot(&m, &slug);
+    }
+    changed(&m);
+    let _ =
+        m.rt.changes
+            .send(Change::SchedulesChanged { id: String::new() });
+    Ok(Json(done))
 }
 
 /// A bot's secret must be a valid secret name that no other bot (the main

@@ -371,16 +371,19 @@ impl Installer {
             out.lines.push(format!("routine {}: removed", r.name));
         }
         for a in &b.agents {
-            // Archived, never deleted: its history and persona stay.
-            let archived = store
-                .update_agent(
-                    &a.id,
-                    &tern_store::AgentChange {
-                        archived: Some(true),
-                        ..tern_store::AgentChange::default()
-                    },
-                )
-                .unwrap_or(false);
+            // Archived, never deleted: its history and persona stay. One
+            // the user deleted is already gone.
+            let live = store.agent(&a.id).ok().flatten().is_some();
+            let archived = live
+                && store
+                    .update_agent(
+                        &a.id,
+                        &tern_store::AgentChange {
+                            archived: Some(true),
+                            ..tern_store::AgentChange::default()
+                        },
+                    )
+                    .unwrap_or(false);
             out.lines.push(if archived {
                 format!(
                     "agent @{}: archived (its persona and history are kept)",
@@ -417,13 +420,28 @@ impl Installer {
         let persona = text(PERSONA_FILE)?;
         let invalid = |e: String| BundleError::Invalid(format!("agent @{slug}: {e}"));
         tern_core::agents::check_slug(slug).map_err(invalid)?;
-        let id = tern_core::agents::id_for(slug);
-        if store
-            .agent(&id)
+        let mut id = tern_core::agents::id_for(slug);
+        match store
+            .agent_or_deleted(&id)
             .map_err(|e| BundleError::Io(e.to_string()))?
-            .is_some()
         {
-            return Err(invalid(format!("the id {id} is taken")));
+            None => {}
+            Some(old) if old.deleted_at.is_none() => {
+                return Err(invalid(format!("the id {id} is taken")));
+            }
+            // A deleted agent keeps its id (history names it): this one
+            // gets the next free id.
+            Some(_) => {
+                let mut n = 2;
+                while store
+                    .agent_or_deleted(&tern_core::agents::id_for(&format!("{slug}-{n}")))
+                    .map_err(|e| BundleError::Io(e.to_string()))?
+                    .is_some()
+                {
+                    n += 1;
+                }
+                id = tern_core::agents::id_for(&format!("{slug}-{n}"));
+            }
         }
         if store
             .channel(&tern_store::dm_slug(slug))
