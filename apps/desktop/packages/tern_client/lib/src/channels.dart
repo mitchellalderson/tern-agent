@@ -85,6 +85,7 @@ class Post {
     this.replies = 0,
     this.resolvedAt,
     this.pointsToChannel,
+    this.outboxId,
     required this.createdAt,
   });
 
@@ -107,6 +108,7 @@ class Post {
       _ => null,
     },
     pointsToChannel: j['points_to_channel'] as String?,
+    outboxId: j['outbox_id'] as int?,
     createdAt: _time(j['created_at'] as int),
   );
 
@@ -141,6 +143,10 @@ class Post {
 
   /// A pointer: the channel of the post it points to.
   final String? pointsToChannel;
+
+  /// The outbox item this `needs_you` post (or pointer) stands for. It
+  /// closes when the item is decided; "Done" alone is refused.
+  final int? outboxId;
   final DateTime createdAt;
 
   bool get mine => authorKind == 'user';
@@ -165,6 +171,7 @@ class Post {
     replies: replies,
     resolvedAt: DateTime.now(),
     pointsToChannel: pointsToChannel,
+    outboxId: outboxId,
     createdAt: createdAt,
   );
 }

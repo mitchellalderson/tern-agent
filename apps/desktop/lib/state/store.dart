@@ -353,6 +353,21 @@ class TernStore extends ChangeNotifier {
     await _refreshChannels();
   }
 
+  /// Show outbox item [id]'s needs-you post and pointer closed.
+  void _resolveOutboxPosts(int id) {
+    bool of(Post p) => p.outboxId == id && p.resolvedAt == null;
+    for (final list in posts.values) {
+      for (var i = 0; i < list.length; i++) {
+        if (of(list[i])) list[i] = list[i].resolved();
+      }
+    }
+    for (final t in transcripts.values) {
+      for (final item in t.items.whereType<PostItem>()) {
+        if (of(item.post)) item.post = item.post.resolved();
+      }
+    }
+  }
+
   /// New posts since this device last looked.
   bool unread(Channel c) =>
       c.id != channel && (c.lastPostId ?? 0) > (lastSeen[c.id] ?? 0);
@@ -1241,7 +1256,9 @@ class TernStore extends ChangeNotifier {
         return;
       case AgentsChanged():
         unawaited(_refreshAgents());
-      case OutboxChanged():
+      case OutboxChanged(:final id, :final state):
+        // Its needs-you post and pointer close with the decision.
+        if (state != 'pending') _resolveOutboxPosts(id);
         unawaited(refreshOutbox());
         return;
       case UnknownEvent():

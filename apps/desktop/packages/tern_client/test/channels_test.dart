@@ -79,6 +79,21 @@ void main() {
     expect((started as RunStarted).channelId, 'c');
   });
 
+  test("an outbox item's needs-you post names it and stays so resolved", () {
+    final p = Post.fromJson(
+      jsonDecode(
+            '{"id":5,"channel_id":"home","author_kind":"agent","author_id":"tern",'
+            '"author":"tern","kind":"pointer","text":"Waiting","points_to":4,'
+            '"outbox_id":12,"created_at":1762185600000}',
+          )
+          as Json,
+    );
+    expect(p.outboxId, 12);
+    expect(p.needsYou, isTrue);
+    final done = p.resolved();
+    expect((done.outboxId, done.needsYou), (12, false));
+  });
+
   test('sessions carry their place in a stream', () {
     final s = SessionItem.fromJson({
       'id': 's2',

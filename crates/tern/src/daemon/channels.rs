@@ -56,9 +56,11 @@ pub fn view(store: &Store, row: tern_store::PostRow) -> Post {
         .points_to
         .and_then(|id| store.post(id).ok().flatten())
         .map(|p| p.channel_id);
+    let outbox_id = super::outbox::outbox_of_post(store, &row);
     Post {
         replies,
         points_to_channel,
+        outbox_id,
         ..Post::from(row)
     }
 }

@@ -340,6 +340,15 @@ async fn resolve(
     State(m): State<Shared>,
     UrlPath(id): UrlPath<i64>,
 ) -> ApiResult<serde_json::Value> {
+    // An outbox item's post closes when the item is decided.
+    if let Some(post) = m.rt.store.post(id).map_err(internal)?
+        && let Some(item) = super::outbox::outbox_of_post(&m.rt.store, &post)
+    {
+        return Err(ApiError(
+            axum::http::StatusCode::CONFLICT,
+            format!("this is outbox #{item}: approve or reject it instead"),
+        ));
+    }
     if !m.rt.store.resolve_post(id).map_err(internal)? {
         return Err(not_found("open needs-you post"));
     }

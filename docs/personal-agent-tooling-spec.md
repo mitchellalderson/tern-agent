@@ -306,6 +306,8 @@ or at once when no client is attached):
 This needs no change to the run loop beyond a new tool-result kind. The sub-agent `inbox` step already proves the
 pattern.
 
+**Status (Home integration, 2026-11-05).** Items now use channels C4's `needs_you` mechanism: a post in the channel the run started in (with Home's pointer), closed when the item is decided or expires. A routine in its quiet hours sends no prompt or card to its chat; its delivery lists what waits, and Telegram's `/outbox` shows the cards (W4). The TUI has an `/outbox` panel. See DECISIONS.md, "The outbox in Home (C4)".
+
 **Status (T3 shipped, 2026-11-04).** Built as above, with these choices: the deferral is a new approval outcome
 (`deferred`) rather than a tool-result kind; only the daemon defers (`tern run` and the in-process TUI still
 deny); a run still working when its item is decided gets a note in its inbox; "edit" is approving with changed

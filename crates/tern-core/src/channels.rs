@@ -58,6 +58,10 @@ pub struct Post {
     /// A `needs_you` post or pointer the user marked done (unix ms).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<i64>,
+    /// A `needs_you` post (or its pointer) for an outbox item: decide the
+    /// item, which resolves the post; "done" alone is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbox_id: Option<i64>,
     /// Unix ms.
     pub created_at: i64,
 }
@@ -84,6 +88,7 @@ impl From<tern_store::PostRow> for Post {
             replies: 0,
             resolved_at: p.resolved_at,
             points_to_channel: None,
+            outbox_id: None,
             created_at: p.created_at,
         }
     }
