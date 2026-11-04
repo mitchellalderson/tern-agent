@@ -1,0 +1,66 @@
+{
+  "can_install": false,
+  "conflicts": ["you already have an agent @scout; rename or archive it first"],
+  "grows": true,
+  "plan": {
+    "author": "Alice",
+    "changes": {
+      "added": [
+        "agent @scout: connectors: all",
+        "agent @scout: autonomy ceiling autonomous"
+      ],
+      "changed": [],
+      "removed": []
+    },
+    "installed": {"version": "0.9.0", "sha256": "bb22"},
+    "connections": [],
+    "connectors": [],
+    "description": "Research helpers",
+    "agents": [
+      {
+        "slug": "scout",
+        "name": "Scout",
+        "description": "Finds things out",
+        "memory": "shared",
+        "tools": [
+          "builtins: all",
+          "connectors: all",
+          "mcp: none",
+          "skills: all"
+        ],
+        "autonomy": "autonomous",
+        "persona": "You are Scout, the user's research agent.",
+        "existing": true,
+        "kept": false
+      },
+      {
+        "slug": "reader",
+        "name": "Reader",
+        "description": "Reads and summarises",
+        "memory": "private",
+        "tools": [
+          "builtins: read_only",
+          "connectors: none",
+          "mcp: none",
+          "skills: all"
+        ],
+        "persona": "You are Reader.",
+        "existing": false,
+        "kept": true
+      }
+    ],
+    "name": "research-pack",
+    "routines": [],
+    "secrets": [],
+    "sha256": "aa11",
+    "signature": {"state": "unsigned"},
+    "skills": [],
+    "source": "/tmp/research-pack.tar.zst",
+    "version": "1.0.0",
+    "warnings": [
+      "agent @scout can use every built-in tool, including shell and file writes",
+      "agent @scout can use every connector you have, including ones added later",
+      "agent @scout reads and writes your shared memory"
+    ]
+  }
+}

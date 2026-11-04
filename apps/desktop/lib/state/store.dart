@@ -1077,6 +1077,7 @@ class TernStore extends ChangeNotifier {
     ToolScope? tools,
     required String memory,
     String? egress,
+    String? autonomy,
     String? template,
     ({String cron, String prompt})? routine,
   }) async {
@@ -1090,6 +1091,7 @@ class TernStore extends ChangeNotifier {
         tools: tools,
         memory: memory,
         egress: egress,
+        autonomy: autonomy,
         template: template,
       );
       if (routine != null) {
@@ -1235,6 +1237,7 @@ class TernStore extends ChangeNotifier {
     String? instructions,
     String? lead,
     bool? agentWakes,
+    bool? letAgentsDecide,
   }) async {
     try {
       await client.updateChannel(
@@ -1247,6 +1250,7 @@ class TernStore extends ChangeNotifier {
         clearInstructions: instructions?.trim().isEmpty ?? false,
         lead: lead,
         agentWakes: agentWakes,
+        letAgentsDecide: letAgentsDecide,
       );
       channels = await client.channels();
       notifyListeners();

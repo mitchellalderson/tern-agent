@@ -108,6 +108,7 @@ class _BundleTile extends StatelessWidget {
         content: Text(
           'This removes what it installed: '
           '${[if (b.connectors.isNotEmpty) 'connectors ${b.connectors.join(', ')}', if (b.skills.isNotEmpty) 'skills ${b.skills.join(', ')}', if (b.routines.isNotEmpty) '${b.routines.length} routine${b.routines.length == 1 ? '' : 's'}'].join('; ')}. '
+          '${b.agents.isEmpty ? '' : 'Its agents (${b.agents.map((a) => '@$a').join(', ')}) are archived, not deleted: their persona and history stay. '}'
           'A connector you changed since is kept.',
         ),
         actions: [
@@ -136,6 +137,8 @@ class _BundleTile extends StatelessWidget {
     final contents = [
       if (b.connectors.isNotEmpty) 'Connectors: ${b.connectors.join(', ')}',
       if (b.skills.isNotEmpty) 'Skills: ${b.skills.join(', ')}',
+      if (b.agents.isNotEmpty)
+        'Agents: ${b.agents.map((a) => '@$a').join(', ')}',
       if (b.routines.isNotEmpty) 'Routines: ${b.routines.join(', ')}',
     ];
     return Container(
@@ -441,6 +444,10 @@ class _Installed extends StatelessWidget {
       if (plan.connectors.isNotEmpty)
         'Connectors are saved inactive. Ask tern to activate one when you '
             'want it; you approve each.',
+      if (plan.agents.any((a) => !a.existing && !a.kept))
+        'Agents made: ${plan.agents.where((a) => !a.existing && !a.kept).map((a) => '@${a.slug}').join(', ')}. '
+            'Each has its own chat in the sidebar; set its model, and its '
+            'Telegram bot if you want one, in its sheet.',
       if (plan.routines.isNotEmpty)
         'Routines are paused. Turn them on in Routines.',
       for (final s in plan.secrets.where((s) => !s.set))
@@ -568,6 +575,24 @@ class BundlePlanView extends StatelessWidget {
                   warning('Can be run: ${s.runnable.join(', ')}'),
               ],
             ],
+            if (plan.agents.isNotEmpty) ...[
+              heading('AGENTS · MADE AT INSTALL, EACH WITH ITS OWN CHAT'),
+              for (final a in plan.agents)
+                BundleAgentCard(
+                  agent: a,
+                  warnings: [
+                    for (final w in plan.warnings)
+                      if (w.startsWith('agent @${a.slug} ')) w,
+                  ],
+                  added: [
+                    for (final x in plan.added)
+                      if (plan.isUpdate &&
+                          (x == 'agent @${a.slug}' ||
+                              x.startsWith('agent @${a.slug}:')))
+                        x,
+                  ],
+                ),
+            ],
             if (plan.routines.isNotEmpty) ...[
               heading('ROUTINES · INSTALLED PAUSED'),
               for (final r in plan.routines) ...[
@@ -601,13 +626,123 @@ class BundlePlanView extends StatelessWidget {
                   style: small,
                 ),
             ],
-            if (plan.warnings.isNotEmpty) ...[
+            if (plan.warnings.any(
+              (w) => !plan.agents.any((a) => w.startsWith('agent @${a.slug} ')),
+            )) ...[
               heading('WARNINGS'),
-              for (final w in plan.warnings)
+              // An agent's own lines show on its card above.
+              for (final w in plan.warnings.where(
+                (w) =>
+                    !plan.agents.any((a) => w.startsWith('agent @${a.slug} ')),
+              ))
                 warning(w, severe: w.contains('lookalike')),
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// One agent a bundle brings: what it is, what it may use, its ceiling, the
+/// start of its persona, and the warnings the plan lists for its reach (every
+/// built-in tool including shell, every connector or MCP server, the shared
+/// memory). On an update, `added` is what it can now do that it couldn't.
+class BundleAgentCard extends StatelessWidget {
+  const BundleAgentCard({
+    super.key,
+    required this.agent,
+    this.warnings = const [],
+    this.added = const [],
+  });
+
+  final BundleAgent agent;
+  final List<String> warnings;
+  final List<String> added;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final a = agent;
+    final small = TextStyle(fontSize: 12.5, color: c.muted);
+    Widget flag(String t, Color color, {IconData? icon}) => Padding(
+      padding: const EdgeInsets.only(top: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon ?? Icons.warning_amber_rounded, size: 14, color: color),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(t, style: TextStyle(fontSize: 12.5, color: color)),
+          ),
+        ],
+      ),
+    );
+    final ceiling = AutonomyLevel.parse(a.autonomy)?.label.toLowerCase();
+    return Container(
+      key: Key('bundle-agent-${a.slug}'),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: c.card,
+        border: Border.all(color: a.existing ? c.error : c.hairline),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(
+                  text: a.name,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                TextSpan(text: '  @${a.slug}', style: small),
+              ],
+            ),
+          ),
+          if (a.description.isNotEmpty)
+            Text(a.description, style: const TextStyle(fontSize: 13)),
+          const SizedBox(height: 4),
+          Text('Memory ${a.memory} · ${a.tools.join(' · ')}', style: small),
+          Text(
+            a.autonomy == null
+                ? 'No autonomy ceiling'
+                : 'Autonomy ceiling: ${ceiling ?? a.autonomy} (a cap, not a grant)',
+            style: small,
+          ),
+          if (a.persona.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(
+                '\u201c${a.persona}\u201d',
+                style: small,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          if (a.existing)
+            flag(
+              'You already have an agent @${a.slug}. Rename or archive it '
+              'first: a bundle never writes over an agent.',
+              c.error,
+            ),
+          if (a.kept)
+            flag(
+              'You have this agent already (this bundle made it). An update '
+              'leaves it as you have it, so your edits stay.',
+              c.muted,
+              icon: Icons.info_outline,
+            ),
+          for (final w in warnings) flag(w, c.warn),
+          for (final x in added)
+            flag(
+              'Added capability: $x',
+              c.warn,
+              icon: Icons.add_circle_outline,
+            ),
+        ],
       ),
     );
   }

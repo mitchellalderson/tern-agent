@@ -94,6 +94,7 @@ class ChannelAgents {
     this.agentWakes = false,
     this.maxHops = 2,
     this.wakesPerHour = 6,
+    this.letAgentsDecide = false,
   });
 
   factory ChannelAgents.fromJson(Json j) => ChannelAgents(
@@ -104,6 +105,7 @@ class ChannelAgents {
     agentWakes: j['agent_wakes'] as bool? ?? false,
     maxHops: j['max_hops'] as int? ?? 2,
     wakesPerHour: j['wakes_per_hour'] as int? ?? 6,
+    letAgentsDecide: j['let_agents_decide'] as bool? ?? false,
   );
 
   /// Lead first.
@@ -113,6 +115,10 @@ class ChannelAgents {
   final bool agentWakes;
   final int maxHops;
   final int wakesPerHour;
+
+  /// "Let agents decide": a post that mentions no one is routed to the
+  /// members it fits (one cheap model call), not always to the lead.
+  final bool letAgentsDecide;
 }
 
 class ChannelMember {

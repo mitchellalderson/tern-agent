@@ -74,6 +74,54 @@ class _FakeClient extends TernClient {
   @override
   Future<List<Agent>> agents({bool archived = false}) async => agentList;
 
+  /// What the bot field offers; `secretsError` makes the listing fail.
+  var secretList = <SecretStatus>[
+    const SecretStatus(
+      name: 'ANTHROPIC_API_KEY',
+      inFile: true,
+      inEnv: false,
+      usedBy: ['provider anthropic'],
+    ),
+    const SecretStatus(
+      name: 'MAIN_BOT',
+      inFile: true,
+      inEnv: false,
+      usedBy: ['telegram'],
+    ),
+    const SecretStatus(
+      name: 'OPS_BOT',
+      inFile: true,
+      inEnv: false,
+      usedBy: [],
+    ),
+    const SecretStatus(
+      name: 'RESEARCH_BOT',
+      inFile: true,
+      inEnv: false,
+      usedBy: [],
+    ),
+    const SecretStatus(
+      name: 'NEW_BOT',
+      inFile: true,
+      inEnv: false,
+      usedBy: [],
+    ),
+    const SecretStatus(
+      name: 'GHOST_BOT',
+      inFile: false,
+      inEnv: false,
+      usedBy: [],
+    ),
+  ];
+  String? secretsError;
+  String? updateError;
+
+  @override
+  Future<List<SecretStatus>> secrets() async {
+    if (secretsError case final e?) throw TernException(e, status: 500);
+    return secretList;
+  }
+
   /// More starters than the default few, for the picker's search.
   List<AgentTemplate>? extraTemplates;
 
@@ -116,9 +164,11 @@ class _FakeClient extends TernClient {
     ToolScope? tools,
     String? memory,
     String? egress,
+    String? autonomy,
     String? template,
   }) async {
     created.add({
+      'autonomy': ?autonomy,
       'model': model,
       'subagent_model': subagentModel,
       'egress': ?egress,
@@ -176,6 +226,7 @@ class _FakeClient extends TernClient {
 
   @override
   Future<Agent> updateAgent(String id, Map<String, Object?> fields) async {
+    if (updateError case final e?) throw TernException(e, status: 400);
     updated.add((id, fields));
     return agentList.firstWhere((a) => a.id == id);
   }
@@ -1000,6 +1051,291 @@ void main() {
     expect(agentAllows(_research, 'memory_save'), isTrue);
     expect(agentAllows(_research, 'lua__gmail__send'), isFalse);
     expect(agentAllows(_tern, 'shell'), isTrue);
+  });
+
+  group('autonomy ceiling and own bot (AP3)', () {
+    /// `_pump` sets the platform override; the test binding checks it is
+    /// unset before tearDowns run, so reset it here.
+    void ap3Test(String name, Future<void> Function(WidgetTester) body) =>
+        testWidgets(name, (tester) async {
+          try {
+            await body(tester);
+          } finally {
+            debugDefaultTargetPlatformOverride = null;
+          }
+        });
+
+    const capped = Agent(
+      id: 'tern:research',
+      slug: 'research',
+      name: 'Research',
+      avatar: AvatarSpec(glyph: '★', color: 'blue'),
+      mainChannelId: 'dm:research',
+      autonomy: 'supervised',
+      telegramSecret: 'RESEARCH_BOT',
+    );
+    const noBot = Agent(
+      id: 'tern:research',
+      slug: 'research',
+      name: 'Research',
+      avatar: AvatarSpec(glyph: '★', color: 'blue'),
+      mainChannelId: 'dm:research',
+      autonomy: 'supervised',
+    );
+    const ops = Agent(
+      id: 'tern:ops',
+      slug: 'ops',
+      name: 'Ops',
+      mainChannelId: 'dm:ops',
+      telegramSecret: 'OPS_BOT',
+    );
+
+    Finder sheetScroll() => find
+        .descendant(
+          of: find.descendant(
+            of: find.byType(AgentSheet),
+            matching: find.byType(SingleChildScrollView),
+          ),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+
+    /// Home on `agent`'s DM with its edit sheet open.
+    Future<(TernStore, _FakeClient)> editing(
+      WidgetTester tester,
+      Agent agent, {
+      List<Agent>? others,
+    }) async {
+      final (store, client) = await _store();
+      client.agentList = [_tern, agent, ...?others];
+      store.agents = client.agentList;
+      await store.openAgent(agent);
+      await _pump(tester, store);
+      await tester.tap(find.byTooltip('Edit ${agent.name}'));
+      await tester.pumpAndSettle();
+      return (store, client);
+    }
+
+    Future<void> show(WidgetTester tester, Finder f) async {
+      await tester.scrollUntilVisible(
+        f.hitTestable(),
+        200,
+        scrollable: sheetScroll(),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> save(WidgetTester tester) async {
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+    }
+
+    ap3Test('the picker shows the ceiling and says it is a cap', (
+      tester,
+    ) async {
+      final (_, client) = await editing(tester, capped);
+      await show(tester, find.byKey(const Key('autonomy-explainer')));
+      expect(find.textContaining('A cap, not a permission'), findsOneWidget);
+      expect(
+        find.textContaining('never lets the agent do more'),
+        findsOneWidget,
+      );
+      bool selected(String wire) =>
+          tester
+              .widget<RadioGroup<String>>(
+                find.ancestor(
+                  of: find.byKey(const Key('autonomy-none')),
+                  matching: find.byType(RadioGroup<String>),
+                ),
+              )
+              .groupValue ==
+          wire;
+      expect(selected('supervised'), isTrue);
+      expect(selected('none'), isFalse);
+      expect(find.text('No ceiling'), findsOneWidget);
+      for (final l in AutonomyLevel.values) {
+        expect(find.text('At most ${l.label.toLowerCase()}'), findsOneWidget);
+      }
+      // Nothing changed: nothing sent for it.
+      await save(tester);
+      final fields = client.updated.single.$2;
+      expect(fields.containsKey('autonomy'), isFalse);
+      expect(fields.containsKey('telegram'), isFalse);
+    });
+
+    ap3Test('No ceiling sends an explicit null', (tester) async {
+      final (_, client) = await editing(tester, capped);
+      await show(tester, find.byKey(const Key('autonomy-none')));
+      await tester.tap(find.byKey(const Key('autonomy-none')));
+      await tester.pump();
+      await save(tester);
+      expect(client.updated.single.$2, containsPair('autonomy', null));
+    });
+
+    ap3Test('picking a level sends its name', (tester) async {
+      final (_, client) = await editing(tester, capped);
+      await show(tester, find.byKey(const Key('autonomy-readonly')));
+      await tester.tap(find.byKey(const Key('autonomy-readonly')));
+      await tester.pump();
+      await save(tester);
+      expect(client.updated.single.$2, containsPair('autonomy', 'readonly'));
+    });
+
+    ap3Test('a new agent can start with a ceiling', (tester) async {
+      final (store, client) = await _store();
+      await _pump(tester, store);
+      await tester.tap(find.byTooltip('New agent'));
+      await tester.pumpAndSettle();
+      // No bot field until the agent exists.
+      expect(find.text('TELEGRAM BOT'), findsNothing);
+      await show(tester, find.byKey(const Key('autonomy-autonomous')));
+      await tester.tap(find.byKey(const Key('autonomy-autonomous')));
+      await tester.pump();
+      await tester.enterText(find.byKey(const Key('agent-name')), 'Scout');
+      await tester.pump();
+      final create = find.widgetWithText(FilledButton, 'Create');
+      expect(tester.widget<FilledButton>(create).onPressed, isNotNull);
+      await tester.tap(create);
+      await tester.pumpAndSettle();
+      expect(client.created.single['autonomy'], 'autonomous');
+    });
+
+    ap3Test('the default agent can have a ceiling but no bot here', (
+      tester,
+    ) async {
+      final (store, _) = await _store();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ternTheme(TernColors.light, Brightness.light),
+          home: Scaffold(
+            body: AgentSheet(store: store, editing: _tern),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await show(tester, find.byKey(const Key('autonomy-none')));
+      expect(find.text('AUTONOMY CEILING'), findsOneWidget);
+      expect(find.text('TELEGRAM BOT'), findsNothing);
+    });
+
+    ap3Test('the header shows the ceiling, and nothing without one', (
+      tester,
+    ) async {
+      final (store, client) = await _store();
+      client.agentList = [_tern, capped];
+      store.agents = client.agentList;
+      await store.openAgent(capped);
+      await _pump(tester, store);
+      expect(find.byKey(const Key('autonomy-chip')), findsOneWidget);
+      expect(find.text('Capped: supervised'), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (w) =>
+              w is Tooltip &&
+              (w.message ?? '').startsWith(
+                'Research never runs above supervised autonomy',
+              ),
+        ),
+        findsOneWidget,
+      );
+
+      client.agentList = [_tern, _research];
+      store.agents = client.agentList;
+      await store.openAgent(_research);
+      await tester.pump();
+      expect(find.byKey(const Key('autonomy-chip')), findsNothing);
+    });
+
+    ap3Test('the bot field lists secrets by name and says why not', (
+      tester,
+    ) async {
+      await editing(tester, noBot, others: [ops]);
+      await show(tester, find.byKey(const Key('agent-bot')));
+      expect(find.text('TELEGRAM BOT'), findsOneWidget);
+      expect(find.byKey(const Key('agent-bot-restart-note')), findsOneWidget);
+      expect(
+        find.textContaining('applies when the daemon restarts'),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const Key('agent-bot')));
+      await tester.pumpAndSettle();
+      expect(find.text('No bot of its own'), findsWidgets);
+      expect(find.text("the main bot's token"), findsOneWidget);
+      expect(find.text("@ops's bot"), findsOneWidget);
+      expect(find.text('not set'), findsOneWidget);
+      // A taken name can't be picked: the menu stays open.
+      await tester.tap(find.text('MAIN_BOT'), warnIfMissed: false);
+      await tester.pumpAndSettle();
+      expect(find.text('NEW_BOT'), findsOneWidget);
+    });
+
+    ap3Test('picking a secret sends its NAME and says when it applies', (
+      tester,
+    ) async {
+      final (_, client) = await editing(tester, noBot, others: [ops]);
+      await show(tester, find.byKey(const Key('agent-bot')));
+      await tester.tap(find.byKey(const Key('agent-bot')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('NEW_BOT'));
+      await tester.pumpAndSettle();
+      await save(tester);
+      expect(
+        client.updated.single.$2,
+        containsPair('telegram', {'bot_token_secret': 'NEW_BOT'}),
+      );
+      expect(find.byType(AgentSheet), findsNothing);
+      expect(
+        find.textContaining('bot change applies when the daemon restarts'),
+        findsOneWidget,
+      );
+    });
+
+    ap3Test('No bot of its own removes it', (tester) async {
+      final (_, client) = await editing(tester, capped);
+      await show(tester, find.byKey(const Key('agent-bot')));
+      // Its current secret is shown.
+      expect(find.text('RESEARCH_BOT'), findsWidgets);
+      await tester.tap(find.byKey(const Key('agent-bot')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('No bot of its own').last);
+      await tester.pumpAndSettle();
+      await save(tester);
+      expect(client.updated.single.$2, containsPair('telegram', null));
+    });
+
+    ap3Test('the daemon refusing the secret shows and keeps the sheet', (
+      tester,
+    ) async {
+      final (_, client) = await editing(tester, noBot);
+      client.updateError =
+          "NEW_BOT is the main bot's token; an agent's bot needs its own";
+      await show(tester, find.byKey(const Key('agent-bot')));
+      await tester.tap(find.byKey(const Key('agent-bot')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('NEW_BOT'));
+      await tester.pumpAndSettle();
+      await save(tester);
+      expect(find.byType(AgentSheet), findsOneWidget);
+      expect(find.textContaining("main bot's token; an agent's"), findsWidgets);
+      expect(
+        find.textContaining('bot change applies'),
+        findsNothing,
+        reason: 'nothing was saved',
+      );
+    });
+
+    ap3Test('a secrets listing that fails says so', (tester) async {
+      final (store, client) = await _store();
+      client.secretsError = 'owner scope needed';
+      client.agentList = [_tern, capped];
+      store.agents = client.agentList;
+      await store.openAgent(capped);
+      await _pump(tester, store);
+      await tester.tap(find.byTooltip('Edit Research'));
+      await tester.pumpAndSettle();
+      await show(tester, find.byKey(const Key('agent-bot-set-secret')));
+      expect(find.textContaining("Couldn't list your secrets"), findsOneWidget);
+    });
   });
 
   testWidgets('avatars use the profile glyph and colour', (tester) async {

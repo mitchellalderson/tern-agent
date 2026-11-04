@@ -823,6 +823,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
       ? null
       : widget.editing!.lead;
   late bool _wakes = widget.editing?.agents?.agentWakes ?? false;
+  late bool _decide = widget.editing?.agents?.letAgentsDecide ?? false;
   late final _slugCtl = TextEditingController(text: widget.editing?.slug);
   String? _error;
   var _busy = false;
@@ -870,6 +871,11 @@ class _ChannelDialogState extends State<ChannelDialog> {
                 editing.agents == null || _wakes == editing.agents!.agentWakes
                 ? null
                 : _wakes,
+            letAgentsDecide:
+                editing.agents == null ||
+                    _decide == editing.agents!.letAgentsDecide
+                ? null
+                : _decide,
           );
     if (!mounted) return;
     if (err == null) {
@@ -892,7 +898,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 520),
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(22, 20, 22, 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1017,6 +1023,22 @@ class _ChannelDialogState extends State<ChannelDialog> {
                               'message, and ${agents.wakesPerHour} an hour.'
                         : "Agents' @mentions are shown but start nothing; "
                               'yours always do.',
+                  ),
+                ),
+                SwitchListTile(
+                  key: const Key('let-agents-decide'),
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  value: _decide,
+                  onChanged: (v) => setState(() => _decide = v),
+                  title: const Text('Let agents decide'),
+                  subtitle: Text(
+                    _decide
+                        ? 'A post that mentions no one goes to the members it '
+                              'fits, picked by one cheap model call. If that '
+                              'fails, the lead answers.'
+                        : 'Off: a post that mentions no one always goes to '
+                              'the lead.',
                   ),
                 ),
               ],

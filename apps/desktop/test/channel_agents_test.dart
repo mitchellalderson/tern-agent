@@ -45,8 +45,11 @@ class _FakeClient extends TernClient {
   final patches = <({String? lead, bool? agentWakes})>[];
   var lead = 'tern:research';
   var wakes = false;
+  var decide = false;
+  final decidePatches = <bool>[];
 
   ChannelAgents get _agents => ChannelAgents(
+    letAgentsDecide: decide,
     members: [
       ChannelMember(agentId: lead, lead: true, addedAt: _t0),
       if (lead != 'tern') ChannelMember(agentId: 'tern', addedAt: _t0),
@@ -103,6 +106,17 @@ class _FakeClient extends TernClient {
   }) async => channel != 'launch'
       ? []
       : [
+          // What "Let agents decide" leaves after routing a post.
+          Post(
+            id: 5,
+            channelId: 'launch',
+            authorKind: 'system',
+            authorId: 'system',
+            author: 'tern',
+            kind: 'note',
+            text: 'Sent to @research, @ops',
+            createdAt: _t0.add(const Duration(minutes: 5)),
+          ),
           Post(
             id: 4,
             channelId: 'launch',
@@ -170,8 +184,13 @@ class _FakeClient extends TernClient {
     bool? agentWakes,
     int? maxHops,
     int? wakesPerHour,
+    bool? letAgentsDecide,
   }) async {
     patches.add((lead: lead, agentWakes: agentWakes));
+    if (letAgentsDecide != null) {
+      decidePatches.add(letAgentsDecide);
+      decide = letAgentsDecide;
+    }
     if (lead != null) this.lead = lead;
     if (agentWakes != null) wakes = agentWakes;
     return (await channels()).last;
@@ -282,8 +301,16 @@ void main() {
       findsOneWidget,
     );
     // The notes are quiet lines; the mention is a link.
-    expect(find.byType(NoteLine), findsNWidgets(2));
+    expect(find.byType(NoteLine), findsNWidgets(3));
     expect(find.text('Research joined'), findsOneWidget);
+    // The routing note of "Let agents decide" is one of them.
+    expect(
+      find.descendant(
+        of: find.byType(NoteLine),
+        matching: find.textContaining('Sent to', findRichText: true),
+      ),
+      findsOneWidget,
+    );
 
     await tester.tap(find.text('+ Agent'));
     await tester.pump(const Duration(milliseconds: 500));
@@ -370,6 +397,44 @@ void main() {
     expect(client.patches.last, (lead: 'tern', agentWakes: true));
     expect(store.openChannel!.lead, 'tern');
     expect(store.openChannel!.agents!.agentWakes, isTrue);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('"Let agents decide" is off until switched on, with a line '
+      'saying what it does', (tester) async {
+    final (store, client) = await _store();
+    await _pump(tester, store);
+    await tester.tap(find.byTooltip('Channel settings'));
+    await tester.pump(const Duration(milliseconds: 500));
+    await _settle(tester);
+    final toggle = find.byKey(const Key('let-agents-decide'));
+    expect(toggle, findsOneWidget);
+    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+    expect(
+      find.textContaining('always goes to the lead'),
+      findsOneWidget,
+      reason: 'off says where unmentioned posts go',
+    );
+    await tester.tap(toggle);
+    await tester.pump();
+    expect(
+      find.textContaining('picked by one cheap model call'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('the lead answers'), findsOneWidget);
+    await tester.tap(find.text('Save'));
+    await _settle(tester);
+    expect(client.decidePatches, [true]);
+    expect(store.openChannel!.agents!.letAgentsDecide, isTrue);
+
+    // Open again: it shows on, and saving without a change sends nothing.
+    await tester.tap(find.byTooltip('Channel settings'));
+    await tester.pump(const Duration(milliseconds: 500));
+    await _settle(tester);
+    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+    await tester.tap(find.text('Save'));
+    await _settle(tester);
+    expect(client.decidePatches, [true]);
     debugDefaultTargetPlatformOverride = null;
   });
 }

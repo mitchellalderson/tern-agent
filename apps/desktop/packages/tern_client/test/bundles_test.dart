@@ -45,6 +45,47 @@ void main() {
     expect(plan.warnings.any((w) => w.contains('notion-api.co')), isTrue);
   });
 
+  test('decodes the agents a bundle brings, with their capability lines', () {
+    final p = BundlePreview.fromJson(_fixture('bundle_preview_agents.json'));
+    expect(p.canInstall, isFalse);
+    expect(p.conflicts.single, contains('@scout'));
+    final scout = p.plan.agents.firstWhere((a) => a.slug == 'scout');
+    expect(scout.name, 'Scout');
+    expect(scout.existing, isTrue);
+    expect(scout.allBuiltins, isTrue);
+    expect(scout.allConnectors, isTrue);
+    expect(scout.allMcp, isFalse);
+    expect(scout.sharedMemory, isTrue);
+    expect(scout.autonomy, 'autonomous');
+    expect(scout.scope('skills'), 'all');
+    final reader = p.plan.agents.last;
+    expect(reader.kept, isTrue);
+    expect(reader.autonomy, isNull);
+    expect(reader.allBuiltins, isFalse);
+    expect(reader.scope('builtins'), 'read_only');
+    expect(p.plan.added, contains('agent @scout: connectors: all'));
+    // A plan from a core without agents has none.
+    expect(
+      BundlePreview.fromJson(_fixture('bundle_preview.json')).plan.agents,
+      isEmpty,
+    );
+  });
+
+  test('the installed list names the agents a bundle made', () {
+    final b = InstalledBundle.fromJson({
+      'name': 'x',
+      'version': '1',
+      'source': 's',
+      'sha256': 'h',
+      'signature': 'unsigned',
+      'installed_at': 'now',
+      'agents': [
+        {'slug': 'scout', 'id': 'tern:scout'},
+      ],
+    });
+    expect(b.agents, ['scout']);
+  });
+
   test('decodes the installed list', () {
     final list = [
       for (final b in _fixture('bundle_list.json')['bundles'] as List)

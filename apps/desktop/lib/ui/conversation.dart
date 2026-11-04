@@ -9,6 +9,7 @@ import 'history.dart';
 import 'items.dart';
 import 'move_dialog.dart';
 import 'model_picker.dart';
+import 'agent_ap3.dart';
 import 'agent_face.dart';
 import 'agent_sheet.dart';
 import 'outbox.dart';
@@ -162,14 +163,28 @@ class _Header extends StatelessWidget {
             },
             const SizedBox(width: 10),
             Expanded(
-              child: Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                ),
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  // Beside the name, where the title gives way to it.
+                  if (store.streamAgent case final a? when a.autonomy != null)
+                    Flexible(
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 10),
+                        child: AutonomyChip(agent: a),
+                      ),
+                    ),
+                ],
               ),
             ),
             if (store.modelWarning case final w?)

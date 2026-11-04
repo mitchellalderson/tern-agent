@@ -16,6 +16,7 @@ class InstalledBundle {
     this.connectors = const [],
     this.skills = const [],
     this.routines = const [],
+    this.agents = const [],
   });
 
   factory InstalledBundle.fromJson(Json j) => InstalledBundle(
@@ -33,6 +34,10 @@ class InstalledBundle {
     routines: [
       for (final r in j['routines'] as List? ?? const [])
         (r as Json)['name'] as String,
+    ],
+    agents: [
+      for (final a in j['agents'] as List? ?? const [])
+        (a as Json)['slug'] as String,
     ],
   );
 
@@ -54,6 +59,9 @@ class InstalledBundle {
   final List<String> connectors;
   final List<String> skills;
   final List<String> routines;
+
+  /// Slugs of the agents it made: removing the bundle archives them.
+  final List<String> agents;
 
   bool get signed => key != null;
 
@@ -101,6 +109,7 @@ class BundlePlan {
     this.trustedAs,
     this.connectors = const [],
     this.skills = const [],
+    this.agents = const [],
     this.routines = const [],
     this.secrets = const [],
     this.connections = const [],
@@ -133,6 +142,10 @@ class BundlePlan {
       skills: [
         for (final s in j['skills'] as List? ?? const [])
           BundleSkill.fromJson(s as Json),
+      ],
+      agents: [
+        for (final a in j['agents'] as List? ?? const [])
+          BundleAgent.fromJson(a as Json),
       ],
       routines: [
         for (final r in j['routines'] as List? ?? const [])
@@ -180,6 +193,9 @@ class BundlePlan {
   final String? trustedAs;
   final List<BundleConnector> connectors;
   final List<BundleSkill> skills;
+
+  /// Agent profiles it brings: made at install, never over one you have.
+  final List<BundleAgent> agents;
   final List<BundleRoutine> routines;
   final List<({String name, List<String> usedBy, bool set})> secrets;
   final List<
@@ -294,6 +310,69 @@ class BundleSkill {
 
   /// Files the agent could run, not only read.
   final List<String> runnable;
+}
+
+/// An agent profile a bundle brings (`agents/<slug>/` in the layout).
+class BundleAgent {
+  const BundleAgent({
+    required this.slug,
+    required this.name,
+    this.description = '',
+    this.memory = 'private',
+    this.tools = const [],
+    this.autonomy,
+    this.persona = '',
+    this.existing = false,
+    this.kept = false,
+  });
+
+  factory BundleAgent.fromJson(Json j) => BundleAgent(
+    slug: j['slug'] as String,
+    name: j['name'] as String? ?? j['slug'] as String,
+    description: j['description'] as String? ?? '',
+    memory: j['memory'] as String? ?? 'private',
+    tools: _strings(j['tools']),
+    autonomy: j['autonomy'] as String?,
+    persona: j['persona'] as String? ?? '',
+    existing: j['existing'] as bool? ?? false,
+    kept: j['kept'] as bool? ?? false,
+  );
+
+  final String slug;
+  final String name;
+  final String description;
+
+  /// `private` or `shared`.
+  final String memory;
+
+  /// One line per kind: `builtins: read_only`, `connectors: all`.
+  final List<String> tools;
+
+  /// Its autonomy ceiling, when the template sets one.
+  final String? autonomy;
+
+  /// The start of its persona.
+  final String persona;
+
+  /// An agent with this @name exists and isn't this bundle's: a conflict.
+  final bool existing;
+
+  /// This bundle made it earlier: an update leaves it as you have it.
+  final bool kept;
+
+  /// The value of a tools line (`all` for `connectors: all`).
+  String? scope(String kind) {
+    for (final t in tools) {
+      if (t.startsWith('$kind: ')) return t.substring(kind.length + 2);
+    }
+    return null;
+  }
+
+  /// Whether it can use every built-in tool (shell included).
+  bool get allBuiltins => scope('builtins') == 'all';
+  bool get allConnectors => scope('connectors') == 'all';
+  bool get allMcp => scope('mcp') == 'all';
+  bool get sharedMemory => memory == 'shared';
 }
 
 class BundleRoutine {

@@ -509,9 +509,10 @@ class _ApprovalCardState extends State<ApprovalCard> {
               ),
               child: SelectableText(
                 _showInput
-                    ? (a.scriptText case final code?
-                          ? '$input\n\nscript:\n$code'
-                          : input)
+                    ? switch (a.scriptText) {
+                        final code? => '$input\n\nscript:\n$code',
+                        null => input,
+                      }
                     : a.headline,
                 style: mono.copyWith(color: c.text),
               ),

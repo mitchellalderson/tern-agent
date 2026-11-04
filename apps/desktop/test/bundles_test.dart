@@ -20,6 +20,7 @@ class FakeBundlesClient extends TernClient {
   FakeBundlesClient() : super(const Endpoint.unix('/nonexistent'));
 
   final calls = <String>[];
+  var previewFixture = 'bundle_preview.json';
 
   @override
   Future<List<InstalledBundle>> bundles() async => [
@@ -30,7 +31,7 @@ class FakeBundlesClient extends TernClient {
   @override
   Future<BundlePreview> previewBundle(String source, {String? sha256}) async {
     calls.add('preview $source');
-    return BundlePreview.fromJson(_fixture('bundle_preview.json'));
+    return BundlePreview.fromJson(_fixture(previewFixture));
   }
 
   @override
@@ -128,4 +129,130 @@ void main() {
     await tester.pumpAndSettle();
     expect(client.calls.last, 'remove notion-recipe');
   });
+
+  testWidgets('the plan lists each agent with what it can reach', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final client = FakeBundlesClient()
+      ..previewFixture = 'bundle_preview_agents.json';
+    final store = TernStore(client)
+      ..health = const Health(pid: 1, version: '0.1.0', features: {'bundles'});
+    await tester.pumpWidget(
+      _app(
+        Builder(
+          builder: (context) => TextButton(
+            onPressed: () => showInstallBundle(
+              context,
+              store,
+              source: 'https://example.com/pack.tar.zst',
+            ),
+            child: const Text('open'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    expect(client.calls, ['preview https://example.com/pack.tar.zst']);
+
+    expect(
+      find.text('AGENTS · MADE AT INSTALL, EACH WITH ITS OWN CHAT'),
+      findsOneWidget,
+    );
+    final scout = find.byKey(const Key('bundle-agent-scout'));
+    final reader = find.byKey(const Key('bundle-agent-reader'));
+    expect(scout, findsOneWidget);
+    expect(reader, findsOneWidget);
+    Finder inCard(Finder card, String text) => find.descendant(
+      of: card,
+      matching: find.textContaining(text, findRichText: true),
+    );
+    // Scout: every built-in tool incl. shell, every connector, shared memory,
+    // a ceiling: each warning stands under it, once, in the card.
+    expect(inCard(scout, 'Scout'), findsWidgets);
+    expect(inCard(scout, 'Memory shared'), findsOneWidget);
+    expect(inCard(scout, 'builtins: all'), findsOneWidget);
+    expect(
+      inCard(scout, 'Autonomy ceiling: autonomous (a cap, not a grant)'),
+      findsOneWidget,
+    );
+    expect(
+      inCard(scout, 'can use every built-in tool, including shell'),
+      findsOneWidget,
+    );
+    expect(inCard(scout, 'every connector you have'), findsOneWidget);
+    expect(inCard(scout, 'reads and writes your shared memory'), findsOneWidget);
+    expect(inCard(scout, 'Added capability: agent @scout: connectors: all'),
+        findsOneWidget);
+    expect(
+      inCard(scout, 'You already have an agent @scout'),
+      findsOneWidget,
+    );
+    // Not repeated in the general WARNINGS list.
+    expect(find.text('WARNINGS'), findsNothing);
+    expect(
+      find.textContaining('can use every built-in tool'),
+      findsOneWidget,
+    );
+    // Reader is narrow: nothing to warn about, and kept as you have it.
+    expect(inCard(reader, 'No autonomy ceiling'), findsOneWidget);
+    expect(inCard(reader, 'builtins: read_only'), findsOneWidget);
+    expect(inCard(reader, 'leaves it as you have it'), findsOneWidget);
+    expect(inCard(reader, 'every built-in'), findsNothing);
+    // The conflict stops the install.
+    expect(
+      find.textContaining('you already have an agent @scout; rename'),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Update'))
+          .onPressed,
+      isNull,
+    );
+  });
+
+  testWidgets('a bundle that made agents says they are archived on remove', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final client = _AgentsBundlesClient();
+    final store = TernStore(client)
+      ..health = const Health(pid: 1, version: '0.1.0', features: {'bundles'});
+    await store.loadBundles();
+    await tester.pumpWidget(
+      _app(BundlesView(store: store, panelOpen: false, onTogglePanel: () {})),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Agents: @scout, @reader'), findsOneWidget);
+    await tester.tap(find.text('Remove'));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('are archived, not deleted'),
+      findsOneWidget,
+    );
+  });
+}
+
+class _AgentsBundlesClient extends FakeBundlesClient {
+  @override
+  Future<List<InstalledBundle>> bundles() async => [
+    InstalledBundle.fromJson({
+      'name': 'research-pack',
+      'version': '1.0.0',
+      'source': '/tmp/p.tar.zst',
+      'sha256': 'aa',
+      'signature': 'unsigned',
+      'installed_at': 'now',
+      'agents': [
+        {'slug': 'scout', 'id': 'tern:scout'},
+        {'slug': 'reader', 'id': 'tern:reader'},
+      ],
+    }),
+  ];
 }

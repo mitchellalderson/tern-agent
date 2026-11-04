@@ -5,9 +5,11 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'agent_ap3.dart';
 import 'channel_view.dart' show slugFor;
 import 'manage.dart';
 import 'model_picker.dart' show ModelList;
+import 'secrets.dart' show showSecretsDialog;
 import 'widgets.dart';
 
 /// Create an agent (`agent` null) or edit one: the sheet of agent profiles
@@ -104,6 +106,17 @@ class _AgentSheetState extends State<AgentSheet> {
   /// Who it may hand work to, by id; null = unchanged from the agent's.
   List<String>? _delegates;
 
+  /// Its autonomy ceiling (`readonly`..`yolo`); null = none.
+  late String? _autonomy = widget.editing?.autonomy;
+
+  /// The NAME of the secret holding its own Telegram bot's token; null =
+  /// no bot of its own.
+  late String? _bot = widget.editing?.telegramSecret;
+
+  /// The user's secrets (names and status; never values), for the bot field.
+  List<SecretStatus>? _secrets;
+  String? _secretsError;
+
   /// The scope being edited; null = everything (the default agent's).
   late ToolScope? _tools = widget.editing == null
       ? _narrow()
@@ -143,8 +156,23 @@ class _AgentSheetState extends State<AgentSheet> {
     _load();
   }
 
+  Future<void> _loadSecrets() async {
+    try {
+      final list = await widget.store.client.secrets();
+      if (mounted) {
+        setState(() {
+          _secrets = list;
+          _secretsError = null;
+        });
+      }
+    } on TernException catch (e) {
+      if (mounted) setState(() => _secretsError = e.message);
+    }
+  }
+
   Future<void> _load() async {
     final client = widget.store.client;
+    if (widget.editing case final a? when !a.isDefault) _loadSecrets();
     try {
       if (widget.editing case final a?) {
         final p = await client.persona(a.id);
@@ -198,6 +226,7 @@ class _AgentSheetState extends State<AgentSheet> {
     final store = widget.store;
     final avatar = AvatarSpec(glyph: _glyph, color: _color);
     final String? err;
+    var botChanged = false;
     if (widget.editing case final a?) {
       final model = _model;
       final fields = <String, Object?>{
@@ -216,7 +245,12 @@ class _AgentSheetState extends State<AgentSheet> {
           'egress': _browse ? 'allow' : null,
         if (!_isDefault || _tools != null) 'tools': _tools?.toJson(),
         'delegates': ?_delegates,
+        // `null` removes the ceiling: sent, not left out.
+        if (_autonomy != a.autonomy) 'autonomy': _autonomy,
+        if (!_isDefault && _bot != a.telegramSecret)
+          'telegram': _bot == null ? null : {'bot_token_secret': _bot},
       };
+      botChanged = !_isDefault && _bot != a.telegramSecret;
       err = await store.updateAgent(
         a,
         fields: fields,
@@ -234,13 +268,25 @@ class _AgentSheetState extends State<AgentSheet> {
         tools: _tools,
         memory: _memory,
         egress: _browse ? 'allow' : null,
+        autonomy: _autonomy,
         template: _template,
         routine: _addRoutine ? _routine : null,
       );
     }
     if (!mounted) return;
     if (err == null) {
+      final messenger = ScaffoldMessenger.maybeOf(context);
       Navigator.of(context).pop();
+      if (botChanged) {
+        messenger?.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'The bot change applies when the daemon restarts '
+              '(Restart daemon, at the bottom of the sidebar).',
+            ),
+          ),
+        );
+      }
     } else {
       setState(() {
         _busy = false;
@@ -537,6 +583,11 @@ class _AgentSheetState extends State<AgentSheet> {
                         'text can\'t send what it knows somewhere new.',
                       ),
                     ),
+                    _section('AUTONOMY CEILING'),
+                    AutonomyPicker(
+                      value: _autonomy,
+                      onChanged: (v) => setState(() => _autonomy = v),
+                    ),
                     if (widget.editing case final a?
                         when widget.store.agents.any(
                           (o) => o.id != a.id && !o.archived,
@@ -550,6 +601,21 @@ class _AgentSheetState extends State<AgentSheet> {
                         ],
                         chosen: _delegates,
                         onChanged: (v) => setState(() => _delegates = v),
+                      ),
+                    ],
+                    if (widget.editing case final a? when !a.isDefault) ...[
+                      _section('TELEGRAM BOT'),
+                      TelegramBotField(
+                        agent: a,
+                        agents: widget.store.agents,
+                        secrets: _secrets,
+                        loadError: _secretsError,
+                        value: _bot,
+                        onChanged: (v) => setState(() => _bot = v),
+                        onSetSecret: () async {
+                          await showSecretsDialog(context, widget.store);
+                          if (mounted) _loadSecrets();
+                        },
                       ),
                     ],
                     if (_routine case final r? when _creating)

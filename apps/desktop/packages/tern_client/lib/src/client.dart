@@ -361,6 +361,7 @@ class TernClient {
     ToolScope? tools,
     String? memory,
     String? egress,
+    String? autonomy,
     String? template,
   }) async => Agent.fromJson(
     await _json('POST', '/v1/agents', {
@@ -377,6 +378,7 @@ class TernClient {
       'tools': ?tools?.toJson(),
       'memory': ?memory,
       'egress': ?egress,
+      'autonomy': ?autonomy,
       'template': ?template,
     }),
   );
@@ -385,6 +387,19 @@ class TernClient {
   /// `archived: true` archives it).
   Future<Agent> updateAgent(String id, Json fields) async =>
       Agent.fromJson(await _json('PATCH', '/v1/agents/${_seg(id)}', fields));
+
+  /// Set an agent's autonomy ceiling (`readonly`, `supervised`,
+  /// `autonomous`, `yolo`), or remove it with null.
+  Future<Agent> setAgentAutonomy(String id, String? level) =>
+      updateAgent(id, {'autonomy': level});
+
+  /// Give an agent a Telegram bot of its own, by the NAME of the secret that
+  /// holds its token (never the token), or remove it with null. Throws
+  /// [TernException] (400) when the name is bad or another bot uses it.
+  /// Applies when the daemon restarts.
+  Future<Agent> setAgentTelegram(String id, String? secret) => updateAgent(id, {
+    'telegram': secret == null ? null : {'bot_token_secret': secret},
+  });
 
   /// What `id` did lately: delegated batches and routine runs.
   Future<List<AgentWork>> agentWork(String id, {int limit = 10}) async => [
@@ -459,6 +474,7 @@ class TernClient {
     bool? agentWakes,
     int? maxHops,
     int? wakesPerHour,
+    bool? letAgentsDecide,
   }) async => Channel.fromJson(
     await _json('PATCH', '/v1/channels/${_seg(id)}', {
       'slug': ?slug,
@@ -472,6 +488,7 @@ class TernClient {
       'agent_wakes': ?agentWakes,
       'max_hops': ?maxHops,
       'wakes_per_hour': ?wakesPerHour,
+      'let_agents_decide': ?letAgentsDecide,
     }),
   );
 

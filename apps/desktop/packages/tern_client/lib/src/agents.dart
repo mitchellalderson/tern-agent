@@ -21,6 +21,8 @@ class Agent {
     this.deleted = false,
     this.isDefault = false,
     this.delegates,
+    this.autonomy,
+    this.telegramSecret,
   });
 
   factory Agent.fromJson(Json j) => Agent(
@@ -48,6 +50,15 @@ class Agent {
       final List<dynamic> l => [for (final d in l) d as String],
       _ => null,
     },
+    autonomy: switch (j['autonomy']) {
+      // `read_only` is still accepted by the core, so tolerate it.
+      'read_only' => 'readonly',
+      final String s => s,
+      _ => null,
+    },
+    telegramSecret: j['telegram'] is Json
+        ? (j['telegram'] as Json)['bot_token_secret'] as String?
+        : null,
   );
 
   /// The default agent: today's setup, whose DM is Home.
@@ -95,6 +106,19 @@ class Agent {
   /// agent for the default agent, none for others.
   final List<String>? delegates;
 
+  /// Its autonomy ceiling (`readonly`, `supervised`, `autonomous`, `yolo`;
+  /// see [AutonomyLevel]): its runs get the lower of this and the
+  /// configured autonomy. A ceiling, never a grant. Null: no ceiling.
+  final String? autonomy;
+
+  /// The NAME of the secret holding its own Telegram bot's token (never the
+  /// token). Null: no bot of its own. A change applies when the daemon
+  /// restarts.
+  final String? telegramSecret;
+
+  /// The ceiling as a level, when it is one this client knows.
+  AutonomyLevel? get autonomyLevel => AutonomyLevel.parse(autonomy);
+
   bool get privateMemory => memory == 'private';
 
   /// Whether it may hand work to `other`.
@@ -102,6 +126,52 @@ class Agent {
       other.id != id &&
       !other.archived &&
       (delegates?.contains(other.id) ?? isDefault);
+}
+
+/// An autonomy level, lowest first (`Autonomy` in tern-core). On an agent
+/// it is a ceiling: `min(configured autonomy, ceiling)` applies to its runs.
+enum AutonomyLevel {
+  readonly(
+    'readonly',
+    'Read-only',
+    'Only looks. Anything that changes '
+        'something is refused without asking.',
+  ),
+  supervised(
+    'supervised',
+    'Supervised',
+    'Asks before it changes '
+        'something: tern\'s usual defaults.',
+  ),
+  autonomous(
+    'autonomous',
+    'Autonomous',
+    'Writes without asking in '
+        'untainted runs; destructive actions still ask.',
+  ),
+  yolo(
+    'yolo',
+    'Yolo',
+    'Nothing asks, tainted or not (forbidden tools '
+        'stay forbidden). As a ceiling it lowers nothing.',
+  );
+
+  const AutonomyLevel(this.wire, this.label, this.line);
+
+  /// What the API takes and sends.
+  final String wire;
+  final String label;
+
+  /// What the level means, in one line.
+  final String line;
+
+  static AutonomyLevel? parse(String? s) => switch (s) {
+    'readonly' || 'read_only' => readonly,
+    'supervised' => supervised,
+    'autonomous' => autonomous,
+    'yolo' => yolo,
+    _ => null,
+  };
 }
 
 /// `"anthropic:x"`, `["a:x", "b:y"]` or null, as a list.
@@ -376,7 +446,9 @@ class AgentImpact {
     runningRuns: j['running_runs'] as int? ?? 0,
     pendingOutbox: j['pending_outbox'] as int? ?? 0,
     telegramBot: j['telegram_bot'] as String?,
-    bundles: [for (final b in j['bundles'] as List<dynamic>? ?? []) b as String],
+    bundles: [
+      for (final b in j['bundles'] as List<dynamic>? ?? []) b as String,
+    ],
     blockers: [
       for (final b in j['blockers'] as List<dynamic>? ?? []) b as String,
     ],
