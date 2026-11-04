@@ -325,6 +325,7 @@ class TernClient {
     AvatarSpec? avatar,
     String? persona,
     List<String>? model,
+    List<String>? subagentModel,
     ToolScope? tools,
     String? memory,
     String? egress,
@@ -337,6 +338,10 @@ class TernClient {
       'persona': ?persona,
       if (model != null && model.isNotEmpty)
         'model': model.length == 1 ? model.first : model,
+      if (subagentModel != null && subagentModel.isNotEmpty)
+        'subagent_model': subagentModel.length == 1
+            ? subagentModel.first
+            : subagentModel,
       'tools': ?tools?.toJson(),
       'memory': ?memory,
       'egress': ?egress,

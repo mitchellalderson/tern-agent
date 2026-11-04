@@ -831,3 +831,11 @@ T3 kept the outbox's Home integration thin until channels C4 existed (`Manager::
   - a routine in quiet hours deferring at once with nothing sent to the chat.
 
   Also the TUI panel (approve, edit, reject) and `Post.outbox_id` in `tern_client`.
+
+### Model pickers in the agent sheet (AP1 fix)
+
+The agent sheet's model was a free-text field. It is now `AgentModelField`, for both the agent's model and its new **sub-agent model** setting (the API had `subagent_model`; the sheet didn't).
+- **A field that opens the app's model list** (`ModelList` from `model_picker.dart`, fed by `TernStore.loadModels` with the same "daemon too old" handling), with **Default** first: no override, showing what it resolves to (`default_model`; for sub-agents, `[subagents].default_model`, else the agent's own model). The default agent has no Default choice: its model *is* `default_model`, and a pick is sent as one model so the daemon keeps that setting's fallbacks.
+- **Chains** (T6a): the field shows the primary; picking another keeps the fallbacks (`withPrimary`, as `ModelChain::with_primary` does in Rust), and they are listed read-only under it. Default clears the whole chain. A chain editor is still later.
+- **A saved model the providers don't list** (a removed provider, a hand edit) is shown as the selection with a warning and left as it is unless another is picked. Typing `provider:model` in the list's search box is the "Other…" way in, as in the app's other model picker.
+- **Tests**: `agents_test.dart` (picking a listed model for both settings, Default sending `null`, a new primary keeping the fallbacks, an unlisted saved value kept and flagged, a typed model, no Default for the default agent); `agents_screenshot_test.dart`'s `agent_models_*` and `agent_model_list_*`, looked at.
