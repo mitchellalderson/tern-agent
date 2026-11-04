@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'endpoint.dart';
+import 'lifecycle.dart';
 import 'models.dart';
 import 'providers.dart';
 import 'secret_requests.dart';
@@ -73,13 +74,11 @@ class TernClient {
     );
     final client = TernClient(bootstrap);
     try {
-      final j =
-          await client._request('POST', '/v1/auth/pair', {
-                'code': link.code,
-                'device_name': deviceName,
-                'platform': ?platform,
-              }, auth: false)
-              as Json;
+      final j = await client._request('POST', '/v1/auth/pair', {
+        'code': link.code,
+        'device_name': deviceName,
+        'platform': ?platform,
+      }, auth: false) as Json;
       return Pairing(
         deviceId: j['device_id'] as String,
         scope: j['scope'] as String,
@@ -101,6 +100,18 @@ class TernClient {
       Health.fromJson(await _json('GET', '/v1/health'));
 
   Future<Info> info() async => Info.fromJson(await _json('GET', '/v1/info'));
+
+  /// Version, uptime and counts, cheap enough to poll.
+  Future<DaemonStatus> status() async =>
+      DaemonStatus.fromJson(await _json('GET', '/v1/status'));
+
+  /// Stop tern (exit code 0, so a service manager doesn't restart it).
+  /// Runs in progress stay paused and resume on the next start. With
+  /// [dryRun], only list them, for the confirmation. Owner-only remotely.
+  Future<ShutdownReply> shutdown({bool dryRun = false}) async =>
+      ShutdownReply.fromJson(
+        await _json('POST', dryRun ? '/v1/shutdown?dry_run=1' : '/v1/shutdown'),
+      );
 
   /// Every tool the agent has, with its argument schema.
   Future<List<ToolSpec>> tools() async => [
@@ -160,13 +171,11 @@ class TernClient {
     String? defaultModel,
   }) async {
     final body = {...draft.toJson(), 'default_model': ?defaultModel};
-    final j =
-        await _json(
-              existing == null ? 'POST' : 'PATCH',
-              existing == null ? '/v1/providers' : '/v1/providers/$existing',
-              body,
-            )
-            as Json;
+    final j = await _json(
+      existing == null ? 'POST' : 'PATCH',
+      existing == null ? '/v1/providers' : '/v1/providers/$existing',
+      body,
+    ) as Json;
     return ProviderStatus.fromJson(j['provider'] as Json);
   }
 
@@ -177,9 +186,9 @@ class TernClient {
 
   /// Make `model` the default for new conversations.
   Future<Resolved> setDefaultModel(String model) async {
-    final j =
-        await _json('PUT', '/v1/config/default_model', {'model': model})
-            as Json;
+    final j = await _json('PUT', '/v1/config/default_model', {
+      'model': model,
+    }) as Json;
     return Resolved.fromJson(j, model);
   }
 
@@ -300,13 +309,11 @@ class TernClient {
   /// A conversation's runs; with [subagents], the runs they started too.
   Future<List<RunItem>> runs(String session, {bool subagents = false}) async =>
       [
-        for (final r
-            in await _json(
-                  'GET',
-                  '/v1/sessions/$session/runs'
-                      '${subagents ? '?include=subagents' : ''}',
-                )
-                as List)
+        for (final r in await _json(
+          'GET',
+          '/v1/sessions/$session/runs'
+              '${subagents ? '?include=subagents' : ''}',
+        ) as List)
           RunItem.fromJson(r as Json),
       ];
 

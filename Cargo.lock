@@ -3326,6 +3326,7 @@ dependencies = [
  "clap",
  "crossterm",
  "futures",
+ "nix 0.31.3",
  "qrcode",
  "rcgen",
  "regex",

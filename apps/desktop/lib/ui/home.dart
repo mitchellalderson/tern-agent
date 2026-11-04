@@ -1,13 +1,17 @@
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../state/daemon.dart';
 import '../state/store.dart';
 import 'conversation.dart';
 import 'offline.dart';
 import 'providers.dart';
+import 'quit.dart';
 import 'secrets.dart';
+import 'settings.dart';
 import 'side_panel.dart';
 import 'sidebar.dart';
 import 'widgets.dart';
@@ -24,6 +28,8 @@ class Home extends StatefulWidget {
 class _HomeState extends State<Home> {
   var _panel = true;
   late final AppLifecycleListener _lifecycle;
+  final _control = TernControl(bin: findTern());
+  final _prefs = AppPrefs.load();
 
   @override
   void initState() {
@@ -32,8 +38,26 @@ class _HomeState extends State<Home> {
     _lifecycle = AppLifecycleListener(
       onStateChange: (s) =>
           widget.store.appActive = s == AppLifecycleState.resumed,
+      onExitRequested: _onExit,
     );
   }
+
+  /// Closing the window quits the app; Settings decides whether tern
+  /// stops with it.
+  Future<AppExitResponse> _onExit() async {
+    if (_prefs.onClose != OnClose.quitTern) return AppExitResponse.exit;
+    final quit = await quitTernCompletely(
+      context,
+      widget.store,
+      _control,
+      exitApp: () async {},
+    );
+    return quit ? AppExitResponse.exit : AppExitResponse.cancel;
+  }
+
+  void _quitCompletely() => quitTernCompletely(context, widget.store, _control);
+
+  void _settings() => showSettingsDialog(context, _control, _prefs);
 
   @override
   void dispose() {
@@ -95,6 +119,11 @@ class _HomeState extends State<Home> {
           const SingleActivator(LogicalKeyboardKey.comma, control: true): () {
             if (store.health != null) showProvidersDialog(context, store);
           },
+          const SingleActivator(
+            LogicalKeyboardKey.keyQ,
+            control: true,
+            alt: true,
+          ): _quitCompletely,
         },
         child: Focus(autofocus: true, child: body),
       );
@@ -129,6 +158,7 @@ class _HomeState extends State<Home> {
                       ? null
                       : () => showSecretsDialog(context, store),
                 ),
+                PlatformMenuItem(label: 'Settings…', onSelected: _settings),
               ],
             ),
             const PlatformMenuItemGroup(
@@ -141,8 +171,22 @@ class _HomeState extends State<Home> {
                 ),
               ],
             ),
-            const PlatformProvidedMenuItem(
-              type: PlatformProvidedMenuItemType.quit,
+            PlatformMenuItemGroup(
+              members: [
+                const PlatformProvidedMenuItem(
+                  type: PlatformProvidedMenuItemType.quit,
+                ),
+                // Stops tern too (spec §11.5a); ⌘Q only closes the window.
+                PlatformMenuItem(
+                  label: 'Quit tern completely',
+                  shortcut: const SingleActivator(
+                    LogicalKeyboardKey.keyQ,
+                    meta: true,
+                    alt: true,
+                  ),
+                  onSelected: _quitCompletely,
+                ),
+              ],
             ),
           ],
         ),

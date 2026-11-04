@@ -293,7 +293,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
               ),
               const SizedBox(height: 4),
               Text(
-                'tern runs this on its own while the daemon is running. '
+                'tern runs this on its own while it runs in the background. '
                 'Each routine keeps its own conversation.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),

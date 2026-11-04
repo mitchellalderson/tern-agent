@@ -97,7 +97,13 @@ pub enum Auth {
 }
 
 /// Paths only the owner may touch, whatever the method.
-const OWNER_ONLY: &[&str] = &["/v1/devices", "/v1/config", "/v1/secrets", "/v1/providers"];
+const OWNER_ONLY: &[&str] = &[
+    "/v1/devices",
+    "/v1/config",
+    "/v1/secrets",
+    "/v1/providers",
+    "/v1/shutdown",
+];
 
 /// Paths a `chat` device may change. Any other non-GET route is owner-only,
 /// so a new endpoint is safe until it's listed here.
@@ -724,6 +730,8 @@ mod tests {
             Scope::Owner
         );
         assert_eq!(required_scope(&get, "/v1/secrets"), Scope::Owner);
+        assert_eq!(required_scope(&post, "/v1/shutdown"), Scope::Owner);
+        assert_eq!(required_scope(&get, "/v1/status"), Scope::Read);
         // Unlisted writes are owner-only, and prefixes match whole segments.
         assert_eq!(
             required_scope(&post, "/v1/connectors/x/activate"),

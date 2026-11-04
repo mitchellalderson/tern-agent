@@ -26,9 +26,8 @@ void main() {
     final free = await ServerSocket.bind('127.0.0.1', 0);
     port = free.port;
     await free.close();
-    await File(
-      '$home/config.toml',
-    ).writeAsString('[api]\nlisten = ["unix", "tcp://127.0.0.1:$port"]\n');
+    await File('$home/config.toml')
+        .writeAsString('[api]\nlisten = ["unix", "tcp://127.0.0.1:$port"]\n');
     final script = File('${tmp.path}/script.json');
     await script.writeAsString(
       jsonEncode({
@@ -188,6 +187,19 @@ void main() {
     },
     skip: bin == null ? 'set TERN_BIN to run' : false,
   );
+
+  // Last: it stops the daemon.
+  test('status, a dry run, then shutdown exits 0', () async {
+    final status = await client.status();
+    expect(status.runningRuns, 0);
+    expect(status.managedBy, isNull);
+    expect((await client.health()).pid, status.pid);
+    final dry = await client.shutdown(dryRun: true);
+    expect(dry.stopping, isFalse);
+    expect(dry.runs, isEmpty);
+    expect((await client.shutdown()).stopping, isTrue);
+    expect(await daemon.exitCode.timeout(const Duration(seconds: 10)), 0);
+  }, skip: bin == null ? 'set TERN_BIN to run' : false);
 }
 
 /// Buffers a stream so tests can wait for the next event of a type.

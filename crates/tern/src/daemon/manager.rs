@@ -223,6 +223,27 @@ pub struct Routes {
     pub gateways: OnceLock<HashMap<String, Arc<dyn Gateway>>>,
     pub api: ApiApprovals,
     pub secrets: ApiSecretRequests,
+    pub lifecycle: Lifecycle,
+}
+
+/// What `/v1/status` and `/v1/shutdown` need from the daemon (T8a).
+pub struct Lifecycle {
+    pub started: Instant,
+    /// Cancelled by `POST /v1/shutdown`; `daemon::serve` then stops as it
+    /// does on SIGTERM.
+    pub shutdown: CancellationToken,
+    /// Each gateway's polling task, to report whether it is still up.
+    pub gateway_tasks: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
+}
+
+impl Default for Lifecycle {
+    fn default() -> Self {
+        Self {
+            started: Instant::now(),
+            shutdown: CancellationToken::new(),
+            gateway_tasks: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 /// Sends each approval to the chat the run's tree reports to, else to API
