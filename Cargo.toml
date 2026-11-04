@@ -16,6 +16,7 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 [workspace.dependencies]
+tern-auth = { path = "crates/tern-auth" }
 tern-core = { path = "crates/tern-core" }
 tern-gateway = { path = "crates/tern-gateway" }
 tern-lua = { path = "crates/tern-lua" }
@@ -43,6 +44,9 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "json", "stream"] }
 qrcode = { version = "0.14.1", default-features = false }
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+# The public suffix list, for "same registrable domain" checks on OAuth
+# endpoints (tooling spec §6.7.2).
+psl = "2.1.246"
 # Monty (docs/python-tool-spec.md): pinned exactly; it releases weekly.
 monty = "=1.4.0"
 # The helper's memory ceiling; `exit-code` reports it as exit 65, not an abort.

@@ -728,6 +728,7 @@ mod tests {
                 "outbox",
                 "taint",
                 "connectors",
+                "auth",
                 "api"
             ]
         );

@@ -114,6 +114,22 @@ docker_pids = 512          # 0 for no limit
 # [connectors]
 # rate = "120/min"             # HTTP requests per connector, shared by every run and script
 
+# Signing in to services: OAuth first, keys as the fallback, and the user
+# chooses. Connections are accounts: `tern connections`, /connections in the
+# TUI, or the app's Connections view. Tokens live in secrets.toml under
+# conn/<service>/<account>/ and never reach the model or a script.
+# [auth]
+# sign_in_timeout_secs = 300   # how long a sign-in waits for the browser or a device code
+# max_connections = 10         # accounts per connector or MCP server
+# idle_timeout_secs = 600      # an extra account's stdio MCP server stops after this long unused
+# local_issuers = []           # OAuth servers allowed on private addresses, e.g. ["http://127.0.0.1:8080"]
+# client_metadata_url = ""     # https URL of a client ID metadata document, for servers that take one instead of registration
+
+# OAuth apps you registered yourself, by provider. Google wants a "Desktop
+# app" client, whose client secret goes in secrets.toml under the name given.
+# [auth.clients]
+# google = { client_id = "1234-abc.apps.googleusercontent.com", client_secret_secret = "GOOGLE_CLIENT_SECRET" }
+
 # Scheduled prompts (schedule_create, the app's routines). Each schedule can
 # override these.
 # [schedules]
