@@ -4581,6 +4581,8 @@ dependencies = [
  "crossterm",
  "dispatch2",
  "futures",
+ "hyper",
+ "hyper-util",
  "monty-alloc",
  "nix 0.31.3",
  "objc2",

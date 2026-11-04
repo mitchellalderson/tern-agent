@@ -181,6 +181,9 @@ docker_pids = 512          # 0 for no limit
 # max_body_kb = 256             # larger bodies get 413
 # per_minute = 30               # deliveries one routine accepts per minute; more get 429
 # tolerance_secs = 300          # how old a signed X-Tern-Signature timestamp may be
+# header_timeout_secs = 10      # time to send the TLS handshake and headers (or idle between requests); slower connections are closed
+# body_timeout_secs = 30        # time to send a body once its headers are in; slower gets 408
+# max_connections = 64          # open connections at once; more are refused (503, or closed under TLS)
 #
 # Prices (USD per million tokens) for models whose list doesn't give them:
 # [providers.anthropic.prices]
