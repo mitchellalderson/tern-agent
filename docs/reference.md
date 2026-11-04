@@ -340,6 +340,19 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `subagents.models` | `{}` | Aliases `agent_spawn` can pass as `model`: `{ fast = "anthropic:claude-haiku-4-5" }`. Each may be a fallback chain. |
 | `secret_request_timeout_secs` | `900` | How long the agent's prompt for a secret waits for you. |
 
+The desktop app shows all of this (except providers, MCP servers and the Telegram gateway, which have their own windows) under **tern › Configuration…** or **Settings › All settings (config.toml)…**: every setting by section with its description from `config.example.toml`, a mark on what you've changed, a reset to the default, search, and a note on settings that matter for safety (`sandbox.network`, `sandbox.confine`, the API listeners). Changes are saved as you make them, keeping the file's comments. `default_model`, `schedules.*`, `home.*` and `api.remote_mcp_stdio` apply from the next run; the rest when tern restarts, which the window offers to do. The same is on the API, owner scope only:
+
+| Method | Path | |
+|---|---|---|
+| `GET` | `/v1/config/settings` | `{path, error?, sections: [{id, title, description?, settings}]}`; each setting is `{key, kind, choices?, min?, max?, optional, value, default, set, description, applies, restart_pending, security?, risky, editable}`. |
+| `PUT` | `/v1/config/settings/{key}` | Set `{"value": …}` (JSON; `null` unsets an optional setting). `400` for a wrong type or range or a config that wouldn't load, `404` for an unknown key. |
+| `DELETE` | `/v1/config/settings/{key}` | Back to the default: the key is removed from the file. |
+
+```sh
+curl --unix-socket ~/.tern/tern.sock -X PUT http://tern/v1/config/settings/sandbox.network \
+  -H 'content-type: application/json' -d '{"value": false}'
+```
+
 Secrets are looked up by name in the environment first, then in `~/.tern/secrets.toml` (mode 0600):
 
 ```toml

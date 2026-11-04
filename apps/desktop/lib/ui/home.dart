@@ -9,6 +9,7 @@ import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
 import 'channel_view.dart';
+import 'config_editor.dart';
 import 'conversation.dart';
 import 'mcp.dart';
 import 'offline.dart';
@@ -84,12 +85,21 @@ class _HomeState extends State<Home> {
 
   void _quitCompletely() => quitTernCompletely(context, widget.store, _control);
 
+  bool get _canRestart => !_remote && _control.bin != null;
+
+  /// For settings that apply at a restart; the app reconnects by itself.
+  Future<void> _restartTern() async {
+    await _control.stop();
+    await _control.start();
+  }
+
   void _settings() => showSettingsDialog(
     context,
     _control,
     _prefs,
     store: widget.store,
     connections: widget.connections,
+    onRestart: _canRestart ? _restartTern : null,
   );
 
   @override
@@ -212,6 +222,16 @@ class _HomeState extends State<Home> {
                   onSelected: store.health == null
                       ? null
                       : () => showSecretsDialog(context, store),
+                ),
+                PlatformMenuItem(
+                  label: 'Configuration…',
+                  onSelected: store.health == null
+                      ? null
+                      : () => showConfigDialog(
+                          context,
+                          store,
+                          onRestart: _canRestart ? _restartTern : null,
+                        ),
                 ),
                 PlatformMenuItem(label: 'Settings…', onSelected: _settings),
               ],

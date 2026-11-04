@@ -39,7 +39,8 @@
 //! Channels and posts are in `api_channels.rs`; schedules in `api_schedules.rs`; session runs and journal steps in
 //! `api_runs.rs`; sub-agent runs and messages in `api_subagents.rs`;
 //! secrets in `api_secrets.rs`; providers, model lists and the default model
-//! in `api_providers.rs`; MCP servers in `api_mcp.rs`.
+//! in `api_providers.rs`; MCP servers in `api_mcp.rs`; the config editor's
+//! settings in `api_config.rs`.
 //! Pairing, devices and uploads are in `auth.rs` and `uploads.rs`. TCP
 //! listeners (`listen.rs`) serve this same router behind device-token auth.
 
@@ -173,6 +174,7 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/approvals", get(pending_approvals))
         .route("/v1/approvals/{id}", post(approve))
         .merge(super::api_channels::routes())
+        .merge(super::api_config::routes())
         .merge(super::api_schedules::routes())
         .merge(super::api_runs::routes())
         .merge(super::api_subagents::routes())

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'channels.dart';
+import 'config.dart';
 import 'endpoint.dart';
 import 'lifecycle.dart';
 import 'mcp.dart';
@@ -540,6 +541,25 @@ class TernClient {
   Future<SecretStatus> setSecret(String name, String value) async =>
       SecretStatus.fromJson(
         await _json('PUT', '/v1/secrets/$name', {'value': value}),
+      );
+
+  /// `config.toml` as settings, by section. Owner scope only.
+  Future<ConfigView> configSettings() async =>
+      ConfigView.fromJson(await _json('GET', '/v1/config/settings'));
+
+  /// Set one setting to a JSON `value` (`null` unsets an optional one).
+  /// The daemon checks it and keeps the file's comments.
+  Future<ConfigSetting> setSetting(String key, Object? value) async =>
+      ConfigSetting.fromJson(
+        await _json('PUT', '/v1/config/settings/${_seg(key)}', {
+          'value': value,
+        }),
+      );
+
+  /// Back to the default: removed from `config.toml`.
+  Future<ConfigSetting> resetSetting(String key) async =>
+      ConfigSetting.fromJson(
+        await _json('DELETE', '/v1/config/settings/${_seg(key)}'),
       );
 
   /// Remove `name` from `secrets.toml`. Returns false if it wasn't there.
