@@ -87,12 +87,22 @@ pub struct TaintConfig {
 pub struct ConnectorsConfig {
     /// Requests per connector when its file declares no `rate`.
     pub rate: Rate,
+    /// `connector_test` saves a live call as a fixture beside the draft,
+    /// and replays it when the same call is tested again (T4c).
+    pub record_tests: bool,
+    /// Operations `connector_from_openapi` generates when none are named.
+    pub openapi_tools: usize,
+    /// Most operations one connector generated from OpenAPI may have.
+    pub openapi_max_tools: usize,
 }
 
 impl Default for ConnectorsConfig {
     fn default() -> Self {
         Self {
             rate: Rate::per_minute(120),
+            record_tests: true,
+            openapi_tools: 8,
+            openapi_max_tools: 40,
         }
     }
 }
@@ -1016,6 +1026,21 @@ env_secrets = ["GITHUB_TOKEN"]
         assert_eq!((c.outbox.wait_secs, c.outbox.expire_hours), (30, 72));
         let c = Config::parse("[connectors]\nrate = \"10/sec\"\n", Path::new("x")).unwrap();
         assert_eq!(c.connectors.rate.to_string(), "10/sec");
+        assert!(c.connectors.record_tests);
+        assert_eq!(
+            (c.connectors.openapi_tools, c.connectors.openapi_max_tools),
+            (8, 40)
+        );
+        let c = Config::parse(
+            "[connectors]\nrecord_tests = false\nopenapi_tools = 3\nopenapi_max_tools = 12\n",
+            Path::new("x"),
+        )
+        .unwrap();
+        assert!(!c.connectors.record_tests);
+        assert_eq!(
+            (c.connectors.openapi_tools, c.connectors.openapi_max_tools),
+            (3, 12)
+        );
         assert!(Config::parse("[connectors]\nrate = \"lots\"\n", Path::new("x")).is_err());
         assert_eq!(
             Config::default().autonomy,

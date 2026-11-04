@@ -195,6 +195,7 @@ fn meta(key: &str) -> Meta {
             ..m
         },
         "sandbox.shell_timeout_secs" => at_least(1.0),
+        "connectors.openapi_tools" | "connectors.openapi_max_tools" => at_least(1.0),
         "sandbox.docker_cpus" | "sandbox.docker_pids" => at_least(0.0),
         "subagents.default_model" => Meta {
             kind: Some(Kind::Model),

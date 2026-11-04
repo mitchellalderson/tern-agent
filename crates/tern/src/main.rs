@@ -206,7 +206,34 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Some(Command::Connectors { command }) => match command.unwrap_or(ConnectorsCommand::List) {
             ConnectorsCommand::List => connectors_cmd::list(&home),
-            ConnectorsCommand::Test { name } => connectors_cmd::test(&home, &name),
+            ConnectorsCommand::Test {
+                name,
+                record,
+                tool,
+                args,
+            } => connectors_cmd::test(&home, &name, record, tool.as_deref(), args.as_deref()),
+            ConnectorsCommand::FromOpenapi {
+                source,
+                name,
+                ops,
+                list,
+                tag,
+                search,
+                offset,
+                base_url,
+            } => connectors_cmd::from_openapi(
+                &home,
+                &connectors_cmd::FromOpenapi {
+                    source,
+                    name,
+                    ops,
+                    list,
+                    tag,
+                    search,
+                    offset,
+                    base_url,
+                },
+            ),
         },
     }
 }

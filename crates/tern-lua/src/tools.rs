@@ -32,6 +32,14 @@ impl Dirs {
     fn active(&self, name: &str) -> PathBuf {
         self.active.join(format!("{name}.{EXTENSION}"))
     }
+    /// A draft's recorded fixtures, beside it.
+    pub fn draft_fixtures(&self, name: &str) -> PathBuf {
+        crate::fixtures::path_for(&self.draft(name))
+    }
+    /// An active connector's fixtures, beside it.
+    pub fn active_fixtures(&self, name: &str) -> PathBuf {
+        crate::fixtures::path_for(&self.active(name))
+    }
 }
 
 fn arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolResult> {
@@ -69,7 +77,18 @@ fn load_draft(host: &Host, dirs: &Dirs, name: &str) -> Result<Vm, String> {
 /// approves exactly what runs (a draft can't change between the check and
 /// the call, or compute different capabilities on each load).
 #[derive(Default)]
-pub struct Inspected(Mutex<HashMap<String, Fingerprint>>);
+pub struct Inspected {
+    seen: Mutex<HashMap<String, Fingerprint>>,
+    /// Whether a test call was judged a replay (offline) or a live call
+    /// when its approval was decided, by `replay_key`, so the call does
+    /// what was approved even if the fixtures change in between.
+    replays: Mutex<HashMap<String, bool>>,
+}
+
+/// One test call: draft, tool and exact arguments.
+fn replay_key(name: &str, tool: &str, args: &Value) -> String {
+    format!("{name}\0{tool}\0{args}")
+}
 
 impl Inspected {
     pub fn new() -> Self {
@@ -78,16 +97,26 @@ impl Inspected {
 
     fn inspect(&self, host: &Host, dirs: &Dirs, name: &str) -> Result<Loaded, String> {
         let loaded = load_draft_full(host, dirs, name)?;
-        if let Ok(mut m) = self.0.lock() {
+        if let Ok(mut m) = self.seen.lock() {
             m.insert(name.to_owned(), loaded.fingerprint.clone());
         }
         Ok(loaded)
     }
 
+    fn plan_replay(&self, key: String, replay: bool) {
+        if let Ok(mut m) = self.replays.lock() {
+            m.insert(key, replay);
+        }
+    }
+
+    fn planned_replay(&self, key: &str) -> Option<bool> {
+        self.replays.lock().ok().and_then(|mut m| m.remove(key))
+    }
+
     /// Load for running: refuse unless it matches what was inspected.
     fn verify(&self, host: &Host, dirs: &Dirs, name: &str) -> Result<Loaded, String> {
         let loaded = load_draft_full(host, dirs, name)?;
-        let seen = self.0.lock().ok().and_then(|m| m.get(name).cloned());
+        let seen = self.seen.lock().ok().and_then(|m| m.get(name).cloned());
         match seen {
             Some(fp) if fp == loaded.fingerprint => Ok(loaded),
             Some(_) => Err(format!(
@@ -183,6 +212,42 @@ pub struct ConnectorTest {
     pub inspected: Inspected,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Auto,
+    Live,
+    Replay,
+}
+
+fn mode_arg(args: &Value) -> Result<Mode, String> {
+    match args.get("mode").and_then(Value::as_str) {
+        None | Some("auto") => Ok(Mode::Auto),
+        Some("live") => Ok(Mode::Live),
+        Some("replay") => Ok(Mode::Replay),
+        Some(other) => Err(format!(
+            "mode {other:?} must be \"auto\", \"live\" or \"replay\""
+        )),
+    }
+}
+
+fn test_args(args: &Value) -> Value {
+    args.get("args").cloned().unwrap_or_else(|| json!({}))
+}
+
+impl ConnectorTest {
+    /// Whether this test call replays fixtures rather than calling the API.
+    fn replays(&self, name: &str, tool: &str, args: &Value) -> bool {
+        match mode_arg(args) {
+            Ok(Mode::Replay) => true,
+            Ok(Mode::Live) | Err(_) => false,
+            Ok(Mode::Auto) => crate::fixtures::Fixtures::load(&self.dirs.draft_fixtures(name))
+                .ok()
+                .flatten()
+                .is_some_and(|f| f.find(tool, &test_args(args)).is_some()),
+        }
+    }
+}
+
 #[async_trait]
 impl Tool for ConnectorTest {
     fn effect(&self) -> Effect {
@@ -193,7 +258,7 @@ impl Tool for ConnectorTest {
         ToolSpec {
             name: "connector_test".into(),
             description:
-                "Run one tool of a draft connector with the given arguments and return its result. With several accounts connected, `connection` picks one (else the default)."
+                "Run one tool of a draft connector with the given arguments and return its result. A live call is recorded as a fixture (sanitized: no credentials) beside the draft; testing the same tool with the same arguments again replays it offline, with no network and no approval, so re-test freely after editing. With several accounts connected, `connection` picks one (else the default)."
                     .into(),
             input_schema: json!({
                 "type": "object",
@@ -201,6 +266,11 @@ impl Tool for ConnectorTest {
                     "name": { "type": "string" },
                     "tool": { "type": "string" },
                     "args": { "type": "object" },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["auto", "live", "replay"],
+                        "description": "auto (default): replay the recorded call with these exact arguments if there is one, else call the API live and record it. live: call the API and record again. replay: offline only."
+                    },
                     "connection": { "type": "string", "description": "The account to test under" }
                 },
                 "required": ["name", "tool"]
@@ -211,16 +281,25 @@ impl Tool for ConnectorTest {
     /// A draft that can reach the network or read secrets is run only with
     /// approval: it is code the model just wrote. Testing a tool has that
     /// tool's effect, so a destructive one asks every time and a
-    /// `money_movement` one is refused.
+    /// `money_movement` one is refused. Replaying fixtures sends nothing,
+    /// so it needs no approval (unless the script reads raw secrets).
     fn policy(&self, _: &ToolCtx, args: &Value) -> ToolPolicy {
-        let loaded = name_arg(args)
-            .ok()
-            .and_then(|n| self.inspected.inspect(&self.host, &self.dirs, n).ok());
+        let name = name_arg(args).ok();
+        let loaded = name.and_then(|n| self.inspected.inspect(&self.host, &self.dirs, n).ok());
+        let tool = args.get("tool").and_then(Value::as_str);
+        let replay = match (name, tool) {
+            (Some(n), Some(t)) => {
+                let r = self.replays(n, t, args);
+                self.inspected
+                    .plan_replay(replay_key(n, t, &test_args(args)), r);
+                r
+            }
+            _ => false,
+        };
         let risky = loaded.as_ref().is_some_and(|l| {
             let c = &l.fingerprint.capabilities;
-            !c.http.is_empty() || !c.secrets.is_empty() || !c.auth.is_empty()
+            !c.secrets.is_empty() || (!replay && (!c.http.is_empty() || !c.auth.is_empty()))
         });
-        let tool = args.get("tool").and_then(Value::as_str);
         let def = loaded.as_ref().and_then(|l| {
             l.vm.spec
                 .tools
@@ -228,6 +307,7 @@ impl Tool for ConnectorTest {
                 .find(|t| Some(t.name.as_str()) == tool)
         });
         let effect = match def {
+            Some(_) if replay && !risky => Effect::Read,
             Some(d) if risky => d.effect(),
             _ => Effect::Write,
         };
@@ -258,11 +338,48 @@ impl Tool for ConnectorTest {
             (Ok(n), Ok(t)) => (n, t),
             (Err(e), _) | (_, Err(e)) => return e,
         };
+        let mode = match mode_arg(&args) {
+            Ok(m) => m,
+            Err(e) => return ToolResult::error(e),
+        };
         let vm = match self.inspected.verify(&self.host, &self.dirs, name) {
             Ok(l) => l.vm,
             Err(e) => return ToolResult::error(e),
         };
-        let tool_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
+        let tool_args = test_args(&args);
+        // What the approval was decided on; offline only if it said so (or
+        // replay was asked for), so a fixture removed in between can't turn
+        // an unapproved replay into a live call.
+        let replay = self
+            .inspected
+            .planned_replay(&replay_key(name, tool, &tool_args))
+            .unwrap_or(mode == Mode::Replay);
+        let fixtures_path = self.dirs.draft_fixtures(name);
+        let fixtures = match crate::fixtures::Fixtures::load(&fixtures_path) {
+            Ok(f) => f,
+            Err(e) => return ToolResult::error(e),
+        };
+        if replay {
+            let Some(case) = fixtures.as_ref().and_then(|f| f.find(tool, &tool_args)) else {
+                return ToolResult::error(format!(
+                    "no recorded call of {name}.{tool} with these arguments{}; test it live (mode \"live\") to record one",
+                    if mode == Mode::Auto { " any more" } else { "" }
+                ));
+            };
+            return match crate::fixtures::check_case(&vm, case).await {
+                crate::fixtures::Outcome::Pass => ToolResult::ok(format!(
+                    "[replayed offline from the recorded fixture; mode \"live\" calls the API again]\n{}",
+                    case.result
+                )),
+                crate::fixtures::Outcome::Changed { got } => ToolResult::ok(format!(
+                    "[replayed offline from the recorded fixture; the result differs from the recorded one, which was:\n{}]\n{got}",
+                    clip(&case.result, 1500)
+                )),
+                crate::fixtures::Outcome::Failed(e) => {
+                    ToolResult::error(format!("{name}.{tool} (replaying fixtures): {e}"))
+                }
+            };
+        }
         // A test only reads what its account allows; it runs under the
         // account asked for, else the default.
         let conn = match &self.host.connections {
@@ -277,11 +394,42 @@ impl Tool for ConnectorTest {
             },
             None => None,
         };
-        match vm.call_as(tool, &tool_args, conn).await {
-            Ok(out) => ToolResult::ok(out),
+        if !self.host.record_fixtures {
+            return match vm.call_as(tool, &tool_args, conn).await {
+                Ok(out) => ToolResult::ok(out),
+                Err(e) => ToolResult::error(format!("{name}.{tool}: {e}")),
+            };
+        }
+        match crate::fixtures::record_case(&vm, tool, &tool_args, conn).await {
+            // Nothing went over the network: nothing worth replaying.
+            Ok((out, case)) if case.exchanges.is_empty() => ToolResult::ok(out),
+            Ok((out, case)) => {
+                let mut f = fixtures.unwrap_or_else(|| crate::fixtures::Fixtures::new(name));
+                let n = case.exchanges.len();
+                f.upsert(case);
+                let note = match f.save(&fixtures_path) {
+                    Ok(()) => format!(
+                        "[recorded {n} HTTP exchange{} as a fixture; testing these arguments again replays offline]",
+                        if n == 1 { "" } else { "s" }
+                    ),
+                    Err(e) => format!("[not recorded: {e}]"),
+                };
+                ToolResult::ok(format!("{out}\n\n{note}"))
+            }
             Err(e) => ToolResult::error(format!("{name}.{tool}: {e}")),
         }
     }
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 /// `. Changes: + http api.x.com/v2/*, - rate 60/min`, or that nothing changed.
@@ -395,6 +543,11 @@ impl Tool for ConnectorActivate {
             return ToolResult::error(format!("recording approval: {e}"));
         }
         let _ = std::fs::remove_file(self.dirs.draft(name));
+        // Fixtures go with the connector, so its tests replay where it lives.
+        let fixtures = self.dirs.draft_fixtures(name);
+        if fixtures.exists() {
+            let _ = std::fs::rename(&fixtures, self.dirs.active_fixtures(name));
+        }
         let tools: Vec<String> = vm
             .spec
             .tools
@@ -408,7 +561,243 @@ impl Tool for ConnectorActivate {
     }
 }
 
-const CONNECTOR_DOCS: &str = r#"Write (or overwrite) a draft Luau connector in ~/.tern/connectors/drafts/ and validate it. A connector file returns a table:
+// ---- connector_from_openapi ----
+
+/// Operations generated when none are named.
+pub const DEFAULT_OPENAPI_TOOLS: usize = 8;
+/// Most operations one generated connector takes.
+pub const MAX_OPENAPI_TOOLS: usize = 40;
+/// Operations per page of a listing.
+const LISTING_PAGE: usize = 50;
+/// How long a fetched document is kept for the next call.
+const DOCUMENT_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Write the draft for these operations and validate it. Shared by the
+/// tool and `tern connectors from-openapi`.
+pub fn draft_from_openapi(
+    host: &Host,
+    dirs: &Dirs,
+    doc: &crate::openapi::Document,
+    name: &str,
+    chosen: &[usize],
+    source: &str,
+) -> Result<(Vm, crate::openapi::Generated), String> {
+    let generated = crate::openapi::generate(doc, name, chosen, source)?;
+    std::fs::create_dir_all(&dirs.drafts).map_err(|e| format!("creating drafts directory: {e}"))?;
+    std::fs::write(dirs.draft(name), &generated.source)
+        .map_err(|e| format!("writing draft: {e}"))?;
+    let vm = load_draft(host, dirs, name)
+        .map_err(|e| format!("the generated draft is invalid (a bug in the generator; edit it with connector_write): {e}"))?;
+    Ok((vm, generated))
+}
+
+/// What to tell the agent (or print) after generating: the draft, what it
+/// left out, and the next steps.
+pub fn openapi_report(
+    vm: &Vm,
+    doc: &crate::openapi::Document,
+    chosen: &[usize],
+    generated: &crate::openapi::Generated,
+) -> String {
+    let mut out = format!("draft saved and valid:\n{}\n", describe(vm));
+    for n in &generated.notes {
+        out.push_str(&format!("\n{n}"));
+    }
+    if let Some(plan) = &generated.oauth_plan {
+        out.push_str(&format!(
+            "\nPlan for auth_propose (only if auth_discover finds nothing): {plan}"
+        ));
+    }
+    let left = doc.operations.len() - chosen.len();
+    if left > 0 {
+        out.push_str(&format!(
+            "\n\n{} of {} operations generated; {left} left out. To change the set, call connector_from_openapi again with `operations` (names from list: true, \"GET /path\", or \"tag:<tag>\").",
+            chosen.len(),
+            doc.operations.len()
+        ));
+    }
+    out.push_str("\n\nNext: test each tool with connector_test (the first live call is recorded as a fixture; later tests replay it offline), then connector_activate: the user approves its capabilities. It is not active until then.");
+    out
+}
+
+type Cached = (
+    String,
+    std::time::Instant,
+    std::sync::Arc<crate::openapi::Document>,
+);
+
+pub struct ConnectorFromOpenapi {
+    pub host: Host,
+    pub dirs: Dirs,
+    /// Operations generated when none are named (`[connectors] openapi_tools`).
+    pub default_tools: usize,
+    /// Most operations a connector takes (`[connectors] openapi_max_tools`).
+    pub max_tools: usize,
+    allow_loopback: bool,
+    cache: Mutex<Option<Cached>>,
+}
+
+impl ConnectorFromOpenapi {
+    pub fn new(host: Host, dirs: Dirs) -> Self {
+        Self {
+            host,
+            dirs,
+            default_tools: DEFAULT_OPENAPI_TOOLS,
+            max_tools: MAX_OPENAPI_TOOLS,
+            allow_loopback: false,
+            cache: Mutex::new(None),
+        }
+    }
+
+    /// Tests fetch documents from a local server.
+    #[cfg(test)]
+    pub fn allowing_loopback(mut self) -> Self {
+        self.allow_loopback = true;
+        self
+    }
+
+    async fn document(
+        &self,
+        url: &str,
+        base_url: Option<&str>,
+    ) -> Result<std::sync::Arc<crate::openapi::Document>, String> {
+        let key = format!("{url}\0{}", base_url.unwrap_or_default());
+        if let Ok(c) = self.cache.lock()
+            && let Some((k, at, doc)) = c.as_ref()
+            && *k == key
+            && at.elapsed() < DOCUMENT_TTL
+        {
+            return Ok(doc.clone());
+        }
+        let fetched = tern_core::net::get_public(
+            url,
+            crate::openapi::MAX_DOCUMENT,
+            self.allow_loopback,
+            std::time::Duration::from_secs(60),
+        )
+        .await
+        .map_err(|e| format!("fetching {url}: {e}"))?;
+        if !fetched.status.is_success() {
+            return Err(format!("fetching {url}: HTTP {}", fetched.status));
+        }
+        if fetched.truncated {
+            return Err(format!(
+                "{url} is larger than {} bytes",
+                crate::openapi::MAX_DOCUMENT
+            ));
+        }
+        let text = String::from_utf8_lossy(&fetched.body);
+        let doc = std::sync::Arc::new(crate::openapi::parse(&text, Some(url), base_url)?);
+        if let Ok(mut c) = self.cache.lock() {
+            *c = Some((key, std::time::Instant::now(), doc.clone()));
+        }
+        Ok(doc)
+    }
+}
+
+fn str_list(args: &Value, key: &str) -> Option<Vec<String>> {
+    args.get(key)?.as_array().map(|a| {
+        a.iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    })
+}
+
+#[async_trait]
+impl Tool for ConnectorFromOpenapi {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "connector_from_openapi".into(),
+            description: "Generate a draft Luau connector from a service's OpenAPI 3 or Swagger 2 document (JSON or YAML): one tool per chosen operation, with typed params, an effect from the method (GET reads, DELETE is destructive, the rest write), exact host and path allowlists, auth from its security schemes, and a rate if it states one. Prefer this to writing a connector by hand whenever the service publishes such a document. With no `operations`, a small API gets its first few read operations and a large one returns the operation list to choose from (`list: true` pages through it, narrowed by `tag` or `search`). The draft is tested and activated like any other: connector_test, then connector_activate with the user's approval.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "The OpenAPI or Swagger document's URL (https)" },
+                    "name": { "type": "string", "description": "Connector name, [a-z][a-z0-9_]*; defaults to one from the document's title" },
+                    "operations": {
+                        "type": "array", "items": { "type": "string" },
+                        "description": "Which operations: tool names from the listing, operationIds, \"GET /path\", or \"tag:<tag>\" for a whole tag"
+                    },
+                    "list": { "type": "boolean", "description": "Only list operations (paged); write nothing" },
+                    "tag": { "type": "string", "description": "With list: only this tag" },
+                    "search": { "type": "string", "description": "With list: only operations whose name, path or summary contains this" },
+                    "offset": { "type": "integer", "minimum": 0, "description": "With list: where the page starts" },
+                    "base_url": { "type": "string", "description": "Where requests go, when the document's servers are missing, relative or wrong" }
+                },
+                "required": ["url"]
+            }),
+        }
+    }
+
+    fn egress_host(&self, args: &Value) -> Option<String> {
+        let url = reqwest::Url::parse(args.get("url")?.as_str()?).ok()?;
+        url.host_str().map(str::to_ascii_lowercase)
+    }
+
+    /// Fetching a public document and writing a draft: nothing runs, and
+    /// activation is its own approval.
+    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+        NOT_IDEMPOTENT
+    }
+
+    async fn call(&self, _: &ToolCtx, args: Value) -> ToolResult {
+        let url = match arg(&args, "url") {
+            Ok(u) => u,
+            Err(e) => return e,
+        };
+        let base_url = args.get("base_url").and_then(Value::as_str);
+        let doc = match self.document(url, base_url).await {
+            Ok(d) => d,
+            Err(e) => return ToolResult::error(e),
+        };
+        let filter = crate::openapi::Filter {
+            tag: args.get("tag").and_then(Value::as_str).map(str::to_owned),
+            search: args
+                .get("search")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+        if args.get("list").and_then(Value::as_bool).unwrap_or(false) {
+            return ToolResult::ok(crate::openapi::listing(&doc, &filter, offset, LISTING_PAGE));
+        }
+        let asked = str_list(&args, "operations").filter(|v| !v.is_empty());
+        if asked.is_none() && doc.operations.len() > self.max_tools {
+            return ToolResult::ok(format!(
+                "{}\nThis API is too large to generate whole. Nothing was written: call again with `operations` (up to {}), for example the reads you need or \"tag:<tag>\".",
+                crate::openapi::listing(&doc, &filter, offset, LISTING_PAGE),
+                self.max_tools
+            ));
+        }
+        let chosen = match crate::openapi::select(
+            &doc,
+            asked.as_deref(),
+            self.default_tools,
+            self.max_tools,
+        ) {
+            Ok(c) => c,
+            Err(e) => return ToolResult::error(e),
+        };
+        let name = match args.get("name").and_then(Value::as_str) {
+            Some(_) => match name_arg(&args) {
+                Ok(n) => n.to_owned(),
+                Err(e) => return e,
+            },
+            None => doc.suggested_name(),
+        };
+        match draft_from_openapi(&self.host, &self.dirs, &doc, &name, &chosen, url) {
+            Ok((vm, generated)) => ToolResult::ok(openapi_report(&vm, &doc, &chosen, &generated)),
+            Err(e) => ToolResult::error(e),
+        }
+    }
+}
+
+const CONNECTOR_DOCS: &str = r#"Write (or overwrite) a draft Luau connector in ~/.tern/connectors/drafts/ and validate it. If the service publishes an OpenAPI or Swagger document, use connector_from_openapi instead: it generates the connector (tools, effects, allowlists, auth) from the document, and you edit the result here only if needed. A connector file returns a table:
 
 return {
   name = "weather",                       -- must equal the `name` argument
@@ -455,4 +844,6 @@ Add hosts = { "api.example.com" } to an entry to send it to only some of the htt
 
 A "read" tool may only send GET/HEAD; set read_via_post = true for one that reads via POST (GraphQL, search APIs). Tools that move money or trade must say money_movement = true or trade = true: tern refuses to run them. Requests outside the declared hosts and paths fail, including after redirects. Past the rate (default 120/min per connector, shared by every caller, scripts included) a request fails with "rate limited … try again in Ns"; a 429 or 503 with Retry-After pauses the connector for that long.
 
-ctx API: ctx.http.request{method, url, headers, json, body, timeout, auth} and ctx.http.get/post/put/patch/delete(url, opts) return {status, ok, headers, body, json}; ctx.kv.get(key) / ctx.kv.set(key, value) (per-connector, per-account storage; set nil to delete); ctx.connection; ctx.log(level, msg); ctx.now() (unix ms). If a key in capabilities.auth isn't set, call secret_request so the user can enter it privately (or connection_add with method "key" for another account), before connector_test; never ask for secrets or tokens in the chat. Globals: json.encode, json.decode, string, table, math, os.time/os.date. No file or process access, no require. Each call has a 5 second limit."#;
+ctx API: ctx.http.request{method, url, headers, json, body, timeout, auth} and ctx.http.get/post/put/patch/delete(url, opts) return {status, ok, headers, body, json}; ctx.kv.get(key) / ctx.kv.set(key, value) (per-connector, per-account storage; set nil to delete); ctx.connection; ctx.log(level, msg); ctx.now() (unix ms). If a key in capabilities.auth isn't set, call secret_request so the user can enter it privately (or connection_add with method "key" for another account), before connector_test; never ask for secrets or tokens in the chat. Globals: json.encode, json.decode, string, table, math, os.time/os.date. No file or process access, no require. Each call has a 5 second limit.
+
+Testing: connector_test's first live call of a tool with given arguments is saved as a fixture beside the draft (<name>.fixtures.json: requests and responses with credentials and secret values removed). Testing the same arguments again replays it offline, with no network or approval, so after editing the draft re-run your earlier tests to check nothing broke; pass mode "live" to call the API again. The fixtures move with the connector when it is activated, and `tern connectors test <name>` replays them all."#;

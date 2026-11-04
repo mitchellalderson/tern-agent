@@ -34,6 +34,7 @@ pub const NOT_IN_SCRIPTS: &[&str] = &[
     "channel_post",
     "secret_request",
     "connector_write",
+    "connector_from_openapi",
     "connector_test",
     "connector_activate",
     "schedule_create",

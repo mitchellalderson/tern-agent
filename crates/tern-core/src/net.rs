@@ -87,6 +87,129 @@ fn embedded_v4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
     }
 }
 
+/// What [`get_public`] fetched.
+#[derive(Debug)]
+pub struct Fetched {
+    pub status: reqwest::StatusCode,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
+    /// The body was longer than the limit and was cut there.
+    pub truncated: bool,
+}
+
+/// Redirects [`get_public`] follows, each checked like the first request.
+const MAX_REDIRECTS: usize = 5;
+
+/// Resolve `url`'s host, refusing non-public addresses (loopback too when
+/// `allow_loopback` is false), and return a client pinned to exactly those
+/// addresses, so DNS can't answer differently between the check and the
+/// connection. It follows no redirects itself.
+pub async fn public_client(
+    url: &reqwest::Url,
+    allow_loopback: bool,
+    timeout: std::time::Duration,
+) -> Result<reqwest::Client, String> {
+    let host = url.host_str().ok_or("url has no host")?.to_owned();
+    let port = url.port_or_known_default().unwrap_or(80);
+    let lookup_host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_owned();
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((lookup_host.as_str(), port))
+        .await
+        .map_err(|e| format!("resolving {host}: {e}"))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(format!("{host} did not resolve"));
+    }
+    if let Some(bad) = addrs
+        .iter()
+        .find(|a| !is_public(a.ip()) && !(allow_loopback && a.ip().is_loopback()))
+    {
+        return Err(format!(
+            "refusing to fetch {host} ({}): loopback, private, and link-local addresses aren't allowed",
+            bad.ip()
+        ));
+    }
+    let mut builder = http_client().timeout(timeout);
+    // Pin hostnames to the checked addresses; IP literals need no pinning.
+    if lookup_host.parse::<IpAddr>().is_err() {
+        builder = builder.resolve_to_addrs(&host, &addrs);
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
+/// GET a public URL the way `http_fetch` does: http(s) only, every hop's
+/// address checked and pinned, redirects followed by hand (at most five),
+/// and the body read up to `max` bytes. No credentials are ever sent.
+pub async fn get_public(
+    url: &str,
+    max: usize,
+    allow_loopback: bool,
+    timeout: std::time::Duration,
+) -> Result<Fetched, String> {
+    use futures::StreamExt;
+    let mut url = match reqwest::Url::parse(url) {
+        Ok(u) if matches!(u.scheme(), "http" | "https") => u,
+        Ok(u) => return Err(format!("unsupported scheme {:?}", u.scheme())),
+        Err(e) => return Err(format!("invalid url: {e}")),
+    };
+    let mut hops = 0;
+    let resp = loop {
+        let client = public_client(&url, allow_loopback, timeout).await?;
+        let resp = client
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|e| e.without_url().to_string())?;
+        let location = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        match location {
+            Some(loc) if resp.status().is_redirection() => {
+                hops += 1;
+                if hops > MAX_REDIRECTS {
+                    return Err(format!("more than {MAX_REDIRECTS} redirects"));
+                }
+                url = url
+                    .join(&loc)
+                    .map_err(|e| format!("bad redirect {loc:?}: {e}"))?;
+                if !matches!(url.scheme(), "http" | "https") {
+                    return Err(format!("redirect to unsupported scheme {:?}", url.scheme()));
+                }
+            }
+            _ => break resp,
+        }
+    };
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let mut body = Vec::new();
+    let mut truncated = false;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        let room = max - body.len();
+        if chunk.len() > room {
+            body.extend_from_slice(&chunk[..room]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(Fetched {
+        status,
+        content_type,
+        body,
+        truncated,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

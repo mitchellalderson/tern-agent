@@ -1,12 +1,12 @@
 //! `http_fetch`: GET a URL, converting HTML to text.
 
-use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tern_core::net::get_public;
+#[cfg(test)]
 use tern_core::net::is_public;
 use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult};
 use tern_core::types::ToolSpec;
@@ -15,7 +15,7 @@ use crate::{args, spec};
 
 const DEFAULT_MAX_BYTES: usize = 2 * 1024 * 1024;
 
-const MAX_REDIRECTS: usize = 5;
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct HttpFetch {
     /// Tests fetch from a local mock server; only loopback is let through.
@@ -34,42 +34,6 @@ impl HttpFetch {
         Self {
             allow_loopback: true,
         }
-    }
-
-    /// Resolve `url`'s host, refusing non-public addresses, and return a
-    /// client pinned to exactly those addresses (no DNS rebinding between
-    /// the check and the connection) that doesn't follow redirects itself.
-    async fn client_for(&self, url: &reqwest::Url) -> Result<reqwest::Client, String> {
-        let host = url.host_str().ok_or("url has no host")?.to_owned();
-        let port = url.port_or_known_default().unwrap_or(80);
-        let lookup_host = host
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .to_owned();
-        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((lookup_host.as_str(), port))
-            .await
-            .map_err(|e| format!("resolving {host}: {e}"))?
-            .collect();
-        if addrs.is_empty() {
-            return Err(format!("{host} did not resolve"));
-        }
-        if let Some(bad) = addrs
-            .iter()
-            .find(|a| !is_public(a.ip()) && !(self.allow_loopback && a.ip().is_loopback()))
-        {
-            return Err(format!(
-                "refusing to fetch {host} ({}): loopback, private, and link-local addresses aren't allowed",
-                bad.ip()
-            ));
-        }
-        let mut builder = tern_core::net::http_client()
-            .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none());
-        // Pin hostnames to the checked addresses; IP literals need no pinning.
-        if lookup_host.parse::<IpAddr>().is_err() {
-            builder = builder.resolve_to_addrs(&host, &addrs);
-        }
-        builder.build().map_err(|e| e.to_string())
     }
 }
 
@@ -118,76 +82,23 @@ impl Tool for HttpFetch {
             Ok(a) => a,
             Err(e) => return e,
         };
-        let url = match reqwest::Url::parse(&a.url) {
-            Ok(u) if matches!(u.scheme(), "http" | "https") => u,
-            Ok(u) => return ToolResult::error(format!("unsupported scheme {:?}", u.scheme())),
-            Err(e) => return ToolResult::error(format!("invalid url: {e}")),
-        };
         let max = a
             .max_bytes
             .unwrap_or(DEFAULT_MAX_BYTES)
             .min(DEFAULT_MAX_BYTES * 4);
         let fetch = async {
-            // Follow redirects by hand so every hop is checked.
-            let mut url = url;
-            let mut hops = 0;
-            let resp = loop {
-                let client = self.client_for(&url).await?;
-                let resp = client
-                    .get(url.clone())
-                    .send()
-                    .await
-                    .map_err(|e| e.without_url().to_string())?;
-                let location = resp
-                    .headers()
-                    .get(reqwest::header::LOCATION)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_owned);
-                match location {
-                    Some(loc) if resp.status().is_redirection() => {
-                        hops += 1;
-                        if hops > MAX_REDIRECTS {
-                            return Err(format!("more than {MAX_REDIRECTS} redirects"));
-                        }
-                        url = url
-                            .join(&loc)
-                            .map_err(|e| format!("bad redirect {loc:?}: {e}"))?;
-                        if !matches!(url.scheme(), "http" | "https") {
-                            return Err(format!(
-                                "redirect to unsupported scheme {:?}",
-                                url.scheme()
-                            ));
-                        }
-                    }
-                    _ => break resp,
-                }
-            };
-            let status = resp.status();
-            let is_html = resp
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
+            let f = get_public(&a.url, max, self.allow_loopback, TIMEOUT).await?;
+            let is_html = f
+                .content_type
+                .as_deref()
                 .is_some_and(|ct| ct.contains("html"));
-            let mut body = Vec::new();
-            let mut truncated = false;
-            let mut stream = resp.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk.map_err(|e| e.to_string())?;
-                let room = max - body.len();
-                if chunk.len() > room {
-                    body.extend_from_slice(&chunk[..room]);
-                    truncated = true;
-                    break;
-                }
-                body.extend_from_slice(&chunk);
-            }
             let text = if is_html {
-                html2text::from_read(body.as_slice(), 100)
-                    .unwrap_or_else(|_| String::from_utf8_lossy(&body).into_owned())
+                html2text::from_read(f.body.as_slice(), 100)
+                    .unwrap_or_else(|_| String::from_utf8_lossy(&f.body).into_owned())
             } else {
-                String::from_utf8_lossy(&body).into_owned()
+                String::from_utf8_lossy(&f.body).into_owned()
             };
-            Ok::<_, String>((status, text, truncated))
+            Ok::<_, String>((f.status, text, f.truncated))
         };
         let result = tokio::select! {
             r = fetch => r,

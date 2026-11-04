@@ -213,8 +213,9 @@ const SUGGEST_CONNECTOR: &str = "When you're about to fetch data from an outside
      `http_fetch`, scraping or `shell`, and the user will likely want it again (a public or REST API, \
      many lookups, a recurring task), first check whether the service has an API: a quick search or its \
      docs, if you have tools for that. If it does, suggest making a connector for it in one sentence: \
-     what it would do, and why (repeatable, safer, every change approved). Build it with \
-     `connector_write` only if the user agrees. Skip this for one-off fetches, suggest it at most once \
+     what it would do, and why (repeatable, safer, every change approved). Build it only if the user \
+     agrees: from the service's OpenAPI or Swagger document with `connector_from_openapi` when it \
+     publishes one (look for it in the docs), else with `connector_write`. Skip this for one-off fetches, suggest it at most once \
      per service in a conversation, and drop it if the user says no.";
 
 /// For a run with the `agent_*` tools: delegate proactively, and how.

@@ -134,6 +134,9 @@ docker_pids = 512          # 0 for no limit
 # (capabilities.rate = "60/min"); this is the limit for those that don't.
 # [connectors]
 # rate = "120/min"             # HTTP requests per connector, shared by every run and script
+# record_tests = true          # connector_test saves a live call as a fixture (no credentials) and replays it offline next time
+# openapi_tools = 8            # operations connector_from_openapi generates when none are named (reads first)
+# openapi_max_tools = 40       # most operations one connector generated from an OpenAPI document may have
 
 # Signing in to services: OAuth first, keys as the fallback, and the user
 # chooses. Connections are accounts: `tern connections`, /connections in the
