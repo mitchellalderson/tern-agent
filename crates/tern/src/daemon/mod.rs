@@ -15,6 +15,7 @@ mod api_runs;
 mod api_schedules;
 mod api_secrets;
 mod api_subagents;
+pub mod api_tasks;
 mod api_webhooks;
 pub mod auth;
 pub mod channels;

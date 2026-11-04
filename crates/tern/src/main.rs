@@ -29,6 +29,7 @@ mod runtime;
 mod service;
 mod settings;
 mod subagents;
+mod tasks_cmd;
 mod tray;
 mod tui_backend;
 
@@ -194,6 +195,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Hooks { command }) => hooks_cmd::run(&home, command),
         Some(Command::Grants { command }) => grants_cmd::run(&home, command),
         Some(Command::Ledger { command }) => ledger_cmd::run(&home, command),
+        Some(Command::Tasks { json }) => tasks_cmd::run(&home, json),
         Some(Command::Runs { command }) => {
             match command {
                 RunsCommand::List => inspect::runs_list(&home)?,

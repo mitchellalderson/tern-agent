@@ -16,6 +16,7 @@ import 'providers.dart';
 import 'secret_requests.dart';
 import 'sse.dart';
 import 'subagents.dart';
+import 'tasks.dart';
 import 'tools.dart';
 import 'webhooks.dart';
 
@@ -527,17 +528,14 @@ class TernClient {
   /// Send a message. Without `session` the daemon starts a new
   /// conversation. A run already in progress in that session is cancelled
   /// first. (Conversations in a channel go through [sendToChannel].)
-  Future<Started> send(
-    String text, {
-    String? session,
-    String? model,
-  }) async => Started.fromJson(
-    await _json('POST', '/v1/runs', {
-      'text': text,
-      'session_id': ?session,
-      'model': ?model,
-    }),
-  );
+  Future<Started> send(String text, {String? session, String? model}) async =>
+      Started.fromJson(
+        await _json('POST', '/v1/runs', {
+          'text': text,
+          'session_id': ?session,
+          'model': ?model,
+        }),
+      );
 
   Future<bool> cancel(String run) async =>
       (await _json('POST', '/v1/runs/$run/cancel'))['cancelled'] as bool;
@@ -861,6 +859,11 @@ class TernClient {
         LedgerEntry.fromJson(e as Json),
     ];
   }
+
+  /// Everything running, queued, scheduled, waiting on you or failed
+  /// recently (check `features` in [health] for `tasks`).
+  Future<Tasks> tasks() async =>
+      Tasks.fromJson(await _json('GET', '/v1/tasks') as Json);
 
   /// Recompute the ledger's hash chain.
   Future<LedgerCheck> verifyLedger() async =>

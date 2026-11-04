@@ -66,6 +66,9 @@ pub const FEATURES: &[&str] = &[
     "connections",
     // `/v1/ledger`: the hash-chained activity ledger (tooling spec §8.1).
     "ledger",
+    // `/v1/tasks`: everything running, queued, scheduled, waiting on you or
+    // failed recently (tooling spec §8.2).
+    "tasks",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";

@@ -11,6 +11,7 @@ mod migrations;
 mod outbox_repo;
 mod repo;
 mod subagents_repo;
+mod tasks_repo;
 mod webhooks_repo;
 
 pub use agents_repo::{AgentChange, AgentRow, DEFAULT_AGENT, dm_slug};

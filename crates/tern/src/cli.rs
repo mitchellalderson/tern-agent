@@ -83,6 +83,12 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<GrantsCommand>,
     },
+    /// Everything running, queued, scheduled, waiting on you (approvals,
+    /// the outbox, secret requests) or failed recently, across agents.
+    Tasks {
+        #[arg(long)]
+        json: bool,
+    },
     /// The activity ledger: approvals, grants, writes, connections and
     /// other security-relevant changes, hash-chained (`verify` checks it).
     Ledger {
