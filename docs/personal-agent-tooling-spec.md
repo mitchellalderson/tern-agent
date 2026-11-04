@@ -295,6 +295,12 @@ or at once when no client is attached):
 This needs no change to the run loop beyond a new tool-result kind. The sub-agent `inbox` step already proves the
 pattern.
 
+**Status (T3 shipped, 2026-11-04).** Built as above, with these choices: the deferral is a new approval outcome
+(`deferred`) rather than a tool-result kind; only the daemon defers (`tern run` and the in-process TUI still
+deny); a run still working when its item is decided gets a note in its inbox; "edit" is approving with changed
+arguments. The "1 action waiting" card in Home is a strip above the composer and `outbox_changed` events, kept thin
+so channels C4's `needs_you` pointers can replace it. See DECISIONS.md, T3.
+
 ### 5.3 Taint
 
 - A run is **tainted** when its input or any tool result so far came from outside the trust boundary: watch or
@@ -318,10 +324,13 @@ step output), by mail from a tainted run, and by being spawned by one (the open 
 results are wrapped as above, with the system-prompt line. In a tainted run every `write`/`destructive` call asks,
 grants and host grants notwithstanding, without "always", except the four `agent_*` calls that carry taint along
 themselves; the prompt says "this run read untrusted content (…)". Posts written by a tainted run are
-`tainted`. MCP servers take `untrusted = true`. **Still open in T3**: the outbox (tainted asks with nobody there
-are denied, not queued), the `http_fetch` host limit above, taint from watch/webhook/non-owner input (the
-`NewRun.taint` hook exists; no such input does yet), and autonomy profiles (§5.4; there is no `yolo` escape yet).
-See DECISIONS.md, T3a.
+`tainted`. MCP servers take `untrusted = true`. See DECISIONS.md, T3a.
+
+**Status (T3 shipped, 2026-11-04).** The rest of T3: the outbox (§5.2), autonomy profiles (§5.4), and the
+`http_fetch` host limit above (a network read to a host the tainted run hasn't reached asks, with no "always";
+tools declare their host with `Tool::egress_host`). Still open: taint from watch, webhook and non-owner input waits
+for those inputs (the `NewRun.taint` hook is there), and the approval prompt names the tool that tainted the run,
+not the email's sender (tools don't report provenance yet). See DECISIONS.md, T3.
 
 ### 5.4 Autonomy profiles
 
@@ -333,6 +342,12 @@ See DECISIONS.md, T3a.
 | `supervised` | §5.1 defaults |
 | `autonomous` | `write` doesn't ask in untainted runs |
 | `yolo` | nothing asks; `doctor` and the status line show it in red |
+
+**Status (T3 shipped, 2026-11-04).** `autonomy` in `config.toml` and on routines (API only; the agent's
+`schedule_*` tools can't set it), frozen on each run when it starts and inherited by sub-agents. `autonomous` still
+asks for forced prompts (shell outside the allowlist, `connector_activate`). `yolo` skips taint too but never
+`money_movement`/`trade`. `tern doctor` shows `yolo` in red; the TUI has no status line to show it in yet.
+Agent profiles will cap it per agent (`Autonomy` is ordered, so a ceiling is a `min`).
 
 ## 6. Connector platform v2 (T4)
 
@@ -977,7 +992,7 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 | Stage | Theme | Items | Complexity | Needs |
 |---|---|---|---|---|
 | **1. Quick wins** | Small changes to what exists. No new data model, no new protocols. Each item is days, not weeks. | **T0** effects on every tool, money-movement deny · **T1a** on today's schedules: `NO_REPLY`, quiet hours, per-schedule run caps and budget · **T5a** memory flush before compaction, capped `user.md`/`memory.md` · **T6a** provider fallback chains (done) · **T8a** `/v1/status`, `/v1/shutdown`, `tern start`/`stop`, `tern service install` with `SuccessfulExit = false`, "Quit tern completely" in the app (one-click stop for non-technical users, before the tray exists) · **T7a** browser via an MCP recipe (docs only; done) | S each | nothing |
-| **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles (**T3a**, taint and untrusted wrapping, done; outbox and autonomy profiles open) · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits | L / M / S–M | Stage 1 (effects, budgets) |
+| **2. Foundations** | The new core concepts everything later builds on. Migrations land here. | **T1b** routines (schedules migrated), Luau watches with cursors and dedup, gate scripts, initiative levels, the gate model, digests · **T3** taint, untrusted wrapping, outbox and deferred approvals, autonomy profiles (done: T3a taint, then T3 the outbox and autonomy; the Tasks view is T6b) · **T4b-i** host-injected credentials (`auth =`), path allowlists, rate limits | L / M / S–M | Stage 1 (effects, budgets) |
 | **3. Organize and surface** | Make background work visible and tidy. Mostly UI plus straightforward store work. | **T2** channels, home, posts, reply-to-act, Telegram topics · **T6b** activity ledger with hash chain, Tasks view, `tern security audit` · **T8b** `tern tray` on macOS (helper bundle, notifications with actions, login items, quit escalation, `tern://` links) · **T5b** skill capture | M each | Stage 2 (routines, outbox) |
 | **4. Connections** | External protocols and the most security-sensitive code. The largest stage. | **T4a** `auth_discover`, research validation, `auth_propose`, the OAuth helper (PKCE, device code, refresh, revoke), connections and multiple accounts for connectors and MCP servers · **T1c** webhook triggers (reachable core) · **T4b-ii** gateway connectors (ntfy, then Slack) | L | Stage 2 (taint before any external input); secret-requests spec built |
 | **5. Ecosystem and bigger bets** | Things that compound once the platform exists, and optional heavy features. | **T6c** recipe bundle (morning brief, follow-ups, meeting prep), goals · **T4b-iii** bundles with signing, `tern bundle`, `import openclaw` · **T6d** `tern mcp serve` · **T4c** OpenAPI-to-connector and recorded test fixtures · **T8c** tray on Linux (ksni) · **T7b** native CDP browser behind a feature | M each, T7b L | Stage 4 (recipes need Google OAuth; bundles carry connections) |

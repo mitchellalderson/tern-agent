@@ -441,7 +441,9 @@ class _ApprovalCardState extends State<ApprovalCard> {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              '${outcome[0].toUpperCase()}${outcome.substring(1)}: ${a.summary}',
+              outcome == 'deferred'
+                  ? 'Nobody answered, so it waits in the outbox: ${a.summary}'
+                  : '${outcome[0].toUpperCase()}${outcome.substring(1)}: ${a.summary}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 12.5, color: c.muted),

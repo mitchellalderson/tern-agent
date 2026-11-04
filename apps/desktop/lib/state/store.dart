@@ -71,6 +71,10 @@ class TernStore extends ChangeNotifier {
   /// Channels, Home first, when the core has them ([hasChannels]).
   List<Channel> channels = [];
 
+  /// Writes waiting for the user's approval (tooling spec §5.2), newest
+  /// first. Shown in Home.
+  List<OutboxItem> outbox = [];
+
   /// The channel open in the centre column: [homeId], or a topic channel.
   /// Null when a plain conversation ([selected]) is open.
   String? channel;
@@ -293,12 +297,14 @@ class TernStore extends ChangeNotifier {
 
   bool get running => current?.activeRun != null;
 
-  /// Approvals waiting anywhere, for badges.
-  int get pendingApprovals => transcripts.values
-      .expand((t) => t.items)
-      .whereType<ApprovalItem>()
-      .where((a) => a.outcome == null)
-      .length;
+  /// Approvals and outbox items waiting anywhere, for badges.
+  int get pendingApprovals =>
+      transcripts.values
+          .expand((t) => t.items)
+          .whereType<ApprovalItem>()
+          .where((a) => a.outcome == null)
+          .length +
+      outbox.where((o) => o.pending).length;
 
   /// Secret requests waiting anywhere.
   int get pendingSecrets => transcripts.values
@@ -313,6 +319,9 @@ class TernStore extends ChangeNotifier {
 
   /// Whether the core manages MCP servers over the API (older ones can't).
   bool get hasMcp => health?.features.contains('mcp') ?? false;
+
+  /// Whether the core defers unanswered writes to an outbox.
+  bool get hasOutbox => health?.features.contains('outbox') ?? false;
 
   /// Reached as a paired device rather than the local owner socket, so the
   /// core refuses stdio MCP servers unless `api.remote_mcp_stdio` is set.
@@ -422,6 +431,7 @@ class TernStore extends ChangeNotifier {
       if (hasChannels) _approvalSession[a.runId] = homeKey;
     }
     if (hasMcp) await loadMcp(notify: false);
+    if (hasOutbox) await refreshOutbox(notify: false);
     if (hasSecretRequests) {
       try {
         for (final r in await client.secretRequests()) {
@@ -962,6 +972,9 @@ class TernStore extends ChangeNotifier {
       case ChannelsChanged():
         unawaited(_refreshChannels());
         return;
+      case OutboxChanged():
+        unawaited(refreshOutbox());
+        return;
       case UnknownEvent():
         return;
     }
@@ -1315,6 +1328,37 @@ class TernStore extends ChangeNotifier {
       error = e.message;
     }
     notifyListeners();
+  }
+
+  /// Re-read the items waiting in the outbox.
+  Future<void> refreshOutbox({bool notify = true}) async {
+    try {
+      outbox = await client.outbox();
+    } on TernException {
+      // A device without read access, or an older core.
+      return;
+    }
+    if (notify) notifyListeners();
+  }
+
+  /// Approve outbox item [item] (run it once), with [input] replacing its
+  /// arguments, or reject it with an optional [note].
+  Future<void> decideOutbox(
+    OutboxItem item, {
+    required bool approve,
+    Object? input,
+    String? note,
+  }) async {
+    try {
+      if (approve) {
+        await client.approveOutbox(item.id, input: input);
+      } else {
+        await client.rejectOutbox(item.id, note: note);
+      }
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    await refreshOutbox();
   }
 
   /// Send what the user entered (only non-empty values; an empty map

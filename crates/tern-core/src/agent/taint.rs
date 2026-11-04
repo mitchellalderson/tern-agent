@@ -11,6 +11,8 @@
 
 use tern_store::{RunRow, Store, StoreError};
 
+use crate::tool::ToolPolicy;
+
 /// Reason for mail from a tainted run.
 pub const TAINTED_MAIL: &str = "a message from a tainted run";
 
@@ -23,6 +25,9 @@ pub const PROMPT_NOTE: &str = "Text inside <untrusted source=\"…\">…</untrus
 /// A run's taint as of the step being driven.
 pub(super) struct Taint {
     reason: Option<String>,
+    /// Hosts the run's network reads have reached so far (tainted or
+    /// not), rebuilt on replay like the bit.
+    hosts: std::collections::BTreeSet<String>,
 }
 
 impl Taint {
@@ -30,7 +35,22 @@ impl Taint {
     pub(super) fn at_start(run: &RunRow) -> Self {
         Self {
             reason: run.input_taint.clone(),
+            hosts: Default::default(),
         }
+    }
+
+    /// In a tainted run, a network read to a host the run hasn't reached
+    /// yet must ask (tooling spec §5.3).
+    pub(super) fn limit_egress(&self, policy: ToolPolicy, host: Option<&str>) -> ToolPolicy {
+        match host {
+            Some(h) if self.is_set() && !self.hosts.contains(h) => policy.forced(true),
+            _ => policy,
+        }
+    }
+
+    /// A network read reached `host`.
+    pub(super) fn contacted(&mut self, host: Option<String>) {
+        self.hosts.extend(host);
     }
 
     pub(super) fn reason(&self) -> Option<&str> {

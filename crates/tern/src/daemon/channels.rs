@@ -327,7 +327,8 @@ impl Manager {
         let Some(run) = store.run(run_id)? else {
             return Ok(None);
         };
-        if run.quiet {
+        // Outbox runs post their own result (`daemon::outbox`).
+        if run.quiet || run.trigger == tern_core::outbox::TRIGGER {
             return Ok(None);
         }
         // A sub-agent reports to its parent; one spawned with `"post": true`
@@ -337,7 +338,7 @@ impl Manager {
             return Ok(None);
         }
         let text = match run.status.as_str() {
-            "completed" => final_text(store, &run)?,
+            "completed" => final_text(store, &run)? + &super::outbox::pending_note(store, &run.id),
             "failed" => format!(
                 "Failed: {}",
                 run.error.as_deref().unwrap_or("unknown error")

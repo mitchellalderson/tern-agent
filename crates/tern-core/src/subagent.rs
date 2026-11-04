@@ -379,6 +379,8 @@ pub fn render_mail(m: &MailRow) -> String {
         .map(str::to_owned)
         .unwrap_or_else(|| m.body.clone());
     match (m.from_run_id.as_deref(), m.kind.as_str()) {
+        // tern's own note about an outbox item; the text says what it is.
+        (None, crate::outbox::MAIL_KIND) => text,
         (None, _) => format!("[message from the user to this agent]\n{text}"),
         (Some(_), "answer") => format!("[answer from the main agent]\n{text}"),
         (Some(_), _) => format!("[message from the main agent]\n{text}"),

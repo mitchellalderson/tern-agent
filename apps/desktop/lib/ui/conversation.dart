@@ -9,6 +9,7 @@ import 'history.dart';
 import 'items.dart';
 import 'move_dialog.dart';
 import 'model_picker.dart';
+import 'outbox.dart';
 import 'providers.dart';
 import 'widgets.dart';
 
@@ -114,6 +115,7 @@ class _ConversationViewState extends State<ConversationView> {
                   },
                 ),
         ),
+        if (store.homeOpen && store.hasOutbox) OutboxStrip(store: store),
         if (store.error case final e?)
           _ErrorBanner(
             message: e,

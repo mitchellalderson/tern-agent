@@ -54,6 +54,8 @@ pub const FEATURES: &[&str] = &[
     "mcp",
     // `/v1/channels` and Home's stream (docs/channels-design.md).
     "channels",
+    // `/v1/outbox` and `outbox_changed` events (tooling spec §5.2).
+    "outbox",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";
@@ -118,6 +120,7 @@ const CHAT_WRITES: &[&str] = &[
     "/v1/runs",
     "/v1/sessions",
     "/v1/approvals",
+    "/v1/outbox",
     "/v1/schedules",
     "/v1/memories",
     "/v1/uploads",

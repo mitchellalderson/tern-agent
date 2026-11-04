@@ -494,6 +494,9 @@ sealed class TernEvent {
       return PostCreated(Post.fromJson(p['post'] as Json));
     }
     if (j.containsKey('channels_changed')) return const ChannelsChanged();
+    if (j['outbox_changed'] case final Json o) {
+      return OutboxChanged(o['id'] as int, o['state'] as String? ?? '');
+    }
     final run = j['run_id'] as String? ?? '';
     final event = _agentEvent(j, run);
     if (event is RunEvent) {
@@ -807,6 +810,13 @@ class PostCreated extends TernEvent {
 /// (Home: a new segment). Re-read `/v1/channels`.
 class ChannelsChanged extends TernEvent {
   const ChannelsChanged();
+}
+
+/// An outbox item was queued or changed state; re-read the outbox.
+class OutboxChanged extends TernEvent {
+  const OutboxChanged(this.id, this.state);
+  final int id;
+  final String state;
 }
 
 class UnknownEvent extends TernEvent {

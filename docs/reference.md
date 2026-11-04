@@ -8,7 +8,7 @@ Everything tern does, command by command. For installing and a first chat, see t
 |---|---|
 | **Models** | Anthropic, plus any OpenAI-compatible endpoint (OpenRouter, Ollama, vLLM, LM Studio). Models are `provider:model`; switch with `--model` or `/model`. |
 | **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `http_fetch`, long-term memory and capped profile notes (`user.md`, `memory.md`), search over past conversations, skills, schedules. |
-| **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. A run that has read untrusted content (a web page, mail, a tool marked `untrusted`) is **tainted**: its `write` and `destructive` calls ask whatever "always" says, and the prompt says why ([Taint](#taint)). |
+| **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. A run that has read untrusted content (a web page, mail, a tool marked `untrusted`) is **tainted**: its `write` and `destructive` calls ask whatever "always" says, and the prompt says why ([Taint](#taint)). A write nobody answers in time waits in the [outbox](#outbox) instead of being denied, and `autonomy` sets how much runs may do without asking ([Autonomy](#autonomy)). |
 | **MCP** | Ask the agent ("add the GitHub MCP server"; you approve the exact command each time, and only on this machine for local commands), or add, test, toggle and remove servers with `/mcp` in the chat or [`tern mcp`](#tern-mcp), or edit `[mcp.servers.<name>]` (stdio or streamable HTTP); changes apply without a restart, a server's pasted `mcpServers` JSON works too, and their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. For a browser, see [Recipe: give tern a browser](recipes/browser.md). |
 | **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
@@ -61,6 +61,7 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern gateway pair`](#tern-gateway-pair) | Pair a Telegram account with the bot. |
 | [`tern sessions`](#tern-sessions) | List or show conversations. |
 | [`tern runs`](#tern-runs) | List runs or print a run's step journal. |
+| [`tern outbox`](#outbox) | Writes waiting for your approval: list, show, approve (optionally edited), reject. |
 | [`tern connectors`](#tern-connectors) | List or validate Luau connectors. |
 | [`tern setup`](#tern-setup) | Connect a model provider: paste a key, pick a model. |
 | [`tern providers`](#tern-providers) | List, add, or remove model providers (for scripts). |
@@ -315,7 +316,7 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `memory.flush` | `true` | Before older context is summarized, give the agent one silent turn to save durable facts with `memory_save`. |
 | `sandbox.backend` | `host` | `host` or `docker`. |
 | `sandbox.shell_timeout_secs` | `120` | Per shell command. |
-| `sandbox.network` | `true` | IP networking for shell commands (both backends). |
+| `sandbox.network` | `true` | IP networking for shell commands (both backends). While commands can reach the network, `shell` output is untrusted and taints the run ([Taint](#taint)); with connectors or MCP servers active, `false` keeps integrations going through their tools (`tern doctor` says so). |
 | `sandbox.confine` | `auto` | Host backend: `auto` (sandbox when the OS can, else warn), `required` (refuse to run unconfined), `off`. |
 | `sandbox.read_paths` | `["~/.gitconfig", "~/.config/git"]` | Host backend: extra read-only paths. |
 | `sandbox.write_paths` | `[]` | Host backend: extra writable paths. |
@@ -339,6 +340,9 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `subagents.default_model` | none | Sub-agents' model when `agent_spawn` names none (unset = the parent's). May be a fallback chain. |
 | `subagents.models` | `{}` | Aliases `agent_spawn` can pass as `model`: `{ fast = "anthropic:claude-haiku-4-5" }`. Each may be a fallback chain. |
 | `secret_request_timeout_secs` | `900` | How long the agent's prompt for a secret waits for you. |
+| `autonomy` | `"supervised"` | `readonly`, `supervised`, `autonomous` or `yolo` ([Autonomy](#autonomy)). Routines can set their own. |
+| `outbox.wait_secs` | `120` | How long a `write`/`destructive` approval waits for an answer before it goes to the [outbox](#outbox) (at once when no client is attached). |
+| `outbox.expire_hours` | `72` | How long an outbox item waits for you. |
 
 Secrets are looked up by name in the environment first, then in `~/.tern/secrets.toml` (mode 0600):
 
@@ -480,11 +484,43 @@ The threat model, what isn't covered, and how to report a vulnerability are in [
 
 A run is **tainted** once untrusted content reaches it (docs/personal-agent-tooling-spec.md §5.3):
 
-- **What taints**: the result of a tool marked untrusted (`http_fetch`, `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
+- **What taints**: the result of a tool marked untrusted (`http_fetch`, `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`, and `shell` while commands can reach the network: `sandbox.network = true`, the default, or no OS sandbox to enforce `false`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
 - **It sticks** for the rest of the run, survives a crash and `tern resume` exactly (it's rebuilt from the journal), and doesn't carry to the next run in the conversation.
-- **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, memory, schedules), and "always" isn't offered. The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) keep their grants, since what they reach starts tainted. With nobody to ask (a routine at night), the call is denied. A tainted run also skips the memory flush before compaction. There's no setting to turn this off.
+- **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, memory, schedules), and "always" isn't offered. The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) and `channel_post` keep their grants, since what they reach is tainted too. With nobody to ask (a routine at night), the call goes to the [outbox](#outbox). A network read (`http_fetch`) to a host the run hasn't reached yet asks too, so a page can't have the agent send what it knows somewhere new. A tainted run also skips the memory flush before compaction. Only `autonomy = "yolo"` turns this off.
 - **What the model sees**: untrusted results arrive as `<untrusted source="http_fetch">…</untrusted>`, and the system prompt says text inside is data, not instructions.
 - **Where it shows**: `tern runs list` / `runs show`, `taint` on runs in `GET /v1/sessions/{id}/runs` (absent while clean), `taint` on approval requests, `untrusted: true` on tool step outputs, the desktop's run inspector (a "tainted" badge), and approval cards in the desktop, the TUI, Telegram and `tern run`. A routine or channel answer written by a tainted run is a **tainted post** (`tainted: true`, a shield next to the author in the desktop).
+
+### Outbox
+
+A `write` or `destructive` call that asks while nobody answers (no app, TUI or tray attached, or `[outbox] wait_secs` passing, default 120) goes to the **outbox** instead of being denied (spec §5.2). The model is told it is "queued for approval as outbox #12" and carries on; a routine's post lists what is waiting. Then:
+
+- **Approve** (the desktop's card in Home, Telegram's button if the run reports to a chat, `tern outbox approve 12`, or `POST /v1/outbox/12/approve`) runs the call exactly once, on a small system run in the same session: a crash can't run it twice, and a second approval is refused. **Edit…** in the app (`--input '{…}'`, `{"input": {…}}`) approves it with arguments you changed. The result is posted to the channel (and sent to the chat), and the conversation learns it ran.
+- **Reject** (`tern outbox reject 12 --note "…"`) drops it. A run still working is told either way, with your note.
+- Items **expire** after `[outbox] expire_hours` (default 72) and say so once in Home.
+- Commands that run on the host outside the sandbox can only be decided on that computer (the app or TUI over the local socket), as with approvals.
+
+```sh
+tern outbox                 # what is waiting
+tern outbox list --all      # decided items too
+tern outbox show 12         # arguments, why it waited, the result
+tern outbox approve 12 [--input '{"to": "carol@example.com"}']
+tern outbox reject 12 [--note "not to Bob"]
+```
+
+API: `GET /v1/outbox[?state=all|<state>]`, `GET /v1/outbox/{id}`, `POST /v1/outbox/{id}/approve` `{input?}`, `POST /v1/outbox/{id}/reject` `{note?}` (chat scope), and `{"outbox_changed": {"id", "state"}}` on `/v1/events`. `/v1/health` lists the `outbox` feature. Only the daemon defers: `tern run` and the TUI without a daemon deny as before.
+
+### Autonomy
+
+`autonomy` (spec §5.4) sets how much runs may do without asking. It is frozen on each run when it starts, so a resumed run asks where it asked before; sub-agents run under their parent's.
+
+| `autonomy` | |
+|---|---|
+| `readonly` | `read` tools only; anything else is refused without asking (the agent is told it is read-only). Sub-agents and posts still work. |
+| `supervised` (default) | As described under Approvals: `write` asks unless granted, `destructive` every time. |
+| `autonomous` | An untainted `write` doesn't ask. `destructive`, forced prompts (commands outside the allowlist, activating a connector) and anything in a tainted run still ask. |
+| `yolo` | Nothing asks, tainted or not. Tools flagged `money_movement` or `trade` are still refused. `tern doctor` shows it in red. |
+
+Set it globally (`autonomy = "autonomous"` in `config.toml`) or per routine: `autonomy` on `POST/PATCH /v1/schedules` (`"default"` clears it). The agent's own `schedule_*` tools can't set it.
 
 ## Measurements
 

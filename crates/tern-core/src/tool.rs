@@ -215,6 +215,12 @@ pub trait Tool: Send + Sync {
     fn untrusted(&self) -> bool {
         false
     }
+    /// The host a call reaches, for tools that fetch from the network. In a
+    /// tainted run, a call to a host the run hasn't contacted yet asks
+    /// (tooling spec §5.3), so injected text can't send data somewhere new.
+    fn egress_host(&self, _args: &Value) -> Option<String> {
+        None
+    }
     /// Policy for this particular call; may depend on the arguments (e.g.
     /// writes outside the workspace need approval, writes inside don't).
     fn policy(&self, ctx: &ToolCtx, args: &Value) -> ToolPolicy;
@@ -328,6 +334,12 @@ impl ToolRegistry {
             .into_iter()
             .map(|(name, t)| (name, (t.effect(), t.untrusted())))
             .collect()
+    }
+
+    /// The host `call` reaches ([`Tool::egress_host`]).
+    pub fn egress_host(&self, call: &ToolCall) -> Option<String> {
+        self.get(&call.name)
+            .and_then(|t| t.egress_host(&call.input))
     }
 
     /// Whether `name` returns third-party text ([`Tool::untrusted`]).

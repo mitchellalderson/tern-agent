@@ -38,6 +38,13 @@ impl Tool for Shell {
         Effect::Destructive
     }
 
+    /// With the network reachable a command can fetch anything (`curl`, a
+    /// script calling an API), so its output taints the run like
+    /// `http_fetch`'s. Without it, it only sees local files.
+    fn untrusted(&self) -> bool {
+        self.backend.network_reachable()
+    }
+
     fn spec(&self) -> ToolSpec {
         spec(
             "shell",
@@ -117,6 +124,7 @@ impl Tool for Shell {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::path::Path;
     use std::sync::Mutex;
 
     use tern_core::tool::{ProgressSink, with_progress};
@@ -154,5 +162,24 @@ mod tests {
         assert_eq!(chunks.len(), 2, "{chunks:?}");
         assert_eq!(chunks[0], "first\n");
         assert_eq!(chunks[1], "second\n");
+    }
+
+    #[test]
+    fn output_is_untrusted_when_commands_can_reach_the_network() {
+        let shell = |network| {
+            let settings = tern_sandbox::DockerSettings {
+                network,
+                ..tern_sandbox::DockerSettings::default()
+            };
+            let backend = tern_sandbox::DockerBackend::new("docker", Path::new("/w"), settings);
+            Shell::new(Arc::new(backend), Duration::from_secs(1))
+        };
+        assert!(shell(true).untrusted());
+        assert!(!shell(false).untrusted());
+        // No OS sandbox: `network = false` isn't enforced, so it counts as on.
+        let mut policy = tern_sandbox::HostPolicy::unconfined();
+        policy.network = false;
+        let host = Shell::new(Arc::new(HostBackend::new(policy)), Duration::from_secs(1));
+        assert!(host.untrusted());
     }
 }

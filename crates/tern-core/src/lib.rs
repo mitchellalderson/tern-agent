@@ -13,6 +13,7 @@ pub mod mcp;
 pub mod memory;
 pub mod models;
 pub mod net;
+pub mod outbox;
 pub mod prompt;
 pub mod quiet;
 pub mod secrets;

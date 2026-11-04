@@ -12,6 +12,7 @@ mod logging;
 mod mcp;
 mod mcp_cmd;
 mod mcp_tools;
+mod outbox_cmd;
 mod providers;
 mod providers_cmd;
 mod remote;
@@ -162,6 +163,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Some(Command::Outbox { command }) => outbox_cmd::run(&home, command),
         Some(Command::Runs { command }) => {
             match command {
                 RunsCommand::List => inspect::runs_list(&home)?,

@@ -6,6 +6,7 @@ import 'channels.dart';
 import 'endpoint.dart';
 import 'lifecycle.dart';
 import 'mcp.dart';
+import 'outbox.dart';
 import 'models.dart';
 import 'providers.dart';
 import 'secret_requests.dart';
@@ -573,6 +574,29 @@ class TernClient {
 
   Future<void> answer(String approval, Decision decision) =>
       _json('POST', '/v1/approvals/$approval', {'decision': decision.wire});
+
+  /// Outbox items waiting for the user (`all`: decided ones too). Check
+  /// `features` in [health] for `outbox` first.
+  Future<List<OutboxItem>> outbox({bool all = false}) async => [
+    for (final o
+        in await _json('GET', all ? '/v1/outbox?state=all' : '/v1/outbox')
+            as List)
+      OutboxItem.fromJson(o as Json),
+  ];
+
+  /// Run item [id] now, exactly once; [input] replaces its arguments.
+  /// Throws [TernException] with 409 if it was already decided or expired.
+  Future<OutboxItem> approveOutbox(int id, {Object? input}) async =>
+      OutboxItem.fromJson(
+        await _json('POST', '/v1/outbox/$id/approve', {'input': ?input})
+            as Json,
+      );
+
+  /// Don't run item [id]; [note] goes to the run that queued it.
+  Future<OutboxItem> rejectOutbox(int id, {String? note}) async =>
+      OutboxItem.fromJson(
+        await _json('POST', '/v1/outbox/$id/reject', {'note': ?note}) as Json,
+      );
 
   /// Put a file in the core's workspace (remote cores can't take a path).
   /// Returns its workspace-relative path, to mention in a message. Check

@@ -68,6 +68,9 @@ pub struct RunRow {
     /// Why the run is tainted (tooling spec §5.3); `None` while clean.
     /// Sticky: set once, never cleared.
     pub taint: Option<String>,
+    /// Its autonomy profile (`readonly`, `supervised`, `autonomous`,
+    /// `yolo`), frozen at start; `None` = supervised.
+    pub autonomy: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,7 +165,7 @@ pub(crate) const SESSION_COLS: &str = "id, title, source, external_ref, model, c
     channel_id, prev_session_id, segment_reason, branched_from, moved_from";
 pub(crate) const RUN_COLS: &str = "id, session_id, status, trigger, model, system_prompt, \
     input_message_id, started_at, updated_at, finished_at, error, parent_run_id, parent_call_id, \
-    label, depth, tool_scope, budget_tokens, max_iterations, quiet, input_taint, taint";
+    label, depth, tool_scope, budget_tokens, max_iterations, quiet, input_taint, taint, autonomy";
 const STEP_COLS: &str = "run_id, idx, kind, input_hash, input_json, output_json, status, \
                          usage_json, error, started_at, finished_at";
 const MESSAGE_COLS: &str =
@@ -208,6 +211,7 @@ pub(crate) fn run_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         quiet: r.get::<_, i64>(18)? != 0,
         input_taint: r.get(19)?,
         taint: r.get(20)?,
+        autonomy: r.get(21)?,
     })
 }
 
@@ -327,6 +331,11 @@ impl Store {
             )?;
         }
         if let Some(parent) = run.parent_run_id {
+            // A sub-agent runs under its parent's autonomy profile.
+            tx.execute(
+                "UPDATE runs SET autonomy = (SELECT autonomy FROM runs WHERE id = ?2) WHERE id = ?1",
+                params![run.id, parent],
+            )?;
             // A sub-agent of a tainted run starts tainted: its brief may
             // carry what the parent read (tooling spec §12, open question).
             tx.execute(
