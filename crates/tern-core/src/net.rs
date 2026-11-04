@@ -48,7 +48,7 @@ pub fn is_public(ip: IpAddr) -> bool {
                 || o[0] >= 240)
         }
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            if let Some(v4) = embedded_v4(v6) {
                 return is_public(IpAddr::V4(v4));
             }
             let seg = v6.segments();
@@ -56,8 +56,34 @@ pub fn is_public(ip: IpAddr) -> bool {
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (seg[0] & 0xfe00) == 0xfc00 // unique local
-                || (seg[0] & 0xffc0) == 0xfe80) // link local
+                || (seg[0] & 0xffc0) == 0xfe80 // link local
+                || (seg[0] & 0xffc0) == 0xfec0 // site local (deprecated)
+                || (seg[0] == 0x64 && seg[1] == 0xff9b && seg[2] == 1) // 64:ff9b:1::/48 local NAT64
+                || (seg[0] == 0x2001 && seg[1] == 0) // 2001::/32 Teredo (embeds an obfuscated v4)
+                || (seg[0] == 0x2001 && seg[1] == 0xdb8) // documentation
+                || (seg[0] == 0x100 && seg[1..4] == [0, 0, 0])) // 100::/64 discard
         }
+    }
+}
+
+/// The IPv4 address inside an IPv6 one that routes to it: mapped
+/// (`::ffff:a.b.c.d`), compatible (`::a.b.c.d`), NAT64 (`64:ff9b::a.b.c.d`,
+/// which DNS64 hands out for v4-only names) and 6to4 (`2002:aabb:ccdd::`).
+/// Each is judged by the v4 rules, so `64:ff9b::a9fe:a9fe` is the metadata
+/// service and `::1` is `0.0.0.1`.
+fn embedded_v4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let seg = v6.segments();
+    let tail = || std::net::Ipv4Addr::from((u32::from(seg[6]) << 16) | u32::from(seg[7]));
+    if let Some(v4) = v6.to_ipv4_mapped() {
+        Some(v4)
+    } else if seg[..6] == [0; 6] || (seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0]) {
+        Some(tail())
+    } else if seg[0] == 0x2002 {
+        Some(std::net::Ipv4Addr::from(
+            (u32::from(seg[1]) << 16) | u32::from(seg[2]),
+        ))
+    } else {
+        None
     }
 }
 
@@ -76,6 +102,34 @@ mod tests {
         assert!(!is_public("168.63.129.16".parse().unwrap()));
         assert!(!is_public("::ffff:127.0.0.1".parse().unwrap()));
         assert!(!is_public("fd00::1".parse().unwrap()));
+        // IPv6 forms that carry an IPv4 address are judged by it.
+        for denied in [
+            "64:ff9b::a9fe:a9fe", // NAT64 169.254.169.254
+            "64:ff9b::7f00:1",
+            "64:ff9b::10.0.0.1",
+            "64:ff9b:1::1",     // local-use NAT64
+            "2002:a9fe:a9fe::", // 6to4 169.254.169.254
+            "2002:7f00:1::1",
+            "2002:c0a8:101::1", // 6to4 192.168.1.1
+            "::127.0.0.1",      // IPv4-compatible
+            "::a9fe:a9fe",
+            "::1",
+            "::",
+            "fec0::1", // site local
+            "2001::1", // Teredo
+            "2001:db8::1",
+            "100::1",
+        ] {
+            assert!(!is_public(denied.parse().unwrap()), "{denied}");
+        }
+        assert!(
+            is_public("64:ff9b::101:101".parse().unwrap()),
+            "NAT64 1.1.1.1"
+        );
+        assert!(
+            is_public("2002:101:101::1".parse().unwrap()),
+            "6to4 1.1.1.1"
+        );
         assert!(is_public("1.1.1.1".parse().unwrap()));
         assert!(is_public("2606:4700::1111".parse().unwrap()));
     }
