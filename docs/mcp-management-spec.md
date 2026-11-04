@@ -1,6 +1,6 @@
 # MCP server management
 
-Status: M0 (engine and API) built; M1 (TUI, CLI) and M2 (desktop) not started. Covers the engine, TUI, desktop app and CLI. See §11 for how M0 was built.
+Status: M0 (engine and API) and M1 (TUI, CLI) built; M2 (desktop) in progress. Covers the engine, TUI, desktop app and CLI. See §11 for how M0 and M1 were built.
 
 ## 1. Problem
 
@@ -289,3 +289,11 @@ tern mcp enable|disable|restart|rm NAME
 - **`tern doctor`** test-connects each enabled server; `--offline` (the existing flag) skips that and checks only the command on `PATH`. There's no separate `--quick`.
 - **Config writes** go through `ConfigFile::upsert_mcp_server` / `remove_mcp_server`: fields left at their defaults are dropped from the table, and comments on the fields that stay are kept. Maps (`env`, `header_secrets`, `effects`) are written as inline tables.
 - **Not yet**: rename doesn't warn about allowlist entries for `mcp__old__*` (that's a client-side message for M1/M2); the `tern_client` and `RemoteBackend` methods come with M1/M2.
+
+## 11.1 As built (M1)
+
+- **TUI**: `/mcp` opens `McpPanel` (`crates/tern-tui/src/mcp.rs`, drawn by `ui_mcp.rs`) with list, detail, form and paste modes. Shortcuts: `/mcp add`, `/mcp paste` (or `import`), `/mcp restart|enable|disable NAME`. `/tools` ends with each server's state and a pointer to `/mcp`.
+- **Form**: one screen of fields (transport toggled with Space), then a Secrets step only for secrets that aren't set or came from a paste, then Testing, then the tool checklist. `args`, `env` and header secrets are typed shell-style (`KEY=value`, quotes group). An `env` value that looks like a key is moved to `env_secrets` automatically on Enter, with its value carried to the Secrets step: that's the "one action" of §6.3.
+- **No `mcp_changed` subscription in the TUI**: the TUI's event bus carries agent events only, so the panel polls `mcp_servers()` once a second for 20 s after a save, toggle or restart, stopping early once nothing is connecting.
+- **Backend**: `set_mcp_enabled` became `patch_mcp(name, &McpPatch)`, which also covers hidden tools. `verify_mcp` returns `Result<Result<McpVerified, McpVerifyError>, String>`: the outer error is the backend, the inner one the server. `save_mcp`, `verify_mcp` and `restart_mcp` are async and run as `Task`s.
+- **CLI**: `tern mcp list|show|add|import|test|enable|disable|restart|rm`. A missing secret without a terminal is an error that points at `/secrets`, since there's no `tern secrets` command. Rename isn't offered in the CLI.

@@ -7,6 +7,11 @@ use ratatui::backend::TestBackend;
 use serde_json::json;
 use tern_core::SecretStatus;
 use tern_core::approval::{ApprovalRequest, SecretAsk, SecretRequest, SecretValues};
+use tern_core::config::McpServerConfig;
+use tern_core::mcp::{
+    ImportedServer, McpErrorKind, McpPatch, McpState, McpStatus, McpToolInfo, McpVerified,
+    McpVerifyError,
+};
 use tern_core::subagent::ChildRun;
 use tern_core::types::{ContentBlock, Role, ToolCall};
 use tern_store::SessionSummary;
@@ -28,6 +33,11 @@ struct Fake {
     secrets: Mutex<std::collections::BTreeMap<String, String>>,
     /// (run, text) passed to `message_run`.
     messaged: Mutex<Vec<(String, String)>>,
+    mcp: Mutex<Vec<McpStatus>>,
+    /// (name, patch) passed to `patch_mcp`.
+    mcp_patches: Mutex<Vec<(String, McpPatch)>>,
+    /// (name, remove_secrets) passed to `remove_mcp`.
+    mcp_removed: Mutex<Vec<(String, bool)>>,
 }
 
 #[async_trait]
@@ -162,6 +172,51 @@ impl Backend for Fake {
             result_preview: None,
             pending_question: Some("Private companies too?".into()),
         }])
+    }
+    fn mcp_servers(&self) -> BackendResult<Vec<McpStatus>> {
+        Ok(self.mcp.lock().unwrap().clone())
+    }
+    fn import_mcp(&self, text: &str) -> BackendResult<Vec<ImportedServer>> {
+        if !text.contains("mcpServers") {
+            return Err("not valid JSON".into());
+        }
+        Ok(vec![ImportedServer {
+            name: "github".into(),
+            config: McpServerConfig {
+                enabled: true,
+                command: Some("github-mcp-server".into()),
+                args: vec!["stdio".into()],
+                env_secrets: vec!["GITHUB_TOKEN".into()],
+                ..Default::default()
+            },
+            secrets: [("GITHUB_TOKEN".to_owned(), None)].into(),
+            warnings: vec!["enter a value for GITHUB_TOKEN".into()],
+        }])
+    }
+    fn patch_mcp(&self, name: &str, patch: &McpPatch) -> BackendResult<McpStatus> {
+        self.mcp_patches
+            .lock()
+            .unwrap()
+            .push((name.into(), patch.clone()));
+        let mut all = self.mcp.lock().unwrap();
+        let s = all.iter_mut().find(|s| s.name == name).ok_or("not found")?;
+        if let Some(e) = patch.enabled {
+            s.config.enabled = e;
+            s.state = if e {
+                McpState::NotStarted
+            } else {
+                McpState::Disabled
+            };
+        }
+        Ok(s.clone())
+    }
+    fn remove_mcp(&self, name: &str, remove_secrets: bool) -> BackendResult<()> {
+        self.mcp_removed
+            .lock()
+            .unwrap()
+            .push((name.into(), remove_secrets));
+        self.mcp.lock().unwrap().retain(|s| s.name != name);
+        Ok(())
     }
     fn message_run(&self, run_id: &str, text: &str) -> BackendResult<()> {
         self.messaged
@@ -1119,4 +1174,237 @@ fn a_finished_run_skips_only_its_own_prompts() {
     assert!(rx_mine.try_recv().unwrap().is_empty(), "own prompt skipped");
     assert!(rx_other.try_recv().is_err(), "another client's stays open");
     assert_eq!(app.secret_prompt.as_ref().unwrap().call_id(), Some("c2"));
+}
+
+fn mcp_server(name: &str, state: McpState) -> McpStatus {
+    McpStatus {
+        name: name.into(),
+        config: McpServerConfig {
+            enabled: state != McpState::Disabled,
+            command: Some("fixture".into()),
+            ..Default::default()
+        },
+        state,
+        tools: vec![tool("echo"), tool("delete_all")],
+        missing_secrets: vec![],
+        server_info: Some("fixture 1.0".into()),
+        stderr_tail: vec!["fixture server starting".into()],
+    }
+}
+
+fn tool(name: &str) -> McpToolInfo {
+    McpToolInfo {
+        exposed: format!("mcp__fx__{name}"),
+        remote: name.into(),
+        description: format!("{name} things"),
+        disabled: false,
+    }
+}
+
+fn press(app: &mut App, code: KeyCode) -> Vec<Effect> {
+    app.on_key(key(code), Instant::now())
+}
+
+#[test]
+fn mcp_add_tests_then_saves_with_secrets_kept_out_of_view() {
+    let (mut app, _fake) = new_app();
+    submit(&mut app, "/mcp add");
+    assert!(app.mcp.is_some());
+    type_text(&mut app, "fx");
+    press(&mut app, KeyCode::Down);
+    type_text(&mut app, "python3");
+    press(&mut app, KeyCode::Down);
+    type_text(&mut app, "server.py --mode 'a b'");
+    press(&mut app, KeyCode::Down);
+    type_text(
+        &mut app,
+        "LOG_LEVEL=warn GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz",
+    );
+    // The token moves to secrets and is asked for (prefilled) before testing.
+    assert!(press(&mut app, KeyCode::Enter).is_empty());
+    let screen_text = screen(&mut app, 100, 30);
+    assert!(screen_text.contains("GITHUB_TOKEN"), "{screen_text}");
+    assert!(!screen_text.contains("ghp_abc"), "{screen_text}");
+    let effects = press(&mut app, KeyCode::Enter);
+    let Some(Effect::Task(Task::McpVerify { name, cfg, secrets })) = effects.first() else {
+        panic!("no verify task: {effects:?}");
+    };
+    assert_eq!(name, "fx");
+    assert_eq!(cfg.args, ["server.py", "--mode", "a b"]);
+    assert_eq!(cfg.env_secrets, ["GITHUB_TOKEN"]);
+    assert_eq!(cfg.env.keys().collect::<Vec<_>>(), ["LOG_LEVEL"]);
+    assert_eq!(secrets["GITHUB_TOKEN"], "ghp_abcdefghijklmnopqrstuvwxyz");
+    assert!(app.is_busy());
+
+    app.on_task_done(TaskDone::McpVerified(Ok(Ok(McpVerified {
+        tools: vec![tool("echo"), tool("delete_all")],
+        server_info: Some("fixture 1.0".into()),
+    }))));
+    let screen_text = screen(&mut app, 100, 30);
+    assert!(
+        screen_text.contains("Connected to fixture 1.0"),
+        "{screen_text}"
+    );
+    // Hide the second tool, then save.
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char(' '));
+    let effects = press(&mut app, KeyCode::Enter);
+    let Some(Effect::Task(Task::McpSave {
+        old, cfg, secrets, ..
+    })) = effects.first()
+    else {
+        panic!("no save task: {effects:?}");
+    };
+    assert_eq!(*old, None);
+    assert_eq!(cfg.disabled_tools, ["delete_all"]);
+    assert!(secrets.contains_key("GITHUB_TOKEN"));
+
+    app.on_task_done(TaskDone::McpSaved(Ok(mcp_server(
+        "fx",
+        McpState::Connecting,
+    ))));
+    let panel = app.mcp.as_ref().unwrap();
+    assert_eq!(panel.mode, crate::mcp::Mode::List);
+    assert!(panel.message.as_ref().unwrap().1.contains("saved fx"));
+    // Nothing secret reached the chat.
+    assert!(!notices(&app).contains("ghp_"));
+    assert!(app.input.text().is_empty());
+}
+
+#[test]
+fn mcp_failed_test_shows_stderr_and_can_save_anyway() {
+    let (mut app, _fake) = new_app();
+    submit(&mut app, "/mcp add");
+    type_text(&mut app, "fx");
+    press(&mut app, KeyCode::Down);
+    type_text(&mut app, "missing-server");
+    let effects = press(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        effects.first(),
+        Some(Effect::Task(Task::McpVerify { .. }))
+    ));
+    app.on_task_done(TaskDone::McpVerified(Ok(Err(McpVerifyError {
+        kind: McpErrorKind::ExitedEarly,
+        message: "connection closed (Error: bad token)".into(),
+        stderr_tail: vec!["Error: bad token".into()],
+    }))));
+    let screen_text = screen(&mut app, 100, 30);
+    assert!(
+        screen_text.contains("exited while starting"),
+        "{screen_text}"
+    );
+    assert!(screen_text.contains("Error: bad token"), "{screen_text}");
+    let effects = press(&mut app, KeyCode::Char('s'));
+    assert!(matches!(
+        effects.first(),
+        Some(Effect::Task(Task::McpSave { .. }))
+    ));
+}
+
+#[test]
+fn mcp_list_toggles_removes_and_restarts() {
+    let (mut app, fake) = new_app();
+    *fake.mcp.lock().unwrap() = vec![
+        mcp_server("fx", McpState::Running { tools: 2, since: 0 }),
+        mcp_server(
+            "pg",
+            McpState::Unavailable {
+                error: "`pg-mcp` exited".into(),
+                retry_at: None,
+                failures: 2,
+            },
+        ),
+    ];
+    submit(&mut app, "/mcp");
+    let screen_text = screen(&mut app, 100, 30);
+    assert!(screen_text.contains("running · 2 tools"), "{screen_text}");
+    assert!(
+        screen_text.contains("unavailable · `pg-mcp` exited"),
+        "{screen_text}"
+    );
+
+    // Space disables the selected server.
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(
+        fake.mcp_patches.lock().unwrap()[0],
+        (
+            "fx".into(),
+            McpPatch {
+                enabled: Some(false),
+                ..Default::default()
+            }
+        )
+    );
+    // Details: hide a tool, show logs.
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(
+        fake.mcp_patches.lock().unwrap()[1].1.disabled_tools,
+        Some(vec!["delete_all".to_owned()])
+    );
+    press(&mut app, KeyCode::Char('l'));
+    assert!(screen(&mut app, 100, 30).contains("fixture server starting"));
+    press(&mut app, KeyCode::Esc);
+
+    // Restart a running server: a background task.
+    press(&mut app, KeyCode::Down);
+    fake.mcp.lock().unwrap()[1].config.enabled = true;
+    let effects = press(&mut app, KeyCode::Char('r'));
+    assert!(
+        matches!(effects.first(), Some(Effect::Task(Task::McpRestart(n))) if n == "pg"),
+        "{effects:?}"
+    );
+
+    // Remove with its secrets.
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Char('x'));
+    assert_eq!(*fake.mcp_removed.lock().unwrap(), [("pg".into(), true)]);
+    assert_eq!(app.mcp.as_ref().unwrap().items.len(), 1);
+    press(&mut app, KeyCode::Esc);
+    assert!(app.mcp.is_none());
+}
+
+#[test]
+fn mcp_paste_opens_the_form_prefilled() {
+    let (mut app, _fake) = new_app();
+    submit(&mut app, "/mcp paste");
+    app.on_paste("{\"mcpServers\": {\"github\": {\"command\": \"github-mcp-server\"}}}\n");
+    press(&mut app, KeyCode::Enter);
+    let Some(crate::mcp::Mode::Form(form)) = app.mcp.as_ref().map(|p| p.mode.clone()) else {
+        panic!("no form");
+    };
+    assert_eq!(form.name, "github");
+    assert_eq!(form.command, "github-mcp-server");
+    assert_eq!(form.env_secrets, "GITHUB_TOKEN");
+    // The missing secret is asked for next.
+    press(&mut app, KeyCode::Enter);
+    let screen_text = screen(&mut app, 100, 30);
+    assert!(
+        screen_text.contains("type or paste the value"),
+        "{screen_text}"
+    );
+    // A pasted value lands in the secret field, not the chat input.
+    app.on_paste("ghp_pasted_value_123456");
+    assert!(app.input.text().is_empty());
+    assert!(!screen(&mut app, 100, 30).contains("ghp_pasted"));
+}
+
+#[test]
+fn mcp_shortcuts() {
+    let (mut app, fake) = new_app();
+    *fake.mcp.lock().unwrap() = vec![mcp_server("fx", McpState::NotStarted)];
+    let effects = submit(&mut app, "/mcp restart fx");
+    assert!(matches!(effects.first(), Some(Effect::Task(Task::McpRestart(n))) if n == "fx"));
+    app.on_task_done(TaskDone::McpRestarted(
+        "fx".into(),
+        Ok(mcp_server("fx", McpState::Running { tools: 2, since: 0 })),
+    ));
+    assert!(notices(&app).contains("MCP server fx: running · 2 tools"));
+    submit(&mut app, "/mcp disable fx");
+    assert!(notices(&app).contains("MCP server fx disabled"));
+    submit(&mut app, "/mcp restart");
+    assert!(notices(&app).contains("usage: /mcp restart <name>"));
+    submit(&mut app, "/tools");
+    assert!(notices(&app).contains("MCP servers (/mcp to manage)"));
 }

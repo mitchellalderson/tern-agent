@@ -13,6 +13,7 @@ use tern_core::types::Usage;
 
 use crate::history;
 use crate::input::Input;
+use crate::mcp::{McpAction, McpPanel};
 use crate::models::{ModelPicker, PickerAction};
 use crate::secret_prompt::{Done, SecretPrompt};
 use crate::secrets::SecretsPanel;
@@ -144,6 +145,8 @@ pub struct App {
     pub secrets: Option<SecretsPanel>,
     /// The `/setup` panel, drawn over the transcript while open.
     pub setup: Option<SetupPanel>,
+    /// The `/mcp` panel, drawn over the transcript while open.
+    pub mcp: Option<McpPanel>,
     /// The `/model` picker, drawn over the transcript while open.
     pub picker: Option<ModelPicker>,
     /// A sub-agent's transcript, drawn over the transcript while open.
@@ -168,6 +171,8 @@ Commands:
   /stop             cancel the current run
   /reload           re-read config and rebuild tools
   /secrets [NAME]   manage API keys and tokens in secrets.toml
+  /mcp              add, test and manage MCP servers (/mcp add, /mcp paste,
+                    /mcp restart|enable|disable <name>)
   /usage            token usage for this session
   /agents           list the last run's sub-agents
   /agent <label>    show a sub-agent's transcript (Esc closes)
@@ -204,6 +209,7 @@ impl App {
             hint: None,
             secrets: None,
             setup,
+            mcp: None,
             picker: None,
             overlay: None,
             agents: HashSet::new(),
@@ -253,6 +259,16 @@ impl App {
                     vec![]
                 }
                 SetupAction::Run(task) => vec![Effect::Task(task)],
+            };
+        }
+        if let Some(panel) = &mut self.mcp {
+            return match panel.on_key(key, self.backend.as_ref()) {
+                McpAction::None => vec![],
+                McpAction::Close => {
+                    self.mcp = None;
+                    vec![]
+                }
+                McpAction::Run(task) => vec![Effect::Task(task)],
             };
         }
         if let Some(picker) = &mut self.picker {
@@ -359,6 +375,8 @@ impl App {
             panel.on_paste(text);
         } else if let Some(panel) = &mut self.setup {
             panel.on_paste(text);
+        } else if let Some(panel) = &mut self.mcp {
+            panel.on_paste(text);
         } else if let Some(picker) = &mut self.picker {
             picker.list.on_paste(text);
         } else if let Some(p) = &mut self.secret_prompt {
@@ -380,6 +398,7 @@ impl App {
         self.hint = Some("press Ctrl+C again to quit".into());
         if self.secrets.take().is_some()
             || self.setup.take().is_some()
+            || self.mcp.take().is_some()
             || self.picker.take().is_some()
             || self.overlay.take().is_some()
         {
@@ -588,7 +607,21 @@ impl App {
                     .into_iter()
                     .map(|(n, d)| format!("{n} — {}", d.lines().next().unwrap_or_default()))
                     .collect();
-                self.notice(format!("tools:\n{}", lines.join("\n")));
+                let mut text = format!("tools:\n{}", lines.join("\n"));
+                if let Ok(servers) = self.backend.mcp_servers()
+                    && !servers.is_empty()
+                {
+                    let now = chrono::Utc::now().timestamp();
+                    text.push_str("\nMCP servers (/mcp to manage):");
+                    for s in &servers {
+                        text.push_str(&format!(
+                            "\n  {} — {}",
+                            s.name,
+                            crate::mcp::describe_state(s, now)
+                        ));
+                    }
+                }
+                self.notice(text);
             }
             "stop" => {
                 if self.running.is_some() {
@@ -609,6 +642,7 @@ impl App {
                     Err(e) => self.error(e),
                 }
             }
+            "mcp" => return self.mcp_command(arg),
             "secrets" => {
                 let name = (!arg.is_empty()).then_some(arg);
                 match SecretsPanel::open(self.backend.as_ref(), name) {
@@ -1166,8 +1200,79 @@ impl App {
         }
     }
 
+    /// `/mcp` and its shortcuts.
+    fn mcp_command(&mut self, arg: &str) -> Vec<Effect> {
+        let backend = self.backend.clone();
+        let (sub, name) = match arg.split_once(char::is_whitespace) {
+            Some((s, n)) => (s, n.trim()),
+            None => (arg, ""),
+        };
+        let opened = match sub {
+            "" => McpPanel::open(backend.as_ref()),
+            "add" => McpPanel::open_add(backend.as_ref()),
+            "paste" | "import" => McpPanel::open_paste(backend.as_ref()),
+            "restart" | "enable" | "disable" if name.is_empty() => {
+                self.error(format!("usage: /mcp {sub} <name>"));
+                return vec![];
+            }
+            "restart" => {
+                self.notice(format!("restarting MCP server {name}…"));
+                return vec![Effect::Task(Task::McpRestart(name.to_owned()))];
+            }
+            "enable" | "disable" => {
+                let patch = tern_core::mcp::McpPatch {
+                    enabled: Some(sub == "enable"),
+                    ..Default::default()
+                };
+                match backend.patch_mcp(name, &patch) {
+                    Ok(_) => self.notice(format!("MCP server {name} {sub}d")),
+                    Err(e) => self.error(e),
+                }
+                return vec![];
+            }
+            other => {
+                self.error(format!(
+                    "unknown /mcp {other}; try /mcp, /mcp add, /mcp paste, or /mcp restart|enable|disable <name>"
+                ));
+                return vec![];
+            }
+        };
+        match opened {
+            Ok(panel) => self.mcp = Some(panel),
+            Err(e) => self.error(e),
+        }
+        vec![]
+    }
+
+    /// The spinner ticked; panels that poll do so here.
+    pub fn on_tick(&mut self) {
+        if let Some(panel) = &mut self.mcp {
+            panel.on_tick(self.backend.as_ref());
+        }
+    }
+
     /// A background [`Task`] finished.
     pub fn on_task_done(&mut self, done: TaskDone) -> Vec<Effect> {
+        if let Some(panel) = &mut self.mcp {
+            if let Some(done) = panel.on_task_done_or_return(done, self.backend.as_ref()) {
+                return self.on_task_done_rest(done);
+            }
+            return vec![];
+        }
+        self.on_task_done_rest(done)
+    }
+
+    fn on_task_done_rest(&mut self, done: TaskDone) -> Vec<Effect> {
+        if let TaskDone::McpRestarted(name, r) = done {
+            match r {
+                Ok(s) => self.notice(format!(
+                    "MCP server {name}: {}",
+                    crate::mcp::describe_state(&s, chrono::Utc::now().timestamp())
+                )),
+                Err(e) => self.error(e),
+            }
+            return vec![];
+        }
         if let Some(panel) = &mut self.setup {
             panel.on_task_done(done, self.backend.as_ref());
             if std::mem::take(&mut panel.changed) {
@@ -1189,6 +1294,7 @@ impl App {
     /// Something is loading in a panel (for the spinner).
     pub fn is_busy(&self) -> bool {
         self.setup.as_ref().is_some_and(SetupPanel::is_busy)
+            || self.mcp.as_ref().is_some_and(McpPanel::is_busy)
             || self.picker.as_ref().is_some_and(|p| p.list.loading)
     }
 

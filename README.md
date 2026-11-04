@@ -65,7 +65,7 @@ tern           # chat
 | **Models** | Anthropic, plus any OpenAI-compatible endpoint (OpenRouter, Ollama, vLLM, LM Studio). Models are `provider:model`; switch with `--model` or `/model`. |
 | **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `http_fetch`, long-term memory, search over past conversations, skills, schedules. |
 | **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. |
-| **MCP** | Configure servers under `[mcp.servers.<name>]` (stdio or streamable HTTP), or add, test, toggle and remove them through the daemon's `/v1/mcp` API without a restart; their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. |
+| **MCP** | Add, test, toggle and remove servers with `/mcp` in the chat or [`tern mcp`](#tern-mcp), or edit `[mcp.servers.<name>]` (stdio or streamable HTTP); changes apply without a restart, a server's pasted `mcpServers` JSON works too, and their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. |
 | **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
 | **Telegram** | Chat from your phone, approve tool calls with buttons, get scheduled results. |
@@ -88,6 +88,7 @@ tern           # chat
 | [`tern connectors`](#tern-connectors) | List or validate Luau connectors. |
 | [`tern setup`](#tern-setup) | Connect a model provider: paste a key, pick a model. |
 | [`tern providers`](#tern-providers) | List, add, or remove model providers (for scripts). |
+| [`tern mcp`](#tern-mcp) | List, add, import, test and manage MCP servers. |
 | [`tern models`](#tern-providers) | List the models each provider offers. |
 | [`tern config`](#tern-config) | Create, read, and edit `config.toml`. |
 | [`tern doctor`](#tern-doctor) | Check configuration, providers, database, daemon, and integrations. |
@@ -99,7 +100,7 @@ tern           # chat
 
 With no subcommand, tern opens the chat TUI. If a daemon is running it attaches to it over `~/.tern/tern.sock`, so the conversation, schedules, and approvals are shared with Telegram; otherwise it starts its own runtime in-process.
 
-Chat commands: `/new` · `/model [model]` · `/setup` · `/sessions` · `/resume <session or run id>` · `/tools` · `/secrets [NAME]` · `/stop` · `/reload` · `/usage` · `/help`.
+Chat commands: `/new` · `/model [model]` · `/setup` · `/sessions` · `/resume <session or run id>` · `/tools` · `/secrets [NAME]` · `/mcp` · `/stop` · `/reload` · `/usage` · `/help`.
 
 `/setup` (or `/providers`) opens a panel for model providers: add one (Anthropic, or any OpenAI-compatible server by base URL), change its API key, choose its default model, or remove it. Keys are checked with the provider before they're saved, shown only masked (`sk-ant…a1B2`), and never reach the transcript, input history, or model. Ctrl+E uses a key already set in the environment. Changes apply to the next message, with no restart, including when attached to the daemon.
 
@@ -242,6 +243,20 @@ tern models [PROVIDER] [--refresh] [--json]
 ```
 
 `add` checks the key with the provider before saving anything and exits non-zero if it's rejected. The key goes to `secrets.toml` as `<NAME>_API_KEY`; `--env-key` uses one already set in the environment instead. Without `--default-model`, the first listed model becomes the default when there's no usable default yet. `rm` also deletes the provider's key unless `--keep-key` or something else uses it. Like `tern setup`, these go through the running daemon when there is one.
+
+### `tern mcp`
+
+```
+tern mcp [list] [--json]                               # servers and their state
+tern mcp show NAME                                     # config, tools, recent stderr
+tern mcp add NAME [--env K=V] [--secret NAME] [--cwd DIR] -- COMMAND [ARGS…]
+tern mcp add NAME --url URL [--bearer-secret NAME] [--header-secret H=NAME]
+tern mcp import [FILE]                                 # mcpServers JSON, from stdin without FILE
+tern mcp test NAME
+tern mcp enable|disable|restart|rm NAME
+```
+
+`add` and `import` start the server and list its tools before saving (`--no-test` skips that), and ask for missing secrets without echoing them. Values in a pasted snippet that look like keys are stored in `secrets.toml`, never `config.toml`. In the chat, `/mcp` opens the same as a panel (`/mcp add`, `/mcp paste`, `/mcp restart|enable|disable NAME`).
 
 ### `tern config`
 

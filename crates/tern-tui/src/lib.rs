@@ -6,15 +6,18 @@
 mod app;
 mod history;
 mod input;
+mod mcp;
 mod models;
 mod secret_prompt;
 mod secrets;
 mod setup;
 mod term;
 mod ui;
+mod ui_mcp;
 mod ui_setup;
 mod wrap;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -23,7 +26,9 @@ use tern_core::agent::RunOutcome;
 use tern_core::approval::{
     ApprovalHandler, ApprovalRequest, Decision, SecretRequest, SecretValues,
 };
+use tern_core::config::McpServerConfig;
 use tern_core::events::AgentEvent;
+use tern_core::mcp::{ImportedServer, McpPatch, McpStatus, McpVerified, McpVerifyError};
 use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
 use tern_core::subagent::ChildRun;
 use tern_core::types::{ContentBlock, Role, Usage};
@@ -37,6 +42,7 @@ pub use term::run;
 pub type BackendResult<T> = Result<T, String>;
 
 const NO_SETUP: &str = "this backend can't manage providers";
+const NO_MCP: &str = "this backend can't manage MCP servers";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Started {
@@ -150,6 +156,47 @@ pub trait Backend: Send + Sync + 'static {
     /// Set `default_model`; returns the resolved `provider:model`.
     fn set_default_model(&self, _model: &str) -> BackendResult<Resolved> {
         Err(NO_SETUP.into())
+    }
+    /// Configured MCP servers with their state.
+    fn mcp_servers(&self) -> BackendResult<Vec<McpStatus>> {
+        Err(NO_MCP.into())
+    }
+    /// Start `cfg` as a throwaway server and list its tools; saves nothing.
+    /// `secrets` are values typed but not saved yet. The outer error is the
+    /// backend failing, the inner one the server.
+    async fn verify_mcp(
+        &self,
+        _name: String,
+        _cfg: McpServerConfig,
+        _secrets: BTreeMap<String, String>,
+    ) -> BackendResult<Result<McpVerified, McpVerifyError>> {
+        Err(NO_MCP.into())
+    }
+    /// Read a pasted `mcpServers` JSON snippet into drafts.
+    fn import_mcp(&self, _text: &str) -> BackendResult<Vec<ImportedServer>> {
+        Err(NO_MCP.into())
+    }
+    /// Store `secrets`, write the config and start the server. `old` is the
+    /// server being replaced (renamed when it differs from `name`).
+    async fn save_mcp(
+        &self,
+        _old: Option<String>,
+        _name: String,
+        _cfg: McpServerConfig,
+        _secrets: BTreeMap<String, String>,
+    ) -> BackendResult<McpStatus> {
+        Err(NO_MCP.into())
+    }
+    /// The quick toggles: enabled, hidden tools, approval, retry.
+    fn patch_mcp(&self, _name: &str, _patch: &McpPatch) -> BackendResult<McpStatus> {
+        Err(NO_MCP.into())
+    }
+    fn remove_mcp(&self, _name: &str, _remove_secrets: bool) -> BackendResult<()> {
+        Err(NO_MCP.into())
+    }
+    /// Reconnect now, ignoring backoff.
+    async fn restart_mcp(&self, _name: String) -> BackendResult<McpStatus> {
+        Err(NO_MCP.into())
     }
     /// The sub-agents `run_id` started, oldest first.
     fn children(&self, _run_id: &str) -> BackendResult<Vec<ChildRun>> {

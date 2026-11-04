@@ -10,6 +10,7 @@ mod inspect;
 mod lifecycle;
 mod logging;
 mod mcp;
+mod mcp_cmd;
 mod providers;
 mod providers_cmd;
 mod remote;
@@ -106,6 +107,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Providers { command }) => {
             home.ensure_layout()?;
             providers_cmd::run(&home, command)
+        }
+        Some(Command::Mcp { command }) => {
+            home.ensure_layout()?;
+            mcp_cmd::run(&home, command)
         }
         Some(Command::Models {
             provider,

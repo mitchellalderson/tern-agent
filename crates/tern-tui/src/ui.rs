@@ -33,6 +33,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(panel) = &app.secrets {
         draw_secrets(frame, panel, transcript);
     }
+    if let Some(panel) = &app.mcp {
+        crate::ui_mcp::draw_mcp(frame, panel, transcript);
+    }
     if let Some(panel) = &app.setup {
         crate::ui_setup::draw_setup(frame, panel, transcript);
     }
@@ -539,6 +542,7 @@ fn draw_input(
         && app.secret_prompt.is_none()
         && app.secrets.is_none()
         && app.setup.is_none()
+        && app.mcp.is_none()
         && app.picker.is_none()
         && app.overlay.is_none()
     {

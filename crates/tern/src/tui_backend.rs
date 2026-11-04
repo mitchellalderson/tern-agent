@@ -1,11 +1,14 @@
 //! The TUI's view of an embedded runtime. `/reload` swaps in a new one.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use tern_core::agent::RunOutcome;
 use tern_core::approval::ApprovalHandler;
+use tern_core::config::McpServerConfig;
 use tern_core::events::AgentEvent;
+use tern_core::mcp::{ImportedServer, McpPatch, McpStatus, McpVerified, McpVerifyError};
 use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
 use tern_core::subagent::ChildRun;
 use tern_core::types::{ContentBlock, Role, Usage};
@@ -250,6 +253,47 @@ impl Backend for TuiBackend {
 
     fn set_default_model(&self, model: &str) -> BackendResult<Resolved> {
         self.rt().set_default_model(model).map_err(chain)
+    }
+
+    fn mcp_servers(&self) -> BackendResult<Vec<McpStatus>> {
+        Ok(self.rt().mcp_statuses())
+    }
+
+    async fn verify_mcp(
+        &self,
+        name: String,
+        cfg: McpServerConfig,
+        secrets: BTreeMap<String, String>,
+    ) -> BackendResult<Result<McpVerified, McpVerifyError>> {
+        Ok(self.rt().verify_mcp(&name, &cfg, secrets).await)
+    }
+
+    fn import_mcp(&self, text: &str) -> BackendResult<Vec<ImportedServer>> {
+        self.rt().import_mcp(text)
+    }
+
+    async fn save_mcp(
+        &self,
+        old: Option<String>,
+        name: String,
+        cfg: McpServerConfig,
+        secrets: BTreeMap<String, String>,
+    ) -> BackendResult<McpStatus> {
+        self.rt()
+            .save_mcp(old.as_deref(), &name, &cfg, &secrets)
+            .map_err(chain)
+    }
+
+    fn patch_mcp(&self, name: &str, patch: &McpPatch) -> BackendResult<McpStatus> {
+        self.rt().patch_mcp(name, patch).map_err(chain)
+    }
+
+    fn remove_mcp(&self, name: &str, remove_secrets: bool) -> BackendResult<()> {
+        self.rt().remove_mcp(name, remove_secrets).map_err(chain)
+    }
+
+    async fn restart_mcp(&self, name: String) -> BackendResult<McpStatus> {
+        self.rt().restart_mcp(&name).await.map_err(chain)
     }
 
     fn children(&self, run_id: &str) -> BackendResult<Vec<ChildRun>> {
