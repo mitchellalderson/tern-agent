@@ -5,7 +5,7 @@
 //! |---|---|---|
 //! | GET | `/v1/channels[?archived=1]` | `[Channel]`: Home first, with `last_post_id`, `needs_you`, `active_runs` |
 //! | POST | `/v1/channels` | create `{slug, title?, kind?: "topic", instructions?}` |
-//! | PATCH | `/v1/channels/{id}` | `{title?, instructions?, archived?, lead?, agent_wakes?, max_hops?, wakes_per_hour?}` (`instructions: null` clears them; the last four: topic channels) |
+//! | PATCH | `/v1/channels/{id}` | `{title?, instructions?, archived?, lead?, agent_wakes?, max_hops?, wakes_per_hour?, let_agents_decide?}` (`instructions: null` clears them; the last five: topic channels) |
 //! | GET | `/v1/channels/{id}/agents` | a topic channel's `{members: [{agent_id, lead?, added_at}], agent_wakes, max_hops, wakes_per_hour}` (also on `Channel` as `agents`) |
 //! | POST | `/v1/channels/{id}/agents` | add `{agent}` (id or slug), with a "Name joined" note |
 //! | DELETE | `/v1/channels/{id}/agents/{agent}` | take an agent out (not the lead or `tern`) |
@@ -81,6 +81,10 @@ pub struct ChannelAgents {
     pub agent_wakes: bool,
     pub max_hops: i64,
     pub wakes_per_hour: i64,
+    /// "Let agents decide": posts that mention no one are routed to the
+    /// right members by the gate model, not always to the lead.
+    #[serde(default)]
+    pub let_agents_decide: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +113,7 @@ fn channel_agents(m: &Shared, c: &ChannelRow) -> Option<ChannelAgents> {
         agent_wakes: w.agent_wakes,
         max_hops: w.max_hops,
         wakes_per_hour: w.wakes_per_hour,
+        let_agents_decide: w.let_agents_decide,
     })
 }
 
@@ -245,6 +250,7 @@ struct UpdateBody {
     agent_wakes: Option<bool>,
     max_hops: Option<i64>,
     wakes_per_hour: Option<i64>,
+    let_agents_decide: Option<bool>,
 }
 
 async fn update(
@@ -271,7 +277,8 @@ async fn update(
     let agents_change = b.lead.is_some()
         || b.agent_wakes.is_some()
         || b.max_hops.is_some()
-        || b.wakes_per_hour.is_some();
+        || b.wakes_per_hour.is_some()
+        || b.let_agents_decide.is_some();
     if agents_change && c.kind != "topic" {
         return Err(bad("only topic channels have a lead and wake settings"));
     }
@@ -298,6 +305,7 @@ async fn update(
         w.agent_wakes = b.agent_wakes.unwrap_or(w.agent_wakes);
         w.max_hops = b.max_hops.unwrap_or(w.max_hops);
         w.wakes_per_hour = b.wakes_per_hour.unwrap_or(w.wakes_per_hour);
+        w.let_agents_decide = b.let_agents_decide.unwrap_or(w.let_agents_decide);
         m.rt.store.set_channel_wakes(&c.id, &w).map_err(internal)?;
     }
     m.channels_changed();

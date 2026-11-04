@@ -843,19 +843,21 @@ fn other_agents(home: &TernHome, store: &Store, me: &str) -> Vec<String> {
         .unwrap_or_default()
         .into_iter()
         .filter(|a| a.id != me)
-        .map(|a| {
-            let first = std::fs::read_to_string(tern_core::agents::persona_path(home, &a.id))
-                .ok()
-                .and_then(|t| {
-                    t.lines()
-                        .map(str::trim)
-                        .find(|l| !l.is_empty() && !l.starts_with("<!--"))
-                        .map(|l| l.chars().take(120).collect::<String>())
-                })
-                .unwrap_or_default();
-            format!("@{} · {} · {first}", a.slug, a.name)
-        })
+        .map(|a| format!("@{} · {} · {}", a.slug, a.name, persona_line(home, &a.id)))
         .collect()
+}
+
+/// The first line of an agent's persona, as a short description of it.
+pub(crate) fn persona_line(home: &TernHome, agent_id: &str) -> String {
+    std::fs::read_to_string(tern_core::agents::persona_path(home, agent_id))
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty() && !l.starts_with("<!--"))
+                .map(|l| l.chars().take(120).collect::<String>())
+        })
+        .unwrap_or_default()
 }
 
 /// `(slug, chain)` for every active agent that sets a model.

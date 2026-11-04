@@ -88,22 +88,25 @@ pub fn gate_model(rt: &crate::runtime::Runtime, run_model: &str) -> anyhow::Resu
     Ok(cheapest.as_deref().unwrap_or(run_model).parse()?)
 }
 
-/// Ask the gate model whether a `notify` routine's result is worth a push
-/// now: one short call, no tools, answered as `{"interrupt", "headline"}`.
-pub async fn ask_gate(
+/// One short call on the gate model, no tools: `system` and `user` in, its
+/// text out. Used for the notification gate and for routing a channel
+/// post to agents. Gives up after `timeout`.
+pub async fn gate_text(
     rt: &crate::runtime::Runtime,
-    purpose: &str,
     run_model: &str,
-    result: &str,
-) -> anyhow::Result<GateAnswer> {
+    system: &str,
+    user: String,
+    max_tokens: u32,
+    timeout: std::time::Duration,
+) -> anyhow::Result<String> {
     let model = gate_model(rt, run_model)?;
     let provider = rt.agent.provider(&model)?;
     let req = ChatRequest {
         model: model.model.clone(),
-        system: GATE_SYSTEM.into(),
-        messages: vec![Message::user_text(gate_prompt(purpose, result))],
+        system: system.into(),
+        messages: vec![Message::user_text(user)],
         tools: Vec::new(),
-        max_tokens: 200,
+        max_tokens,
         forbid_tool_calls: false,
     };
     let call = async {
@@ -118,10 +121,30 @@ pub async fn ask_gate(
         }
         anyhow::Ok(text)
     };
-    let text = tokio::time::timeout(std::time::Duration::from_secs(60), call)
+    let text = tokio::time::timeout(timeout, call)
         .await
-        .map_err(|_| anyhow::anyhow!("the gate model took over a minute"))??;
+        .map_err(|_| anyhow::anyhow!("the gate model took over {}s", timeout.as_secs()))??;
     tracing::debug!(model = %model, answer = %text, "gate model answered");
+    Ok(text)
+}
+
+/// Ask the gate model whether a `notify` routine's result is worth a push
+/// now: one short call, no tools, answered as `{"interrupt", "headline"}`.
+pub async fn ask_gate(
+    rt: &crate::runtime::Runtime,
+    purpose: &str,
+    run_model: &str,
+    result: &str,
+) -> anyhow::Result<GateAnswer> {
+    let text = gate_text(
+        rt,
+        run_model,
+        GATE_SYSTEM,
+        gate_prompt(purpose, result),
+        200,
+        std::time::Duration::from_secs(60),
+    )
+    .await?;
     parse_gate_answer(&text)
         .ok_or_else(|| anyhow::anyhow!("the gate model answered {text:?}, not the JSON asked for"))
 }

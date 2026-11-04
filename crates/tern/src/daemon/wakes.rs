@@ -56,6 +56,58 @@ impl Manager {
         Ok(s.id)
     }
 
+    /// "Let agents decide" (§5.2): one call on the gate model picks who
+    /// answers `text` from the channel's members (the lead first), by
+    /// their persona lines. Only members can be picked, so nothing in the
+    /// message can send it elsewhere. `None` (any failure, a single member,
+    /// no clear pick) means the lead answers, as without the setting.
+    async fn route(&self, channel: &ChannelRow, text: &str) -> Option<Vec<String>> {
+        let store = &self.rt.store;
+        let members = store.channel_members(channel).ok()?;
+        let candidates: Vec<(String, String, String)> = members
+            .iter()
+            .filter_map(|m| store.agent(&m.agent_id).ok().flatten())
+            .filter(|a| a.archived_at.is_none())
+            .map(|a| {
+                let line = crate::runtime::persona_line(&self.rt.home, &a.id);
+                (a.slug, a.name, line)
+            })
+            .collect();
+        if candidates.len() < 2 {
+            return None;
+        }
+        let valid: Vec<String> = candidates.iter().map(|c| c.0.clone()).collect();
+        let run_model = self
+            .rt
+            .live()
+            .default_model
+            .as_ref()
+            .map(|c| c.primary().to_owned())
+            .unwrap_or_else(|| "mock:mock".into());
+        let answer = crate::routines::gate_text(
+            &self.rt,
+            &run_model,
+            tern_core::agents::ROUTER_SYSTEM,
+            tern_core::agents::router_prompt(text, &candidates),
+            100,
+            std::time::Duration::from_secs(20),
+        )
+        .await;
+        let picked = match answer {
+            Ok(t) => tern_core::agents::parse_router_answer(&t, &valid),
+            Err(e) => {
+                tracing::warn!(channel = %channel.id, error = %e, "routing failed; the lead answers");
+                None
+            }
+        }?;
+        let ids: Vec<String> = picked
+            .iter()
+            .filter_map(|slug| store.agent(slug).ok().flatten())
+            .map(|a| a.id)
+            .collect();
+        (!ids.is_empty()).then_some(ids)
+    }
+
     /// Who answers a reply to post `to` that mentions no one: the agent
     /// that wrote it (a routine's: its agent), else the lead. The answer
     /// is in that agent's conversation in the channel, like any other.
@@ -179,11 +231,24 @@ impl Manager {
         for a in &mentioned {
             self.join(channel, a)?;
         }
+        let mut routed = false;
         let agents: Vec<String> = if mentioned.is_empty() {
-            vec![match reply_to {
-                Some(to) => self.replier(channel, to)?,
-                None => self.answering_lead(channel)?,
-            }]
+            // Only a fresh post with no mention is routed: a reply goes to
+            // whoever wrote what it answers.
+            let by_gate = match reply_to {
+                None if store.channel_wakes(&channel.id)?.let_agents_decide => {
+                    self.route(channel, text).await
+                }
+                _ => None,
+            };
+            routed = by_gate.is_some();
+            match by_gate {
+                Some(ids) => ids,
+                None => vec![match reply_to {
+                    Some(to) => self.replier(channel, to)?,
+                    None => self.answering_lead(channel)?,
+                }],
+            }
         } else {
             mentioned.into_iter().map(|a| a.id).collect()
         };
@@ -209,6 +274,18 @@ impl Manager {
             dedupe_key: Some(&key),
             ..NewPost::default()
         })?;
+        if routed {
+            let names: Vec<String> = threads
+                .iter()
+                .filter_map(|(a, _)| store.agent(a).ok().flatten())
+                .map(|a| format!("@{}", a.slug))
+                .collect();
+            self.note(
+                &channel.id,
+                &format!("Sent to {}", names.join(", ")),
+                &format!("routed:{}", row.id),
+            )?;
+        }
         let mut woke = Vec::with_capacity(threads.len());
         // A chat's send gets the first agent's answer back; the others'
         // reach it as posts, under their names.
