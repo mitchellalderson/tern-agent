@@ -41,10 +41,11 @@ pub fn request_body(req: &ChatRequest) -> Value {
         .messages
         .iter()
         .map(|m| {
-            let content: Vec<&ContentBlock> = m
+            let content: Vec<ContentBlock> = m
                 .content
                 .iter()
                 .filter(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()))
+                .map(wire_ids)
                 .collect();
             json!({ "role": m.role.as_str(), "content": content })
         })
@@ -77,6 +78,41 @@ pub fn request_body(req: &ChatRequest) -> Value {
         }
     }
     body
+}
+
+/// Anthropic only takes tool-use ids of letters, digits, `_` and `-`. Ids
+/// from another provider in a fallback chain (T6a) may hold more, e.g.
+/// `functions.read_file:0`; both ends of a call map the same way, so they
+/// still pair up.
+fn wire_ids(b: &ContentBlock) -> ContentBlock {
+    let clean = |id: &str| -> String {
+        id.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    };
+    match b {
+        ContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse {
+            id: clean(id),
+            name: name.clone(),
+            input: input.clone(),
+        },
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => ContentBlock::ToolResult {
+            tool_use_id: clean(tool_use_id),
+            content: content.clone(),
+            is_error: *is_error,
+        },
+        other => other.clone(),
+    }
 }
 
 #[derive(Default)]
@@ -272,6 +308,36 @@ mod tests {
         });
         let b = request_body(&r);
         assert_eq!(b["messages"][1]["content"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn foreign_tool_ids_are_made_valid_on_both_ends() {
+        let mut r = req();
+        r.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "functions.read_file:0".into(),
+                name: "read_file".into(),
+                input: json!({}),
+            }],
+        });
+        r.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "functions.read_file:0".into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+        });
+        let b = request_body(&r);
+        assert_eq!(
+            b["messages"][1]["content"][0]["id"],
+            "functions_read_file_0"
+        );
+        assert_eq!(
+            b["messages"][2]["content"][0]["tool_use_id"],
+            "functions_read_file_0"
+        );
     }
 
     const STREAM: &str = concat!(

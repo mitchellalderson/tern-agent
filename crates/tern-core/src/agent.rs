@@ -43,9 +43,10 @@ pub const STOPPED_MARKER: &str = "[stopped: ";
 /// what it has instead of stopping mid-task with nothing to show.
 pub const WRAP_UP_MESSAGE: &str = "You have used up your {limit}, so you can't call any more tools. Write your final reply now from what you have: lead with the answer or result in the shape you were asked for, then say what you checked, what is unfinished and what you would do next.";
 
-/// Resolves the provider half of a `provider:model` reference.
+/// Resolves a `provider:model` reference to the provider that serves it:
+/// a fallback chain when config lists one for that model (T6a).
 pub type ProviderFactory =
-    Arc<dyn Fn(&str) -> Result<Arc<dyn Provider>, ProviderError> + Send + Sync>;
+    Arc<dyn Fn(&ModelRef) -> Result<Arc<dyn Provider>, ProviderError> + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
@@ -331,7 +332,7 @@ impl Agent {
             .as_deref()
             .ok_or_else(|| AgentError::Corrupt(format!("run {} has no model", run.id)))?
             .parse()?;
-        let provider = (self.providers)(&model.provider)?;
+        let provider = (self.providers)(&model)?;
         let system = run.system_prompt.clone().unwrap_or_default();
         let ctx = ToolCtx {
             workspace: self.cfg.workspace.clone(),
@@ -429,8 +430,10 @@ impl Agent {
                             let turn = self.call_llm(&run.id, &provider, req, cancel, true).await?;
                             let usage = turn.usage;
                             let messages = vec![turn.message.clone()];
+                            let answered = turn.fallback.clone();
                             Ok(StepOutput::new(turn)
                                 .with_usage(usage)
+                                .answered_by(answered.as_ref())
                                 .with_messages(messages))
                         }
                     },
@@ -954,6 +957,7 @@ impl Agent {
                     let usage = turn.usage;
                     Ok(StepOutput::new(summary.clone())
                         .with_usage(usage)
+                        .answered_by(turn.fallback.as_ref())
                         .with_messages(vec![compaction::summary_message(&summary)])
                         .with_summary_of(plan.cover_through))
                 },
@@ -1027,11 +1031,13 @@ impl Agent {
                 InFlight::Substitute(StepOutput::new(interrupted)),
                 || async {
                     let mut out = memory::FlushOutput::default();
+                    let mut answered = None;
                     match self.call_llm(&run.id, provider, req, cancel, false).await {
                         Err(StepError::Cancelled) => return Err(StepError::Cancelled),
                         Err(e) => out.error = Some(e.to_string()),
                         Ok(turn) => {
                             out.usage = turn.usage;
+                            answered = turn.fallback.clone();
                             let ctx = ToolCtx {
                                 workspace: self.cfg.workspace.clone(),
                                 run_id: run.id.clone(),
@@ -1058,7 +1064,9 @@ impl Agent {
                         }
                     }
                     let usage = out.usage;
-                    Ok(StepOutput::new(out).with_usage(usage))
+                    Ok(StepOutput::new(out)
+                        .with_usage(usage)
+                        .answered_by(answered.as_ref()))
                 },
             )
             .await?;
@@ -1325,6 +1333,7 @@ struct Assembler {
     text: String,
     tool_json: HashMap<String, String>,
     stop: Option<(Usage, crate::types::StopReason)>,
+    fallback: Option<crate::types::Fallback>,
 }
 
 impl Assembler {
@@ -1351,6 +1360,7 @@ impl Assembler {
                 self.stop = Some((usage, stop_reason));
                 return true;
             }
+            StreamEvent::Fallback(f) => self.fallback = Some(f),
         }
         false
     }
@@ -1392,6 +1402,7 @@ impl Assembler {
             },
             usage,
             stop_reason,
+            fallback: self.fallback,
         })
     }
 }

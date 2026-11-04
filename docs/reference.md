@@ -186,7 +186,7 @@ tern runs list            # the 20 most recent runs: id, status, start time, mod
 tern runs show <run-id>   # run details and its step journal
 ```
 
-A run is one prompt driven to a final answer within a session. Its journal records each model call and tool result; `runs show` is the quickest way to see what a run did, and where an unfinished one stopped. A tainted run shows `tainted  <why>` in its details, untrusted tool results are marked `[untrusted]`, and mail from a tainted run `[tainted]`.
+A run is one prompt driven to a final answer within a session. Its journal records each model call and tool result; `runs show` is the quickest way to see what a run did, and where an unfinished one stopped. A tainted run shows `tainted  <why>` in its details, untrusted tool results are marked `[untrusted]`, and mail from a tainted run `[tainted]`. Steps a [fallback model](#fallback-chains) answered say so.
 
 ### `tern connectors`
 
@@ -271,7 +271,7 @@ tern config set mcp.servers.github.args '["stdio"]'
 tern doctor [--offline]
 ```
 
-Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
+Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; every model in each fallback chain (configured provider, and listed by it when online); the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
 
 It exits `1` if anything failed, `0` otherwise (warnings are things not set up yet). It is read-only and doesn't create `~/.tern`.
 
@@ -297,7 +297,7 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 
 | Key | Default | |
 |---|---|---|
-| `default_model` | none | `provider:model` used when `--model` / `/model` isn't given. |
+| `default_model` | none | `provider:model` used when `--model` / `/model` isn't given, or a [fallback chain](#fallback-chains) `["anthropic:…", "openrouter:…"]`. |
 | `workspace` | `~/tern-workspace` | Where file tools work without approval. |
 | `max_iterations` | `40` | Model calls per run before it stops. |
 | `context_window` | `128000` | Tokens; older messages are summarized past 75%. |
@@ -336,6 +336,8 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `mcp.servers.<name>.requires_approval` | `false` | Ask before each of its tool calls. |
 | `mcp.servers.<name>.untrusted` | `false` | Its tools return third-party text (a browser, mail, chat): their results taint the run ([Taint](#taint)). |
 | `mcp.servers.<name>.effects` | `{}` | Effect per tool, by the server's tool name (`"*"` for the rest): `{ search_issues = "read", delete_repo = "destructive" }`. Overrides the server's `readOnlyHint` / `destructiveHint`; tools without either are `write`. |
+| `subagents.default_model` | none | Sub-agents' model when `agent_spawn` names none (unset = the parent's). May be a fallback chain. |
+| `subagents.models` | `{}` | Aliases `agent_spawn` can pass as `model`: `{ fast = "anthropic:claude-haiku-4-5" }`. Each may be a fallback chain. |
 | `secret_request_timeout_secs` | `900` | How long the agent's prompt for a secret waits for you. |
 
 Secrets are looked up by name in the environment first, then in `~/.tern/secrets.toml` (mode 0600):
@@ -363,6 +365,16 @@ Both create `secrets.toml` with mode 0600 if needed, keep its comments, and take
 **The agent can ask you for a secret.** When a connector it wrote (or anything else) needs a key that isn't set, the agent calls `secret_request` with the name and a reason. You get a private prompt: inline in the TUI, as a card in the desktop app, or in Telegram as a pointer to the app (a chat never takes the value). The prompt shows what would read the secret, for example `connector weather (draft) · reaches api.weather.com`. The value goes straight into `secrets.toml`; the agent only learns whether each name was `set`, `already_set`, `skipped` or `timed_out`. Values that are already set aren't asked for again unless the agent asks to replace them. A prompt waits up to `secret_request_timeout_secs` (default 900); runs with nobody to ask (`tern run --yes`) skip it. API clients see prompts on `/v1/events` as `{"secret_requested": …}`, list them with `GET /v1/secret-requests`, and answer with `POST /v1/secret-requests/{id}` `{"values": {"NAME": "…"}}` (names left out are skipped; only names the request asked for are accepted; owner scope).
 
 Environment variables: `TERN_HOME` (data directory, default `~/.tern`) and `TERN_LOG` (log level, e.g. `debug`).
+
+### Fallback chains
+
+A model setting can be a list instead of one model: `default_model = ["anthropic:claude-sonnet-4-5", "openrouter:anthropic/claude-sonnet-4.5"]`. So can `subagents.default_model` and each `subagents.models` alias.
+
+- **What moves on.** When a model call fails with an overload (`529`, Anthropic's `overloaded_error`), a server error (`5xx`), a rate limit (`429`), a timeout or network error, or an auth or billing error (`401`, `402`, `403`), it is retried as usual, and once those retries are spent the *same call* goes to the next model in the list. Other `4xx` errors (a bad request, a model that doesn't exist, a body too large) fail the run without trying the rest: the request itself is wrong. A refusal is an answer, not an error, so it never falls back.
+- **Which runs get it.** A chain belongs to its first model: any run on that model gets the chain, whether `default_model`, a session's `/model`, a schedule or `agent_spawn` picked it. Picking a different model in `/model` runs without fallbacks; picking a new default keeps the chain's fallbacks behind it. If two chains start with the same model, the first (in the order above) applies and `tern doctor` warns.
+- **What is recorded.** The journal stores which model answered each step, so `tern resume` and replays reuse that answer and never pick again. `tern runs show` prints `answered by openrouter:… (anthropic:… HTTP 529 (overloaded))` under such a step, and the app's run inspector shows the same. Tokens are counted against the model that answered, so schedule `usd_per_day` caps use its price.
+- **Next call starts over.** Each model call tries the first model again; a run can switch back and forth. Prompt caching doesn't carry across providers, so a switched call costs full input price.
+- `tern doctor` checks every model in each chain: that it parses, that its provider is configured, and (online) that the provider lists it. A fallback whose provider can't be built when a run starts (its key unset) is skipped with a warning in the log.
 
 ## Memory
 

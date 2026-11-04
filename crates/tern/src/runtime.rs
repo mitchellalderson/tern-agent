@@ -13,7 +13,7 @@ use tern_core::models::Change;
 use tern_core::prompt::{AgentRole, SubagentPrompt};
 use tern_core::subagent::HostSlot;
 use tern_core::tool::ToolRegistry;
-use tern_core::types::{Provider, ProviderError};
+use tern_core::types::Provider;
 use tern_core::{Config, SecretStatus, Secrets, TernHome};
 use tern_providers::{MockProvider, PROVIDER_ENV};
 use tern_store::Store;
@@ -355,22 +355,18 @@ fn provider_factory(
             bail!("{PROVIDER_ENV} must be `mock:<script.json>`, got {spec:?}");
         };
         let mock: Arc<dyn Provider> = Arc::new(MockProvider::from_file(path.as_ref())?);
-        return Ok((Arc::new(move |_| Ok(mock.clone())), true));
+        // Every model is the mock, but chains still apply, so fallback
+        // tests run through the real chain.
+        let factory: ProviderFactory = Arc::new(move |model: &ModelRef| {
+            let config = live.read().unwrap_or_else(|p| p.into_inner());
+            tern_providers::with_fallbacks(model, &config, |_| Ok(mock.clone()))
+        });
+        return Ok((factory, true));
     }
     let secrets = secrets.clone();
-    let factory: ProviderFactory = Arc::new(move |name: &str| {
-        let cfg = live
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .providers
-            .get(name)
-            .cloned();
-        let cfg = cfg.ok_or_else(|| {
-            ProviderError::Config(format!(
-                "provider {name:?} is not configured in config.toml"
-            ))
-        })?;
-        tern_providers::build(name, &cfg, &secrets)
+    let factory: ProviderFactory = Arc::new(move |model: &ModelRef| {
+        let config = live.read().unwrap_or_else(|p| p.into_inner());
+        tern_providers::for_model(model, &config, &secrets)
     });
     Ok((factory, false))
 }

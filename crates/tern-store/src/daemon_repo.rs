@@ -225,7 +225,8 @@ impl Store {
 
     /// Tokens used per model by runs started in `session_id` since `since`,
     /// their sub-agents included: `(model, (input, output, cache_read,
-    /// cache_write))`.
+    /// cache_write))`. A step a fallback answered counts against that
+    /// model (`model` in its usage, T6a), not the run's.
     pub fn usage_by_model_since(
         &self,
         session_id: &str,
@@ -238,14 +239,14 @@ impl Store {
                UNION ALL
                SELECT r.id FROM runs r JOIN tree t ON r.parent_run_id = t.id
              )
-             SELECT r.model,
+             SELECT COALESCE(json_extract(s.usage_json, '$.model'), r.model) AS m,
                COALESCE(SUM(json_extract(s.usage_json, '$.input_tokens')), 0),
                COALESCE(SUM(json_extract(s.usage_json, '$.output_tokens')), 0),
                COALESCE(SUM(json_extract(s.usage_json, '$.cache_read_tokens')), 0),
                COALESCE(SUM(json_extract(s.usage_json, '$.cache_write_tokens')), 0)
              FROM tree JOIN runs r ON r.id = tree.id JOIN steps s ON s.run_id = r.id
              WHERE s.usage_json IS NOT NULL
-             GROUP BY r.model",
+             GROUP BY m",
         )?;
         let rows = stmt.query_map(params![session_id, since], |r| {
             let n = |i| r.get::<_, i64>(i).map(|v| v.max(0) as u64);

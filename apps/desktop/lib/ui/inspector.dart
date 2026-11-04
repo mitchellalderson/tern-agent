@@ -495,6 +495,12 @@ class _RunInspectorState extends State<RunInspector> {
             : 'Inbox: $what';
       }
       if (s.kind == 'llm') {
+        // A fallback model answered (T6a): say which, and why.
+        if (s.output case {
+          'fallback': {'model': final String m, 'reason': final String why},
+        }) {
+          return 'Model call · answered by $m ($why)';
+        }
         return 'Model call${input['model'] is String ? ' · ${input['model']}' : ''}';
       }
       if (input['name'] case final String name) {

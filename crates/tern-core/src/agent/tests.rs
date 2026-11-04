@@ -2366,3 +2366,93 @@ async fn a_tainted_run_skips_the_memory_flush() {
     assert_eq!(count_kind(&h, &run, "memory_flush:completed"), 0);
     assert_eq!(script.flushes.load(Ordering::SeqCst), 0);
 }
+
+/// A fallback model answers the first call (as a chain marks it); the
+/// second fails. Resuming replays the first from the journal, never asking
+/// a provider again, and its usage stays with the model that answered.
+#[tokio::test]
+async fn a_fallback_answer_is_journaled_replayed_and_billed_to_its_model() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", false, false));
+    let replies = vec![Reply::Tool("count", json!({})), Reply::Text("done")];
+    let run = h.start(
+        &h.agent(Arc::new(Script::new(vec![])), vec![], Arc::new(AutoApprove)),
+        "go",
+    );
+    {
+        struct FallbackThenFail(Arc<Script>, AtomicU32);
+        #[async_trait]
+        impl Provider for FallbackThenFail {
+            fn id(&self) -> &str {
+                "chain"
+            }
+            async fn stream(
+                &self,
+                r: ChatRequest,
+                c: CancellationToken,
+            ) -> Result<EventStream, ProviderError> {
+                if self.1.fetch_add(1, Ordering::SeqCst) == 1 {
+                    return Err(ProviderError::Http {
+                        status: 400,
+                        body: "bad".into(),
+                        retry_after: None,
+                    });
+                }
+                let marker = StreamEvent::Fallback(crate::types::Fallback {
+                    model: "backup:m2".into(),
+                    reason: "script:m HTTP 529 (overloaded)".into(),
+                });
+                let rest = self.0.stream(r, c).await?;
+                Ok(Box::pin(futures::stream::iter([Ok(marker)]).chain(rest)))
+            }
+        }
+        let fp: Arc<dyn Provider> = Arc::new(FallbackThenFail(
+            Arc::new(Script::new(replies.clone())),
+            AtomicU32::new(0),
+        ));
+        let mut reg = ToolRegistry::new();
+        reg.register(tool.clone());
+        let a = Agent::new(
+            Journal::new(h.store.clone()),
+            Arc::new(move |_| Ok(fp.clone())),
+            Arc::new(reg),
+            Arc::new(AutoApprove),
+            AgentConfig {
+                retry_base: Duration::from_millis(1),
+                ..AgentConfig::default()
+            },
+        );
+        let out = a.drive(&run, CancellationToken::new()).await.unwrap();
+        assert_eq!(out.status, RunStatus::Failed);
+    }
+    let step0 = &h.store.steps(&run).unwrap()[0];
+    let turn: AssistantTurn = serde_json::from_str(step0.output_json.as_deref().unwrap()).unwrap();
+    assert_eq!(turn.fallback.unwrap().model, "backup:m2");
+    let usage: Value = serde_json::from_str(step0.usage_json.as_deref().unwrap()).unwrap();
+    assert_eq!(usage["model"], "backup:m2");
+
+    let ok = Arc::new(Script::new(replies));
+    let agent = h.agent(ok.clone(), vec![tool], Arc::new(AutoApprove));
+    let out = agent.resume(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(
+        (out.status, out.final_text.as_str()),
+        (RunStatus::Completed, "done")
+    );
+    // Only the failed call went out again; the fallback's answer replayed.
+    assert_eq!(ok.seen.lock().unwrap().len(), 1);
+    let step0_again = &h.store.steps(&run).unwrap()[0];
+    assert_eq!(step0_again.output_json, step0.output_json);
+
+    let by_model: std::collections::BTreeMap<String, u64> = h
+        .store
+        .usage_by_model_since("s1", 0)
+        .unwrap()
+        .into_iter()
+        .map(|(m, (input, ..))| (m.unwrap_or_default(), input))
+        .collect();
+    assert_eq!(
+        by_model.keys().collect::<Vec<_>>(),
+        ["backup:m2", "script:m"]
+    );
+    assert!(by_model.values().all(|n| *n > 0), "{by_model:?}");
+}

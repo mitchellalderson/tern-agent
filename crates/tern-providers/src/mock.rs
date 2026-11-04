@@ -5,7 +5,8 @@
 //! crashed one left off. Compaction requests get a summary that records how
 //! many turns it replaced (`mock-turns=N`), so counting survives compaction.
 //! Memory flushes before compaction save each of `memory_flush` (if any)
-//! with `memory_save`, and otherwise answer NOTHING.
+//! with `memory_save`, and otherwise answer NOTHING. Models named in
+//! `fail_models` fail every call, so fallback chains can be tested.
 //!
 //! ```json
 //! { "turns": [
@@ -79,6 +80,10 @@ pub struct Script {
     /// Facts every memory flush saves.
     #[serde(default)]
     pub memory_flush: Vec<String>,
+    /// Models (the part after `provider:`) whose every call fails with this
+    /// HTTP status, for fallback chains (T6a): `{ "down": 529 }`.
+    #[serde(default)]
+    pub fail_models: std::collections::BTreeMap<String, u16>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -153,6 +158,13 @@ impl Provider for MockProvider {
         req: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<EventStream, ProviderError> {
+        if let Some(status) = self.script.fail_models.get(&req.model) {
+            return Err(ProviderError::Http {
+                status: *status,
+                body: format!("mock: {} fails with {status}", req.model),
+                retry_after: Some(Duration::ZERO),
+            });
+        }
         if req.system == tern_core::compaction::SYSTEM_PROMPT {
             let text = req.messages.iter().map(|m| m.text()).collect::<String>();
             let n = text.matches("### assistant").count() + summarized_turns(&text);

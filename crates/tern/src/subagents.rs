@@ -383,10 +383,9 @@ impl Subagents {
                 self.config
                     .models
                     .get(m)
-                    .cloned()
-                    .unwrap_or_else(|| m.to_owned())
+                    .map_or_else(|| m.to_owned(), |c| c.primary().to_owned())
             })
-            .or_else(|| self.config.default_model.clone())
+            .or_else(|| self.config.default_model.as_deref().map(str::to_owned))
             .or_else(|| parent.model.clone())
             .ok_or("no model to run the sub-agent with")?;
         let aliases = || {

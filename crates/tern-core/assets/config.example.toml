@@ -1,7 +1,12 @@
 # tern configuration. See `tern doctor` for what is missing.
 
-# Model used when none is given, as "provider:model".
+# Model used when none is given, as "provider:model". A list is a fallback
+# chain: when a call to the first fails with an overload, a server error, a
+# rate limit, a network error or an auth/billing error (after its retries),
+# the same call goes to the next. Bad requests never fall back. Any run on
+# the first model gets the chain, whatever picked it.
 # default_model = "anthropic:claude-sonnet-4-5"
+# default_model = ["anthropic:claude-sonnet-4-5", "openrouter:anthropic/claude-sonnet-4.5"]
 
 workspace = "~/tern-workspace"
 max_iterations = 40
@@ -63,8 +68,8 @@ docker_pids = 512          # 0 for no limit
 # Sub-agents: the agent_spawn / agent_wait / agent_cancel / agent_status tools.
 # [subagents]
 # enabled = true             # false: no agent_* tools, and the prompt doesn't mention them
-# default_model = "anthropic:claude-sonnet-4-5"   # unset = the parent's model
-# models = { fast = "anthropic:claude-haiku-4-5" } # aliases for agent_spawn's `model`
+# default_model = "anthropic:claude-sonnet-4-5"   # unset = the parent's model; may be a chain
+# models = { fast = "anthropic:claude-haiku-4-5" } # aliases for agent_spawn's `model`; each may be a chain
 # max_depth = 1               # 1 = sub-agents can't start their own
 # max_concurrent = 4          # running per parent; more are queued
 # max_children = 12           # per parent run, in total

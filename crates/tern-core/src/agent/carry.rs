@@ -86,6 +86,7 @@ impl Agent {
                         summary: String::new(),
                     };
                     let mut usage = crate::types::Usage::default();
+                    let mut answered = None;
                     let effective = compaction::effective(rows);
                     if !effective.is_empty() {
                         let old =
@@ -103,6 +104,7 @@ impl Agent {
                         let turn = self.call_llm(&run.id, provider, req, cancel, false).await?;
                         carry.summary = turn.message.text();
                         usage = turn.usage;
+                        answered = turn.fallback;
                     }
                     let message = Message::user_text(carry.render());
                     Ok(StepOutput::new(CarryOutput {
@@ -110,6 +112,7 @@ impl Agent {
                         carry,
                     })
                     .with_usage(usage)
+                    .answered_by(answered.as_ref())
                     .with_messages(vec![message]))
                 },
             )

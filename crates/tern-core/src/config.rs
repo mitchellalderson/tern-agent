@@ -30,7 +30,8 @@ pub enum ConfigError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    pub default_model: Option<String>,
+    /// `provider:model`, or a fallback chain `["a:x", "b:y"]` (T6a).
+    pub default_model: Option<ModelChain>,
     pub workspace: String,
     pub max_iterations: u32,
     /// Default model context window in tokens; providers can override it.
@@ -126,6 +127,140 @@ impl Config {
 
     pub fn default_model_ref(&self) -> Option<Result<ModelRef, ConfigError>> {
         self.default_model.as_deref().map(str::parse)
+    }
+
+    /// Every model setting that may hold a chain, with its config key:
+    /// `default_model`, `subagents.default_model`, `subagents.models.<alias>`.
+    pub fn model_chains(&self) -> Vec<(String, &ModelChain)> {
+        let mut out = Vec::new();
+        if let Some(c) = &self.default_model {
+            out.push(("default_model".to_owned(), c));
+        }
+        if let Some(c) = &self.subagents.default_model {
+            out.push(("subagents.default_model".to_owned(), c));
+        }
+        for (alias, c) in &self.subagents.models {
+            out.push((format!("subagents.models.{alias}"), c));
+        }
+        out
+    }
+
+    /// The fallbacks for `model`: the rest of the first chain (in
+    /// [`Config::model_chains`] order) that starts with it. A run on any
+    /// model, whatever picked it, gets that model's chain. Entries that
+    /// don't parse are skipped here; `tern doctor` reports them.
+    pub fn fallbacks_for(&self, model: &ModelRef) -> Vec<ModelRef> {
+        let model = model.to_string();
+        self.model_chains()
+            .into_iter()
+            .map(|(_, c)| c)
+            .find(|c| c.primary() == model && !c.fallbacks().is_empty())
+            .map(|c| {
+                c.fallbacks()
+                    .iter()
+                    .filter_map(|m| m.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// One model, or a fallback chain tried in order when a model call fails in
+/// a way another provider might not (T6a). Written as `"anthropic:x"` or
+/// `["anthropic:x", "openrouter:y"]`; never empty. Derefs to the first
+/// entry, the model itself, so code that wants one model reads it as a
+/// `&str`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelChain(Vec<String>);
+
+impl ModelChain {
+    /// `None` for an empty list.
+    pub fn new(entries: Vec<String>) -> Option<Self> {
+        (!entries.is_empty()).then_some(Self(entries))
+    }
+
+    pub fn primary(&self) -> &str {
+        &self.0[0]
+    }
+
+    pub fn fallbacks(&self) -> &[String] {
+        &self.0[1..]
+    }
+
+    pub fn entries(&self) -> &[String] {
+        &self.0
+    }
+
+    /// This chain with `model` first, keeping the other fallbacks: what
+    /// picking a new default in `/model` or the app does.
+    pub fn with_primary(&self, model: &str) -> Self {
+        let mut entries = vec![model.to_owned()];
+        entries.extend(self.fallbacks().iter().filter(|m| *m != model).cloned());
+        Self(entries)
+    }
+
+    /// The value to write back to `config.toml`: a string for one model.
+    pub fn to_toml(&self) -> toml_edit::Value {
+        match self.0.as_slice() {
+            [one] => one.as_str().into(),
+            many => many
+                .iter()
+                .map(String::as_str)
+                .collect::<toml_edit::Array>()
+                .into(),
+        }
+    }
+}
+
+impl std::ops::Deref for ModelChain {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.primary()
+    }
+}
+
+impl From<&str> for ModelChain {
+    fn from(m: &str) -> Self {
+        Self(vec![m.to_owned()])
+    }
+}
+
+impl From<String> for ModelChain {
+    fn from(m: String) -> Self {
+        Self(vec![m])
+    }
+}
+
+impl fmt::Display for ModelChain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0.join(" → "))
+    }
+}
+
+impl Serialize for ModelChain {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.0.as_slice() {
+            [one] => s.serialize_str(one),
+            many => many.serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelChain {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            One(String),
+            Many(Vec<String>),
+        }
+        match Raw::deserialize(d)? {
+            Raw::One(m) => Ok(Self(vec![m])),
+            Raw::Many(v) => Self::new(v).ok_or_else(|| {
+                serde::de::Error::custom("a model list needs at least one `provider:model`")
+            }),
+        }
     }
 }
 
@@ -332,10 +467,11 @@ pub struct SubagentsConfig {
     /// Registers the `agent_*` tools and tells the agent to delegate.
     pub enabled: bool,
     /// Model for sub-agents when `agent_spawn` doesn't name one, as
-    /// `provider:model`. Unset = the parent's model.
-    pub default_model: Option<String>,
-    /// Aliases the parent can pass as `model`, e.g. `fast = "anthropic:…"`.
-    pub models: BTreeMap<String, String>,
+    /// `provider:model`, or a fallback chain. Unset = the parent's model.
+    pub default_model: Option<ModelChain>,
+    /// Aliases the parent can pass as `model`, e.g. `fast = "anthropic:…"`;
+    /// each may be a fallback chain.
+    pub models: BTreeMap<String, ModelChain>,
     /// 1 = children can't spawn; 2 = one level of grandchildren.
     pub max_depth: u32,
     /// Running children per parent run; more are queued.
@@ -613,7 +749,7 @@ ask_parent_timeout_secs = 900
         )
         .unwrap();
         assert!(!c.subagents.enabled);
-        assert_eq!(c.subagents.models["fast"], "anthropic:claude-haiku-4-5");
+        assert_eq!(&*c.subagents.models["fast"], "anthropic:claude-haiku-4-5");
         let err = Config::parse("[subagents]\nmax_dept = 2", Path::new("c.toml")).unwrap_err();
         assert!(err.to_string().contains("max_dept"), "{err}");
     }
@@ -639,5 +775,42 @@ ask_parent_timeout_secs = 900
         assert_eq!(m.model, "qwen/qwen3-coder:free");
         assert!("nocolon".parse::<ModelRef>().is_err());
         assert!(":m".parse::<ModelRef>().is_err());
+    }
+
+    #[test]
+    fn model_chains_accept_a_string_or_a_list() {
+        let c = Config::parse(
+            r#"
+default_model = ["anthropic:a", "openrouter:b", "bad"]
+[subagents]
+default_model = "anthropic:c"
+models = { fast = ["anthropic:h", "openrouter:h"] }
+"#,
+            Path::new("t"),
+        )
+        .unwrap();
+        let chain = c.default_model.as_ref().unwrap();
+        assert_eq!(&**chain, "anthropic:a");
+        assert_eq!(chain.fallbacks(), ["openrouter:b", "bad"]);
+        let refs = |m: &str| -> Vec<String> {
+            c.fallbacks_for(&m.parse().unwrap())
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        assert_eq!(refs("anthropic:a"), ["openrouter:b"]);
+        assert_eq!(refs("anthropic:h"), ["openrouter:h"]);
+        assert!(refs("anthropic:c").is_empty());
+        assert!(refs("openrouter:b").is_empty());
+        assert_eq!(c.subagents.default_model.as_deref(), Some("anthropic:c"));
+
+        // A single model round-trips as a string, a chain as a list.
+        assert_eq!(ModelChain::from("a:x").to_toml().to_string(), "\"a:x\"");
+        let moved = chain.with_primary("openrouter:b");
+        assert_eq!(moved.entries(), ["openrouter:b", "bad"]);
+        assert_eq!(moved.to_toml().to_string(), "[\"openrouter:b\", \"bad\"]");
+
+        let empty = Config::parse("default_model = []", Path::new("t"));
+        assert!(empty.is_err());
     }
 }
