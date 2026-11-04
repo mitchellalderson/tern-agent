@@ -12,6 +12,7 @@ Everything tern does, command by command. For installing and a first chat, see t
 | **MCP** | Ask the agent ("add the GitHub MCP server"; you approve the exact command each time, and only on this machine for local commands), or add, test, toggle and remove servers with `/mcp` in the chat or [`tern mcp`](#tern-mcp), or edit `[mcp.servers.<name>]` (stdio or streamable HTTP); changes apply without a restart, a server's pasted `mcpServers` JSON works too, and their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. For a browser, see [Recipe: give tern a browser](recipes/browser.md). |
 | **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and paths they may reach, which credentials tern adds to their requests (the script never sees them), a request rate, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
 | **Skills** | Folders in `~/.tern/skills/` with a `SKILL.md` (agentskills format). |
+| **Bundles** | Connectors, skills and routines someone shared as a link or a file, signed and pinned by hash, shown in full before anything installs: [`tern bundle`](#tern-bundle), or the app's Library → Bundles. There is no store to browse. `tern import openclaw` brings an OpenClaw setup across. |
 | **Telegram** | Chat from your phone, approve tool calls with buttons, get scheduled results. |
 | **Schedules** | "Every weekday at 8am, summarize my unread GitHub notifications" becomes a routine whose results are delivered to the chat that asked: on a cron, once at a time, or on events from a connector's watch (no model call when nothing happened). Runs with nothing to say stay silent, a gate can skip a run, each routine's initiative decides whether its result interrupts you or waits for a digest, results wait out your quiet hours, and each can be capped per day. See [Schedules](#schedules). |
 | **Durability** | Kill tern mid-run and `tern resume <run>` (or the daemon, automatically) continues it without re-running completed tools. `tern runs show <run>` prints the step journal. |
@@ -69,6 +70,8 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern hooks`](#webhooks) | Webhook routines: create (URL and secret shown once), list, rotate, revoke, fire locally. |
 | [`tern connectors`](#tern-connectors) | List or validate Luau connectors. |
 | [`tern connections`](#tern-connections) | Accounts of connectors and MCP servers: sign in, add another, set the default, remove. |
+| [`tern bundle`](#tern-bundle) | Install, update, remove and export bundles of connectors, skills and routines; signing keys and trust. |
+| [`tern import openclaw`](#tern-import-openclaw) | Bring OpenClaw's skills, automations and profile files across (never its credentials). |
 | [`tern setup`](#tern-setup) | Connect a model provider: paste a key, pick a model. |
 | [`tern providers`](#tern-providers) | List, add, or remove model providers (for scripts). |
 | [`tern mcp`](#tern-mcp) | List, add, import, test and manage MCP servers. |
@@ -267,6 +270,47 @@ In the TUI, `/connections` lists the accounts. The desktop app has a Connections
 
 **Connector code** declares OAuth with `capabilities.oauth = { google = { scopes = { "https://www.googleapis.com/auth/gmail.readonly" } } }` (one provider: a built-in profile, `google`, `microsoft`, `github`, `slack`, `notion`, `linear`, `atlassian`, `dropbox`, or a provider the agent discovered). tern sends the account's access token as `Authorization: Bearer …` to every declared host (or where `auth = "oauth"` entries say), refreshes it when it expires or the service answers 401, and the script sees only `ctx.connection` (`{ slug, label, account }`). OAuth apps you registered yourself go in `[auth.clients]` (see [Configuration](#configuration)).
 
+### `tern bundle`
+
+```sh
+tern bundle [list]                                   # installed bundles: version, source, hash, signature, contents
+tern bundle install <url|file|dir> [--sha256 H] [--agent A] [--dry-run] [--yes] [--accept-new-key]
+tern bundle update <name> [--sha256 H] [--dry-run] [--yes] [--accept-new-key]
+tern bundle remove <name> [--yes]
+tern bundle export <name> [--connector C]… [--skill S]… [--routine sch_…]… [--all] [--version V] [-o file | --dir] [--unsigned]
+tern bundle keygen                                   # your signing key: bundles/signing.key and .pub
+tern bundle trust [<key or .pub file> --name N]      # trust a key, or list trusted keys
+tern bundle untrust <key, key id or name>
+```
+
+A **bundle** is a directory or a `.tar.zst` holding `bundle.toml` and some of: `connectors/<name>.luau`, `skills/<name>/…` (a `SKILL.md` and files beside it), `routines.toml` (routine templates: `[[routine]] name, prompt, trigger = { cron | at | watch, every }, initiative, quiet_hours, urgent, autonomy, budget = { runs_per_day, usd_per_day, tokens_per_run }, gate, gate_connector`; no agent, and no webhooks, whose secret is made where they run), and `README.md`. `bundle.toml` names it (`[bundle] name, version, description, author, key`) and lists every file with its SHA-256 (`[[file]] path, sha256`); `bundle.toml.minisig` signs it with ed25519 in minisign's format, so it covers every file. `minisign -Vm bundle.toml -P <key>` checks a bundle tern signed, and a bundle signed with `minisign -Sm bundle.toml` installs. Anything else in a bundle, a link, or a file not listed is refused.
+
+`install` reads a local path, or fetches an https URL through a client pinned to public addresses (redirects checked hop by hop, 8 MB at most; `[bundles] allow_private_hosts` for your own network). It then checks, in order: the hash you pinned (`--sha256`, or `…#sha256=<hex>` on the URL; the archive's SHA-256, or `bundle.toml`'s for a directory), every file against the manifest, and the signature. A wrong hash, a changed file or a bad signature stops it; an unsigned bundle installs with a warning unless `[bundles] require_signed`. Then it shows everything the bundle can do:
+
+- each connector's hosts and paths, how tern sends its credentials (the script never sees them), OAuth scopes, rate, and every tool with its effect; **lookalike hosts** are flagged (a "notion" connector that also reaches `notion-api.co`, digit swaps like `n0tion.so`, punycode, a host imitating a known service);
+- each skill, and any file in it the agent could run;
+- each routine: trigger, initiative, autonomy, limits and prompt;
+- the secrets and accounts it needs (a bundle never carries values or tokens), and whether you have them;
+- the signature: trusted, signed by a key you haven't trusted, or unsigned.
+
+Nothing is installed until you approve (`--yes` approves without asking). Connectors land in `connectors/drafts/`, inactive until you activate each (ask tern; the activation shows its capabilities again). Routines are created paused, owned by `--agent` (default tern). A bundle won't replace a connector or skill of yours with the same name. `bundles/bundles.lock` pins each bundle's source, hash and key, and `bundles/installed/<name>/` keeps the approved copy.
+
+`update` fetches the bundle again from its source and shows what changed since the approved version. It asks again only when the new version can do more (a new host, tool, credential, routine…), keeps routines that didn't change as you left them (on or off), and refuses a bundle signed by another key, or unsigned after being signed, unless `--accept-new-key`. `remove` takes back its connectors (unless you changed them since), skills and routines.
+
+`export` packages your own connectors, skills and routines (`--all`: active connectors, skills and the routines of `--agent`, except tern's built-in skills and what came from bundles), signed with your key when you've made one, and prints the hash others pin. No secret goes in: connectors carry secret names, routines lose their agent, channel, delivery target and session, hidden and credential-looking files in skills stay behind, and the export is refused if any file holds the value of a secret tern knows.
+
+The desktop app's **Library → Bundles** lists installed bundles (Check for update, Remove) and **Install a bundle…** shows the same plan before installing. Over the API: `GET /v1/bundles`, `POST /v1/bundles/preview {source, sha256?}`, `POST /v1/bundles/install {source, sha256}` (the preview's hash), `DELETE /v1/bundles/{name}`; owner-only.
+
+### `tern import openclaw`
+
+```sh
+tern import openclaw [dir] [--agent A] [--dry-run] [--yes]   # dir: ~/.openclaw (default) or its workspace
+```
+
+Converts what maps cleanly and reports the rest. Skills (`SKILL.md`, the same agentskills format; the workspace's first, then OpenClaw's managed ones, flagged to read) and automations (cron as is, intervals that fit a clock, future one-offs; ones that delivered to a chat become `interrupt`) become the unsigned bundle `openclaw-import`, shown and installed like any bundle, so routines arrive paused; importing again updates it. `SOUL.md` and `IDENTITY.md` become `persona.md`, `USER.md` goes to `user.md` and `MEMORY.md` to `memory.md`: they replace tern's defaults, are added under a heading to files you've written, or (the persona) are saved beside yours as `persona.openclaw.md`, and are never added twice.
+
+Credentials are never read into tern. A skill holding a value from `openclaw.json` is left out, hidden and key-like files stay behind, and the report names the secrets to set (from skills' `requires.env` and `skills.entries`), the channels, MCP servers (with the `tern mcp add` line) and providers to set up, and what isn't converted: plugins (Node code), automations that watch a command's output or don't fit a clock, the heartbeat, `AGENTS.md`, daily memory logs. OpenClaw 2026.9.7 and later keep automations in a database: save each with `openclaw automations get <id>` into `automations.json` in the OpenClaw directory first (the older `cron/jobs.json` is read as it is).
+
 ### `tern setup`
 
 Opens the chat TUI on the `/setup` panel (see [`tern`](#tern)): choose a provider, paste its API key, pick a model. Uses the running daemon when there is one, so it picks up the change at once.
@@ -409,6 +453,8 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `outbox.expire_hours` | `72` | How long an outbox item waits for you. |
 | `taint.egress` | `"ask"` | In a tainted run, a read from a site it hasn't reached asks first (`ask`) or doesn't (`allow`). An agent can set its own ([New sites in a tainted run](#new-sites-in-a-tainted-run)). |
 | `connectors.rate` | `"120/min"` | HTTP requests per Luau connector for those that declare no `rate`, shared by every caller ([`tern connectors`](#tern-connectors)). Read at start. |
+| `bundles.require_signed` | `false` | Refuse unsigned bundles instead of installing them with a warning ([`tern bundle`](#tern-bundle)). |
+| `bundles.allow_private_hosts` | `false` | Fetch bundle URLs on private or loopback addresses (http allowed there), for a server on your own network. |
 | `auth.clients` | `{}` | OAuth apps you registered, by provider: `google = { client_id = "…", client_secret_secret = "GOOGLE_CLIENT_SECRET" }` (the secret's name, not its value). Needed for built-in profiles (Google wants a "Desktop app" client); servers that register clients themselves need none. |
 | `auth.local_issuers` | `[]` | OAuth servers allowed on private or loopback addresses (`"http://127.0.0.1:8080"`), for a self-hosted identity provider. Every other token, metadata or registration endpoint must be public https. |
 | `auth.sign_in_timeout_secs` | `300` | How long a sign-in waits for the browser or a device code. |
@@ -773,4 +819,4 @@ If tern hits an internal error it writes `~/.tern/logs/crash-<time>.txt` (messag
 
 ## Data
 
-Everything lives in `~/.tern` (`TERN_HOME` to move it): `config.toml`, `secrets.toml`, `tern.db` (SQLite, WAL), `persona.md`, `user.md` and `memory.md` (included in the system prompt; see [Memory](#memory)), `agents/` (other agents' personas and private `memory.md`; see [Agents](#agents)), `skills/`, `connectors/`, `logs/` (daily rotated; set `TERN_LOG=debug` for more).
+Everything lives in `~/.tern` (`TERN_HOME` to move it): `config.toml`, `secrets.toml`, `tern.db` (SQLite, WAL), `persona.md`, `user.md` and `memory.md` (included in the system prompt; see [Memory](#memory)), `agents/` (other agents' personas and private `memory.md`; see [Agents](#agents)), `skills/`, `connectors/`, `bundles/` (the lockfile, trusted keys, your signing key and copies of installed bundles), `logs/` (daily rotated; set `TERN_LOG=debug` for more).
