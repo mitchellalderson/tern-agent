@@ -477,7 +477,7 @@ skills and routine templates.
   routines carry no agent (the installer picks one) and no webhook; lookalike hosts are flagged in the plan (W2);
   `tern bundle export` refuses any file holding a known secret value. `import openclaw` also converts cron automations
   to paused routines, installs skills live through the same plan rather than as drafts (tern has no skill drafts), and
-  reports what it skips. The desktop has Library → Bundles. Agent profile templates (AP3) are refused for now; the
+  reports what it skips. The desktop has Library → Bundles. A bundle can carry agent profile templates (`agents/<slug>/agent.toml` and `persona.md`; AP3, DECISIONS.md "Agent profiles AP3"); the
   layout reserves `agents/`.
 
 ### 6.6 Faster connector authoring

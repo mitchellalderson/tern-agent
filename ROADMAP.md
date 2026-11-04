@@ -93,7 +93,7 @@ Being built on other branches right now; not done until merged.
 |---|---|---|
 | 3. Organize | Skill capture (T5b). | tooling §8 |
 | 5. Ecosystem | Recipes (morning brief, follow-ups, meeting prep) and goals (T6c). Native browser behind a feature flag (T7b). Tray on Linux (T8c). | tooling §6.5, §9, §10 |
-| Agent profiles | The rest of AP3: "Let agents decide" routing, a Telegram bot per agent, a per-agent autonomy ceiling, templates as signed bundles. | [agent-profiles-design.md](docs/agent-profiles-design.md) |
+| Agent profiles | AP3 is built (API, CLI, daemon): "Let agents decide" routing, a Telegram bot per agent, a per-agent autonomy ceiling, templates as signed bundles. Left: the desktop controls for them. | [agent-profiles-design.md](docs/agent-profiles-design.md) |
 | 6. Multiplayer | Group rooms with guests (M0), then several members on one core (M1), then hosted workspaces (M2). | tooling §15 |
 
 **Running it elsewhere** ([deployment-spec.md](docs/deployment-spec.md) §12): event replay and an async store (D0),
