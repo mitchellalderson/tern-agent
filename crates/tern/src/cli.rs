@@ -396,6 +396,8 @@ pub enum AgentsCommand {
         #[arg(long)]
         all: bool,
     },
+    /// List the starter agents `new --template` takes, by category.
+    Templates,
     /// Create an agent and its DM.
     New {
         /// Display name, e.g. "Research".
@@ -403,7 +405,7 @@ pub enum AgentsCommand {
         /// Its @name (default: from the name).
         #[arg(long)]
         slug: Option<String>,
-        /// Start from a template: research, inbox, marketing or blank.
+        /// Start from a starter (`tern agents templates` lists them).
         #[arg(long)]
         template: Option<String>,
         /// `private` (default) or `shared`.

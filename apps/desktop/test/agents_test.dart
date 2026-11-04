@@ -74,29 +74,36 @@ class _FakeClient extends TernClient {
   @override
   Future<List<Agent>> agents({bool archived = false}) async => agentList;
 
+  /// More starters than the default few, for the picker's search.
+  List<AgentTemplate>? extraTemplates;
+
   @override
-  Future<List<AgentTemplate>> agentTemplates() async => const [
-    AgentTemplate(
-      id: 'research',
-      name: 'Research',
-      description: 'Looks things up.',
-      persona: 'You are Research.',
-      tools: ToolScope(builtins: Pick.readOnly()),
-    ),
-    AgentTemplate(
-      id: 'inbox',
-      name: 'Inbox',
-      description: 'Sweeps your mail.',
-      persona: 'You are Inbox.',
-      routine: (cron: '0 8 * * 1-5', prompt: 'Check my inbox.'),
-    ),
-    AgentTemplate(
-      id: 'blank',
-      name: '',
-      description: 'Start blank.',
-      persona: 'You are {name}.',
-    ),
-  ];
+  Future<List<AgentTemplate>> agentTemplates() async =>
+      extraTemplates ??
+      const [
+        AgentTemplate(
+          id: 'research',
+          name: 'Research',
+          category: 'Research',
+          description: 'Looks things up.',
+          persona: 'You are Research.',
+          tools: ToolScope(builtins: Pick.readOnly()),
+        ),
+        AgentTemplate(
+          id: 'inbox',
+          name: 'Inbox',
+          category: 'Everyday',
+          description: 'Sweeps your mail.',
+          persona: 'You are Inbox.',
+          routine: (cron: '0 8 * * 1-5', prompt: 'Check my inbox.'),
+        ),
+        AgentTemplate(
+          id: 'blank',
+          name: '',
+          description: 'Start blank.',
+          persona: 'You are {name}.',
+        ),
+      ];
 
   @override
   Future<Agent> createAgent({
@@ -481,6 +488,53 @@ void main() {
     ));
     // It opens on the new agent's DM.
     expect(store.channel, 'dm:inbox');
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('a long starter catalog is grouped by category and searchable', (
+    tester,
+  ) async {
+    final (store, client) = await _store();
+    client.extraTemplates = [
+      for (var i = 0; i < 5; i++)
+        AgentTemplate(
+          id: 'code-$i',
+          name: 'Coder $i',
+          category: 'Coding',
+          description: 'Writes code $i.',
+          persona: 'You are {name}.',
+        ),
+      for (var i = 0; i < 3; i++)
+        AgentTemplate(
+          id: 'mail-$i',
+          name: 'Mailer $i',
+          category: 'Everyday',
+          description: 'Sorts the mail.',
+          persona: 'You are {name}.',
+        ),
+      const AgentTemplate(
+        id: 'blank',
+        name: '',
+        category: 'General',
+        description: 'Start blank.',
+        persona: 'You are {name}.',
+      ),
+    ];
+    await _pump(tester, store);
+    await tester.tap(find.byTooltip('New agent'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('starter-category-Coding')), findsOneWidget);
+    expect(find.byKey(const Key('starter-category-Everyday')), findsOneWidget);
+    expect(find.byKey(const Key('starter-code-3')), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('starter-search')), 'mail');
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('starter-category-Coding')), findsNothing);
+    expect(find.byKey(const Key('starter-mail-1')), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('starter-search')), 'zzz');
+    await tester.pumpAndSettle();
+    // The picked starter stays visible; nothing else matches.
+    expect(find.byKey(const Key('starter-mail-1')), findsNothing);
+    expect(find.byKey(const Key('starter-blank')), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
   });
 
