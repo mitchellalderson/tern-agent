@@ -1,6 +1,7 @@
 //! MCP client against an independent (Python, stdlib-only) server.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use std::time::Duration;
 use serde_json::json;
 use tern_core::Secrets;
 use tern_core::config::{McpServerConfig, McpTransport};
+use tern_core::mcp::{McpErrorKind, McpState};
 use tern_core::tool::{Effect, ToolCtx, ToolSource};
 use tern_core::types::ToolCall;
 use tern_mcp::{McpServer, McpServers};
@@ -24,13 +26,11 @@ fn fixture() -> String {
 fn stdio_cfg(env_secrets: Vec<String>) -> McpServerConfig {
     McpServerConfig {
         transport: McpTransport::Stdio,
+        enabled: true,
         command: Some("python3".into()),
         args: vec![fixture()],
-        url: None,
         env_secrets,
-        idempotent: false,
-        requires_approval: false,
-        effects: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -68,7 +68,7 @@ async fn call(
     input: serde_json::Value,
 ) -> tern_core::tool::ToolResult {
     let mut reg = tern_core::tool::ToolRegistry::new();
-    let set = Arc::new(McpServers::new(set.servers().to_vec()));
+    let set = Arc::new(McpServers::new(set.servers()));
     reg.add_source(set);
     reg.call(
         &ctx(),
@@ -225,13 +225,11 @@ async fn streamable_http_transport() {
     let (secrets, _tmp) = secrets(&[]);
     let cfg = McpServerConfig {
         transport: McpTransport::Http,
-        command: None,
-        args: vec![],
+        enabled: true,
         url: Some(format!("http://127.0.0.1:{port}/mcp")),
-        env_secrets: vec![],
         idempotent: true,
         requires_approval: true,
-        effects: Default::default(),
+        ..Default::default()
     };
     let set = McpServers::new(vec![McpServer::new("remote", cfg, secrets)]);
     set.prepare().await;
@@ -302,4 +300,191 @@ async fn annotations_map_to_effects_and_config_overrides_them() {
         .find(|t| t.spec().name == "mcp__fx__echo")
         .unwrap();
     assert_eq!(echo.policy(&ctx(), &json!({})).effect, Effect::Destructive);
+}
+
+async fn pid(set: &McpServers, server: &str) -> u32 {
+    let r = call(set, &format!("mcp__{server}__env"), json!({"name": "$$"})).await;
+    r.content
+        .parse()
+        .unwrap_or_else(|_| panic!("{}", r.content))
+}
+
+fn alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+#[tokio::test]
+async fn apply_keeps_unchanged_servers_and_kills_removed_ones() {
+    let (secrets, _tmp) = secrets(&[]);
+    let seen = Arc::new(std::sync::Mutex::new(
+        Vec::<(String, Option<McpState>)>::new(),
+    ));
+    let log = seen.clone();
+    let notify: tern_mcp::Notify = Arc::new(move |name, state| {
+        log.lock().unwrap().push((name.to_owned(), state));
+    });
+    let mut cfg = BTreeMap::from([
+        ("a".to_owned(), stdio_cfg(vec![])),
+        ("b".to_owned(), stdio_cfg(vec![])),
+    ]);
+    let set = McpServers::from_config(&cfg, secrets, Some(notify));
+    set.prepare().await;
+    let (a, b) = (pid(&set, "a").await, pid(&set, "b").await);
+
+    // Change b only: a keeps its process, b gets a new one.
+    cfg.get_mut("b").unwrap().requires_approval = true;
+    set.apply(&cfg);
+    set.prepare().await;
+    assert_eq!(
+        pid(&set, "a").await,
+        a,
+        "unchanged server kept its connection"
+    );
+    let b2 = pid(&set, "b").await;
+    assert_ne!(b2, b);
+
+    // Remove b: its process goes away.
+    cfg.remove("b");
+    set.apply(&cfg);
+    let end = std::time::Instant::now() + Duration::from_secs(5);
+    while alive(b2) {
+        assert!(
+            std::time::Instant::now() < end,
+            "removed server still running"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(set.status("b").is_none());
+    assert!(alive(a));
+    let seen = seen.lock().unwrap();
+    assert!(seen.contains(&("b".to_owned(), None)), "{seen:?}");
+    assert!(
+        seen.iter()
+            .any(|(n, s)| n == "a" && matches!(s, Some(McpState::Running { tools: 5, .. }))),
+        "{seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn disabled_servers_and_tools_are_hidden() {
+    let (secrets, _tmp) = secrets(&[]);
+    let mut on = stdio_cfg(vec![]);
+    on.disabled_tools = vec!["crash".into(), "fail".into()];
+    let mut off = stdio_cfg(vec![]);
+    off.enabled = false;
+    let set = McpServers::from_config(
+        &BTreeMap::from([("on".to_owned(), on), ("off".to_owned(), off)]),
+        secrets,
+        None,
+    );
+    set.prepare().await;
+    let mut names: Vec<String> = set.tools().iter().map(|t| t.spec().name).collect();
+    names.sort();
+    assert_eq!(names, ["mcp__on__add", "mcp__on__echo", "mcp__on__env"]);
+    let on = set.status("on").unwrap();
+    assert!(
+        matches!(on.state, McpState::Running { tools: 3, .. }),
+        "{:?}",
+        on.state
+    );
+    assert_eq!(on.tools.iter().filter(|t| t.disabled).count(), 2);
+    assert_eq!(on.server_info.as_deref(), Some("fixture 1.0"));
+    assert!(
+        on.stderr_tail
+            .iter()
+            .any(|l| l.contains("fixture server starting"))
+    );
+    assert_eq!(set.status("off").unwrap().state, McpState::Disabled);
+    assert!(set.describe().iter().all(|d| !d.contains("server off")));
+    assert!(set.restart("off").await.is_err());
+}
+
+#[tokio::test]
+async fn verify_reports_tools_and_startup_errors() {
+    let (secrets, _tmp) = secrets(&[]);
+    let ok = tern_mcp::verify("fx", &stdio_cfg(vec![]), secrets.clone(), BTreeMap::new())
+        .await
+        .unwrap();
+    assert_eq!(ok.tools.len(), 5);
+    assert_eq!(ok.server_info.as_deref(), Some("fixture 1.0"));
+
+    let mut crashing = stdio_cfg(vec![]);
+    crashing.args.extend([
+        "--fail-start".into(),
+        "Error: GITHUB_TOKEN is invalid".into(),
+    ]);
+    let e = tern_mcp::verify("fx", &crashing, secrets.clone(), BTreeMap::new())
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, McpErrorKind::ExitedEarly, "{e:?}");
+    assert!(
+        e.message.contains("GITHUB_TOKEN is invalid"),
+        "{}",
+        e.message
+    );
+    assert_eq!(e.stderr_tail, ["Error: GITHUB_TOKEN is invalid"]);
+
+    let mut ghost = stdio_cfg(vec![]);
+    ghost.command = Some("definitely-not-a-real-mcp-server".into());
+    let e = tern_mcp::verify("fx", &ghost, secrets.clone(), BTreeMap::new())
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, McpErrorKind::CommandNotFound);
+
+    let needs = stdio_cfg(vec!["FIXTURE_TOKEN".into()]);
+    let e = tern_mcp::verify("fx", &needs, secrets.clone(), BTreeMap::new())
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, McpErrorKind::MissingSecret);
+    // A value typed in the form but not saved yet is enough.
+    let typed = BTreeMap::from([("FIXTURE_TOKEN".to_owned(), "typed".to_owned())]);
+    assert!(tern_mcp::verify("fx", &needs, secrets, typed).await.is_ok());
+}
+
+#[tokio::test]
+async fn http_bearer_tokens_come_from_secrets() {
+    struct Server(std::process::Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut server = Server(
+        std::process::Command::new("python3")
+            .args([
+                fixture(),
+                "--http".into(),
+                "--token".into(),
+                "s3cret".into(),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut line = String::new();
+    std::io::BufReader::new(server.0.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let port: u16 = line.trim().parse().unwrap();
+    let cfg = McpServerConfig {
+        transport: McpTransport::Http,
+        enabled: true,
+        url: Some(format!("http://127.0.0.1:{port}/mcp")),
+        bearer_token_secret: Some("FX_TOKEN".into()),
+        ..Default::default()
+    };
+    let (secrets, _tmp) = secrets(&[("FX_TOKEN", "wrong")]);
+    let e = tern_mcp::verify("fx", &cfg, secrets.clone(), BTreeMap::new())
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, McpErrorKind::Unauthorized, "{e:?}");
+    let right = BTreeMap::from([("FX_TOKEN".to_owned(), "s3cret".to_owned())]);
+    let ok = tern_mcp::verify("fx", &cfg, secrets, right).await.unwrap();
+    assert_eq!(ok.tools.len(), 5);
 }

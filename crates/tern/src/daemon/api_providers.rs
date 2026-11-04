@@ -11,7 +11,7 @@
 //! | DELETE | `/v1/providers/{name}?remove_secret=` | remove a provider |
 //! | GET | `/v1/models?provider=&refresh=` | model lists: `[{provider, error?, message?, fetched_at, models}]` |
 //! | PUT | `/v1/config/default_model` | set `{model}`, resolved like `/v1/models/check` |
-//! | POST | `/v1/config/reload` | re-read providers and `default_model` from `config.toml` |
+//! | POST | `/v1/config/reload` | re-read providers, `default_model` and MCP servers from `config.toml` |
 //!
 //! Every write sends `providers_changed` on `/v1/events`; a fresh model list
 //! sends `models_changed`.
@@ -49,7 +49,7 @@ pub fn routes() -> Router<Shared> {
         .route("/v1/config/reload", post(reload))
 }
 
-fn limited(auth: Option<&Extension<Auth>>) -> Result<(), ApiError> {
+pub(super) fn limited(auth: Option<&Extension<Auth>>) -> Result<(), ApiError> {
     static HITS: Mutex<Option<HashMap<String, VecDeque<Instant>>>> = Mutex::new(None);
     let who = match auth.map(|a| &a.0) {
         Some(Auth::Device { id, .. }) => id.clone(),
@@ -180,9 +180,10 @@ async fn set_default(State(m): State<Shared>, Json(b): Json<DefaultBody>) -> Api
 
 async fn reload(State(m): State<Shared>) -> ApiResult<Value> {
     m.rt.reload_providers().map_err(internal)?;
+    m.rt.reload_mcp().map_err(internal)?;
     Ok(Json(json!({
         "ok": true,
-        "reloaded": "providers and default_model; restart the daemon for other settings",
+        "reloaded": "providers, default_model and MCP servers; restart the daemon for other settings",
         "providers": m.rt.live().providers.len(),
     })))
 }

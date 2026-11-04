@@ -51,6 +51,14 @@ docker_pids = 512          # 0 for no limit
 # command = "github-mcp-server"
 # args = ["stdio"]
 # env_secrets = ["GITHUB_TOKEN"]
+# env = { LOG_LEVEL = "warn" }      # plain values only; keys go in env_secrets
+# disabled_tools = ["delete_repo"]  # hide some of its tools
+# enabled = false                   # keep it configured but off
+#
+# [mcp.servers.linear]
+# transport = "http"
+# url = "https://mcp.linear.app/mcp"
+# bearer_token_secret = "LINEAR_TOKEN"
 
 # Sub-agents: the agent_spawn / agent_wait / agent_cancel / agent_status tools.
 # [subagents]

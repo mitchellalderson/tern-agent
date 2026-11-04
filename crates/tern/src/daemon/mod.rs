@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod api_lifecycle;
+mod api_mcp;
 mod api_providers;
 mod api_runs;
 mod api_schedules;

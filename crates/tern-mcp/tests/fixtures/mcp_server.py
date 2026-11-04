@@ -3,8 +3,11 @@
 
     mcp_server.py                 stdio transport
     mcp_server.py --http          streamable HTTP on 127.0.0.1; prints the port
+    mcp_server.py --http --token T   ...answering 401 without `Authorization: Bearer T`
+    mcp_server.py --fail-start M  prints M to stderr and exits 1 before speaking MCP
 
-Tools: echo(text), add(a, b), fail(), env(name), crash() (exits the process).
+Tools: echo(text), add(a, b), fail(), env(name) (`$$` gives the process id),
+crash() (exits the process).
 Every tools/call is appended to $MCP_FIXTURE_LOG if set, one name per line.
 """
 
@@ -45,6 +48,8 @@ def call_tool(name, args):
     if name == "fail":
         return text("something went wrong", error=True)
     if name == "env":
+        if args["name"] == "$$":
+            return text(str(os.getpid()))
         return text(os.environ.get(args["name"], "<unset>"))
     if name == "crash":
         sys.stdout.flush()
@@ -93,6 +98,11 @@ def http():
             pass
 
         def do_POST(self):
+            if TOKEN and self.headers.get("Authorization") != "Bearer " + TOKEN:
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             msg = json.loads(body)
             resp = handle(msg)
@@ -122,5 +132,14 @@ def http():
     server.serve_forever()
 
 
+def arg(flag):
+    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else None
+
+
+TOKEN = arg("--token")
+
 if __name__ == "__main__":
+    if arg("--fail-start"):
+        print(arg("--fail-start"), file=sys.stderr, flush=True)
+        sys.exit(1)
     http() if "--http" in sys.argv else stdio()

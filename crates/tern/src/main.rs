@@ -9,6 +9,7 @@ mod gateway_cmd;
 mod inspect;
 mod lifecycle;
 mod logging;
+mod mcp;
 mod providers;
 mod providers_cmd;
 mod remote;
