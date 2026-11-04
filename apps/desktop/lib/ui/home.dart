@@ -17,6 +17,7 @@ import 'mcp.dart';
 import 'offline.dart';
 import 'providers.dart';
 import 'quit.dart';
+import 'routines.dart';
 import 'secrets.dart';
 import 'settings.dart';
 import 'side_panel.dart';
@@ -140,6 +141,12 @@ class _HomeState extends State<Home> {
                               store.page == LibraryPage.connections &&
                                   store.canManageConnections
                               ? ConnectionsView(
+                                  store: store,
+                                  panelOpen: panel,
+                                  onTogglePanel: _togglePanel,
+                                )
+                              : store.page == LibraryPage.routines
+                              ? RoutinesPage(
                                   store: store,
                                   panelOpen: panel,
                                   onTogglePanel: _togglePanel,

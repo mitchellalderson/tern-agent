@@ -6,11 +6,14 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/cron_words.dart';
 import '../state/store.dart';
+import '../state/transcript.dart';
 import '../theme.dart';
+import 'widgets.dart';
 
 /// The routines section of the side panel. With agent profiles it shows
-/// the open agent's jobs (agent profiles §4), and **All** shows every
-/// agent's, so what runs at night stays visible in one place.
+/// the open agent's jobs (agent profiles §4); in a topic channel, the
+/// routines that post there. **All** shows every routine, so what runs at
+/// night stays visible in one place.
 class RoutinesSection extends StatefulWidget {
   const RoutinesSection({super.key, required this.store});
 
@@ -30,9 +33,18 @@ class _RoutinesSectionState extends State<RoutinesSection> {
     final agent = store.hasAgents
         ? store.streamAgent ?? (store.topicOpen ? null : store.defaultAgent)
         : null;
-    final shown = agent == null || _all
+    final topic = store.topicOpen ? store.openChannel : null;
+    final scoped = agent != null || topic != null;
+    final shown = !scoped || _all
         ? store.schedules
-        : store.schedulesOf(agent);
+        : agent != null
+        ? store.schedulesOf(agent)
+        : store.schedulesIn(topic!.id);
+    final scope = agent != null
+        ? agent.name.toUpperCase()
+        : topic != null
+        ? '#${topic.slug.toUpperCase()}'
+        : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -40,13 +52,13 @@ class _RoutinesSectionState extends State<RoutinesSection> {
           children: [
             Expanded(
               child: Text(
-                agent == null || _all
-                    ? 'ROUTINES'
-                    : 'ROUTINES · ${agent.name.toUpperCase()}',
+                scope == null || _all ? 'ROUTINES' : 'ROUTINES · $scope',
                 style: Theme.of(context).textTheme.labelSmall,
               ),
             ),
-            if (agent != null && store.otherAgents.isNotEmpty)
+            if (scoped &&
+                (topic != null || store.otherAgents.isNotEmpty) &&
+                store.schedules.isNotEmpty)
               SizedBox(
                 height: 22,
                 child: TextButton(
@@ -56,7 +68,7 @@ class _RoutinesSectionState extends State<RoutinesSection> {
                     minimumSize: Size.zero,
                   ),
                   child: Text(
-                    _all ? agent.name : 'All',
+                    _all ? (agent?.name ?? '#${topic!.slug}') : 'All',
                     style: TextStyle(fontSize: 11.5, color: c.muted),
                   ),
                 ),
@@ -65,19 +77,22 @@ class _RoutinesSectionState extends State<RoutinesSection> {
         ),
         const SizedBox(height: 6),
         for (final s in shown)
-          _RoutineRow(
+          RoutineRow(
             store: store,
             schedule: s,
             showAgent: _all || agent == null,
           ),
-        if (shown.isEmpty && agent != null && !_all)
+        if (shown.isEmpty && scoped && !_all)
           Text(
-            'Ask ${agent.name} to do something on a schedule, or add one.',
+            agent != null
+                ? 'Ask ${agent.name} to do something on a schedule, or add one.'
+                : 'No routines post here yet. Ask for one, or add one.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         Align(
           alignment: Alignment.centerLeft,
           child: TextButton.icon(
+            // In a topic, the sheet files a new routine there.
             onPressed: () => showRoutineSheet(context, store, agent: agent),
             icon: Icon(Icons.add, size: 16, color: c.muted),
             label: Text('New routine', style: TextStyle(color: c.muted)),
@@ -91,11 +106,29 @@ class _RoutinesSectionState extends State<RoutinesSection> {
   }
 }
 
-class _RoutineRow extends StatelessWidget {
-  const _RoutineRow({
+/// Where a routine's results are posted, in words: `#topic`, `Home`, or an
+/// agent's DM.
+String routinePostsTo(TernStore store, Schedule s) {
+  final ch = store.channels.where((c) => c.id == s.channelId).firstOrNull;
+  if (ch == null || s.channelId == TernStore.homeId) return 'Home';
+  if (!ch.isMain) return '#${ch.slug}';
+  return '${store.agentOf(ch.id)?.name ?? ch.title} DM';
+}
+
+/// The agent a routine runs as, by name.
+String routineAgent(TernStore store, Schedule s) =>
+    store.agents.where((a) => a.id == s.agentId).firstOrNull?.name ??
+    (s.agentId == Agent.defaultId ? 'tern' : s.agentId);
+
+/// One routine: what it does, when, whose and where it posts, with a menu
+/// to run, edit, pause or delete it.
+class RoutineRow extends StatelessWidget {
+  const RoutineRow({
+    super.key,
     required this.store,
     required this.schedule,
     this.showAgent = false,
+    this.wide = false,
   });
 
   final TernStore store;
@@ -103,6 +136,9 @@ class _RoutineRow extends StatelessWidget {
 
   /// Name the agent whose job it is (the All list).
   final bool showAgent;
+
+  /// Room for the next run in the line itself (the Routines page).
+  final bool wide;
 
   @override
   Widget build(BuildContext context) {
@@ -122,10 +158,13 @@ class _RoutineRow extends StatelessWidget {
         ? 'Last run failed · $when'
         : s.lastQuiet
         ? 'Last run quiet · $when'
+        : wide && s.nextRunAt != null && s.trigger != 'watch'
+        ? '$when · next ${whenInWords(s.nextRunAt!)}'
         : when;
-    final postsTo = store.channels
-        .where((ch) => ch.id == s.channelId && !ch.isMain)
-        .firstOrNull;
+    // Topic channels always; Home and DMs in lists that mix agents.
+    final postsTo = routinePostsTo(store, s);
+    final showPostsTo =
+        postsTo.startsWith('#') || (showAgent && store.hasChannels);
     final owner = showAgent && store.otherAgents.isNotEmpty
         ? store.agents.where((a) => a.id == s.agentId).firstOrNull
         : null;
@@ -193,7 +232,7 @@ class _RoutineRow extends StatelessWidget {
                       [
                         ?owner?.name,
                         detail,
-                        if (postsTo != null) '#${postsTo.slug}',
+                        if (showPostsTo) '→ $postsTo',
                       ].join(' · '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -272,6 +311,255 @@ class _RoutineRow extends StatelessWidget {
     if (ok ?? false) await store.deleteSchedule(schedule);
   }
 }
+
+/// Open the routine a `tern://routine/<id>` link names: its editor, after
+/// re-reading the list if it's newer than ours. False if [link] isn't one.
+bool openTernLink(BuildContext context, TernStore store, String? link) {
+  final id = link == null ? null : routineIdOf(link);
+  if (id == null) return false;
+  unawaited(openRoutine(context, store, id));
+  return true;
+}
+
+Future<void> openRoutine(
+  BuildContext context,
+  TernStore store,
+  String id,
+) async {
+  var s = store.schedules.where((x) => x.id == id).firstOrNull;
+  if (s == null) {
+    await store.refreshSchedules();
+    s = store.schedules.where((x) => x.id == id).firstOrNull;
+  }
+  if (!context.mounted) return;
+  if (s == null) {
+    ScaffoldMessenger.maybeOf(
+      context,
+    )?.showSnackBar(const SnackBar(content: Text('That routine was deleted.')));
+    return;
+  }
+  await showRoutineSheet(context, store, editing: s);
+}
+
+/// A routine an agent made or changed in this conversation: what it does,
+/// when, who runs it and where results go, and a way to open it.
+class RoutineCard extends StatelessWidget {
+  const RoutineCard({super.key, required this.item, required this.store});
+
+  final RoutineItem item;
+  final TernStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final s = store.schedules.where((x) => x.id == item.scheduleId).firstOrNull;
+    final next = s?.nextRunAt;
+    final lines = s == null
+        ? ['This routine was deleted.']
+        : [
+            [
+              routineWhen(s),
+              if (s.enabled && next != null && s.trigger != 'watch')
+                'next ${whenInWords(next)}',
+              if (!s.enabled) 'paused',
+            ].join(' · '),
+            'Runs as ${routineAgent(store, s)} · posts to ${routinePostsTo(store, s)}',
+          ];
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 460),
+        child: Container(
+          key: ValueKey('routine-card-${item.scheduleId}'),
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+          decoration: BoxDecoration(
+            color: c.card,
+            border: Border.all(color: c.hairline),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.schedule,
+                size: 18,
+                color: s?.enabled ?? false ? c.accent : c.muted,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      [
+                        switch (item.created) {
+                          true => 'New routine',
+                          false => 'Routine changed',
+                          null => 'Routine',
+                        },
+                        if (s != null) s.prompt.split('\n').first,
+                      ].join(': '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    for (final l in lines)
+                      Text(
+                        l,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 12, color: c.muted),
+                      ),
+                  ],
+                ),
+              ),
+              if (s != null)
+                TextButton(
+                  onPressed: () => openRoutine(context, store, s.id),
+                  child: const Text('Open'),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Every routine, by every agent, wherever it posts: the Library's
+/// Routines page.
+class RoutinesPage extends StatelessWidget {
+  const RoutinesPage({
+    super.key,
+    required this.store,
+    required this.panelOpen,
+    required this.onTogglePanel,
+  });
+
+  final TernStore store;
+  final bool panelOpen;
+  final VoidCallback onTogglePanel;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    // Soonest first; paused and event-driven ones after.
+    final list = [...store.schedules]
+      ..sort((a, b) {
+        final x = a.enabled ? a.nextRunAt : null;
+        final y = b.enabled ? b.nextRunAt : null;
+        if (x == null || y == null) return x == null ? (y == null ? 0 : 1) : -1;
+        return x.compareTo(y);
+      });
+    return Column(
+      children: [
+        WindowDragArea(
+          child: Container(
+            height: titleBarInset + 12,
+            padding: const EdgeInsets.fromLTRB(20, 0, 10, 0),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Routines',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                FilledButton.icon(
+                  onPressed: () => showRoutineSheet(context, store),
+                  icon: const Icon(Icons.add, size: 16),
+                  label: const Text('New routine'),
+                ),
+                const SizedBox(width: 6),
+                QuietIconButton(
+                  icon: panelOpen
+                      ? Icons.view_sidebar
+                      : Icons.view_sidebar_outlined,
+                  tooltip: panelOpen ? 'Hide activity' : 'Show activity',
+                  onPressed: onTogglePanel,
+                ),
+              ],
+            ),
+          ),
+        ),
+        const Hairline(),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(28, 18, 28, 24),
+            children: [
+              Text(
+                'Everything that runs on its own: who runs it, when, and '
+                'where its results go.',
+                style: TextStyle(color: c.muted),
+              ),
+              const SizedBox(height: 12),
+              if (list.isEmpty)
+                Text(
+                  'No routines yet. Ask an agent to do something on a '
+                  'schedule, or add one.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              for (final s in list)
+                RoutineRow(
+                  store: store,
+                  schedule: s,
+                  showAgent: true,
+                  wide: true,
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// A topic channel's routines, from its header.
+Future<void> showChannelRoutines(
+  BuildContext context,
+  TernStore store,
+  Channel channel,
+) => showDialog<void>(
+  context: context,
+  builder: (context) => ListenableBuilder(
+    listenable: store,
+    builder: (context, _) {
+      final list = store.schedulesIn(channel.id);
+      return AlertDialog(
+        title: Text('Routines in #${channel.slug}'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (list.isEmpty)
+                Text(
+                  'No routines post here yet.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              for (final s in list)
+                RoutineRow(store: store, schedule: s, showAgent: true),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => showRoutineSheet(context, store),
+            child: const Text('New routine'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      );
+    },
+  ),
+);
 
 Future<void> showRoutineSheet(
   BuildContext context,

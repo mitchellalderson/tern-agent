@@ -151,16 +151,16 @@ impl Runtime {
             changes.clone(),
         ));
         let slot = HostSlot::default();
-        let mcp_changes = changes.clone();
-        let notify: tern_mcp::Notify = Arc::new(move |name, state| {
-            let _ = mcp_changes.send(Change::McpChanged {
-                name: name.to_owned(),
-                state,
-            });
-        });
         let connections = open_connections(&config, &store, &secrets);
-        let (mut tools, connectors, mcp) =
-            build_tools(home, &config, &store, &secrets, &slot, notify, &connections)?;
+        let (mut tools, connectors, mcp) = build_tools(
+            home,
+            &config,
+            &store,
+            &secrets,
+            &slot,
+            &changes,
+            &connections,
+        )?;
         // Channels (docs/channels-design.md §3): a post an agent writes is
         // announced like the daemon's own.
         let post_changes = changes.clone();
@@ -947,13 +947,25 @@ fn build_tools(
     store: &Store,
     secrets: &Secrets,
     subagents: &HostSlot,
-    mcp_notify: tern_mcp::Notify,
+    changes: &broadcast::Sender<Change>,
     connections: &Arc<tern_auth::Connections>,
 ) -> anyhow::Result<(
     ToolRegistry,
     Arc<tern_lua::Connectors>,
     Arc<tern_mcp::McpServers>,
 )> {
+    // MCP state and routine changes are announced on `/v1/events`.
+    let mcp_changes = changes.clone();
+    let mcp_notify: tern_mcp::Notify = Arc::new(move |name, state| {
+        let _ = mcp_changes.send(Change::McpChanged {
+            name: name.to_owned(),
+            state,
+        });
+    });
+    let schedule_changes = changes.clone();
+    let schedules: tern_tools::schedule::Notify = Arc::new(move |id| {
+        let _ = schedule_changes.send(Change::SchedulesChanged { id: id.to_owned() });
+    });
     let sandbox: Arc<dyn tern_sandbox::SandboxBackend> = match config.sandbox.backend {
         SandboxBackendKind::Host => {
             Arc::new(tern_sandbox::HostBackend::new(host_policy(config, home)))
@@ -999,13 +1011,20 @@ fn build_tools(
     let checks: Arc<dyn tern_tools::schedule::RoutineChecks> = Arc::new(
         crate::routines::LuaChecks::new(lua.clone(), dirs.active.clone()),
     );
+    // Clients hear when a tool changes the routines.
     registry.register(Arc::new(tern_tools::schedule::ScheduleCreate {
         store: store.clone(),
+        notify: Some(schedules.clone()),
         checks: Some(checks.clone()),
     }));
     registry.register(Arc::new(tern_tools::schedule::ScheduleUpdate {
         store: store.clone(),
+        notify: Some(schedules.clone()),
         checks: Some(checks),
+    }));
+    registry.register(Arc::new(tern_tools::schedule::ScheduleDelete {
+        store: store.clone(),
+        notify: Some(schedules),
     }));
     registry.register(Arc::new(tern_lua::tools::ConnectorWrite {
         host: lua.clone(),

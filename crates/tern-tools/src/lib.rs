@@ -55,10 +55,12 @@ pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> R
     registry.register(Arc::new(memory::MemorySearch::new(opts.store.clone())));
     registry.register(Arc::new(schedule::ScheduleCreate {
         store: opts.store.clone(),
+        notify: None,
         checks: None,
     }));
     registry.register(Arc::new(schedule::ScheduleUpdate {
         store: opts.store.clone(),
+        notify: None,
         checks: None,
     }));
     registry.register(Arc::new(schedule::ScheduleList {
@@ -66,6 +68,7 @@ pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> R
     }));
     registry.register(Arc::new(schedule::ScheduleDelete {
         store: opts.store.clone(),
+        notify: None,
     }));
     registry.register(Arc::new(history::HistorySearch::new(opts.store.clone())));
     registry.register(Arc::new(memory::SessionSearch::new(opts.store.clone())));

@@ -467,6 +467,60 @@ fn owned(store: &Store, id: &str, agent: &str) -> Option<ScheduleRow> {
         .filter(|s| s.agent() == agent)
 }
 
+/// The agent a new routine runs as: the caller, or an agent the caller
+/// may delegate to (`agent`, by id or slug; the `delegates` rule that
+/// `agent_spawn {agent}` follows, agent profiles §6.1). The routine is then
+/// that agent's, like one it made itself.
+fn run_as(store: &Store, caller: &str, agent: Option<&str>) -> Result<String, String> {
+    let Some(want) = agent.map(str::trim).filter(|a| !a.is_empty()) else {
+        return Ok(caller.to_owned());
+    };
+    let target = store
+        .agent(want)
+        .map_err(|e| e.to_string())?
+        .filter(|a| a.archived_at.is_none())
+        .ok_or_else(|| format!("no agent {want:?}"))?;
+    if target.id == caller {
+        return Ok(target.id);
+    }
+    let me = store
+        .agent(caller)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no agent {caller:?}"))?;
+    if !me.may_delegate_to(&target) {
+        return Err(format!(
+            "you can't give routines to {}: it isn't in your delegates",
+            target.name
+        ));
+    }
+    Ok(target.id)
+}
+
+/// The topic channel a session is a thread of, if it is one: a routine
+/// made there posts its results there.
+fn topic_of(store: &Store, session_id: &str) -> Option<tern_store::ChannelRow> {
+    store
+        .session_channel(session_id)
+        .ok()
+        .flatten()
+        .filter(|c| c.kind == "topic" && c.archived_at.is_none())
+}
+
+/// The link that opens a routine in the desktop app.
+pub fn routine_link(id: &str) -> String {
+    format!("tern://routine/{id}")
+}
+
+/// Told the id of a routine a tool created, changed or deleted, so clients
+/// can re-read the list.
+pub type Notify = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
+fn notify(n: &Option<Notify>, id: &str) {
+    if let Some(n) = n {
+        n(id);
+    }
+}
+
 /// Validate and save a cron schedule owned by `agent` (see
 /// [`create_routine`]).
 pub fn create_schedule(
@@ -685,6 +739,7 @@ pub fn check_deliver_to(t: &str) -> Result<(), String> {
 
 pub struct ScheduleCreate {
     pub store: Store,
+    pub notify: Option<Notify>,
     /// Checks watches against the active connectors; `None` refuses them.
     pub checks: Option<std::sync::Arc<dyn RoutineChecks>>,
 }
@@ -695,6 +750,8 @@ struct CreateArgs {
     trigger: TriggerArgs,
     prompt: String,
     deliver_to: Option<String>,
+    /// The agent the routine runs as: the caller, or one it delegates to.
+    agent: Option<String>,
     #[serde(flatten)]
     limits: ScheduleLimits,
 }
@@ -717,12 +774,13 @@ impl Tool for ScheduleCreate {
     fn spec(&self) -> ToolSpec {
         spec(
             "schedule_create",
-            "Schedule a prompt (a routine) to run repeatedly on a `cron`, or once `at` a time (reminders). Each run happens in its own session and its final answer is delivered to `deliver_to`: \"here\" (default: this chat, if it's a messaging chat), \"none\", \"telegram:<chat_id>\", or \"<gateway>:<chat>\" for a gateway connector such as ntfy or slack. A run with nothing to report answers NO_REPLY and sends nothing. Results finishing in quiet hours wait until they end, unless `urgent`. Scheduled runs only happen while `tern daemon` is running.",
+            "Schedule a prompt (a routine) to run repeatedly on a `cron`, or once `at` a time (reminders). Each run happens in its own session and its result is posted to this channel (a topic channel) or the running agent's DM, and also delivered to `deliver_to`: \"here\" (default: this chat, if it's a messaging chat), \"none\", \"telegram:<chat_id>\", or \"<gateway>:<chat>\" for a gateway connector such as ntfy or slack. To have another agent do the work (\"have Research check …\"), set `agent` to it rather than writing \"ask Research\" in the prompt: the routine then runs as, and belongs to, that agent (the user manages it from the link). A run with nothing to report answers NO_REPLY and sends nothing. Results finishing in quiet hours wait until they end, unless `urgent`. Scheduled runs only happen while `tern daemon` is running. Give the user the link in the result so they can open the routine.",
             {
                 let mut props = limit_properties();
                 props.extend(trigger_properties());
-                props.insert("prompt".into(), json!({ "type": "string", "description": "what to do each time, written as a standalone instruction" }));
+                props.insert("prompt".into(), json!({ "type": "string", "description": "what to do each time, written as a standalone instruction to the agent that runs it" }));
                 props.insert("deliver_to".into(), json!({ "type": "string" }));
+                props.insert("agent".into(), json!({ "type": "string", "description": "the agent the routine runs as (id or slug): you (the default), or an agent you may delegate to" }));
                 json!({ "type": "object", "properties": props, "required": ["prompt"] })
             },
         )
@@ -745,16 +803,46 @@ impl Tool for ScheduleCreate {
             return ToolResult::error(e);
         }
         let deliver_to = resolve_target(&self.store, &ctx.session_id, a.deliver_to.as_deref());
-        let row = match create_routine(
+        let agent = match run_as(&self.store, &caller(&self.store, ctx), a.agent.as_deref()) {
+            Ok(a) => a,
+            Err(e) => return ToolResult::error(e),
+        };
+        let mut row = match create_routine(
             &self.store,
             &a.trigger,
             &a.prompt,
             deliver_to.clone(),
             &a.limits,
-            &caller(&self.store, ctx),
+            &agent,
         ) {
             Ok(r) => r,
             Err(e) => return ToolResult::error(e),
+        };
+        // Made in a topic channel, it posts there, and its agent joins it.
+        if let Some(topic) = topic_of(&self.store, &ctx.session_id) {
+            let filed = self
+                .store
+                .set_schedule_channel(&row.id, &topic.id)
+                .and_then(|_| self.store.add_channel_agent(&topic, &agent));
+            if let Err(e) = filed {
+                return ToolResult::error(format!("filing it under #{}: {e}", topic.slug));
+            }
+            row.channel_id = Some(topic.id);
+        }
+        notify(&self.notify, &row.id);
+        let posts_to = row
+            .channel_id
+            .as_deref()
+            .and_then(|c| self.store.channel(c).ok().flatten())
+            .map(|c| match c.kind.as_str() {
+                "topic" => format!("#{}", c.slug),
+                _ if c.id == tern_store::HOME => "Home".to_owned(),
+                _ => format!("{}'s DM", c.title),
+            })
+            .unwrap_or_else(|| "Home".into());
+        let runs_as = match self.store.agent(&agent) {
+            Ok(Some(a)) => a.name,
+            _ => agent.clone(),
         };
         let when = match &watch {
             Some(w) => format!(
@@ -768,19 +856,22 @@ impl Tool for ScheduleCreate {
             None => format!("next run {}", fmt_time(row.next_run_at)),
         };
         ToolResult::ok(format!(
-            "created schedule {} ({}); {when}; results go to {}{}",
+            "created schedule {} ({}); runs as {runs_as}; {when}; results are posted to {posts_to}{}{}\nLink for the user (include it in your answer): [Open the routine]({})",
             row.id,
             describe_trigger(&row),
-            deliver_to
-                .as_deref()
-                .unwrap_or("nowhere (check with `tern sessions`)"),
-            describe_limits(&row)
+            match deliver_to.as_deref() {
+                Some(t) => format!(" and sent to {t}"),
+                None => String::new(),
+            },
+            describe_limits(&row),
+            routine_link(&row.id)
         ))
     }
 }
 
 pub struct ScheduleUpdate {
     pub store: Store,
+    pub notify: Option<Notify>,
     pub checks: Option<std::sync::Arc<dyn RoutineChecks>>,
 }
 
@@ -852,15 +943,19 @@ impl Tool for ScheduleUpdate {
             resume: a.resume,
         };
         match update_schedule(&self.store, &a.id, &ch) {
-            Ok(Some(s)) => ToolResult::ok(format!(
-                "updated {} [{}] {}; next run {} → {}{}",
-                s.id,
-                describe_trigger(&s),
-                if s.enabled { "enabled" } else { "disabled" },
-                fmt_time(s.next_run_at),
-                s.deliver_to.as_deref().unwrap_or("none"),
-                describe_limits(&s)
-            )),
+            Ok(Some(s)) => {
+                notify(&self.notify, &s.id);
+                ToolResult::ok(format!(
+                    "updated {} [{}] {}; next run {} → {}{}\nLink: [Open the routine]({})",
+                    s.id,
+                    describe_trigger(&s),
+                    if s.enabled { "enabled" } else { "disabled" },
+                    fmt_time(s.next_run_at),
+                    s.deliver_to.as_deref().unwrap_or("none"),
+                    describe_limits(&s),
+                    routine_link(&s.id)
+                ))
+            }
             Ok(None) => ToolResult::error(format!("no schedule {:?} of yours", a.id)),
             Err(e) => ToolResult::error(e),
         }
@@ -925,6 +1020,7 @@ impl Tool for ScheduleList {
 
 pub struct ScheduleDelete {
     pub store: Store,
+    pub notify: Option<Notify>,
 }
 
 #[async_trait]
@@ -951,7 +1047,10 @@ impl Tool for ScheduleDelete {
             return ToolResult::error(format!("no schedule {id:?} of yours"));
         }
         match self.store.delete_schedule(id) {
-            Ok(true) => ToolResult::ok(format!("deleted {id}")),
+            Ok(true) => {
+                notify(&self.notify, id);
+                ToolResult::ok(format!("deleted {id}"))
+            }
             Ok(false) => ToolResult::error(format!("no schedule {id:?}")),
             Err(e) => ToolResult::error(e.to_string()),
         }
@@ -977,6 +1076,7 @@ mod tests {
         };
         let create = ScheduleCreate {
             store: store.clone(),
+            notify: None,
             checks: None,
         };
         let bad = create
@@ -1011,6 +1111,7 @@ mod tests {
         );
         let update = ScheduleUpdate {
             store: store.clone(),
+            notify: None,
             checks: None,
         };
         let r = update
@@ -1064,6 +1165,7 @@ mod tests {
 
         let del = ScheduleDelete {
             store: store.clone(),
+            notify: None,
         };
         assert!(!del.call(&ctx, json!({"id": s.id})).await.is_error);
         assert!(del.call(&ctx, json!({"id": s.id})).await.is_error);
@@ -1081,6 +1183,7 @@ mod tests {
         };
         let create = ScheduleCreate {
             store: store.clone(),
+            notify: None,
             checks: None,
         };
         let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
@@ -1113,6 +1216,7 @@ mod tests {
         store.finish_once(&s.id, tern_store::now_ms()).unwrap();
         let update = ScheduleUpdate {
             store: store.clone(),
+            notify: None,
             checks: None,
         };
         let r = update
@@ -1160,6 +1264,7 @@ mod tests {
         let (inbox, home) = (ctx("inbox-dm"), ctx("home"));
         let create = ScheduleCreate {
             store: store.clone(),
+            notify: None,
             checks: None,
         };
         let r = create
@@ -1182,6 +1287,7 @@ mod tests {
         assert!(list.call(&inbox, json!({})).await.content.contains("sweep"));
         let update = ScheduleUpdate {
             store: store.clone(),
+            notify: None,
             checks: None,
         };
         let r = update
@@ -1194,6 +1300,7 @@ mod tests {
         );
         let del = ScheduleDelete {
             store: store.clone(),
+            notify: None,
         };
         assert!(del.call(&home, json!({"id": s.id})).await.is_error);
         assert!(store.schedule(&s.id).unwrap().unwrap().enabled);
@@ -1249,6 +1356,7 @@ mod tests {
             Some(std::sync::Arc::new(FakeChecks));
         let create = ScheduleCreate {
             store: store.clone(),
+            notify: None,
             checks: checks.clone(),
         };
         for bad in [
@@ -1274,6 +1382,7 @@ mod tests {
         );
         let update = ScheduleUpdate {
             store: store.clone(),
+            notify: None,
             checks,
         };
         assert!(
@@ -1317,10 +1426,12 @@ mod tests {
             Some(std::sync::Arc::new(FakeChecks));
         let create = ScheduleCreate {
             store: store.clone(),
+            notify: None,
             checks: checks.clone(),
         };
         let no_lua = ScheduleCreate {
             store: store.clone(),
+            notify: None,
             checks: None,
         };
         let pr = json!({"prompt": "Summarize the PR", "watch": "github.reviews"});
@@ -1354,6 +1465,7 @@ mod tests {
         );
         let update = ScheduleUpdate {
             store: store.clone(),
+            notify: None,
             checks,
         };
         let r = update

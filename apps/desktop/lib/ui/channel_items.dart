@@ -8,6 +8,7 @@ import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
 import 'channel_view.dart' show NeedsYouTag;
+import 'routines.dart';
 import 'widgets.dart';
 
 /// Where Home's stream was cut into a new session: a thin line, with the
@@ -252,9 +253,12 @@ class PostCard extends StatelessWidget {
           MarkdownBody(
             data: post.text,
             selectable: true,
+            onTapLink: (_, href, _) => openTernLink(context, store, href),
             styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
                 .copyWith(p: Theme.of(context).textTheme.bodyMedium),
           ),
+          for (final id in routineLinksIn(post.text))
+            RoutineCard(item: RoutineItem(id), store: store),
         ],
       ),
     );
@@ -354,4 +358,3 @@ class MovedMarker extends StatelessWidget {
     );
   }
 }
-

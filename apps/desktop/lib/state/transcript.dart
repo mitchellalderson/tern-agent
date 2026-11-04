@@ -109,6 +109,33 @@ class AgentsItem extends Item {
 
 enum PillKind { routine, connector, memory, compacted, retrying, posts }
 
+/// A routine an agent created or changed here: a card that opens it.
+class RoutineItem extends Item {
+  RoutineItem(this.scheduleId, {this.created});
+  final String scheduleId;
+
+  /// Made (true) or changed (false) by a tool here; null for a link.
+  final bool? created;
+}
+
+/// The routines `tern://routine/<id>` links in [text] name, once each.
+List<String> routineLinksIn(String text) => [
+  ...{
+    for (final m in RegExp(
+      r'tern://routine/(sch_[A-Za-z0-9_-]+)',
+    ).allMatches(text))
+      m.group(1)!,
+  },
+];
+
+/// The routine a `tern://routine/<id>` link names, if [link] is one.
+String? routineIdOf(String link) =>
+    RegExp(r'^tern://routine/(sch_[A-Za-z0-9_-]+)$').firstMatch(link)?.group(1);
+
+/// The first routine link in a tool's result.
+String? _routineIn(String output) =>
+    RegExp(r'tern://routine/(sch_[A-Za-z0-9_-]+)').firstMatch(output)?.group(1);
+
 /// A quiet one-line note: something the agent made, or the engine did.
 class PillItem extends Item {
   PillItem(this.kind, this.text);
@@ -395,7 +422,7 @@ class Transcript {
           (w) => w.steps.contains(step),
         );
         if (!work.running) work.finished = now;
-        if (!isError) _pillFor(name, step.summary);
+        if (!isError) _pillFor(name, step.summary, output);
         closeSecretRequests(e.runId, id, output);
       case ApprovalRequested(:final approval):
         if (items.any(
@@ -454,6 +481,7 @@ class Transcript {
           ChannelsChanged() ||
           AgentsChanged() ||
           OutboxChanged() ||
+          SchedulesChanged() ||
           AuthPromptOpened() ||
           AuthPromptClosed() ||
           ConnectionsChanged():
@@ -638,9 +666,18 @@ class Transcript {
   bool _hasAssistant(String text) =>
       items.any((i) => i is AssistantItem && i.text == text);
 
-  void _pillFor(String tool, String summary) {
+  void _pillFor(String tool, String summary, String output) {
+    final pill = switch ((tool, _routineIn(output))) {
+      ('schedule_create', final String id) => RoutineItem(id, created: true),
+      ('schedule_update', final String id) => RoutineItem(id, created: false),
+      ('schedule_create', _) => PillItem(PillKind.routine, 'Created a routine'),
+      _ => _plainPill(tool),
+    };
+    if (pill != null) items.add(pill);
+  }
+
+  PillItem? _plainPill(String tool) {
     final pill = switch (tool) {
-      'schedule_create' => PillItem(PillKind.routine, 'Created a routine'),
       'connector_activate' => PillItem(
         PillKind.connector,
         'Activated a connector',
@@ -648,7 +685,7 @@ class Transcript {
       'memory_save' => PillItem(PillKind.memory, 'Saved to memory'),
       _ => null,
     };
-    if (pill != null) items.add(pill);
+    return pill;
   }
 }
 
@@ -732,7 +769,7 @@ class _Builder {
           step
             ..status = isError ? StepStatus.error : StepStatus.ok
             ..output = content;
-          if (!isError) t._pillFor(step.name, step.summary);
+          if (!isError) t._pillFor(step.name, step.summary, content);
       }
     }
   }

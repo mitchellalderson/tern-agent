@@ -10,7 +10,7 @@ import 'transcript.dart';
 enum Link { connecting, online, offline }
 
 /// A Library page shown in the centre column instead of a conversation.
-enum LibraryPage { mcp, connections }
+enum LibraryPage { mcp, connections, routines }
 
 /// Everything the app knows, fed by the daemon. Widgets listen to it.
 ///
@@ -1042,6 +1042,12 @@ class TernStore extends ChangeNotifier {
       if (s.agentId == a.id) s,
   ];
 
+  /// The routines that post to channel `id`.
+  List<Schedule> schedulesIn(String id) => [
+    for (final s in schedules)
+      if (s.channelId == id) s,
+  ];
+
   /// Create a topic channel and open it. Returns the daemon's reason on
   /// failure.
   Future<String?> createChannel({
@@ -1316,6 +1322,9 @@ class TernStore extends ChangeNotifier {
         // Its needs-you post and pointer close with the decision.
         if (state != 'pending') _resolveOutboxPosts(id);
         unawaited(refreshOutbox());
+        return;
+      case SchedulesChanged():
+        unawaited(refreshSchedules());
         return;
       case UnknownEvent() || EventsDropped():
         return;
@@ -2095,6 +2104,13 @@ class TernStore extends ChangeNotifier {
       loadingModels = false;
       if (!_disposed) notifyListeners();
     }
+  }
+
+  /// Show the Routines page: every routine, by every agent.
+  void openRoutines() {
+    page = LibraryPage.routines;
+    notifyListeners();
+    unawaited(refreshSchedules());
   }
 
   /// Show the MCP servers page, at `server`'s details when given.
