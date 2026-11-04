@@ -57,6 +57,7 @@ pub const CHILD_EXCLUDED_TOOLS: &[&str] = &[
     "schedule_update",
     "schedule_delete",
     "connector_activate",
+    "profile_edit",
 ];
 
 /// Numeric limits from `[subagents]`.

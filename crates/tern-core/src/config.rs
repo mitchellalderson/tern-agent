@@ -44,6 +44,7 @@ pub struct Config {
     pub api: ApiConfig,
     pub subagents: SubagentsConfig,
     pub schedules: SchedulesConfig,
+    pub memory: crate::memory::MemoryConfig,
 }
 
 impl Default for Config {
@@ -61,6 +62,7 @@ impl Default for Config {
             api: ApiConfig::default(),
             subagents: SubagentsConfig::default(),
             schedules: SchedulesConfig::default(),
+            memory: crate::memory::MemoryConfig::default(),
         }
     }
 }

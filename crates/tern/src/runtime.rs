@@ -31,6 +31,7 @@ pub struct PromptMaker {
     /// Set when sub-agents are enabled.
     sub: Option<SubagentPrompt>,
     max_depth: u32,
+    memory: tern_core::memory::MemoryConfig,
 }
 
 impl PromptMaker {
@@ -52,6 +53,7 @@ impl PromptMaker {
                 can_nest: s.max_depth >= 2,
             }),
             max_depth: s.max_depth,
+            memory: config.memory.clone(),
         }
     }
 
@@ -75,6 +77,7 @@ impl PromptMaker {
             workspace: &self.workspace,
             skills: &skills,
             integrations: &integrations,
+            memory: &self.memory,
         })
     }
 }
@@ -176,6 +179,7 @@ impl Runtime {
                     .iter()
                     .filter_map(|(name, p)| p.context_window.map(|w| (name.clone(), w)))
                     .collect(),
+                memory_flush: config.memory.flush,
                 ..AgentConfig::default()
             },
         )
@@ -443,6 +447,10 @@ fn build_tools(
         },
     )
     .map_err(anyhow::Error::msg)?;
+    registry.register(Arc::new(tern_tools::memory::ProfileEdit::new(
+        home.clone(),
+        config.memory.clone(),
+    )));
     if config.subagents.enabled && config.subagents.max_depth >= 1 {
         tern_tools::agents::register(&mut registry, subagents.clone());
     }

@@ -4,6 +4,8 @@
 //! contains, not by call count, so a resumed process picks up where the
 //! crashed one left off. Compaction requests get a summary that records how
 //! many turns it replaced (`mock-turns=N`), so counting survives compaction.
+//! Memory flushes before compaction save each of `memory_flush` (if any)
+//! with `memory_save`, and otherwise answer NOTHING.
 //!
 //! ```json
 //! { "turns": [
@@ -71,6 +73,9 @@ pub struct Script {
     /// the first entry whose `matches` it contains wins; otherwise `turns`.
     #[serde(default)]
     pub conversations: Vec<Conversation>,
+    /// Facts every memory flush saves.
+    #[serde(default)]
+    pub memory_flush: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -151,15 +156,34 @@ impl Provider for MockProvider {
             return Ok(text_stream(format!("mock summary mock-turns={n}")));
         }
         let n = turns_so_far(&req);
-        let turn = self
-            .script
-            .turns_for(&req)
-            .get(n)
-            .cloned()
-            .unwrap_or_else(|| Turn {
-                text: "(mock script exhausted)".into(),
+        let turn = if req.system == tern_core::memory::FLUSH_SYSTEM_PROMPT {
+            Turn {
+                text: if self.script.memory_flush.is_empty() {
+                    "NOTHING".into()
+                } else {
+                    String::new()
+                },
+                tool_calls: self
+                    .script
+                    .memory_flush
+                    .iter()
+                    .map(|fact| ScriptedCall {
+                        name: tern_core::memory::FLUSH_TOOL.into(),
+                        input: serde_json::json!({ "content": fact }),
+                    })
+                    .collect(),
                 ..Turn::default()
-            });
+            }
+        } else {
+            self.script
+                .turns_for(&req)
+                .get(n)
+                .cloned()
+                .unwrap_or_else(|| Turn {
+                    text: "(mock script exhausted)".into(),
+                    ..Turn::default()
+                })
+        };
         if turn.delay_ms > 0 {
             tokio::select! {
                 () = tokio::time::sleep(Duration::from_millis(turn.delay_ms)) => {}

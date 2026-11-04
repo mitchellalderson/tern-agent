@@ -19,6 +19,7 @@ use crate::compaction;
 use crate::config::ModelRef;
 use crate::events::AgentEvent;
 use crate::journal::{InFlight, Journal, StepError, StepKind, StepOutput};
+use crate::memory;
 use crate::subagent::{HostSlot, InboxEntry, InboxOutput};
 use crate::tool::{ProgressSink, ToolCtx, ToolRegistry, ToolResult, with_call, with_progress};
 use crate::types::{
@@ -53,6 +54,8 @@ pub struct AgentConfig {
     pub context_windows: std::collections::BTreeMap<String, u64>,
     /// Context window for providers not in `context_windows`.
     pub default_context_window: u64,
+    /// Flush durable facts to memory before compacting (`[memory].flush`).
+    pub memory_flush: bool,
 }
 
 impl Default for AgentConfig {
@@ -65,6 +68,7 @@ impl Default for AgentConfig {
             retry_base: Duration::from_secs(1),
             context_windows: std::collections::BTreeMap::new(),
             default_context_window: 128_000,
+            memory_flush: false,
         }
     }
 }
@@ -367,12 +371,15 @@ impl Agent {
             let mut messages = self.context(run, idx)?;
             let estimate = compaction::estimate_tokens(&system, &messages, &tools);
             if (estimate as f64 * correction) > window as f64 * compaction::THRESHOLD {
-                match self.compact(run, idx, &model, &provider, cancel).await {
-                    Ok(true) => {
-                        idx += 1;
+                match self
+                    .compact(run, idx, &model, &provider, cancel, &mut outcome.usage)
+                    .await
+                {
+                    Ok(0) => {}
+                    Ok(steps) => {
+                        idx += steps;
                         messages = self.context(run, idx)?;
                     }
-                    Ok(false) => {}
                     Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
                     Err(e) => return Err(e.into()),
                 }
@@ -843,8 +850,9 @@ impl Agent {
         to_messages(rows)
     }
 
-    /// Summarize old context as step `idx`. Returns false if there was
-    /// nothing to compact (no step recorded).
+    /// Summarize old context as step `idx`, after a memory flush when one
+    /// applies. Returns the number of steps recorded (0: nothing to
+    /// compact). The flush's usage is added to `usage`.
     async fn compact(
         &self,
         run: &RunRow,
@@ -852,14 +860,28 @@ impl Agent {
         model: &ModelRef,
         provider: &Arc<dyn Provider>,
         cancel: &CancellationToken,
-    ) -> Result<bool, StepError> {
+        usage: &mut Usage,
+    ) -> Result<u32, StepError> {
         let rows = compaction::effective(self.store.run_context(run, idx)?);
         let Some(plan) = compaction::plan(&rows) else {
-            return Ok(false);
+            return Ok(0);
         };
         let old = to_messages(rows[..plan.split].to_vec())
             .map_err(|e| StepError::Failed(e.to_string()))?;
         let transcript = compaction::transcript(&old);
+        let flushed = self
+            .flush_memory(
+                run,
+                idx,
+                model,
+                provider,
+                &transcript,
+                plan.cover_through,
+                cancel,
+                usage,
+            )
+            .await?;
+        let idx = idx + u32::from(flushed);
         let input = compaction::StepInput {
             cover_through: plan.cover_through,
             transcript_digest: blake3::hash(transcript.as_bytes()).to_hex().to_string(),
@@ -895,6 +917,111 @@ impl Agent {
             run_id: run.id.clone(),
             cover_through: plan.cover_through,
         });
+        Ok(1 + u32::from(flushed))
+    }
+
+    /// Give the model one silent turn, with only `memory_save`, to keep
+    /// durable facts from the span about to be summarized (spec §7, T5a).
+    /// Returns whether a step was recorded at `idx`. It never fails the
+    /// run: errors are recorded in its output and compaction goes ahead.
+    #[allow(clippy::too_many_arguments)]
+    async fn flush_memory(
+        &self,
+        run: &RunRow,
+        idx: u32,
+        model: &ModelRef,
+        provider: &Arc<dyn Provider>,
+        transcript: &str,
+        cover_through: i64,
+        cancel: &CancellationToken,
+        usage: &mut Usage,
+    ) -> Result<bool, StepError> {
+        let scope = [memory::FLUSH_TOOL.to_owned()];
+        let tools = self.tools.specs_for(Some(&scope));
+        // Replay follows the journal; only the live frontier decides.
+        match self.journal.peek(&run.id, idx)? {
+            Some(StepKind::MemoryFlush) => {}
+            Some(_) => return Ok(false),
+            None => {
+                if !self.cfg.memory_flush
+                    || tools.is_empty()
+                    || !memory::flush_applies(run)
+                    || !memory::flush_affordable(run, usage, transcript)
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        let input = memory::FlushInput {
+            cover_through,
+            transcript_digest: blake3::hash(transcript.as_bytes()).to_hex().to_string(),
+        };
+        let interrupted = memory::FlushOutput {
+            error: Some("interrupted by a crash; not repeated".into()),
+            ..Default::default()
+        };
+        let req = ChatRequest {
+            model: model.model.clone(),
+            system: memory::FLUSH_SYSTEM_PROMPT.into(),
+            messages: vec![memory::flush_request(transcript)],
+            tools,
+            max_tokens: memory::FLUSH_MAX_TOKENS,
+        };
+        let out = self
+            .journal
+            .step_with(
+                &run.id,
+                idx,
+                StepKind::MemoryFlush,
+                &input,
+                InFlight::Substitute(StepOutput::new(interrupted)),
+                || async {
+                    let mut out = memory::FlushOutput::default();
+                    match self.call_llm(&run.id, provider, req, cancel, false).await {
+                        Err(StepError::Cancelled) => return Err(StepError::Cancelled),
+                        Err(e) => out.error = Some(e.to_string()),
+                        Ok(turn) => {
+                            out.usage = turn.usage;
+                            let ctx = ToolCtx {
+                                workspace: self.cfg.workspace.clone(),
+                                run_id: run.id.clone(),
+                                session_id: run.session_id.clone(),
+                                cancel: cancel.clone(),
+                            };
+                            let calls = turn
+                                .message
+                                .tool_uses()
+                                .filter(|c| c.name == memory::FLUSH_TOOL);
+                            for call in calls.take(memory::MAX_FLUSH_SAVES) {
+                                let policy = self.tools.policy(&ctx, &call);
+                                if approval::needs_check(&call.name, &policy) {
+                                    out.saved.push("skipped: would need approval".into());
+                                    continue;
+                                }
+                                let r = self.tools.call_in(Some(&scope), &ctx, &call).await;
+                                out.saved.push(if r.is_error {
+                                    format!("error: {}", r.content)
+                                } else {
+                                    r.content
+                                });
+                            }
+                        }
+                    }
+                    let usage = out.usage;
+                    Ok(StepOutput::new(out).with_usage(usage))
+                },
+            )
+            .await?;
+        let flush = out.value;
+        add_usage(usage, &flush.usage);
+        match &flush.error {
+            Some(e) => {
+                tracing::warn!(run = %run.id, idx, error = %e, "memory flush failed; compacting anyway")
+            }
+            None => {
+                tracing::info!(run = %run.id, idx, saved = flush.saved.len(), replayed = out.replayed, "memory flush")
+            }
+        }
         Ok(true)
     }
 }

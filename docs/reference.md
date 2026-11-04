@@ -7,7 +7,7 @@ Everything tern does, command by command. For installing and a first chat, see t
 | | |
 |---|---|
 | **Models** | Anthropic, plus any OpenAI-compatible endpoint (OpenRouter, Ollama, vLLM, LM Studio). Models are `provider:model`; switch with `--model` or `/model`. |
-| **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `http_fetch`, long-term memory, search over past conversations, skills, schedules. |
+| **Tools** | Files (`read_file`, `list_dir`, `search_files`, `write_file`, `edit_file`), `shell`, `http_fetch`, long-term memory and capped profile notes (`user.md`, `memory.md`), search over past conversations, skills, schedules. |
 | **Approvals** | Every tool has an effect, and tern (not the model) decides from it: `read` never asks, `write` asks unless you chose "always", `destructive` asks every time. Prompts show it, e.g. `write · lua__gmail__send …`. Workspace writes (`~/tern-workspace` by default) and tern's own memory and schedules are pre-granted; reads or writes outside the workspace ask. Shell commands are `destructive` unless an "always" pattern (e.g. `git *`) covers them. Tools flagged `money_movement` or `trade` are refused, and nothing can approve them. |
 | **MCP** | Ask the agent ("add the GitHub MCP server"; you approve the exact command each time, and only on this machine for local commands), or add, test, toggle and remove servers with `/mcp` in the chat or [`tern mcp`](#tern-mcp), or edit `[mcp.servers.<name>]` (stdio or streamable HTTP); changes apply without a restart, a server's pasted `mcpServers` JSON works too, and their tools appear as `mcp__<name>__<tool>`. Effects come from the server's `readOnlyHint` / `destructiveHint` (else `write`), and `effects = { tool = "read" }` overrides them. For a browser, see [Recipe: give tern a browser](recipes/browser.md). |
 | **Luau connectors** | Small sandboxed scripts in `~/.tern/connectors/*.luau` that declare which hosts and secrets they may use, and an `effect` per tool (`write` if left out). The agent can write and test its own, and activates one only with your approval of its capabilities. `tern connectors` lists them. |
@@ -271,7 +271,7 @@ tern config set mcp.servers.github.args '["stdio"]'
 tern doctor [--offline]
 ```
 
-Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
+Checks, in order: the data directory; `config.toml` and `secrets.toml` (including its 0600 permissions); each provider (that its secret is set and, unless `--offline`, that its endpoint answers with that key) and `default_model`; the database's schema version and integrity; whether the daemon is running and what manages it (launchd, systemd, or nothing); schedules paused by a daily cap or whose USD cap can't apply (no known price), and deliveries held for quiet hours; `user.md` and `memory.md` against their caps (over a cap is a warning: only the first part is in the prompt); the sandbox backend (whether the OS sandbox is available for `host`, Docker on `PATH` for `docker`); the Telegram gateway; and each enabled MCP server: its secrets, and that it starts and lists its tools (with `--offline`, only that its command is on `PATH`). Each problem comes with a hint for fixing it.
 
 It exits `1` if anything failed, `0` otherwise (warnings are things not set up yet). It is read-only and doesn't create `~/.tern`.
 
@@ -310,6 +310,9 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `schedules.runs_per_day` | none | Default cap on runs per schedule per local day. |
 | `schedules.usd_per_day` | none | Default cap on a schedule's spend per local day (sub-agents included), where prices are known. |
 | `schedules.tokens_per_run` | none | Default cap on one scheduled run's tokens (input + output + cache). |
+| `memory.user_md_tokens` | `1500` | Cap on `user.md` as injected into the prompt (tokens ≈ chars / 4). |
+| `memory.memory_md_tokens` | `1500` | Cap on `memory.md` (core facts) as injected. |
+| `memory.flush` | `true` | Before older context is summarized, give the agent one silent turn to save durable facts with `memory_save`. |
 | `sandbox.backend` | `host` | `host` or `docker`. |
 | `sandbox.shell_timeout_secs` | `120` | Per shell command. |
 | `sandbox.network` | `true` | IP networking for shell commands (both backends). |
@@ -359,6 +362,15 @@ Both create `secrets.toml` with mode 0600 if needed, keep its comments, and take
 **The agent can ask you for a secret.** When a connector it wrote (or anything else) needs a key that isn't set, the agent calls `secret_request` with the name and a reason. You get a private prompt: inline in the TUI, as a card in the desktop app, or in Telegram as a pointer to the app (a chat never takes the value). The prompt shows what would read the secret, for example `connector weather (draft) · reaches api.weather.com`. The value goes straight into `secrets.toml`; the agent only learns whether each name was `set`, `already_set`, `skipped` or `timed_out`. Values that are already set aren't asked for again unless the agent asks to replace them. A prompt waits up to `secret_request_timeout_secs` (default 900); runs with nobody to ask (`tern run --yes`) skip it. API clients see prompts on `/v1/events` as `{"secret_requested": …}`, list them with `GET /v1/secret-requests`, and answer with `POST /v1/secret-requests/{id}` `{"values": {"NAME": "…"}}` (names left out are skipped; only names the request asked for are accepted; owner scope).
 
 Environment variables: `TERN_HOME` (data directory, default `~/.tern`) and `TERN_LOG` (log level, e.g. `debug`).
+
+## Memory
+
+tern remembers in two places:
+
+- **`user.md` and `memory.md`** in `~/.tern`: what every conversation needs, in the system prompt each time. `user.md` is about you; `memory.md` holds core facts the agent keeps. You can edit both; the agent changes them with `profile_edit` (read, append, or replace to consolidate). Each has a cap, 1500 tokens by default (`[memory]` in config). A write that would go over is refused and the agent is asked to consolidate: merge, drop what's stale, and move details to long-term memory. A file you edit past its cap is cut in the prompt with a note asking the agent to consolidate, and `tern doctor` warns. Sub-agents see both files but can't change them.
+- **Long-term memory**: facts saved with `memory_save`, found with `memory_search`, never in the prompt by themselves.
+
+**Flush before compaction.** When a long conversation is about to be summarized, the agent first gets one silent model call over the part being summarized, with only `memory_save`, to keep durable facts (preferences, decisions, people, commitments). It's journaled, so a resumed run doesn't repeat it, and its tokens count toward the run's budget. If it fails, compaction goes ahead. Sub-agents and scheduled runs don't flush, nor does a run whose token budget can't cover it. `memory.flush = false` turns it off.
 
 ## Schedules
 
@@ -460,4 +472,4 @@ If tern hits an internal error it writes `~/.tern/logs/crash-<time>.txt` (messag
 
 ## Data
 
-Everything lives in `~/.tern` (`TERN_HOME` to move it): `config.toml`, `secrets.toml`, `tern.db` (SQLite, WAL), `persona.md` and `user.md` (included in the system prompt), `skills/`, `connectors/`, `logs/` (daily rotated; set `TERN_LOG=debug` for more).
+Everything lives in `~/.tern` (`TERN_HOME` to move it): `config.toml`, `secrets.toml`, `tern.db` (SQLite, WAL), `persona.md`, `user.md` and `memory.md` (included in the system prompt; see [Memory](#memory)), `skills/`, `connectors/`, `logs/` (daily rotated; set `TERN_LOG=debug` for more).

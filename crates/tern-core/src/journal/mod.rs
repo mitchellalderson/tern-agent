@@ -28,6 +28,8 @@ pub enum StepKind {
     Compaction,
     /// Delivers mail from other runs of the tree (sub-agent reports).
     Inbox,
+    /// Saves durable facts before a compaction (T5a).
+    MemoryFlush,
 }
 
 impl StepKind {
@@ -38,6 +40,7 @@ impl StepKind {
             StepKind::Approval => "approval",
             StepKind::Compaction => "compaction",
             StepKind::Inbox => "inbox",
+            StepKind::MemoryFlush => "memory_flush",
         }
     }
 
@@ -48,6 +51,7 @@ impl StepKind {
             "approval" => StepKind::Approval,
             "compaction" => StepKind::Compaction,
             "inbox" => StepKind::Inbox,
+            "memory_flush" => StepKind::MemoryFlush,
             _ => return None,
         })
     }
