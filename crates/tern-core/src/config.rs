@@ -340,11 +340,16 @@ pub struct SubagentsConfig {
     pub max_children: u32,
     /// Running sub-agents across the process; more are queued.
     pub max_concurrent_global: u32,
-    /// Per child, unless `agent_spawn` asks for fewer.
+    /// Per child, unless `agent_spawn` asks for a different number.
     pub max_iterations: u32,
-    /// Per child (input + output + cache tokens), unless `agent_spawn` asks
-    /// for fewer.
+    /// The most `agent_spawn` may ask for (at least `max_iterations`).
+    pub max_iterations_ceiling: u32,
+    /// Per child (input + output + cache tokens, counted on every model
+    /// call), unless `agent_spawn` asks for a different number. 0 = none.
     pub budget_tokens: u64,
+    /// The most `agent_spawn` may ask for (at least `budget_tokens`).
+    /// 0 = no ceiling.
+    pub budget_tokens_ceiling: u64,
     /// How long `agent_ask_parent` waits for an answer.
     pub ask_parent_timeout_secs: u64,
 }
@@ -360,7 +365,9 @@ impl Default for SubagentsConfig {
             max_children: 12,
             max_concurrent_global: 8,
             max_iterations: 30,
+            max_iterations_ceiling: 100,
             budget_tokens: 400_000,
+            budget_tokens_ceiling: 2_000_000,
             ask_parent_timeout_secs: 900,
         }
     }
@@ -589,7 +596,9 @@ max_concurrent = 4
 max_children = 12
 max_concurrent_global = 8
 max_iterations = 30
+max_iterations_ceiling = 100
 budget_tokens = 400000
+budget_tokens_ceiling = 2000000
 ask_parent_timeout_secs = 900
 "#,
             Path::new("c.toml"),

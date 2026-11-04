@@ -67,7 +67,11 @@ pub struct SubagentLimits {
     pub max_children: u32,
     pub max_concurrent_global: u32,
     pub max_iterations: u32,
+    pub max_iterations_ceiling: u32,
+    /// 0 = none.
     pub budget_tokens: u64,
+    /// 0 = no ceiling.
+    pub budget_tokens_ceiling: u64,
 }
 
 impl From<&SubagentsConfig> for SubagentLimits {
@@ -78,7 +82,12 @@ impl From<&SubagentsConfig> for SubagentLimits {
             max_children: c.max_children,
             max_concurrent_global: c.max_concurrent_global.max(1),
             max_iterations: c.max_iterations.max(1),
+            max_iterations_ceiling: c.max_iterations_ceiling.max(c.max_iterations).max(1),
             budget_tokens: c.budget_tokens,
+            budget_tokens_ceiling: match c.budget_tokens_ceiling {
+                0 => 0,
+                ceiling => ceiling.max(c.budget_tokens),
+            },
         }
     }
 }

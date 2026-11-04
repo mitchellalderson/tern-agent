@@ -69,8 +69,10 @@ docker_pids = 512          # 0 for no limit
 # max_concurrent = 4          # running per parent; more are queued
 # max_children = 12           # per parent run, in total
 # max_concurrent_global = 8   # running across tern; more are queued
-# max_iterations = 30         # per sub-agent
-# budget_tokens = 400000      # per sub-agent: input + output + cache tokens
+# max_iterations = 30         # per sub-agent, unless agent_spawn asks for more or fewer
+# max_iterations_ceiling = 100  # the most agent_spawn may ask for
+# budget_tokens = 400000      # per sub-agent: input + output + cache tokens, on every model call
+# budget_tokens_ceiling = 2000000  # the most agent_spawn may ask for (0 = no ceiling)
 
 # Scheduled prompts (schedule_create, the app's routines). Each schedule can
 # override these.
