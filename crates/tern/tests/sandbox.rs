@@ -188,6 +188,47 @@ async fn network_off_blocks_ip_connections() {
     assert!(accepted(&listener), "no connection with network = true");
 }
 
+/// The seccomp filter must deny only what it lists. (Its action arguments
+/// were once swapped, so every other syscall failed and plain commands died
+/// with SIGSEGV; the network tests above pass vacuously when nothing runs.)
+#[tokio::test]
+async fn commands_run_under_every_network_setting() {
+    for network in [false, true] {
+        let Some(b) = backend(HostPolicy {
+            network,
+            ..HostPolicy::confined()
+        }) else {
+            return;
+        };
+        let ws = tempfile::tempdir().unwrap();
+        let out = run(&b, ws.path(), "echo ok > proof.txt && cat proof.txt && ls").await;
+        assert_eq!(out.exit_code, Some(0), "network={network}: {out:?}");
+        assert!(out.stdout.contains("ok"), "{out:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn ptrace_is_denied() {
+    if which("python3").is_none() {
+        eprintln!("skipping: no python3");
+        return;
+    }
+    let Some(b) = backend(HostPolicy::confined()) else {
+        return;
+    };
+    let ws = tempfile::tempdir().unwrap();
+    // PTRACE_TRACEME (0) would succeed unconfined; the filter makes it EPERM.
+    let out = run(
+        &b,
+        ws.path(),
+        "python3 -c 'import ctypes; l = ctypes.CDLL(None, use_errno=True); \
+         print(l.ptrace(0, 0, 0, 0), ctypes.get_errno())'",
+    )
+    .await;
+    assert_eq!(out.stdout.trim(), "-1 1", "{out:?}");
+}
+
 #[tokio::test]
 async fn timeout_kills_the_whole_process_group() {
     let Some(b) = backend(HostPolicy::confined()) else {

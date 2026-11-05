@@ -266,6 +266,9 @@ void main() {
     store.channel = 'dm:research';
     store.notifyListeners();
     await tester.pump();
+    // Let the closing dialog and the channel switch finish animating: on a
+    // slow runner the old frame's copy of the text can still be mounted.
+    await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('ROUTINES · RESEARCH'), findsOneWidget);
     expect(
       find.text("Look up this week's AI news and summarise it."),

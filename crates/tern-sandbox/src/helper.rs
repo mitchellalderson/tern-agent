@@ -183,8 +183,11 @@ mod linux {
         }
         let filter = SeccompFilter::new(
             rules,
-            SeccompAction::Errno(libc::EPERM as u32),
+            // seccompiler's order is (mismatch, match): calls no rule names
+            // are allowed, the listed ones fail with EPERM. Swapped, this
+            // denied every other syscall and the command died with SIGSEGV.
             SeccompAction::Allow,
+            SeccompAction::Errno(libc::EPERM as u32),
             arch,
         )
         .map_err(err)?;
