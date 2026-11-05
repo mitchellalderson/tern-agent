@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 /// Design tokens (docs/brand/brand-guide.md). Cream paper, ink, and the
-/// red / orange / yellow racing stripe. Light by default; dark is its own
+/// orange / yellow / teal racing stripe. Light by default; dark is its own
 /// set, not an inversion.
 @immutable
 class TernColors extends ThemeExtension<TernColors> {
@@ -21,9 +21,9 @@ class TernColors extends ThemeExtension<TernColors> {
     required this.selection,
     required this.ink,
     required this.link,
-    required this.stripeRed,
     required this.stripeOrange,
     required this.stripeYellow,
+    required this.stripeTeal,
   });
 
   final Color background;
@@ -43,9 +43,9 @@ class TernColors extends ThemeExtension<TernColors> {
   /// Interactive borders and strong text; `text` is the same colour.
   final Color ink;
   final Color link;
-  final Color stripeRed;
   final Color stripeOrange;
   final Color stripeYellow;
+  final Color stripeTeal;
 
   static const light = TernColors(
     background: Color(0xFFF7EEDC),
@@ -63,9 +63,9 @@ class TernColors extends ThemeExtension<TernColors> {
     selection: Color(0xFFEFE3CB),
     ink: Color(0xFF2B2118),
     link: Color(0xFFB3281D),
-    stripeRed: Color(0xFFD93A2B),
     stripeOrange: Color(0xFFF07A2B),
     stripeYellow: Color(0xFFF6B92B),
+    stripeTeal: Color(0xFF2A8C8C),
   );
 
   static const dark = TernColors(
@@ -84,9 +84,9 @@ class TernColors extends ThemeExtension<TernColors> {
     selection: Color(0xFF2F251C),
     ink: Color(0xFFF3E8D2),
     link: Color(0xFFF08A7A),
-    stripeRed: Color(0xFFE5483A),
     stripeOrange: Color(0xFFF58A3D),
     stripeYellow: Color(0xFFF9C846),
+    stripeTeal: Color(0xFF4DB3AE),
   );
 
   @override
@@ -239,7 +239,7 @@ TextStyle wordmarkStyle(double size, Color color) => TextStyle(
   color: color,
 );
 
-/// The racing stripe: three hard-edged bars, red / orange / yellow, never
+/// The racing stripe: three hard-edged bars, orange / yellow / teal, never
 /// reordered. [slant] skews it -18° for the Baja look.
 class Stripes extends StatelessWidget {
   const Stripes({
@@ -259,9 +259,9 @@ class Stripes extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.colors;
     final bars = [
-      c.stripeRed,
       c.stripeOrange,
       c.stripeYellow,
+      c.stripeTeal,
     ].map((color) => Expanded(child: ColoredBox(color: color))).toList();
     final box = vertical
         ? SizedBox(

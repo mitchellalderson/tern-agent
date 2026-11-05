@@ -2,7 +2,7 @@
 
 Visual reference: [style-sheet.html](style-sheet.html). That sheet is the source of truth for how things look; this file is the source of truth for the rules and values. If they disagree, fix the sheet.
 
-**The idea:** vintage Toyota racing stripe, Baja racer. Warm cream paper, sharp ink, and one red / orange / yellow stripe. Simple, warm, clean.
+**The idea:** vintage Toyota racing stripe, Baja racer. Warm cream paper, sharp ink, and one orange / yellow / teal stripe. Simple, warm, clean.
 
 ## 1. Color
 
@@ -12,9 +12,11 @@ All colors are tokens. Never hard-code a hex in UI code; use the token.
 
 | Token    | Light     | Dark      | Use |
 |----------|-----------|-----------|-----|
-| `red`    | `#D93A2B` | `#E5483A` | Top stripe, destructive fills |
-| `orange` | `#F07A2B` | `#F58A3D` | Primary accent: primary buttons, selection edge |
-| `yellow` | `#F6B92B` | `#F9C846` | Bottom stripe, hover, focus glow, highlights |
+| `orange` | `#F07A2B` | `#F58A3D` | Top stripe, primary accent: primary buttons, selection edge |
+| `yellow` | `#F6B92B` | `#F9C846` | Middle stripe, hover, focus glow, highlights |
+| `teal`   | `#2A8C8C` | `#4DB3AE` | Bottom stripe only. Not for text or fills elsewhere |
+
+Red is not a stripe color: on a dark background red, orange and yellow read as a national flag. `red` (`#D93A2B` light, `#E5483A` dark) exists only for destructive fills.
 
 ### Surfaces and text
 
@@ -39,14 +41,14 @@ All colors are tokens. Never hard-code a hex in UI code; use the token.
 ### Color rules
 
 - Body text is `ink` (or `muted` for secondary). Never orange or yellow text on cream; they fail contrast.
-- Text on an orange, yellow, or red-accent fill is `ink`, never white. Exception: text on the `red` destructive button is `paper`.
+- Text on an orange, yellow, or teal fill is `ink`, never white. Exception: text on the `red` destructive button is `paper`.
 - The background is always warm. No pure white, no pure black, no neutral gray.
 - Dark mode is its own palette, not an inversion. Primary button text stays dark `ink` (`#2B2118`) in both modes.
 - No gradients, glows, glass, or drop shadows. Depth comes from `paper` vs `sand` vs `cream`.
 
 ## 2. The stripe
 
-Three bars, hard-edged, no gaps, always in this order: red, orange, yellow (top to bottom, or left to right when vertical). Never reorder, recolor, or space them.
+Three bars, hard-edged, no gaps, always in this order: orange, yellow, teal (top to bottom, or left to right when vertical). Never reorder, recolor, or space them.
 
 | Variant   | Bar thickness | Use |
 |-----------|---------------|-----|
@@ -127,4 +129,4 @@ Plain, short, calm. Sentence case. Say what happened and what is needed next. No
 | `userBubble` | `sand` |
 | `selection` | `sand`, with the orange left bar |
 
-New fields to add: `stripeRed`, `stripeOrange`, `stripeYellow`, `link`, `ink` (for interactive borders). The multi-color avatar palette in `ui/widgets.dart` should be reduced to stripe and status colors.
+New fields to add: `stripeOrange`, `stripeYellow`, `stripeTeal`, `link`, `ink` (for interactive borders). The multi-color avatar palette in `ui/widgets.dart` should be reduced to stripe and status colors.

@@ -10,7 +10,8 @@
 <style>
 :root {
   /* stripes */
-  --red: #D93A2B;
+  --red: #D93A2B; /* destructive only, not a stripe */
+  --teal: #2A8C8C;
   --orange: #F07A2B;
   --yellow: #F6B92B;
   /* surfaces */
@@ -43,9 +44,9 @@ body {
 /* ---------- the stripe motif ---------- */
 .stripes { display: grid; gap: 0; }
 .stripes i { display: block; }
-.stripes i:nth-child(1) { background: var(--red); }
-.stripes i:nth-child(2) { background: var(--orange); }
-.stripes i:nth-child(3) { background: var(--yellow); }
+.stripes i:nth-child(1) { background: var(--orange); }
+.stripes i:nth-child(2) { background: var(--yellow); }
+.stripes i:nth-child(3) { background: var(--teal); }
 .stripes.h > i { height: var(--t, 10px); }
 .stripes.v { grid-auto-flow: column; }
 .stripes.v > i { width: var(--t, 10px); }
@@ -138,7 +139,7 @@ p.lede { max-width: 620px; color: var(--muted); margin-bottom: 8px; }
 .dark-panel {
   --cream: #1F1812; --paper: #2A211A; --sand: #261E17; --hairline: #3D3226;
   --ink: #F3E8D2; --muted: #B3A58F; --link: #F08A7A;
-  --red: #E5483A; --orange: #F58A3D; --yellow: #F9C846;
+  --red: #E5483A; --teal: #4DB3AE; --orange: #F58A3D; --yellow: #F9C846;
   --ok: #8DB56F; --warn: #E3B04B; --error: #F08A7A;
   background: var(--cream); color: var(--ink); border-radius: 14px; padding: 28px; border: 1px solid var(--hairline);
 }
@@ -177,11 +178,11 @@ footer { padding: 40px 0 64px; border-top: 1px solid var(--hairline); color: var
   <!-- 01 -->
   <section>
     <div class="sec-head"><span class="n">01</span><h2>Stripe colors</h2></div>
-    <p class="lede">The three stripes are the whole brand. Always stacked in this order, red on top, orange in the middle, yellow on the bottom. They are decoration and emphasis, not body text.</p>
+    <p class="lede">The three stripes are the whole brand. Always stacked in this order, orange on top, yellow in the middle, teal on the bottom. They are decoration and emphasis, not body text.</p>
     <div class="stripe-row" style="margin-top:20px">
-      <div class="sw"><div class="chip" style="background:var(--red)"></div><div class="meta"><b>Stripe Red</b><code>#D93A2B</code><small>Danger fill, top stripe, destructive buttons.</small></div></div>
-      <div class="sw"><div class="chip" style="background:var(--orange)"></div><div class="meta"><b>Stripe Orange</b><code>#F07A2B</code><small>The primary accent. Primary buttons, selection edge, focus. Carries over from today's app.</small></div></div>
-      <div class="sw"><div class="chip" style="background:var(--yellow)"></div><div class="meta"><b>Stripe Yellow</b><code>#F6B92B</code><small>Highlights, hover, focus glow, bottom stripe.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--orange)"></div><div class="meta"><b>Stripe Orange</b><code>#F07A2B</code><small>Top stripe and the primary accent. Primary buttons, selection edge, focus.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--yellow)"></div><div class="meta"><b>Stripe Yellow</b><code>#F6B92B</code><small>Middle stripe. Highlights, hover, focus glow.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--teal)"></div><div class="meta"><b>Stripe Teal</b><code>#2A8C8C</code><small>Bottom stripe only. Replaces red, which read as a flag on dark. Destructive buttons still use red.</small></div></div>
     </div>
 
     <h3>Paper and ink</h3>
@@ -316,7 +317,7 @@ footer { padding: 40px 0 64px; border-top: 1px solid var(--hairline); color: var
         <span class="pill warn"><span class="dot"></span>Waiting</span>
         <span class="pill err"><span class="dot"></span>Failed</span>
       </div>
-      <p style="margin-top:16px;font-size:13px;color:var(--muted)">Dark stripes: red <code style="font-family:var(--mono)">#E5483A</code> · orange <code style="font-family:var(--mono)">#F58A3D</code> · yellow <code style="font-family:var(--mono)">#F9C846</code>. Primary button text stays dark ink in both modes.</p>
+      <p style="margin-top:16px;font-size:13px;color:var(--muted)">Dark stripes: orange <code style="font-family:var(--mono)">#F58A3D</code> · yellow <code style="font-family:var(--mono)">#F9C846</code> · teal <code style="font-family:var(--mono)">#4DB3AE</code>. Primary button text stays dark ink in both modes.</p>
     </div>
   </section>
 
@@ -329,7 +330,7 @@ footer { padding: 40px 0 64px; border-top: 1px solid var(--hairline); color: var
         <ul>
           <li>Keep the background cream and let the stripes be the only loud thing.</li>
           <li>Use ink for text and for any border that means "you can click this".</li>
-          <li>Stack stripes red, orange, yellow, top to bottom or left to right.</li>
+          <li>Stack stripes orange, yellow, teal, top to bottom or left to right.</li>
           <li>Keep copy plain and short. Sentence case.</li>
           <li>Leave generous empty space. Simple beats busy.</li>
         </ul>
