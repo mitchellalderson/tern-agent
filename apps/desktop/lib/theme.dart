@@ -158,7 +158,11 @@ ThemeData ternTheme(TernColors c, Brightness b) {
         ),
     tooltipTheme: TooltipThemeData(
       waitDuration: const Duration(milliseconds: 600),
-      textStyle: TextStyle(fontSize: 12, color: c.background),
+      textStyle: TextStyle(
+        fontFamily: 'TernSans',
+        fontSize: 12,
+        color: c.background,
+      ),
       decoration: BoxDecoration(
         color: c.text,
         borderRadius: BorderRadius.circular(8),
@@ -176,7 +180,10 @@ ThemeData ternTheme(TernColors c, Brightness b) {
           FilledButton.styleFrom(
             backgroundColor: c.accent,
             foregroundColor: c.onAccent,
-            textStyle: const TextStyle(fontWeight: FontWeight.w700),
+            textStyle: const TextStyle(
+              fontFamily: 'TernSans',
+              fontWeight: FontWeight.w700,
+            ),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(8),
               side: BorderSide(color: c.ink, width: 2),
@@ -191,7 +198,10 @@ ThemeData ternTheme(TernColors c, Brightness b) {
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         foregroundColor: c.ink,
-        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+        textStyle: const TextStyle(
+          fontFamily: 'TernSans',
+          fontWeight: FontWeight.w700,
+        ),
         side: BorderSide(color: c.ink, width: 2),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
@@ -199,7 +209,10 @@ ThemeData ternTheme(TernColors c, Brightness b) {
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(
         foregroundColor: c.link,
-        textStyle: const TextStyle(fontWeight: FontWeight.w600),
+        textStyle: const TextStyle(
+          fontFamily: 'TernSans',
+          fontWeight: FontWeight.w600,
+        ),
       ),
     ),
     cardTheme: CardThemeData(

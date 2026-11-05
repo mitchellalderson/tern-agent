@@ -29,6 +29,41 @@ Future<void> _font(String family, List<String> paths) async {
   }
 }
 
+/// Loads the bundled brand fonts under the family names the theme uses, so
+/// screenshots show the real typography instead of placeholder boxes.
+Future<void> _brandFonts() async {
+  const families = {
+    'TernDisplay': [
+      'assets/fonts/ArchivoDisplay-ExtraBoldItalic.ttf',
+      'assets/fonts/ArchivoDisplay-BlackItalic.ttf',
+    ],
+    'TernSans': [
+      'assets/fonts/DMSans-Regular.ttf',
+      'assets/fonts/DMSans-SemiBold.ttf',
+      'assets/fonts/DMSans-Bold.ttf',
+    ],
+    'TernMono': [
+      'assets/fonts/JetBrainsMono-Regular.ttf',
+      'assets/fonts/JetBrainsMono-SemiBold.ttf',
+    ],
+  };
+  for (final e in families.entries) {
+    final loader = FontLoader(e.key);
+    for (final path in e.value) {
+      loader.addFont(
+        Future.value(ByteData.sublistView(File(path).readAsBytesSync())),
+      );
+    }
+    await loader.load();
+  }
+}
+
+/// Avatar glyphs (★ ■ ▲ ♥) aren't in DM Sans; the app gets them from the
+/// system, the test from a loaded symbols font.
+ThemeData _withSymbols(ThemeData t) => t.copyWith(
+  textTheme: t.textTheme.apply(fontFamilyFallback: const ['SymbolsFallback']),
+);
+
 TernStore demoStore() {
   final now = DateTime.now();
   final store = TernStore(TernClient(const Endpoint.unix('/nonexistent')))
@@ -425,6 +460,11 @@ class _McpClient extends TernClient {
 
 void main() {
   setUpAll(() async {
+    await _brandFonts();
+    await _font('SymbolsFallback', [
+      '/System/Library/Fonts/Apple Symbols.ttf',
+      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    ]);
     await _font('.AppleSystemUIFont', [
       '/System/Library/Fonts/SFNS.ttf',
       '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
@@ -455,11 +495,7 @@ void main() {
           key: key,
           child: MaterialApp(
             debugShowCheckedModeBanner: false,
-            theme: theme.copyWith(
-              textTheme: theme.textTheme.apply(
-                fontFamily: '.AppleSystemUIFont',
-              ),
-            ),
+            theme: _withSymbols(theme),
             home: Home(store: demoStore()),
           ),
         ),
@@ -553,11 +589,7 @@ void main() {
           key: key,
           child: MaterialApp(
             debugShowCheckedModeBanner: false,
-            theme: theme.copyWith(
-              textTheme: theme.textTheme.apply(
-                fontFamily: '.AppleSystemUIFont',
-              ),
-            ),
+            theme: _withSymbols(theme),
             home: Home(store: store),
           ),
         ),
