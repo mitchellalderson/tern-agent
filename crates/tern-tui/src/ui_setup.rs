@@ -8,7 +8,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tern_core::config::ProviderKind;
 
 use crate::models::{ModelList, ModelPicker, Row};
-use crate::setup::{ANTHROPIC_KEY_URL, Form, KINDS, MANAGE, SetupPanel, Step};
+use crate::setup::{Form, MANAGE, SetupPanel, Step};
+use tern_core::presets::PRESETS;
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -269,12 +270,20 @@ pub fn draw_setup(frame: &mut Frame<'_>, panel: &SetupPanel, area: Rect) {
             ]
         }
         Step::Kind { selected } => {
-            body.push(Line::from(Span::styled("What kind of provider?", bold())));
+            body.push(Line::from(Span::styled("Connect a provider", bold())));
+            body.push(Line::from(Span::styled(
+                "Pick where your models come from. You'll only need an API key next.",
+                dim(),
+            )));
             body.push(Line::default());
-            for (i, (label, blurb)) in KINDS.iter().enumerate() {
-                body.push(choice(i == *selected, (*label).into(), blurb));
+            for (i, p) in PRESETS.iter().enumerate() {
+                body.push(choice(
+                    i == *selected,
+                    format!("{} {}", i + 1, p.label),
+                    p.blurb,
+                ));
             }
-            vec![("Enter", "choose"), ("↑↓", "move"), ("Esc", "back")]
+            vec![("Enter", "choose"), ("1-9", "pick"), ("Esc", "back")]
         }
         Step::Endpoint { form, field: f } => {
             body.push(Line::from(Span::styled("OpenAI-compatible server", bold())));
@@ -288,7 +297,7 @@ pub fn draw_setup(frame: &mut Frame<'_>, panel: &SetupPanel, area: Rect) {
             body.push(field("Name", form.name.clone(), *f == 1, "(from the URL)"));
             body.push(Line::default());
             body.push(Line::from(Span::styled(
-                "For example http://localhost:11434/v1 for Ollama, or https://openrouter.ai/api/v1.",
+                "The address the server's API lives at. It usually ends in /v1.",
                 dim(),
             )));
             vec![("Enter", "next"), ("Tab", "switch field"), ("Esc", "back")]
@@ -299,7 +308,7 @@ pub fn draw_setup(frame: &mut Frame<'_>, panel: &SetupPanel, area: Rect) {
                 vec![]
             } else {
                 vec![
-                    ("Enter", "check key"),
+                    ("Enter", "test connection"),
                     ("Ctrl+E", "use key from environment"),
                     ("Ctrl+U", "clear"),
                     ("Esc", "back"),
@@ -367,25 +376,36 @@ pub fn draw_setup(frame: &mut Frame<'_>, panel: &SetupPanel, area: Rect) {
 }
 
 fn key_step(body: &mut Vec<Line<'static>>, form: &Form, verifying: bool) {
-    let what = match (form.kind, &form.existing) {
+    let what = match (&form.preset, &form.existing) {
         (_, Some(name)) => format!("New API key for {name}"),
-        (ProviderKind::Anthropic, None) => "Paste your Anthropic API key".into(),
-        (ProviderKind::OpenaiCompat, None) => "API key".into(),
+        (Some(p), None) if p.needs_key => format!("Paste your {} API key", p.label),
+        (Some(p), None) if p.local => format!("{} runs here, so there's no key", p.label),
+        _ => "API key".into(),
     };
     body.push(Line::from(Span::styled(what, bold())));
-    match (form.kind, &form.existing) {
-        (ProviderKind::Anthropic, None) => body.push(Line::from(vec![
-            Span::styled("Don't have one? Get a key at ", dim()),
-            Span::styled(ANTHROPIC_KEY_URL, Style::new().fg(Color::Blue)),
-        ])),
-        (ProviderKind::OpenaiCompat, None) => body.push(Line::from(Span::styled(
-            format!(
-                "For {}. Leave it blank if the server doesn't need one.",
-                form.base_url
-            ),
-            dim(),
-        ))),
-        _ => {}
+    if form.existing.is_none() {
+        match form.preset {
+            Some(p) if p.id != "other" => {
+                body.push(Line::from(Span::styled(p.key_hint, dim())));
+                if let Some(url) = p.key_url {
+                    body.push(Line::from(vec![
+                        Span::styled("Get one at ", dim()),
+                        Span::styled(url, Style::new().fg(Color::Blue)),
+                    ]));
+                }
+                body.push(Line::from(Span::styled(
+                    format!("Talks to {}", form.base_url),
+                    dim(),
+                )));
+            }
+            _ => body.push(Line::from(Span::styled(
+                format!(
+                    "For {}. Leave it blank if the server doesn't need one.",
+                    form.base_url
+                ),
+                dim(),
+            ))),
+        }
     }
     body.push(Line::default());
     let masked = SetupPanel::masked(form);

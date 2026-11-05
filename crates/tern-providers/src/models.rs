@@ -35,6 +35,14 @@ pub async fn list_models(cfg: &ProviderConfig, key: Option<&str>) -> Result<List
     let base = cfg
         .effective_base_url()
         .ok_or_else(|| ListError::BadUrl("base_url is required".into()))?;
+    let tidy;
+    let base = match cfg.kind {
+        ProviderKind::OpenaiCompat => {
+            tidy = tern_core::presets::normalize_base_url(base);
+            tidy.as_str()
+        }
+        ProviderKind::Anthropic => base,
+    };
     check_url(base)?;
     let client = tern_core::net::http_client()
         .connect_timeout(Duration::from_secs(5))
@@ -403,7 +411,8 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, ListError::NotFound);
-        assert!(err.key_accepted());
+        // A 404 means the address is wrong; it must not save as "working".
+        assert!(!err.key_accepted());
     }
 
     #[test]

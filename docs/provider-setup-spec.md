@@ -1,6 +1,6 @@
 # Provider, API key and model setup
 
-Status: P0 (engine and API), P1 (TUI, CLI) and P2 (desktop) built. Covers the engine, TUI, desktop app and CLI.
+Status: P0 (engine and API), P1 (TUI, CLI) and P2 (desktop) built; presets (section 12) added after. Covers the engine, TUI, desktop app and CLI.
 
 ## 1. Problem
 
@@ -21,7 +21,7 @@ Nothing checks the key until the first message fails. Models are free text every
 - **No restart**: adding a provider or changing the default takes effect on the next run, daemon included.
 - **Keys stay safe**: they never reach the transcript, input history, logs, URLs or the model.
 
-**Scope**: only the two existing `ProviderKind`s, **Anthropic** and **OpenAI-compatible**. There is no catalog of named providers (OpenRouter, Groq, …): an OpenAI-compatible provider is a name, a base URL and an optional key.
+**Scope**: only the two existing `ProviderKind`s, **Anthropic** and **OpenAI-compatible**. Named presets (OpenRouter, Groq, ...) were added later as prefilled providers (section 12); the saved config is the same.
 
 Out of scope: per-provider presets, detecting local servers, OAuth, per-role models, and storing keys in the OS keychain.
 
@@ -242,3 +242,28 @@ Events: `providers_changed` (any write) and `models_changed` (a fresh list has l
 
 1. **Default-model changes**: should changing the default also move existing sessions that still use the old default? The proposal is no: sessions keep their model, matching today's behaviour.
 2. **Hidden models**: is a fixed filter list (§4.2) acceptable, or should the picker have a "show all" toggle instead of hiding anything?
+
+## 12. Presets, address repair and friendlier errors
+
+Added after P2. Presets are prefilled Anthropic or OpenAI-compatible providers; nothing about config changes.
+
+### 12.1 Presets
+
+`tern_core::presets::PRESETS` (also `GET /v1/providers/presets`): Anthropic, OpenAI, OpenRouter (`https://openrouter.ai/api/v1`), Google Gemini (`https://generativelanguage.googleapis.com/v1beta/openai`), Groq (`https://api.groq.com/openai/v1`), Together AI (`https://api.together.xyz/v1`), Ollama (`http://localhost:11434/v1`, no key), LM Studio (`http://localhost:1234/v1`, no key) and "Other (OpenAI-compatible URL)". Each has a label, a one-line blurb, a default provider name, a key link and hint, `needs_key`, and up to a few `suggested_models` (ids only, no prices; shown only when the model list can't be fetched). `ProviderDraft.preset` fills in kind, name and base URL when left out; `ProviderStatus` and `ProviderModels` carry `preset` and `label` so clients can badge models with "OpenRouter" rather than `openrouter`. Connecting a service twice names the second `name-2`.
+
+### 12.2 Flow
+
+Choose a service, then the key (with where to get it), then **Test connection**, then a model. Only "Other" asks for a URL. "Test connection" is the model-list call (cheap, real); its result is plain words, never raw JSON: bad key, "didn't recognise that address", unreachable (with "Is the server running?" for local servers). A local preset skips the key.
+
+### 12.3 Address repair, and why a 404 is not a success
+
+`GET {base}/models` answering 404 used to count as a working key, which let a wrong address (for example `https://openrouter.ai/v1`) be saved and then 404 every chat call. It is now an error. `normalize_base_url` runs when saving, listing and building a provider: it drops a pasted endpoint path (`/chat/completions`, `/completions`, `/responses`, `/messages`, `/embeddings`, `/models`; the real-world case was OpenRouter's `.../api/v1/responses`), keeping the `/api/v1` that belongs to the base, and for a service in the preset list swaps a bare host or a guessed version path (`/v1`, `/api`, `/api/v1`, `/v1beta`) for the preset's address. Local servers and unknown hosts are left as typed. tern uses the Chat Completions API, not the Responses API, and adds `/chat/completions` itself. When the saving flow or Test connection changes the address it says so (a pasted endpoint gets "That looks like a full endpoint, not the base address; using <fixed url>") and saves the fixed address; `tern doctor` reports the same for an already-saved config and the fixed address is what runs use. OpenRouter requests also send `HTTP-Referer` and `X-Title`.
+
+### 12.4 Model entry and call errors
+
+- Pickers show the provider as a badge on each model. "Enter a model id" accepts an id as is; with one provider configured it needs no prefix (`resolve_model` assumes it, with the not-in-list warning), with several the desktop asks which provider.
+- `friendly_call_error(raw, label)` turns `HTTP 401/402/403/404/429/5xx` and `network error:` into a sentence ("OpenRouter couldn't find that endpoint or model. Check the model name."). The desktop run-failed row shows it with **Fix in Models** (401, 403, 404, network) and **Show details** for the raw text; the TUI says `Run /setup to fix` and keeps the raw text in parentheses; `tern run` does the same and points at `tern setup`.
+
+### 12.5 Surfaces
+
+Desktop: preset cards in the Models dialog and first-run, Test connection, badges, "Enter a model id", Fix in Models. TUI `/setup`: the same list (keys 1-9), key hint and link, suggestions in the model step. CLI: `tern providers add openrouter|openai|gemini|groq|together|ollama|lmstudio|anthropic|openai-compat`.

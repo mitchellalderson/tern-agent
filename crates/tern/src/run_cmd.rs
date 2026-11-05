@@ -76,9 +76,17 @@ fn drive(rt: &Runtime, run_id: &str, resume: bool, banner: &str) -> anyhow::Resu
             Ok(ExitCode::from(130))
         }
         RunStatus::Failed | RunStatus::Running => {
+            let raw = outcome.error.as_deref().unwrap_or("unknown error");
+            let model = rt
+                .store
+                .run(&outcome.run_id)
+                .ok()
+                .flatten()
+                .and_then(|r| r.model)
+                .unwrap_or_default();
+            let text = crate::providers::explain_failure(&rt.live(), &model, raw);
             eprintln!(
-                "run failed: {}\ncontinue with `tern resume {}`",
-                outcome.error.as_deref().unwrap_or("unknown error"),
+                "run failed: {text}\ncontinue with `tern resume {}` (or fix the provider with `tern setup`)",
                 outcome.run_id
             );
             Ok(ExitCode::FAILURE)

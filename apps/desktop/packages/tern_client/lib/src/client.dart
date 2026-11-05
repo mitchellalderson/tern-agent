@@ -145,6 +145,12 @@ class TernClient {
       ProviderStatus.fromJson(p as Json),
   ];
 
+  /// The friendly presets ("Connect a provider"), in display order.
+  Future<List<ProviderPreset>> providerPresets() async => [
+    for (final p in await _json('GET', '/v1/providers/presets') as List)
+      ProviderPreset.fromJson(p as Json),
+  ];
+
   /// Model lists, from the daemon's cache unless `refresh`.
   Future<List<ProviderModels>> models({
     String? provider,

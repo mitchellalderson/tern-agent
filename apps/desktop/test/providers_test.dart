@@ -34,6 +34,124 @@ const _models = [
   ),
 ];
 
+/// What the daemon's `/v1/providers/presets` sends (a trimmed copy).
+const testPresets = [
+  ProviderPreset(
+    id: 'anthropic',
+    label: 'Anthropic',
+    blurb: 'Claude models',
+    kind: ProviderKind.anthropic,
+    name: 'anthropic',
+    keyUrl: 'https://console.anthropic.com/settings/keys',
+    keyHint: 'Create a key in the Anthropic Console, then paste it here.',
+    needsKey: true,
+    local: false,
+    suggestedModels: ['claude-sonnet-4-5'],
+  ),
+  ProviderPreset(
+    id: 'openai',
+    label: 'OpenAI',
+    blurb: 'GPT models',
+    kind: ProviderKind.openaiCompat,
+    baseUrl: 'https://api.openai.com/v1',
+    name: 'openai',
+    keyUrl: 'https://platform.openai.com/api-keys',
+    keyHint: 'Create a secret key on the OpenAI platform, then paste it here.',
+    needsKey: true,
+    local: false,
+    suggestedModels: ['gpt-4o'],
+  ),
+  ProviderPreset(
+    id: 'openrouter',
+    label: 'OpenRouter',
+    blurb: 'One key for hundreds of models',
+    kind: ProviderKind.openaiCompat,
+    baseUrl: 'https://openrouter.ai/api/v1',
+    name: 'openrouter',
+    keyUrl: 'https://openrouter.ai/keys',
+    keyHint: 'Create a key on openrouter.ai/keys, then paste it here.',
+    needsKey: true,
+    local: false,
+    suggestedModels: ['anthropic/claude-sonnet-4.5', 'openai/gpt-4o-mini'],
+  ),
+  ProviderPreset(
+    id: 'gemini',
+    label: 'Google Gemini',
+    blurb: "Gemini models, through Google's OpenAI-compatible endpoint",
+    kind: ProviderKind.openaiCompat,
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    name: 'gemini',
+    keyUrl: 'https://aistudio.google.com/apikey',
+    keyHint: 'Create a key in Google AI Studio, then paste it here.',
+    needsKey: true,
+    local: false,
+    suggestedModels: ['gemini-2.5-flash'],
+  ),
+  ProviderPreset(
+    id: 'groq',
+    label: 'Groq',
+    blurb: 'Fast open models',
+    kind: ProviderKind.openaiCompat,
+    baseUrl: 'https://api.groq.com/openai/v1',
+    name: 'groq',
+    keyUrl: 'https://console.groq.com/keys',
+    keyHint: 'Create an API key in the Groq console, then paste it here.',
+    needsKey: true,
+    local: false,
+    suggestedModels: ['llama-3.3-70b-versatile'],
+  ),
+  ProviderPreset(
+    id: 'together',
+    label: 'Together AI',
+    blurb: 'Open models, hosted',
+    kind: ProviderKind.openaiCompat,
+    baseUrl: 'https://api.together.xyz/v1',
+    name: 'together',
+    keyUrl: 'https://api.together.ai/settings/api-keys',
+    keyHint: 'Create an API key in your Together settings, then paste it here.',
+    needsKey: true,
+    local: false,
+    suggestedModels: [],
+  ),
+  ProviderPreset(
+    id: 'ollama',
+    label: 'Ollama (on this computer)',
+    blurb: 'Local models; no key needed',
+    kind: ProviderKind.openaiCompat,
+    baseUrl: 'http://localhost:11434/v1',
+    name: 'ollama',
+    keyUrl: 'https://ollama.com/download',
+    keyHint: 'Start Ollama and pull a model first. No key needed.',
+    needsKey: false,
+    local: true,
+    suggestedModels: ['llama3.2'],
+  ),
+  ProviderPreset(
+    id: 'lmstudio',
+    label: 'LM Studio (on this computer)',
+    blurb: 'Local models; no key needed',
+    kind: ProviderKind.openaiCompat,
+    baseUrl: 'http://localhost:1234/v1',
+    name: 'lmstudio',
+    keyUrl: 'https://lmstudio.ai',
+    keyHint: 'Open LM Studio, load a model and start its local server.',
+    needsKey: false,
+    local: true,
+    suggestedModels: [],
+  ),
+  ProviderPreset(
+    id: 'other',
+    label: 'Other (OpenAI-compatible URL)',
+    blurb: 'Any server that speaks the OpenAI API',
+    kind: ProviderKind.openaiCompat,
+    name: 'custom',
+    keyHint: "Enter the server's base URL.",
+    needsKey: false,
+    local: false,
+    suggestedModels: [],
+  ),
+];
+
 class _FakeClient extends TernClient {
   _FakeClient() : super(const Endpoint.unix('/nonexistent'));
 
@@ -53,6 +171,9 @@ class _FakeClient extends TernClient {
 
   @override
   Future<List<ProviderStatus>> providers() async => providerList;
+
+  @override
+  Future<List<ProviderPreset>> providerPresets() async => testPresets;
 
   @override
   Future<List<ProviderModels>> models({
@@ -236,12 +357,12 @@ void main() {
     final field = find.byKey(const ValueKey('api-key'));
     expect(tester.widget<TextField>(field).obscureText, isTrue);
 
-    await tester.tap(find.text('Check key'));
+    await tester.tap(find.text('Test connection'));
     await tester.pump();
     expect(find.text('Paste your API key first.'), findsOneWidget);
 
     await tester.enterText(field, 'sk-bad');
-    await tester.tap(find.text('Check key'));
+    await tester.tap(find.text('Test connection'));
     await tester.pumpAndSettle();
     expect(find.textContaining('rejected that key'), findsOneWidget);
 
@@ -251,7 +372,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
     await tester.pumpAndSettle();
     expect(client.verified.last.key, 'sk-ant-api03-good');
-    expect(find.textContaining('Key sk-ant…good works'), findsOneWidget);
+    expect(find.textContaining('Connected to Anthropic'), findsOneWidget);
     final sonnet = find.textContaining('claude-sonnet-5-5', findRichText: true);
     expect(sonnet, findsOneWidget);
 
@@ -280,7 +401,8 @@ void main() {
         ),
       ),
     );
-    await tester.tap(find.text('OpenAI-compatible'));
+    await tester.pump();
+    await tester.tap(find.text('Other (OpenAI-compatible URL)'));
     await tester.pumpAndSettle();
     await tester.enterText(
       find.byKey(const ValueKey('base-url')),
@@ -294,7 +416,7 @@ void main() {
     await tester.tap(find.text('Next'));
     await tester.pumpAndSettle();
     expect(find.textContaining("Leave it blank"), findsOneWidget);
-    await tester.tap(find.text('Check key'));
+    await tester.tap(find.text('Test connection'));
     await tester.pumpAndSettle();
     final draft = client.verified.single;
     expect(draft.key, isNull);

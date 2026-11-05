@@ -342,19 +342,20 @@ Credentials are never read into tern. A skill holding a value from `openclaw.jso
 
 ### `tern setup`
 
-Opens the chat TUI on the `/setup` panel (see [`tern`](#tern)): choose a provider, paste its API key, pick a model. Uses the running daemon when there is one, so it picks up the change at once.
+Opens the chat TUI on the `/setup` panel (see [`tern`](#tern)): choose a service (Anthropic, OpenAI, OpenRouter, Google Gemini, Groq, Together AI, Ollama, LM Studio, or any OpenAI-compatible URL), paste its API key, pick a model. No `provider:model` typing needed. Uses the running daemon when there is one, so it picks up the change at once.
 
 ### `tern providers`
 
 ```sh
 tern providers [list]                                  # providers, key source (masked), default
 tern providers add anthropic [--default-model M]       # key from stdin, or asked for hidden
+tern providers add openrouter|openai|gemini|groq|together|ollama|lmstudio [--url URL] [--name N]
 tern providers add openai-compat --url URL [--name N] [--default-model M] [--no-key | --env-key]
 tern providers rm NAME [--keep-key]
 tern models [PROVIDER] [--refresh] [--json]
 ```
 
-`add` checks the key with the provider before saving anything and exits non-zero if it's rejected. The key goes to `secrets.toml` as `<NAME>_API_KEY`; `--env-key` uses one already set in the environment instead. Without `--default-model`, the first listed model becomes the default when there's no usable default yet. `rm` also deletes the provider's key unless `--keep-key` or something else uses it. Like `tern setup`, these go through the running daemon when there is one.
+A service name (`openrouter`, ...) fills in the address; `--url` overrides it. Addresses are tidied (a pasted `/chat/completions` is dropped, `openrouter.ai/v1` becomes `openrouter.ai/api/v1`). `add` checks the key with the provider before saving anything, and refuses an address the server doesn't recognise (HTTP 404) and exits non-zero if it's rejected. The key goes to `secrets.toml` as `<NAME>_API_KEY`; `--env-key` uses one already set in the environment instead. Without `--default-model`, the first listed model becomes the default when there's no usable default yet. `rm` also deletes the provider's key unless `--keep-key` or something else uses it. Like `tern setup`, these go through the running daemon when there is one.
 
 ### `tern mcp`
 

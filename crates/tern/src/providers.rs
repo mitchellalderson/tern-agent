@@ -307,6 +307,17 @@ impl Runtime {
                 model: format!("{one}:{text}"),
                 warning: None,
             }),
+            // One provider and an id it doesn't list (typed under "Enter a
+            // model id"): it can only mean that provider.
+            [] if config.providers.len() == 1 && !text.is_empty() => {
+                let only = config.providers.keys().next().map_or("", String::as_str);
+                Ok(Resolved {
+                    model: format!("{only}:{text}"),
+                    warning: Some(format!(
+                        "{text} is not in {only}'s model list; using it anyway"
+                    )),
+                })
+            }
             [] => match text.split_once(':') {
                 Some((p, m)) if !p.is_empty() && !m.is_empty() => {
                     bail!("provider {p:?} is not configured; run /setup to add it")
@@ -375,6 +386,8 @@ impl Runtime {
                     secret: p.api_key_secret.clone(),
                     key_source: key_source.into(),
                     key_hint: key.as_deref().map(mask_key),
+                    preset: preset_of(p).map(|x| x.id.to_owned()),
+                    label: label_of(name, p),
                     message: error
                         .as_ref()
                         .map(|e| describe(e, name, p.effective_base_url())),
@@ -436,6 +449,10 @@ impl Runtime {
                 error: entry.error,
                 fetched_at: Some(entry.fetched_at),
                 models: entry.models,
+                label: label_of(name, cfg),
+                suggested: preset_of(cfg)
+                    .map(|p| p.suggested_models.iter().map(|m| (*m).to_owned()).collect())
+                    .unwrap_or_default(),
             });
         }
         Ok(out)
@@ -446,6 +463,31 @@ impl Runtime {
     fn plan(&self, draft: &ProviderDraft, existing: Option<&str>) -> anyhow::Result<Plan> {
         let config = self.live();
         let mut warnings = Vec::new();
+        // A preset fills in what the draft leaves out.
+        let preset = match draft.preset.as_deref() {
+            Some(id) => Some(
+                tern_core::presets::find(id)
+                    .with_context(|| format!("unknown provider preset {id:?}"))?,
+            ),
+            None => None,
+        };
+        let mut draft = draft.clone();
+        if let Some(p) = preset
+            && existing.is_none()
+        {
+            draft.kind.get_or_insert(p.kind);
+            if draft.name.as_deref().is_none_or(|n| n.trim().is_empty()) {
+                draft.name = Some(unused_name(&config, p.name));
+            }
+            if draft
+                .base_url
+                .as_deref()
+                .is_none_or(|u| u.trim().is_empty())
+            {
+                draft.base_url = p.base_url.map(str::to_owned);
+            }
+        }
+        let draft = &draft;
         let (name, mut cfg) = match existing {
             Some(name) => {
                 let cfg = config
@@ -486,6 +528,16 @@ impl Runtime {
             .filter(|u| !u.is_empty())
         {
             let url = url.trim_end_matches('/');
+            let tidy;
+            let url = if cfg.kind == ProviderKind::OpenaiCompat {
+                tidy = tern_core::presets::normalize_base_url(url);
+                if tidy != url {
+                    warnings.push(tern_core::presets::repair_note(url, &tidy));
+                }
+                tidy.as_str()
+            } else {
+                url
+            };
             let default =
                 cfg.kind == ProviderKind::Anthropic && url == ProviderConfig::ANTHROPIC_BASE_URL;
             cfg.base_url = (!default).then(|| url.to_owned());
@@ -672,6 +724,35 @@ impl Runtime {
     }
 }
 
+/// The friendly preset a configured provider matches, by URL.
+pub fn preset_of(cfg: &ProviderConfig) -> Option<&'static tern_core::presets::Preset> {
+    tern_core::presets::for_url(cfg.kind, cfg.base_url.as_deref())
+}
+
+/// A provider's display name: its preset's label, else its config name.
+pub fn label_of(name: &str, cfg: &ProviderConfig) -> String {
+    match preset_of(cfg) {
+        Some(p) if p.id != "other" => p.label.to_owned(),
+        _ => name.to_owned(),
+    }
+}
+
+/// A failed model call for `model` (`provider:id`) in plain words, with the
+/// raw error kept after it: `OpenRouter couldn't find that endpoint or
+/// model. Check the model name. (details: HTTP 404: ...)`. The raw text
+/// alone when it is not an error we know how to explain.
+pub fn explain_failure(config: &Config, model: &str, raw: &str) -> String {
+    let provider = model.split_once(':').map_or(model, |(p, _)| p);
+    let label = config
+        .providers
+        .get(provider)
+        .map_or_else(|| provider.to_owned(), |p| label_of(provider, p));
+    match tern_core::models::friendly_call_error(raw, &label) {
+        Some(f) => format!("{} (details: {raw})", f.message),
+        None => raw.to_owned(),
+    }
+}
+
 /// `model` as `provider:model`, unless it already names `provider`.
 fn full_model(provider: &str, model: &str) -> String {
     match model.split_once(':') {
@@ -756,6 +837,25 @@ mod tests {
             describe(&ListError::Unauthorized, "anthropic", None),
             "anthropic rejected that key. Check you copied all of it."
         );
+    }
+
+    #[test]
+    fn explains_a_failed_call_with_the_raw_text_kept() {
+        let config = Config::parse(
+            "[providers.openrouter]\nkind = \"openai_compat\"\nbase_url = \"https://openrouter.ai/api/v1\"\n",
+            std::path::Path::new("config.toml"),
+        )
+        .unwrap();
+        let raw = r#"HTTP 404: {"error":{"message":"Not Found","code":404}}"#;
+        let text = explain_failure(&config, "openrouter:minimax/m", raw);
+        assert!(text.starts_with("OpenRouter couldn't find that endpoint or model."));
+        assert!(text.ends_with(&format!("(details: {raw})")));
+        // Unknown text and unknown providers fall back sensibly.
+        assert_eq!(
+            explain_failure(&config, "x:y", "tool failed"),
+            "tool failed"
+        );
+        assert!(explain_failure(&config, "mine:y", "HTTP 401: no").starts_with("mine rejected"));
     }
 
     #[test]

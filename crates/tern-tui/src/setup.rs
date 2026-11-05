@@ -8,12 +8,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tern_core::config::{McpServerConfig, ProviderKind};
 use tern_core::mcp::{McpStatus, McpVerified, McpVerifyError};
 use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
+use tern_core::presets::{PRESETS, Preset};
 use tern_core::secrets::keys::mask_key;
 
 use crate::models::{ListKey, ModelList};
 use crate::{Backend, BackendResult};
-
-pub const ANTHROPIC_KEY_URL: &str = "https://console.anthropic.com/settings/keys";
 
 /// Backend work the event loop runs in the background.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +96,8 @@ pub struct Form {
     pub base_url: String,
     pub key: String,
     pub use_env_key: bool,
+    /// The friendly choice this provider started from, if any.
+    pub preset: Option<&'static Preset>,
 }
 
 impl Form {
@@ -108,7 +109,26 @@ impl Form {
             base_url: String::new(),
             key: String::new(),
             use_env_key: false,
+            preset: None,
         }
+    }
+
+    /// A form with the preset's kind, name and base URL filled in.
+    pub fn for_preset(p: &'static Preset) -> Self {
+        let mut form = Self::new(p.kind);
+        form.preset = Some(p);
+        if p.id != "other" {
+            form.name = p.name.to_owned();
+            form.base_url = p.base_url.unwrap_or_default().to_owned();
+        }
+        form
+    }
+
+    /// Whether the key step may be left blank.
+    pub fn key_optional(&self) -> bool {
+        self.existing.is_none()
+            && self.preset.is_none_or(|p| !p.needs_key)
+            && self.kind == ProviderKind::OpenaiCompat
     }
 
     /// The Endpoint step's fields: 0 = base URL, 1 = name.
@@ -132,6 +152,7 @@ impl Form {
                 opt(&self.key)
             },
             use_env_key: self.use_env_key,
+            preset: self.preset.map(|p| p.id.to_owned()),
         }
     }
 
@@ -139,6 +160,9 @@ impl Form {
     pub fn label(&self) -> String {
         match (&self.existing, self.name.trim(), self.kind) {
             (Some(n), _, _) => n.clone(),
+            (None, _, _) if self.preset.is_some_and(|p| p.id != "other") => {
+                self.preset.map_or_else(String::new, |p| p.label.to_owned())
+            }
             (None, n, _) if !n.is_empty() => n.to_owned(),
             (None, _, ProviderKind::Anthropic) => "Anthropic".into(),
             (None, _, ProviderKind::OpenaiCompat) => "the server".into(),
@@ -181,13 +205,6 @@ pub enum Step {
 }
 
 pub const MANAGE: &[&str] = &["Change API key", "Choose default model", "Remove"];
-pub const KINDS: &[(&str, &str)] = &[
-    ("Anthropic", "Claude models"),
-    (
-        "OpenAI-compatible",
-        "OpenAI, OpenRouter, Ollama, or any server with the OpenAI API",
-    ),
-];
 
 pub struct SetupPanel {
     pub providers: Vec<ProviderStatus>,
@@ -352,19 +369,14 @@ impl SetupPanel {
                     (Step::Kind { selected }, SetupAction::None)
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    selected = (selected + 1).min(KINDS.len() - 1);
+                    selected = (selected + 1).min(PRESETS.len() - 1);
                     (Step::Kind { selected }, SetupAction::None)
                 }
-                KeyCode::Char('1') => (
-                    Step::Key(Form::new(ProviderKind::Anthropic)),
+                KeyCode::Char(c @ '1'..='9') if (c as usize - '1' as usize) < PRESETS.len() => (
+                    preset_step(c as usize - '1' as usize, &self.providers),
                     SetupAction::None,
                 ),
-                KeyCode::Char('2') => (self.endpoint(), SetupAction::None),
-                KeyCode::Enter if selected == 0 => (
-                    Step::Key(Form::new(ProviderKind::Anthropic)),
-                    SetupAction::None,
-                ),
-                KeyCode::Enter => (self.endpoint(), SetupAction::None),
+                KeyCode::Enter => (preset_step(selected, &self.providers), SetupAction::None),
                 _ => (Step::Kind { selected }, SetupAction::None),
             },
             Step::Endpoint {
@@ -373,7 +385,12 @@ impl SetupPanel {
             } => {
                 let url_empty = form.base_url.trim().is_empty();
                 match key.code {
-                    KeyCode::Esc => (Step::Kind { selected: 1 }, SetupAction::None),
+                    KeyCode::Esc => (
+                        Step::Kind {
+                            selected: PRESETS.len() - 1,
+                        },
+                        SetupAction::None,
+                    ),
                     KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => {
                         field = 1 - field;
                         (Step::Endpoint { form, field }, SetupAction::None)
@@ -412,14 +429,19 @@ impl SetupPanel {
             }
             Step::Key(mut form) => match key.code {
                 KeyCode::Esc if form.existing.is_some() => (Step::List, SetupAction::None),
-                KeyCode::Esc if form.kind == ProviderKind::OpenaiCompat => {
+                KeyCode::Esc if form.preset.is_some_and(|p| p.id == "other") => {
                     (Step::Endpoint { form, field: 0 }, SetupAction::None)
                 }
-                KeyCode::Esc => (Step::Kind { selected: 0 }, SetupAction::None),
+                KeyCode::Esc => {
+                    let selected = form
+                        .preset
+                        .and_then(|p| PRESETS.iter().position(|q| q.id == p.id))
+                        .unwrap_or(0);
+                    (Step::Kind { selected }, SetupAction::None)
+                }
                 KeyCode::Enter | KeyCode::Char('e') if key.code == KeyCode::Enter || ctrl => {
                     form.use_env_key = key.code != KeyCode::Enter;
-                    let needs_key = form.kind == ProviderKind::Anthropic || form.existing.is_some();
-                    if !form.use_env_key && needs_key && form.key.trim().is_empty() {
+                    if !form.use_env_key && !form.key_optional() && form.key.trim().is_empty() {
                         self.message = Some((true, "Paste your API key first.".into()));
                         (Step::Key(form), SetupAction::None)
                     } else {
@@ -549,13 +571,6 @@ impl SetupPanel {
         SetupAction::None
     }
 
-    fn endpoint(&self) -> Step {
-        Step::Endpoint {
-            form: Form::new(ProviderKind::OpenaiCompat),
-            field: 0,
-        }
-    }
-
     /// Pasted text goes into the field being edited.
     pub fn on_paste(&mut self, text: &str) {
         let text = text.trim();
@@ -605,6 +620,11 @@ impl SetupPanel {
                     message: v.message.clone(),
                     fetched_at: None,
                     models: v.models,
+                    label: form.label(),
+                    suggested: form
+                        .preset
+                        .map(|p| p.suggested_models.iter().map(|m| (*m).to_owned()).collect())
+                        .unwrap_or_default(),
                 }]);
                 Step::Model {
                     form,
@@ -624,7 +644,7 @@ impl SetupPanel {
             }
             (Step::Verifying(form), TaskDone::Verified(Err(e))) => {
                 self.message = Some((true, e));
-                if form.kind == ProviderKind::OpenaiCompat && form.existing.is_none() {
+                if form.preset.is_some_and(|p| p.id == "other") && form.existing.is_none() {
                     Step::Endpoint { form, field: 0 }
                 } else {
                     Step::Key(form)
@@ -703,6 +723,25 @@ impl SetupPanel {
         } else {
             mask_key(form.key.trim())
         }
+    }
+}
+
+/// The step after choosing entry `i` of the preset list: "Other" asks for a
+/// URL first, every other choice goes straight to the key.
+fn preset_step(i: usize, taken: &[ProviderStatus]) -> Step {
+    let preset = &PRESETS[i];
+    let mut form = Form::for_preset(preset);
+    // Connecting the same service twice: `openrouter-2`.
+    if taken.iter().any(|p| p.name == form.name) {
+        form.name = (2..)
+            .map(|n| format!("{}-{n}", preset.name))
+            .find(|n| taken.iter().all(|p| &p.name != n))
+            .unwrap_or_default();
+    }
+    if preset.id == "other" {
+        Step::Endpoint { form, field: 0 }
+    } else {
+        Step::Key(form)
     }
 }
 

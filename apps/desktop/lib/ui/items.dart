@@ -14,6 +14,7 @@ import 'channel_items.dart';
 import 'channel_view.dart';
 import 'inspector.dart';
 import 'move_dialog.dart';
+import 'providers.dart';
 import 'routines.dart';
 
 /// One transcript item.
@@ -922,41 +923,91 @@ class _SecretRequestCardState extends State<SecretRequestCard> {
   }
 }
 
-class _RunEnd extends StatelessWidget {
+class _RunEnd extends StatefulWidget {
   const _RunEnd(this.end, {required this.store});
 
   final RunEndItem end;
   final TernStore store;
 
   @override
+  State<_RunEnd> createState() => _RunEndState();
+}
+
+class _RunEndState extends State<_RunEnd> {
+  var _details = false;
+
+  @override
   Widget build(BuildContext context) {
     final c = context.colors;
+    final end = widget.end;
+    final store = widget.store;
     final failed = end.status == 'failed';
-    return Row(
+    final raw = end.error ?? 'unknown error';
+    // A 404/401/429 from the provider, in plain words; the raw text stays
+    // under "Show details".
+    final friendly = failed
+        ? store.explainFailure(store.modelFor(store.selected), raw)
+        : null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(
-          failed ? Icons.error_outline : Icons.pause_circle_outline,
-          size: 15,
-          color: failed ? c.error : c.muted,
+        Row(
+          children: [
+            Icon(
+              failed ? Icons.error_outline : Icons.pause_circle_outline,
+              size: 15,
+              color: failed ? c.error : c.muted,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                failed ? friendly?.message ?? 'Run failed: $raw' : 'Stopped',
+                key: const ValueKey('run-end-message'),
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: failed ? c.error : c.muted,
+                ),
+              ),
+            ),
+            if (friendly != null && friendly.fixInModels)
+              TextButton(
+                key: const ValueKey('fix-in-models'),
+                onPressed: () => showProvidersDialog(context, store),
+                child: const Text('Fix in Models'),
+              ),
+            if (friendly != null)
+              TextButton(
+                key: const ValueKey('show-error-details'),
+                onPressed: () => setState(() => _details = !_details),
+                style: TextButton.styleFrom(foregroundColor: c.muted),
+                child: Text(_details ? 'Hide details' : 'Show details'),
+              ),
+            if (store.selected case final session?)
+              TextButton(
+                onPressed: () => showInspector(
+                  context,
+                  store,
+                  session: session,
+                  run: end.runId,
+                ),
+                style: TextButton.styleFrom(foregroundColor: c.muted),
+                child: Text(friendly == null ? 'Details' : 'Run log'),
+              ),
+            TextButton(
+              onPressed: store.running ? null : () => store.resume(end.runId),
+              child: const Text('Resume'),
+            ),
+          ],
         ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            failed ? 'Run failed: ${end.error ?? 'unknown error'}' : 'Stopped',
-            style: TextStyle(fontSize: 12.5, color: failed ? c.error : c.muted),
+        if (_details)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(23, 2, 0, 4),
+            child: SelectableText(
+              raw,
+              key: const ValueKey('raw-error'),
+              style: mono.copyWith(fontSize: 11.5, color: c.muted),
+            ),
           ),
-        ),
-        if (store.selected case final session?)
-          TextButton(
-            onPressed: () =>
-                showInspector(context, store, session: session, run: end.runId),
-            style: TextButton.styleFrom(foregroundColor: c.muted),
-            child: const Text('Details'),
-          ),
-        TextButton(
-          onPressed: store.running ? null : () => store.resume(end.runId),
-          child: const Text('Resume'),
-        ),
       ],
     );
   }

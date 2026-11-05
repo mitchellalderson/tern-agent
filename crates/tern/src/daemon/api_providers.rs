@@ -4,6 +4,7 @@
 //! | Method | Path | |
 //! |---|---|---|
 //! | GET | `/v1/providers` | configured providers with key source and last list status |
+//! | GET | `/v1/providers/presets` | the friendly presets (`[{id, label, blurb, kind, base_url, name, key_url, key_hint, needs_key, local, suggested_models}]`) |
 //! | POST | `/v1/providers/verify` | check a draft `{kind, name?, base_url?, key?, use_env_key?}`; saves nothing |
 //! | POST | `/v1/providers` | verify, store the key, write config, reload; `default_model?` |
 //! | PATCH | `/v1/providers/{name}` | change key or base URL (verifies first) |
@@ -38,6 +39,7 @@ const VERIFY_PER_MINUTE: usize = 10;
 pub fn routes() -> Router<Shared> {
     Router::new()
         .route("/v1/providers", get(list).post(add))
+        .route("/v1/providers/presets", get(presets))
         .route("/v1/providers/verify", post(verify_new))
         .route(
             "/v1/providers/{name}",
@@ -79,6 +81,10 @@ pub(super) fn limited(auth: Option<&Extension<Auth>>) -> Result<(), ApiError> {
 
 async fn list(State(m): State<Shared>) -> ApiResult<Vec<ProviderStatus>> {
     Ok(Json(m.rt.provider_statuses()))
+}
+
+async fn presets() -> Json<Value> {
+    Json(json!(tern_core::presets::PRESETS))
 }
 
 async fn verify_new(
