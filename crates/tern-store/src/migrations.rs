@@ -32,7 +32,11 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0022_agent_autonomy.sql"),
     include_str!("../migrations/0023_let_agents_decide.sql"),
     include_str!("../migrations/0024_agent_tombstones.sql"),
+    include_str!("../migrations/0025_starter_seed.sql"),
 ];
+
+/// The migration that introduced first-run seeding.
+const SEED_VERSION: usize = 25;
 
 pub const LATEST_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -51,6 +55,14 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<()> {
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
+        // An install that predates first-run seeding never gets seeded.
+        if i + 1 == SEED_VERSION && current > 0 {
+            tx.execute(
+                "INSERT OR IGNORE INTO kv (namespace, key, value, updated_at)
+                 VALUES ('tern', 'starters_seeded', 'existing install', 0)",
+                [],
+            )?;
+        }
         tx.pragma_update(None, "user_version", i as u32 + 1)?;
         tx.commit()?;
     }

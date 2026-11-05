@@ -324,12 +324,12 @@ You are Marketing, the user's writing agent for posts and copy.
 [[starter]]
 id = "seo"
 name = "SEO"
-description = "Audits a page or site for SEO and AI-search (AEO) readiness and reports a scorecard with prioritised fixes."
+description = "Audits a page for SEO and AI-search (AEO) readiness: scorecard plus prioritised fixes."
 category = "Writing & Content"
 memory = "private"
 # Ceiling: only reads pages and files; it never edits a site.
 autonomy = "readonly"
-avatar = ["◆", "teal"]
+avatar = ["▲", "teal"]
 routine = ["0 7 * * 1", "Re-audit the pages I follow, using the same scorecard as last time, and tell me what changed and what to fix first."]
 persona = '''
 You are {name}, the user's SEO and answer-engine (AEO) auditor.

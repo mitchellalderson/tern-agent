@@ -320,8 +320,57 @@ impl Runtime {
             auth_targets: targets,
             mock,
         };
+        rt.seed_starter_agents();
         rt.refresh_agent_chains();
         Ok(rt)
+    }
+
+    /// On a brand-new home, create the default set of agents from starters
+    /// so the Agents list isn't empty. Runs once ever: the claim is a
+    /// persisted flag (set before creating, and for installs that predate
+    /// this by the migration), so deleting the agents never brings them
+    /// back. Seeded agents are ordinary agents. `TERN_SEED_AGENTS=0` skips
+    /// it (the test harnesses use this).
+    fn seed_starter_agents(&self) {
+        if std::env::var("TERN_SEED_AGENTS").is_ok_and(|v| v == "0") {
+            return;
+        }
+        match self.store.kv_claim("tern", "starters_seeded", "1") {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, "checking the starter-agent flag failed");
+                return;
+            }
+        }
+        // Belt and braces: a home that already has agents (even archived
+        // or deleted ones) is not new.
+        let has_others = self
+            .store
+            .agents(true)
+            .map(|a| a.iter().any(|a| a.id != "tern"))
+            .unwrap_or(true);
+        let had_deleted = self
+            .store
+            .deleted_agents()
+            .map(|d| !d.is_empty())
+            .unwrap_or(true);
+        if has_others || had_deleted {
+            return;
+        }
+        for id in tern_core::agents::SEEDED_STARTERS {
+            let Some(t) = tern_core::agents::template(id) else {
+                continue;
+            };
+            let made = self.create_agent(NewAgent {
+                name: t.name.clone(),
+                template: Some((*id).to_owned()),
+                ..NewAgent::default()
+            });
+            if let Err(e) = made {
+                tracing::warn!(starter = id, error = %e, "seeding a starter agent failed");
+            }
+        }
     }
 
     /// Create an agent profile with its persona file and DM. Fields left

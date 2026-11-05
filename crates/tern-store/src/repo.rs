@@ -738,6 +738,16 @@ impl Store {
         Ok(())
     }
 
+    /// Claim a one-time marker: true for the one caller that sets it, false
+    /// if it was already set (atomic, so two processes cannot both win).
+    pub fn kv_claim(&self, namespace: &str, key: &str, value: &str) -> Result<bool> {
+        let n = self.conn()?.execute(
+            "INSERT OR IGNORE INTO kv (namespace, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)",
+            params![namespace, key, value, now_ms()],
+        )?;
+        Ok(n == 1)
+    }
+
     pub fn kv_delete(&self, namespace: &str, key: &str) -> Result<()> {
         self.conn()?.execute(
             "DELETE FROM kv WHERE namespace = ?1 AND key = ?2",

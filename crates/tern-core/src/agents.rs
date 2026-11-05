@@ -340,6 +340,17 @@ pub const STARTER_TOOLS: &[&str] = &[
     "skill_read",
 ];
 
+/// The starters a brand-new home gets as real agents (once; see
+/// `Runtime::seed_starter_agents`).
+pub const SEEDED_STARTERS: &[&str] = &[
+    "assistant",
+    "research",
+    "code-reviewer",
+    "seo",
+    "writer-editor",
+    "bug-fixer",
+];
+
 /// Built-in tools only coding starters may have: they run commands.
 /// (File edits are allowed to any starter whose job is making files, such as
 /// a writer's drafts; none of them gets `shell`.)

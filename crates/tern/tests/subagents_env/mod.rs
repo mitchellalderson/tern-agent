@@ -58,6 +58,7 @@ impl Env {
             .env("HOME", &self.home)
             .env("TERN_HOME", &self.tern_home)
             .env("TERN_PROVIDER", format!("mock:{}", self.script.display()))
+            .env("TERN_SEED_AGENTS", "0")
             .stdin(Stdio::null());
         c
     }
