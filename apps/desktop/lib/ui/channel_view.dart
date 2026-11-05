@@ -4,6 +4,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../state/transcript.dart';
+import '../state/workspaces.dart';
 import '../theme.dart';
 import 'agent_face.dart';
 import 'channel_items.dart' show SuggestionActions;
@@ -14,6 +15,7 @@ import 'routines.dart';
 import 'items.dart';
 import 'manage.dart';
 import 'widgets.dart';
+import 'workspace_ui.dart';
 
 /// A topic channel's timeline (docs/channels-design.md §5.2): its posts,
 /// who is working, and a composer that posts to the channel.
@@ -124,6 +126,8 @@ class _ChannelViewState extends State<ChannelView> {
           onTogglePanel: onTogglePanel,
         ),
         const Hairline(),
+        if (store.workspaces case final api?)
+          WorkspaceBanner(api: api, target: WorkspaceTarget.channel(ch.id)),
         if (store.homeOpen && store.hasAgents)
           FleetStrip(
             store: store,
@@ -384,6 +388,11 @@ class _ChannelHeader extends StatelessWidget {
                   window: contextWindow,
                   compactAt: compactAt,
                 ),
+            if (store.workspaces case final api?)
+              WorkspaceChip(
+                api: api,
+                target: WorkspaceTarget.channel(channel.id),
+              ),
             _RoutinesButton(store: store, channel: channel),
             QuietIconButton(
               icon: Icons.tune,
@@ -899,6 +908,9 @@ class _ChannelDialogState extends State<ChannelDialog> {
   String? _error;
   var _busy = false;
 
+  /// The folder chosen for a new channel; null = the default.
+  String? _folder;
+
   @override
   void initState() {
     super.initState();
@@ -950,7 +962,20 @@ class _ChannelDialogState extends State<ChannelDialog> {
           );
     if (!mounted) return;
     if (err == null) {
-      Navigator.of(context).pop();
+      if (editing == null && _folder != null) {
+        final id = widget.store.openChannel?.id;
+        try {
+          if (id != null) {
+            await widget.store.workspaces?.set(
+              WorkspaceTarget.channel(id),
+              _folder!,
+            );
+          }
+        } on WorkspaceRefused {
+          // The channel is made; the chip shows the folder it really uses.
+        }
+      }
+      if (mounted) Navigator.of(context).pop();
     } else {
       setState(() {
         _busy = false;
@@ -963,6 +988,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
   Widget build(BuildContext context) {
     final c = context.colors;
     final editing = widget.editing;
+    final folders = editing == null ? widget.store.workspaces : null;
     final labels = Theme.of(context).textTheme.labelSmall;
     final ok = _slug.isNotEmpty && !_busy;
     return Dialog(
@@ -1040,6 +1066,22 @@ class _ChannelDialogState extends State<ChannelDialog> {
                   helperText: 'Added to what tern is told for work here.',
                 ),
               ),
+              if (folders != null) ...[
+                const SizedBox(height: 14),
+                FolderRow(
+                  api: folders,
+                  path: _folder,
+                  emptyLabel: 'Default folder',
+                  note:
+                      'Where agents in this channel read and write files. '
+                      'You can change it later from the channel header.',
+                  onChosen: (p) async {
+                    setState(() => _folder = p);
+                    return null;
+                  },
+                  onClear: () => setState(() => _folder = null),
+                ),
+              ],
               if (editing?.agents case final agents?
                   when widget.store.hasAgents) ...[
                 const SizedBox(height: 14),

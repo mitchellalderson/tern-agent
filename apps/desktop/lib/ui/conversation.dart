@@ -4,6 +4,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../state/transcript.dart';
+import '../state/workspaces.dart';
 import '../theme.dart';
 import 'feed.dart';
 import 'history.dart';
@@ -17,6 +18,7 @@ import 'outbox.dart';
 import 'preferences.dart';
 import 'providers.dart';
 import 'widgets.dart';
+import 'workspace_ui.dart';
 
 class ConversationView extends StatefulWidget {
   const ConversationView({
@@ -109,6 +111,9 @@ class _ConversationViewState extends State<ConversationView> {
           onTogglePanel: widget.onTogglePanel,
         ),
         const Hairline(),
+        if (_folderTarget(store) case final t?)
+          if (store.workspaces case final api?)
+            WorkspaceBanner(api: api, target: t),
         Expanded(
           child: items.isEmpty && store.setupNeeded
               ? _Welcome(store: store)
@@ -167,6 +172,16 @@ class _ConversationViewState extends State<ConversationView> {
       ],
     );
   }
+}
+
+/// What the folder chip and card are about: the open conversation (or the
+/// agent whose DM is open); null when there is nothing to show yet.
+WorkspaceTarget? _folderTarget(TernStore store) {
+  if (store.selected case final id?) return WorkspaceTarget.session(id);
+  if (store.streamOpen && store.channel != null) {
+    return WorkspaceTarget.channel(store.channel!);
+  }
+  return null;
 }
 
 class _Header extends StatelessWidget {
@@ -240,6 +255,22 @@ class _Header extends StatelessWidget {
                 window: contextWindow,
                 compactAt: compactAt,
               ),
+            if (_folderTarget(store) case final t?)
+              if (store.workspaces case final api?)
+                WorkspaceChip(
+                  api: api,
+                  target: t,
+                  homeTopic: store.streamOpen,
+                  pending: store.newTopic ? store.pendingFolder : null,
+                  revision: store.newTopic ? 1 : 0,
+                  onChangeHome: (path) async {
+                    await store.openStream(
+                      store.channel ?? TernStore.homeId,
+                      newTopic: true,
+                    );
+                    store.setPendingFolder(path);
+                  },
+                ),
             if (store.streamAgent case final a? when store.hasAgents)
               QuietIconButton(
                 icon: Icons.tune,

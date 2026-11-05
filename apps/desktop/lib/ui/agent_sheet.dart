@@ -14,6 +14,7 @@ import 'model_chain_editor.dart';
 import 'model_picker.dart' show ModelList;
 import 'secrets.dart' show showSecretsDialog;
 import 'widgets.dart';
+import 'workspace_ui.dart';
 
 /// Create an agent (`agent` null) or edit one: the sheet of agent profiles
 /// §7.2. A template only fills the sheet.
@@ -603,6 +604,11 @@ class _AgentSheetState extends State<AgentSheet> {
                             mcp: widget.store.mcpServers,
                             onChanged: (t) => setState(() => _tools = t),
                           ),
+                          if (widget.editing case final a?)
+                            if (widget.store.workspaces case final api?) ...[
+                              _section('Folder'),
+                              AgentFolderField(api: api, agentId: a.id),
+                            ],
                           _section('Memory'),
                           RadioGroup<String>(
                             groupValue: _memory,
