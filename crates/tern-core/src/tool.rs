@@ -101,6 +101,10 @@ pub struct ToolPolicy {
     /// allowlist entry covers it, it asks every time, and an unattended
     /// profile (`autonomous`, `yolo`) refuses it.
     pub unbounded: bool,
+    /// Code auto mode may run this without asking (docs/alpha-coding-agent.md):
+    /// a command with a verified sandbox, no network, the workspace as cwd,
+    /// and nothing the shell classifier asks about. Set only by `shell`.
+    pub auto_code: bool,
 }
 
 impl ToolPolicy {
@@ -114,7 +118,12 @@ impl ToolPolicy {
             local_approval: false,
             reach: Reach::Unbounded,
             unbounded: false,
+            auto_code: false,
         }
+    }
+
+    pub const fn auto_code(self, auto_code: bool) -> Self {
+        Self { auto_code, ..self }
     }
 
     pub const fn reaching(self, reach: Reach) -> Self {

@@ -3363,3 +3363,5 @@ mod plans;
 mod tainted_reads;
 
 mod fetch_e2e;
+
+mod code_mode;

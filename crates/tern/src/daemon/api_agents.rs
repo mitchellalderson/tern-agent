@@ -5,7 +5,7 @@
 //! |---|---|---|
 //! | GET | `/v1/agents[?archived=1\|deleted=1]` | `[Agent]` (`deleted=1`: archived and deleted ones too, deleted marked `deleted`, so history can name them): the default first, with `main_channel_id`, `last_activity`, `needs_you`, `active_runs` |
 //! | POST | `/v1/agents` | create `{name, slug?, avatar?, persona?, model?, subagent_model?, tools?, memory?, egress?, autonomy?, template?}`, with its DM channel |
-//! | PATCH | `/v1/agents/{id}` | any of those but `template` and `persona`, plus `telegram` (`{bot_token_secret}`: a bot of its own, from the next daemon start; `null` removes it), and `delegates` (agents it may hand work to; `null`: all for the default agent, none for others); `archived: true` archives (not the default agent) |
+//! | PATCH | `/v1/agents/{id}` | any of those but `template` and `persona`, plus `telegram` (`{bot_token_secret}`: a bot of its own, from the next daemon start; `null` removes it), and `delegates` (agents it may hand work to; `null`: all for the default agent, none for others); `archived: true` archives (not the default agent); `code_auto: true` opts in to code auto mode (409 `ceiling_below_code` unless the ceiling is `code` or above after the change: send `autonomy: "code"` with it), `false` opts out. Create never sets it |
 //! | DELETE | `/v1/agents/{id}?confirm=true[&reassign_to=<agent>\|&delete_routines=true]` | delete it (never the default agent): its conversations stay in History under its name; refused (409) while it has runs in progress or writes in the outbox, or routines that `reassign_to` or `delete_routines` doesn't place |
 //! | GET | `/v1/agents/{id}/impact` | what deleting it touches: `{routines, led_channels, member_channels, conversations, memories, running_runs, pending_outbox, blockers}` |
 //! | GET / PUT | `/v1/agents/{id}/persona` | `{persona}`; GET adds `system_sections`, what tern adds to every persona |
@@ -91,6 +91,10 @@ pub struct Agent {
     /// `autonomy` applies. Absent = no ceiling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomy: Option<Autonomy>,
+    /// The user opted this agent in to code auto mode (the ceiling must be
+    /// `code` or above). Only `PATCH` sets it: never create, never a bundle.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub code_auto: bool,
     /// A Telegram bot of its own: the secret holding its token (never the
     /// token) and, for tests, a Bot API URL. It starts when the daemon
     /// does. Absent: reached through the main bot's `/agent`.
@@ -188,6 +192,7 @@ pub(super) fn agent_view(m: &Shared, a: AgentRow) -> Agent {
         delegates: a.delegate_list(),
         egress: a.egress.as_deref().and_then(Egress::parse),
         autonomy: a.autonomy.as_deref().and_then(Autonomy::parse),
+        code_auto: a.code_auto,
         telegram: AgentTelegram::parse(a.telegram.as_deref()),
         archived: a.archived_at.is_some(),
         deleted: a.deleted_at.is_some(),
@@ -364,6 +369,10 @@ struct UpdateBody {
     /// `null` removes the ceiling.
     #[serde(default, deserialize_with = "double")]
     autonomy: Option<Option<Autonomy>>,
+    /// `true` opts in to code auto mode; the ceiling must be `code` or above
+    /// after this change (send `autonomy: "code"` with it to raise it, which
+    /// is the visible step the confirm dialog shows). `false` opts out.
+    code_auto: Option<bool>,
     /// `{bot_token_secret}` gives the agent a bot of its own (set the
     /// secret first: `tern secrets set <name>`); `null` removes it.
     /// Applies when the daemon restarts.
@@ -398,6 +407,15 @@ async fn update(
     }
     if a.is_default() && b.archived == Some(true) {
         return Err(bad("the default agent can't be archived"));
+    }
+    // A read-only agent (a starter that can't write) can't opt in, even by
+    // raising its ceiling in the same request: change the ceiling first, on
+    // purpose, as its own step.
+    if b.code_auto == Some(true) && a.autonomy.as_deref() == Some("readonly") {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "ceiling_below_code: this agent is read-only (autonomy ceiling readonly), so it can't use code auto mode".into(),
+        ));
     }
     let telegram = match &b.telegram {
         None => None,
@@ -436,6 +454,7 @@ async fn update(
         },
         egress: b.egress.map(|v| v.map(|e| e.as_str().to_owned())),
         autonomy: b.autonomy.map(|v| v.map(|e| e.as_str().to_owned())),
+        code_auto: b.code_auto,
         archived: b.archived,
         ..AgentChange::default()
     };
@@ -457,7 +476,13 @@ async fn update(
         }
         (None, _) => {}
     }
-    m.rt.store.update_agent(&a.id, &ch).map_err(internal)?;
+    m.rt.store.update_agent(&a.id, &ch).map_err(|e| match e {
+        // Code auto mode with a ceiling below `code`: the caller's to fix.
+        tern_store::StoreError::Invalid(msg) if msg.starts_with("ceiling_below_code") => {
+            ApiError(StatusCode::CONFLICT, msg)
+        }
+        e => internal(e),
+    })?;
     changed(&m);
     Ok(Json(agent_view(&m, find(&m, &a.id)?)))
 }

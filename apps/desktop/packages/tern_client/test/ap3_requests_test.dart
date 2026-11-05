@@ -84,6 +84,83 @@ void main() {
     expect(seen.last.body, {'autonomy': null});
   });
 
+  test(
+    'code auto mode is its own PATCH, with the ceiling raise alongside',
+    () async {
+      reply = {...agent, 'autonomy': 'code', 'code_auto': true};
+      final a = await client.setCodeAuto('tern:ops', true, raiseCeiling: true);
+      expect(a.codeAuto, isTrue);
+      expect(a.autonomyLevel, AutonomyLevel.code);
+      expect(seen.last.method, 'PATCH');
+      expect(seen.last.body, {'code_auto': true, 'autonomy': 'code'});
+      // Without the raise, only the flag; off is a plain false.
+      await client.setCodeAuto('tern:ops', true);
+      expect(seen.last.body, {'code_auto': true});
+      await client.setCodeAuto('tern:ops', false, raiseCeiling: true);
+      expect(seen.last.body, {'code_auto': false});
+      // Absent on the wire means off.
+      expect(Agent.fromJson({...agent}).codeAuto, isFalse);
+    },
+  );
+
+  test('a ceiling below code is refused with its reason', () async {
+    status = 409;
+    reply = {'error': 'ceiling_below_code: needs a ceiling of code or above'};
+    await expectLater(
+      client.setCodeAuto('tern:ops', true),
+      throwsA(
+        isA<TernException>()
+            .having((e) => e.status, 'status', 409)
+            .having(
+              (e) => e.message,
+              'message',
+              contains('ceiling_below_code'),
+            ),
+      ),
+    );
+  });
+
+  test('a run lists what it changed and undo needs confirm', () async {
+    reply = {
+      'changes': [
+        {'path': 'src/lib.rs', 'kind': 'modified'},
+        {'path': 'new.txt', 'kind': 'added'},
+      ],
+    };
+    final c = await client.runChanges('r1');
+    expect(seen.last.method, 'GET');
+    expect(seen.last.path, '/v1/runs/r1/changes');
+    expect(c.changes.map((x) => '${x.kind}:${x.path}'), [
+      'modified:src/lib.rs',
+      'added:new.txt',
+    ]);
+    expect(c.skipped, isNull);
+    reply = {'changes': [], 'skipped': 'no snapshot: workspace too large'};
+    expect((await client.runChanges('r1')).skipped, contains('too large'));
+    await client.undoRun('r1');
+    expect(seen.last.method, 'POST');
+    expect(seen.last.path, '/v1/runs/r1/undo');
+    expect(seen.last.body, {'confirm': true});
+  });
+
+  test('the checkpoint and approved_by_mode events parse', () {
+    final e = TernEvent.fromJson({
+      'type': 'checkpoint',
+      'run_id': 'r1',
+      'commit': 'abc',
+    });
+    expect(e, isA<CheckpointSaved>());
+    expect((e as CheckpointSaved).commit, 'abc');
+    final a = TernEvent.fromJson({
+      'type': 'approval',
+      'run_id': 'r1',
+      'id': 'c1',
+      'name': 'shell',
+      'outcome': 'approved_by_mode',
+    });
+    expect((a as ApprovalAnswered).outcome, 'approved_by_mode');
+  });
+
   test('a bot is set by the secret NAME and removed with null', () async {
     reply = {...agent};
     final a = await client.setAgentTelegram('tern:ops', 'OPS_BOT');

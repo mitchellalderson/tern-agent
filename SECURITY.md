@@ -39,6 +39,22 @@ file in the folder, which the agent can write): the conversation's, else the cha
 default, frozen when the run starts; a sub-agent inherits it and may be narrowed to a subfolder, never widened, and a
 routine keeps the folder it was made in. Choosing a folder refuses `/`, your home folder, system folders, credentials
 folders (`~/.ssh`, `~/.aws`, `~/Library`, ...), temp folders and tern's own data, whatever the spelling or link.
+**Code auto mode is not fully sandboxed.** The per-agent `code` autonomy level (see the reference) lets an agent you
+opted in write files and run build and test commands in its workspace without asking, but only while the OS sandbox is
+verified active, the run is untainted and a command filter finds nothing on its ask list. It is opt-in per agent (never
+global, never from a starter or bundle), shows this list before it turns on, raises a starter's ceiling visibly, and is a
+ledger entry (`code_auto.agent`), as is every unasked call (`reason: code-mode`). A snapshot of the workspace is taken
+before a run's first change (a private git repository under `~/.tern/checkpoints`; `tern runs undo`). Residual risks, each
+real: anything in the workspace can be changed or deleted, including uncommitted work (the snapshot is the net, and it is
+skipped, with a notice, past 50,000 files or 500 MB); the code the agent writes runs as you under the sandbox's limits, and
+tern does not read it; poisoning what you run later (a `Makefile`, `package.json`, `.cargo/config.toml`, an editor task,
+a git hook: the classifier asks about `.git/hooks`, `.git/config` and `.envrc` by name, but the sandbox does not
+protect them, so review the change list before you run anything); prompt injection through repository content, which
+does not taint a run; the filter is a speed bump that `sh -c`, a script or a Makefile can bypass, and the sandbox is the
+boundary; shared `/tmp` and, on macOS, reads outside your home folder; local sockets (Docker); resource exhaustion on the
+host; Linux's protections are weaker than macOS's. A package install or network access always asks, and a tainted run, an
+unverified sandbox or a still-checking one gets exactly the `supervised` behaviour.
+
 **What the core does not bound is `shell`:** a command can name a path in endless ways, so only the OS sandbox bounds
 it. With a verified sandbox it is limited as described below. With none (`confine = "off"`, no Landlock, or a check that failed) the command runs as you with the workspace only as its start directory, tern asks before every one (no
 "always", no grants), and under `autonomy = "autonomous"` or `"yolo"` it is **refused**, so an unattended run never

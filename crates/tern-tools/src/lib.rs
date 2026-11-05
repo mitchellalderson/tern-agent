@@ -9,6 +9,7 @@ pub mod memory;
 pub mod schedule;
 pub mod secret_request;
 pub mod shell;
+pub mod shell_class;
 pub mod shell_script;
 pub mod skills;
 

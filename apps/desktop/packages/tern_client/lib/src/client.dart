@@ -445,6 +445,30 @@ class TernClient {
   Future<Agent> setAgentAutonomy(String id, String? level) =>
       updateAgent(id, {'autonomy': level});
 
+  /// Opt an agent in to (or out of) code auto mode. Turning it on needs a
+  /// ceiling of `code` or above after the change: pass [raiseCeiling] when the
+  /// agent's is lower (the confirm dialog said so), which sends
+  /// `autonomy: "code"` in the same request. Throws [TernException] (409,
+  /// `ceiling_below_code`) when the ceiling would stay below `code`, or the
+  /// agent is read-only.
+  Future<Agent> setCodeAuto(String id, bool on, {bool raiseCeiling = false}) =>
+      updateAgent(id, {
+        'code_auto': on,
+        if (on && raiseCeiling) 'autonomy': 'code',
+      });
+
+  /// What a code auto mode run changed since its pre-run snapshot, and why
+  /// there is none to compare with (when there isn't one).
+  Future<RunChanges> runChanges(String runId) async => RunChanges.fromJson(
+    await _json('GET', '/v1/runs/${_seg(runId)}/changes'),
+  );
+
+  /// Put a run's folder back as its snapshot had it (the changes it
+  /// reverted). The caller lists [runChanges] and confirms first.
+  Future<RunChanges> undoRun(String runId) async => RunChanges.fromJson(
+    await _json('POST', '/v1/runs/${_seg(runId)}/undo', {'confirm': true}),
+  );
+
   /// Give an agent a Telegram bot of its own, by the NAME of the secret that
   /// holds its token (never the token), or remove it with null. Throws
   /// [TernException] (400) when the name is bad or another bot uses it.

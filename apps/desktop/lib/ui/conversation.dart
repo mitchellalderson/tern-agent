@@ -14,6 +14,7 @@ import 'model_picker.dart';
 import 'agent_ap3.dart';
 import 'agent_face.dart';
 import 'agent_sheet.dart';
+import 'code_auto.dart';
 import 'outbox.dart';
 import 'preferences.dart';
 import 'providers.dart';
@@ -233,6 +234,17 @@ class _Header extends StatelessWidget {
                       child: Padding(
                         padding: const EdgeInsets.only(left: 10),
                         child: AutonomyChip(agent: a),
+                      ),
+                    ),
+                  // Code auto mode: always visible while it applies.
+                  if (store.streamAgent case final a?
+                      when CodeAutoChip.applies(a))
+                    Padding(
+                      padding: const EdgeInsets.only(left: 10),
+                      child: CodeAutoChip(
+                        state: CodeAutoChip.stateFor(
+                          store.info?.sandbox?.verified,
+                        ),
                       ),
                     ),
                 ],

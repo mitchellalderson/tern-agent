@@ -21,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 use super::*;
 use crate::{HistoryMessage, PendingSecret, Started, UserPrompt};
 
+mod autonomy;
 mod fleet;
 
 /// (session, model, text) passed to `start_run`.
@@ -65,6 +66,11 @@ struct Fake {
     /// (key, value) pairs passed to `change_setting`.
     config: Mutex<Option<tern_core::config::settings::ConfigView>>,
     setting_calls: Mutex<Vec<(String, Option<serde_json::Value>)>>,
+    /// Per-agent autonomy ceilings, agents opted in to code auto mode, and
+    /// the (id, on) calls to `set_code_auto`.
+    ceilings: Mutex<std::collections::BTreeMap<String, String>>,
+    code_on: Mutex<std::collections::BTreeSet<String>>,
+    code_calls: Mutex<Vec<(String, bool)>>,
 }
 
 mod settings;
@@ -323,6 +329,19 @@ impl Backend for Fake {
             .push((run_id.into(), text.into()));
         Ok(())
     }
+    fn set_code_auto(&self, id: &str, on: bool) -> BackendResult<String> {
+        self.code_calls.lock().unwrap().push((id.into(), on));
+        let mut set = self.code_on.lock().unwrap();
+        if on {
+            set.insert(id.into());
+        } else {
+            set.remove(id);
+        }
+        Ok(format!(
+            "code auto mode is {} for {id}",
+            if on { "on" } else { "off" }
+        ))
+    }
     fn agents(&self) -> BackendResult<Vec<AgentInfo>> {
         let a = |id: &str, slug: &str, name: &str, needs_you| AgentInfo {
             id: id.into(),
@@ -331,6 +350,8 @@ impl Backend for Fake {
             needs_you,
             active_runs: 0,
             is_default: id == "tern",
+            ceiling: self.ceilings.lock().unwrap().get(id).cloned(),
+            code_auto: self.code_on.lock().unwrap().contains(id),
         };
         Ok(vec![
             a("tern", "tern", "tern", 0),

@@ -29,6 +29,11 @@ pub enum ConfigError {
     },
     #[error("invalid model reference {0:?}: expected \"provider:model\"")]
     ModelRef(String),
+    #[error(
+        "{0}: autonomy = \"code\" is per agent, not global; leave autonomy at \"supervised\" and \
+         turn code auto mode on for one agent (`tern agents code-auto <agent> on`)"
+    )]
+    CodeIsPerAgent(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -381,10 +386,15 @@ impl Config {
     }
 
     pub fn parse(text: &str, path: &Path) -> Result<Self, ConfigError> {
-        toml::from_str(text).map_err(|e| ConfigError::Parse {
+        let c: Self = toml::from_str(text).map_err(|e| ConfigError::Parse {
             path: path.to_path_buf(),
             source: Box::new(e),
-        })
+        })?;
+        // Code auto mode is a per-agent opt-in, never a global default.
+        if c.autonomy == crate::approval::Autonomy::Code {
+            return Err(ConfigError::CodeIsPerAgent(path.to_path_buf()));
+        }
+        Ok(c)
     }
 
     /// Workspace directory with `~` expanded.
@@ -1212,6 +1222,9 @@ env_secrets = ["GITHUB_TOKEN"]
             crate::approval::Autonomy::Supervised
         );
         assert!(Config::parse("autonomy = \"reckless\"", Path::new("c")).is_err());
+        // Code auto mode is opted into per agent, never set globally.
+        let e = Config::parse("autonomy = \"code\"", Path::new("c")).unwrap_err();
+        assert!(e.to_string().contains("per agent"), "{e}");
         let c = Config::parse("[taint]\negress = \"allow\"\n", Path::new("c")).unwrap();
         assert_eq!(c.taint.egress, crate::approval::Egress::Allow);
         assert_eq!(Config::default().taint.egress, crate::approval::Egress::Ask);

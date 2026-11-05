@@ -10,6 +10,8 @@ fn info(slug: &str, needs_you: usize, active_runs: usize) -> AgentInfo {
         needs_you,
         active_runs,
         is_default: false,
+        ceiling: None,
+        code_auto: false,
     }
 }
 

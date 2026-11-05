@@ -117,6 +117,12 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
                 None => println!("@{} has no autonomy ceiling", a.slug),
             }
         }
+        AgentsCommand::CodeAuto {
+            agent,
+            state,
+            raise_ceiling,
+            yes,
+        } => return code_auto(&rt, &agent, &state, raise_ceiling, yes),
         AgentsCommand::Edit { agent } => edit(&rt, &agent)?,
         AgentsCommand::Memory { agent, action } => return memory(&rt, &agent, action),
         AgentsCommand::Rename { agent, name, slug } => rename(&rt, &agent, name, slug)?,
@@ -156,8 +162,71 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
 
 fn parse_autonomy(s: &str) -> anyhow::Result<tern_core::approval::Autonomy> {
     tern_core::approval::Autonomy::parse(s).with_context(|| {
-        format!("autonomy must be readonly, supervised, autonomous or yolo, not {s:?}")
+        format!("autonomy must be readonly, supervised, code, autonomous or yolo, not {s:?}")
     })
+}
+
+/// `tern agents code-auto <agent> on|off`: never silent. Turning it on shows
+/// the disclaimer, says when it raises the agent's ceiling, and needs the
+/// typed phrase (or `--yes`); a read-only agent can't opt in.
+fn code_auto(
+    rt: &Runtime,
+    agent: &str,
+    state: &str,
+    raise_ceiling: bool,
+    yes: bool,
+) -> anyhow::Result<ExitCode> {
+    use tern_core::approval::Autonomy;
+    let a = find(rt, agent)?;
+    let on = match state {
+        "on" => true,
+        "off" => false,
+        s => bail!("code-auto takes on or off, not {s:?}"),
+    };
+    let mut change = AgentChange {
+        code_auto: Some(on),
+        ..AgentChange::default()
+    };
+    if on {
+        let ceiling = a.autonomy.as_deref().and_then(Autonomy::parse);
+        if ceiling == Some(Autonomy::ReadOnly) {
+            bail!(
+                "@{} is read-only (autonomy ceiling readonly), so it can't use code auto mode",
+                a.slug
+            );
+        }
+        let raises = ceiling.filter(|c| *c < Autonomy::Code);
+        println!(
+            "{}",
+            tern_core::approval::code_auto_disclaimer(
+                &format!("@{}", a.slug),
+                "its workspace folder",
+                raises.map(|c| c.as_str()),
+            )
+        );
+        if raises.is_some() {
+            if !raise_ceiling && !yes {
+                bail!(
+                    "this raises @{}'s ceiling to code; pass --raise-ceiling to say you know",
+                    a.slug
+                );
+            }
+            change.autonomy = Some(Some("code".into()));
+        }
+        if !yes && !crate::manage::confirm_cli("code auto")? {
+            bail!("not turned on");
+        }
+    }
+    rt.store.update_agent(&a.id, &change)?;
+    if on {
+        println!(
+            "code auto mode is on for @{}: its next conversations edit files and run build and test commands without asking (not fully sandboxed)",
+            a.slug
+        );
+    } else {
+        println!("code auto mode is off for @{}", a.slug);
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// The starter catalog, grouped by category.

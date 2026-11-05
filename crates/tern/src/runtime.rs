@@ -284,6 +284,7 @@ impl Runtime {
                     config.outbox.expire_hours.saturating_mul(3600),
                 ),
                 script: config.python.script_limits(),
+                checkpoints: Some(home.checkpoints_dir()),
                 ..AgentConfig::default()
             },
         )
@@ -741,15 +742,31 @@ impl Runtime {
         agent: &tern_store::AgentRow,
         requested: Option<tern_core::approval::Autonomy>,
     ) -> tern_core::approval::Autonomy {
-        let base = requested.unwrap_or(self.live().autonomy);
-        match agent
-            .autonomy
-            .as_deref()
-            .and_then(tern_core::approval::Autonomy::parse)
-        {
-            Some(ceiling) => base.min(ceiling),
-            None => base,
-        }
+        self.autonomy_for_run(agent, requested, false)
+    }
+
+    /// [`Runtime::autonomy_for`] for a run that may also be lifted to code
+    /// auto mode: an `interactive` run of an opted-in agent whose ceiling is
+    /// `code` or above (or absent) gets at least `code`, unless the global or
+    /// requested level is `readonly`, which always wins. A global `supervised`
+    /// doesn't hold an opted-in agent back (that is the opt-in's point); a
+    /// ceiling below `code` does.
+    pub fn autonomy_for_run(
+        &self,
+        agent: &tern_store::AgentRow,
+        requested: Option<tern_core::approval::Autonomy>,
+        interactive: bool,
+    ) -> tern_core::approval::Autonomy {
+        tern_core::approval::effective_autonomy(
+            self.live().autonomy,
+            requested,
+            agent
+                .autonomy
+                .as_deref()
+                .and_then(tern_core::approval::Autonomy::parse),
+            agent.code_auto,
+            interactive,
+        )
     }
 
     pub fn check_model(&self, model: &str) -> anyhow::Result<ModelRef> {
@@ -899,8 +916,14 @@ impl Runtime {
         // Frozen on the run, like its model (tooling spec §5.4); a routine
         // overrides it in `Manager::start_scheduled`, and the agent's
         // ceiling caps either (agent profiles AP3).
-        self.store
-            .set_run_autonomy(&run.id, self.autonomy_for(&agent, None).as_str())?;
+        // Code auto mode is for the user's own conversations: only a "user"
+        // trigger lifts an opted-in agent to it; a routine or a woken run
+        // stays at the plain effective level (docs/alpha-coding-agent.md §3.1).
+        self.store.set_run_autonomy(
+            &run.id,
+            self.autonomy_for_run(&agent, None, trigger == "user")
+                .as_str(),
+        )?;
         // The tainted host limit: the agent's own setting, else the
         // config's; frozen like autonomy.
         let egress = agent

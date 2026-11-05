@@ -1205,11 +1205,12 @@ class TernStore extends ChangeNotifier {
     required String memory,
     String? egress,
     String? autonomy,
+    bool codeAuto = false,
     String? template,
     ({String cron, String prompt})? routine,
   }) async {
     try {
-      final a = await client.createAgent(
+      var a = await client.createAgent(
         name: name,
         avatar: avatar,
         persona: persona,
@@ -1221,6 +1222,8 @@ class TernStore extends ChangeNotifier {
         autonomy: autonomy,
         template: template,
       );
+      // Creating never opts in: the confirmed opt-in is its own request.
+      if (codeAuto) a = await client.setCodeAuto(a.id, true);
       if (routine != null) {
         await client.createSchedule(
           cron: routine.cron,

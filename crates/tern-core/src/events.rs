@@ -88,6 +88,15 @@ pub enum AgentEvent {
         name: String,
         outcome: ApprovalOutcome,
     },
+    /// Code auto mode took (or couldn't take) its snapshot before the run's
+    /// first unasked change: `commit` when it did, else why not.
+    Checkpoint {
+        run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skipped: Option<String>,
+    },
     Retrying {
         run_id: String,
         attempt: u32,
@@ -140,6 +149,7 @@ impl AgentEvent {
             | Self::ToolOutput { run_id, .. }
             | Self::ToolFinished { run_id, .. }
             | Self::Approval { run_id, .. }
+            | Self::Checkpoint { run_id, .. }
             | Self::Retrying { run_id, .. }
             | Self::Compacted { run_id, .. }
             | Self::Usage { run_id, .. }

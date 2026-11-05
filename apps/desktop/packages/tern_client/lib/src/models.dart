@@ -734,6 +734,11 @@ sealed class TernEvent {
         error: j['error'] as String,
       ),
       'compacted' => Compacted(runId: run),
+      'checkpoint' => CheckpointSaved(
+        runId: run,
+        commit: j['commit'] as String?,
+        skipped: j['skipped'] as String?,
+      ),
       'usage' => UsageEvent(runId: run, usage: Usage.fromJson(j['usage'])),
       'run_finished' => RunFinished(
         runId: run,
@@ -921,6 +926,41 @@ class Retrying extends RunEvent {
 
 class Compacted extends RunEvent {
   const Compacted({required String runId}) : super(runId);
+}
+
+/// Code auto mode took (or couldn't take) its snapshot before the run's
+/// first unasked change: [commit] when it did, else [skipped] says why not.
+class CheckpointSaved extends RunEvent {
+  const CheckpointSaved({required String runId, this.commit, this.skipped})
+    : super(runId);
+  final String? commit;
+  final String? skipped;
+}
+
+/// A file a code auto mode run changed since its snapshot.
+class RunChange {
+  const RunChange({required this.path, required this.kind});
+  factory RunChange.fromJson(Json j) =>
+      RunChange(path: j['path'] as String, kind: j['kind'] as String);
+  final String path;
+
+  /// `added`, `modified` or `deleted`.
+  final String kind;
+}
+
+/// What a run changed since its snapshot (`GET /v1/runs/{id}/changes`), or
+/// what an undo reverted. [skipped] says why there is no snapshot.
+class RunChanges {
+  const RunChanges({this.changes = const [], this.skipped});
+  factory RunChanges.fromJson(Json j) => RunChanges(
+    changes: [
+      for (final c in (j['changes'] as List<dynamic>? ?? const []))
+        RunChange.fromJson(c as Json),
+    ],
+    skipped: j['skipped'] as String?,
+  );
+  final List<RunChange> changes;
+  final String? skipped;
 }
 
 class UsageEvent extends RunEvent {

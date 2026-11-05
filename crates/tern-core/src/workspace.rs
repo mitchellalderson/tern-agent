@@ -14,7 +14,7 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub mod validate;
@@ -449,6 +449,7 @@ pub struct WorkspaceScope {
     deny: Arc<DenySet>,
     flags: FsFlags,
     bound: AtomicU8,
+    code_mode: AtomicBool,
     sink: Mutex<Option<RefusalSink>>,
 }
 
@@ -525,6 +526,7 @@ impl WorkspaceScope {
             deny,
             flags,
             bound: AtomicU8::new(ShellBound::Unbounded.to_u8()),
+            code_mode: AtomicBool::new(false),
             sink: Mutex::new(None),
         })
     }
@@ -576,6 +578,7 @@ impl WorkspaceScope {
             deny: Arc::new(DenySet::default()),
             flags: FsFlags::default(),
             bound: AtomicU8::new(ShellBound::Unbounded.to_u8()),
+            code_mode: AtomicBool::new(false),
             sink: Mutex::new(None),
         }
     }
@@ -632,6 +635,16 @@ impl WorkspaceScope {
 
     pub fn set_shell_bound(&self, b: ShellBound) {
         self.bound.store(b.to_u8(), Ordering::Relaxed);
+    }
+
+    /// Whether the run is in code auto mode right now (set by the agent
+    /// loop before each call): only used to word approval notices.
+    pub fn code_mode(&self) -> bool {
+        self.code_mode.load(Ordering::Relaxed)
+    }
+
+    pub fn set_code_mode(&self, on: bool) {
+        self.code_mode.store(on, Ordering::Relaxed);
     }
 
     // ---- refusals ----

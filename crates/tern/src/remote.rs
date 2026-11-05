@@ -910,6 +910,41 @@ impl Backend for Remote {
         }
     }
 
+    fn set_code_auto(&self, id: &str, on: bool) -> BackendResult<String> {
+        use tern_core::approval::Autonomy;
+        let list: Vec<crate::daemon::api_agents::Agent> = self.get("/v1/agents")?;
+        let a = list
+            .into_iter()
+            .find(|a| a.id == id || a.slug == id.trim_start_matches('@'))
+            .ok_or_else(|| format!("no agent {id:?}"))?;
+        let mut body = json!({ "code_auto": on });
+        if on && let Some(c) = a.autonomy {
+            if c == Autonomy::ReadOnly {
+                return Err(format!(
+                    "@{} is read-only: it can't use code auto mode",
+                    a.slug
+                ));
+            }
+            if c < Autonomy::Code {
+                body["autonomy"] = json!("code");
+            }
+        }
+        let _: crate::daemon::api_agents::Agent = self.send_json(
+            reqwest::Method::PATCH,
+            &format!("/v1/agents/{}", a.id),
+            body,
+        )?;
+        Ok(if on {
+            format!(
+                "code auto mode is on for @{}: it edits files and runs build and test commands \
+                 in its folder without asking (not fully sandboxed). /autonomy off turns it off.",
+                a.slug
+            )
+        } else {
+            format!("code auto mode is off for @{}", a.slug)
+        })
+    }
+
     fn delete_preview(&self, what: tern_tui::Managed, id: &str) -> BackendResult<String> {
         let (text, blockers) = match what {
             tern_tui::Managed::Agent => {
@@ -1032,6 +1067,8 @@ impl Backend for Remote {
                 needs_you: a.needs_you,
                 active_runs: a.active_runs,
                 is_default: a.is_default,
+                ceiling: a.autonomy.map(|l| l.as_str().to_owned()),
+                code_auto: a.code_auto,
             })
             .collect())
     }

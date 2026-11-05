@@ -40,6 +40,11 @@ pub enum Autonomy {
     /// The §5.1 defaults.
     #[default]
     Supervised,
+    /// Code auto mode (docs/alpha-coding-agent.md): per-agent opt-in. Writes
+    /// inside the workspace and sandbox-verified commands that pass the
+    /// shell classifier don't ask in untainted runs ([`ToolPolicy::auto_code`]);
+    /// everything else asks as in `supervised`. `autonomous` includes it.
+    Code,
     /// `write` doesn't ask in untainted runs; `destructive` still does.
     Autonomous,
     /// Nothing asks, tainted or not. Forbidden tools stay forbidden.
@@ -51,6 +56,7 @@ impl Autonomy {
         match self {
             Autonomy::ReadOnly => "readonly",
             Autonomy::Supervised => "supervised",
+            Autonomy::Code => "code",
             Autonomy::Autonomous => "autonomous",
             Autonomy::Yolo => "yolo",
         }
@@ -60,6 +66,7 @@ impl Autonomy {
         match s {
             "readonly" => Some(Autonomy::ReadOnly),
             "supervised" => Some(Autonomy::Supervised),
+            "code" => Some(Autonomy::Code),
             "autonomous" => Some(Autonomy::Autonomous),
             "yolo" => Some(Autonomy::Yolo),
             _ => None,
@@ -219,6 +226,12 @@ pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, gate: Gate) -> Chec
     {
         return Check::Allow;
     }
+    // Code auto mode: a command the shell classifier cleared inside a
+    // verified sandbox ([`ToolPolicy::auto_code`]). Tainted runs returned
+    // above; an unconfined command returned above too.
+    if gate.autonomy >= Autonomy::Code && policy.auto_code {
+        return Check::Allow;
+    }
     match effect {
         Effect::Destructive => ask,
         _ if granted => Check::Allow,
@@ -344,6 +357,74 @@ pub fn needs_check(tool: &str, policy: &ToolPolicy, gate: Gate) -> bool {
 pub const READONLY_MESSAGE: &str = "blocked: this run is read-only (autonomy = \"readonly\"), so it \
      can't make changes. Say what you would do instead, and the user can do it or run you with more autonomy.";
 
+/// The autonomy a run starts with (docs/alpha-coding-agent.md §3.1): the
+/// requested level (a routine's own) or the configured one, capped by the
+/// agent's `ceiling`; then, for an `interactive` run of an agent the user
+/// opted in to code auto mode (`code_auto`) whose ceiling is `code` or above
+/// (or absent), at least `code`. Global or requested `readonly` always wins,
+/// a routine without its own level never gets the lift, and a global
+/// `supervised` doesn't hold an opted-in agent back (a ceiling below `code`
+/// does).
+pub fn effective_autonomy(
+    configured: Autonomy,
+    requested: Option<Autonomy>,
+    ceiling: Option<Autonomy>,
+    code_auto: bool,
+    interactive: bool,
+) -> Autonomy {
+    let base = requested.unwrap_or(configured);
+    let eff = ceiling.map_or(base, |c| base.min(c));
+    let lifted = interactive
+        && code_auto
+        && requested.is_none()
+        && base != Autonomy::ReadOnly
+        && ceiling.is_none_or(|c| c >= Autonomy::Code);
+    if lifted { eff.max(Autonomy::Code) } else { eff }
+}
+
+/// The autonomy a delegate (an `agent_spawn {agent}` child) runs with: its
+/// caller's, lowered to its own `ceiling`; lifted to `code` only when its own
+/// agent opted in and the ceiling allows, never because the caller was more
+/// permissive than the child's ceiling.
+pub fn delegate_autonomy(
+    inherited: Autonomy,
+    ceiling: Option<Autonomy>,
+    code_auto: bool,
+) -> Autonomy {
+    let level = ceiling.map_or(inherited, |c| inherited.min(c));
+    if code_auto && inherited != Autonomy::ReadOnly && ceiling.is_none_or(|c| c >= Autonomy::Code) {
+        level.max(Autonomy::Code)
+    } else {
+        level
+    }
+}
+
+/// The code auto mode disclaimer (docs/alpha-coding-agent.md §3.6) for the
+/// TUI and the CLI; the desktop app carries the same text. `raises` names the
+/// ceiling being raised ("supervised"), when it is.
+pub fn code_auto_disclaimer(name: &str, folder: &str, raises: Option<&str>) -> String {
+    let raise = raises.map_or(String::new(), |from| {
+        format!("\nThis raises {name}'s ceiling from {from} to code.\n")
+    });
+    format!(
+        "Code auto mode: not fully sandboxed\n\
+         \n\
+         {name} will edit files and run build and test commands in {folder} without asking you each time.\n\
+         \n\
+         What limits it. Commands run inside the operating-system sandbox, checked just now: they can write only in this folder and have no network. Pushing code, installing packages, network access, deleting much of the folder and anything outside it still ask.\n\
+         \n\
+         What it does not protect.\n\
+         - Anything in this folder can be changed or deleted, including uncommitted work. tern saves a snapshot before each run's first change; `tern runs undo <run>` restores it. It does not protect your .git history.\n\
+         - The code it writes runs on your machine. Tests, build scripts and install scripts can do anything the sandbox allows, and tern does not read them first.\n\
+         - The sandbox is an operating-system feature, not a virtual machine. It does not cover reading files outside your home folder, local sockets (including Docker), or anything you run yourself later: cargo run, make, an editor task or a git hook. Review what it changed before you do.\n\
+         - If tern cannot confirm the sandbox is active, commands ask as usual and this mode only covers file edits.\n\
+         - Reading a web page or other outside content pauses auto mode for the rest of that run.\n\
+         \n\
+         Use it only on code you would be willing to run yourself.\n\
+         {raise}"
+    )
+}
+
 /// The message the model gets for a command that can't be confined, in an
 /// unattended run.
 pub const UNBOUNDED_MESSAGE: &str = "blocked: this machine can't confine commands (no verified OS sandbox), so unattended commands are off. Say what you would run and the user can run it, or work with the file tools, which are bounded to the folder.";
@@ -399,7 +480,13 @@ pub enum ApprovalOutcome {
     /// Approved because the user's scoped answer to an identical request
     /// covered this one ([`Decision::CoveredByGrant`]): they never saw it.
     ApprovedByGrant,
+    /// Approved by the run's autonomy mode, not a person: code auto mode
+    /// ([`CODE_MODE_REASON`]).
+    ApprovedByMode,
 }
+
+/// Why a call ran unasked under code auto mode (ledger `reason`).
+pub const CODE_MODE_REASON: &str = "code-mode";
 
 impl ApprovalOutcome {
     /// The call may run.
@@ -409,6 +496,7 @@ impl ApprovalOutcome {
             ApprovalOutcome::Approved
                 | ApprovalOutcome::ApprovedForRun
                 | ApprovalOutcome::ApprovedByGrant
+                | ApprovalOutcome::ApprovedByMode
         )
     }
 }
@@ -832,6 +920,9 @@ pub fn glob_match(pattern: &str, s: &str) -> bool {
     }
     rest.len() >= last.len() && rest.ends_with(last)
 }
+
+#[cfg(test)]
+mod code_tests;
 
 #[cfg(test)]
 mod tests {

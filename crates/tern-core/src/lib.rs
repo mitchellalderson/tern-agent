@@ -4,6 +4,7 @@ pub mod agent;
 pub mod agents;
 pub mod approval;
 pub mod channels;
+pub mod checkpoint;
 pub mod compaction;
 pub mod config;
 pub mod cron;

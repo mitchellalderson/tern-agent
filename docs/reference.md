@@ -194,8 +194,9 @@ Prints an 8-character one-time code on stdout. Send it to your Telegram bot with
 ```sh
 tern agents [list] [--all]                    # each agent: @name, name, memory, model, routines (--all: archived too)
 tern agents templates                    # the starter agents, by category
-tern agents new <name> [--slug s] [--template <starter id>] [--memory private|shared] [--autonomy readonly|supervised|autonomous|yolo]
+tern agents new <name> [--slug s] [--template <starter id>] [--memory private|shared] [--autonomy readonly|supervised|code|autonomous|yolo]
 tern agents autonomy <name> <level|none>    # the most autonomy its runs may have (the lower of this and `autonomy` applies)
+tern agents code-auto <name> on|off [--raise-ceiling] [--yes]   # code auto mode for one agent: shows what it does not protect, asks you to type "code auto"
 tern agents telegram <name> <secret|none>   # a Telegram bot of its own; the token is that secret; restart the daemon
 tern agents edit <name>                       # open its persona.md in $VISUAL / $EDITOR
 tern agents memory <name> [list | edit <id> <text> | rm <id> | clear [--yes]]   # what it remembers (`shared`, or `tern`, for the shared memories)
@@ -249,6 +250,8 @@ A session is a conversation; its source is where it started (`cli`, `tui`, `api`
 ```sh
 tern runs list            # the 20 most recent runs: id, status, start time, model, "tainted"
 tern runs show <run-id>   # run details and its step journal
+tern runs changes <run-id>        # files a code auto mode run changed since its snapshot
+tern runs undo <run-id> [--yes]   # list, then (with --yes) restore the folder to that snapshot
 ```
 
 A run is one prompt driven to a final answer within a session. Its journal records each model call and tool result; `runs show` is the quickest way to see what a run did, and where an unfinished one stopped. A tainted run shows `tainted  <why>` in its details, untrusted tool results are marked `[untrusted]`, and mail from a tainted run `[tainted]`. Steps a [fallback model](#fallback-chains) answered say so.
@@ -539,7 +542,7 @@ It prints what is left for you to remove by hand: the `tern` binary, `~/.tern` (
 | `subagents.default_model` | none | Sub-agents' model when `agent_spawn` names none (unset = the parent's). May be a fallback chain. |
 | `subagents.models` | `{}` | Aliases `agent_spawn` can pass as `model`: `{ fast = "anthropic:claude-haiku-4-5" }`. Each may be a fallback chain. |
 | `secret_request_timeout_secs` | `900` | How long the agent's prompt for a secret waits for you. |
-| `autonomy` | `"supervised"` | `readonly`, `supervised`, `autonomous` or `yolo` ([Autonomy](#autonomy)). Routines can set their own. |
+| `autonomy` | `"supervised"` | `readonly`, `supervised`, `autonomous` or `yolo` (`code` is per agent, not global) ([Autonomy](#autonomy)). Routines can set their own. |
 | `outbox.wait_secs` | `120` | How long a `write`/`destructive` approval waits for an answer before it goes to the [outbox](#outbox) (at once when no client is attached). |
 | `outbox.expire_hours` | `72` | How long an outbox item waits for you. |
 | `taint.egress` | `"ask"` | In a tainted run, a read from a site it hasn't reached asks first (`ask`) or doesn't (`allow`). An agent can set its own ([New sites in a tainted run](#new-sites-in-a-tainted-run)). |
@@ -971,10 +974,29 @@ API: `GET /v1/outbox[?state=all|<state>]`, `GET /v1/outbox/{id}`, `POST /v1/outb
 |---|---|
 | `readonly` | `read` tools only; anything else is refused without asking (the agent is told it is read-only). Sub-agents and posts still work. |
 | `supervised` (default) | As described under Approvals: `write` asks unless granted, `destructive` every time. |
-| `autonomous` | An untainted `write` doesn't ask. `destructive`, forced prompts (commands outside the allowlist, activating a connector) and anything in a tainted run still ask. |
+| `code` | **Code auto mode**, an opt-in for one agent (never global, never from a starter or a bundle): file edits in the workspace and sandbox-verified build and test commands don't ask. Not fully sandboxed; see [Code auto mode](#code-auto-mode). Everything else asks as in `supervised`. |
+| `autonomous` | An untainted `write` doesn't ask, and everything `code` allows. `destructive`, forced prompts (commands outside the allowlist, activating a connector) and anything in a tainted run still ask. |
 | `yolo` | Nothing asks, tainted or not. Tools flagged `money_movement` or `trade` are still refused. `tern doctor` shows it in red. |
 
-Set it globally (`autonomy = "autonomous"` in `config.toml`) or per routine: `autonomy` on `POST/PATCH /v1/schedules` (`"default"` clears it). The agent's own `schedule_*` tools can't set it.
+Set it globally (`autonomy = "autonomous"` in `config.toml`; `"code"` is refused there because it is per agent) or per routine: `autonomy` on `POST/PATCH /v1/schedules` (`"default"` clears it). The agent's own `schedule_*` tools can't set it.
+
+### Code auto mode
+
+For an agent that writes and tests code, so it isn't stopped for every `cargo test`. **Opt in per agent**: the desktop agent sheet (pick **Code** under Autonomy ceiling), `/autonomy code` in the TUI, `tern agents code-auto <agent> on`, or `PATCH /v1/agents/{id} {"code_auto": true}`. Every route shows what it does and does not protect first, needs a typed or ticked confirmation, and says when it **raises the agent's ceiling** (a starter's `supervised`) to `code`; the API takes `"autonomy": "code"` in the same request and answers 409 `ceiling_below_code` otherwise. A read-only agent can't opt in, a ceiling below `code` switches the mode off, and starters, bundles and `POST /v1/agents` never carry it. The ledger gets `code_auto.agent` (and `autonomy.agent` for the raise).
+
+Lifting applies to the user's own conversations; a routine of an opted-in agent runs at its plain level unless the routine sets `autonomy = "code"`. A sub-agent never exceeds its own ceiling and reaches `code` only through its own opt-in or a parent that has it.
+
+| Without asking, in the workspace | Still asks |
+|---|---|
+| `write_file`, `edit_file` in the folder (as always) | files outside the folder (they are refused, not asked); `.git/` writes |
+| `shell` when the OS sandbox is **verified now**, the run is untainted and the command asks for no network, e.g. `cargo test`, `npm test`, `python3 -m pytest`, `make test`, `git commit`, `git add`, `git switch` | any `shell` when the sandbox is unverified, still being checked, Docker or off (exactly as `supervised`, and the chip says "edits only") |
+| | `network: true`, `git push`, `fetch`, `pull`, `clone`, `config`, `reset --hard`, `clean`, `checkout .`, `branch -D`, `curl`, `ssh`, `sudo`, `docker`, `rsync` |
+| | installs (`npm install`, `pip install`, `cargo add`, `go get`, `brew`, `apt`); a "Prepare workspace" step by you fetches dependencies, then it builds offline |
+| | deleting outside the folder, or much of it (`rm -rf ~`, `rm -rf .`, `rm -r src`; build directories like `target` are fine), `find -delete` |
+| | anything touching `.git/hooks`, `.git/config`, `.envrc`; token-looking arguments, `--password`; `sh -c` with any of the above; text it can't parse (command substitution, unbalanced quotes) |
+| | everything in a **tainted** run (it read a web page or mail), `agent_spawn` widening, connectors, MCP tools, `http_fetch` |
+
+The classifier (`tern-tools::shell_class`) is a speed bump, not a wall: the OS sandbox is the boundary, and a script the agent writes or a `Makefile` can get past a filter. **Safety net**: before a run's first unasked change tern snapshots the workspace into a private git repository (`~/.tern/checkpoints/<workspace id>`, never your own `.git`, skipping `.gitignore`, `.tern/`, `target/`, `node_modules/`, `.venv/`, capped at 50,000 files or 500 MB, and saying "no snapshot: workspace too large" when it can't). `tern runs changes <run>` lists what the run changed, `tern runs undo <run> --yes` puts the folder back (API: `GET /v1/runs/{id}/changes`, `POST /v1/runs/{id}/undo {"confirm": true}`). **Audit**: each unasked call is an `approval` ledger entry with `reason: "code-mode"` (workspace, sandbox state, command), the snapshot a `code_auto.checkpoint` entry, and the run stream carries `approval` with outcome `approved_by_mode` and a `checkpoint` event (the desktop shows an `auto` badge and a snapshot line). `tern doctor` and `tern security audit` list opted-in agents (high when the sandbox isn't active).
 
 ### Tasks
 

@@ -34,6 +34,7 @@ use crate::workspace::WorkspaceScope;
 
 mod carry;
 mod channel;
+mod code_mode;
 mod ledger;
 mod script;
 pub use carry::CarryOutput;
@@ -89,6 +90,9 @@ pub struct AgentConfig {
     pub outbox_expiry: Duration,
     /// What one `python` script may do (`[python]`).
     pub script: crate::script::ScriptLimits,
+    /// Where code auto mode keeps its pre-run snapshots
+    /// ([`crate::checkpoint`]); `None` takes none (and says so).
+    pub checkpoints: Option<PathBuf>,
 }
 
 impl Default for AgentConfig {
@@ -106,6 +110,7 @@ impl Default for AgentConfig {
             approval_wait: Duration::from_secs(120),
             outbox_expiry: Duration::from_secs(72 * 60 * 60),
             script: crate::script::ScriptLimits::default(),
+            checkpoints: None,
         }
     }
 }
@@ -203,6 +208,8 @@ struct ScopedGrants {
     read_runs: std::collections::HashSet<(String, std::path::PathBuf)>,
     /// Runs whose unasked workspace reads are already in the ledger.
     noted_reads: std::collections::HashSet<String>,
+    /// Code auto mode: each run's snapshot attempt, taken once.
+    snapshots: std::collections::HashMap<String, code_mode::Snapshot>,
 }
 
 /// What an approved call's grant answer covers.
@@ -821,6 +828,10 @@ impl Agent {
                     tainted: taint.is_set(),
                     autonomy,
                 };
+                // Words the approval notice for a command code auto mode
+                // doesn't cover; no effect on any decision.
+                ctx.scope
+                    .set_code_mode(gate.autonomy >= Autonomy::Code && !gate.tainted);
                 let mut policy = if runs {
                     self.tools.policy(&ctx, &call)
                 } else {
@@ -856,7 +867,9 @@ impl Agent {
                     idx += 1;
                     match decision {
                         Ok((
-                            ApprovalOutcome::Approved | ApprovalOutcome::ApprovedByGrant,
+                            ApprovalOutcome::Approved
+                            | ApprovalOutcome::ApprovedByGrant
+                            | ApprovalOutcome::ApprovedByMode,
                             replayed,
                         )) => {
                             stale = replayed
@@ -882,6 +895,14 @@ impl Agent {
                     // A tainted run's read of the workspace: no prompt, one
                     // ledger row per run.
                     self.note_tainted_reads(run, &call)?;
+                } else if runs && code_mode::by_code_mode(&call.name, &policy, gate) {
+                    // Code auto mode let it through: snapshot (once per run),
+                    // then one ledger row per call.
+                    match self.code_mode_step(run, &call, &ctx).await {
+                        Ok(()) => {}
+                        Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
+                        Err(e) => return Err(e.into()),
+                    }
                 }
 
                 self.emit(AgentEvent::ToolStarted {

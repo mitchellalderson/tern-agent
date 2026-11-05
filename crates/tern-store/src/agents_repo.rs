@@ -40,6 +40,9 @@ pub struct AgentRow {
     /// Set when the agent was deleted: the row stays so that ids in
     /// history still resolve, but nothing else sees it.
     pub deleted_at: Option<i64>,
+    /// Code auto mode (docs/alpha-coding-agent.md): the user opted this agent
+    /// in. Never copied from a starter or a bundle; `create_agent` writes 0.
+    pub code_auto: bool,
 }
 
 impl AgentRow {
@@ -88,10 +91,14 @@ pub struct AgentChange {
     pub autonomy: Option<Option<String>>,
     pub telegram: Option<Option<String>>,
     pub archived: Option<bool>,
+    /// Opt in or out of code auto mode. Turning it on needs a ceiling of
+    /// `code` or above after this change (or none), and a `readonly` ceiling
+    /// never qualifies. Lowering the ceiling below `code` turns it off.
+    pub code_auto: Option<bool>,
 }
 
 const AGENT_COLS: &str = "id, slug, name, avatar, model, subagent_model, tools, memory, delegates, \
-    archived_at, created_at, updated_at, egress, autonomy, telegram, deleted_at";
+    archived_at, created_at, updated_at, egress, autonomy, telegram, deleted_at, code_auto";
 
 fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
     Ok(AgentRow {
@@ -111,8 +118,13 @@ fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
         autonomy: r.get(13)?,
         telegram: r.get(14)?,
         deleted_at: r.get(15)?,
+        code_auto: r.get::<_, i64>(16)? != 0,
     })
 }
+
+/// Which wording of the code auto mode disclaimer the user confirmed; bump it
+/// when the copy changes materially. Recorded in the ledger.
+pub const CODE_AUTO_DISCLAIMER_VERSION: u32 = 1;
 
 /// The DM channel's slug for an agent slug.
 pub fn dm_slug(agent_slug: &str) -> String {
@@ -130,7 +142,7 @@ impl Store {
         tx.execute(
             &format!(
                 "INSERT INTO agents ({AGENT_COLS})
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10, ?11, ?12, ?13, NULL)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10, ?11, ?12, ?13, NULL, 0)"
             ),
             params![
                 a.id,
@@ -299,6 +311,59 @@ impl Store {
             )
             .detail(serde_json::json!({ "value": v }));
             crate::ledger_repo::append_on(&tx, &e)?;
+        }
+        // Code auto mode follows the ceiling as it stands after this change.
+        let (ceiling, was_on): (Option<String>, i64) = tx.query_row(
+            "SELECT autonomy, code_auto FROM agents WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let rank = |s: &str| match s {
+            "readonly" => 0,
+            "supervised" => 1,
+            "code" => 2,
+            "autonomous" => 3,
+            "yolo" => 4,
+            _ => 1,
+        };
+        let below = ceiling.as_deref().is_some_and(|c| rank(c) < 2);
+        let code_entry = |on: bool, why: &str| {
+            crate::LedgerEntry::new(
+                "code_auto.agent",
+                id,
+                format!(
+                    "agent {id}: code auto mode {}{why}",
+                    if on { "turned on" } else { "turned off" }
+                ),
+            )
+            .detail(serde_json::json!({
+                "value": on,
+                "ceiling": ceiling,
+                "disclaimer_version": CODE_AUTO_DISCLAIMER_VERSION,
+            }))
+        };
+        match ch.code_auto {
+            Some(true) if below => {
+                return Err(crate::StoreError::Invalid(format!(
+                    "ceiling_below_code: code auto mode needs an autonomy ceiling of code or above \
+                     (this agent's is {})",
+                    ceiling.as_deref().unwrap_or("supervised")
+                )));
+            }
+            Some(true) if was_on == 0 => {
+                tx.execute("UPDATE agents SET code_auto = 1 WHERE id = ?1", [id])?;
+                crate::ledger_repo::append_on(&tx, &code_entry(true, ""))?;
+            }
+            Some(false) if was_on != 0 => {
+                tx.execute("UPDATE agents SET code_auto = 0 WHERE id = ?1", [id])?;
+                crate::ledger_repo::append_on(&tx, &code_entry(false, ""))?;
+            }
+            None if was_on != 0 && below => {
+                tx.execute("UPDATE agents SET code_auto = 0 WHERE id = ?1", [id])?;
+                let why = " (its ceiling dropped below code)";
+                crate::ledger_repo::append_on(&tx, &code_entry(false, why))?;
+            }
+            _ => {}
         }
         if let Some(v) = &ch.telegram {
             set("telegram", v.as_deref())?;

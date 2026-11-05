@@ -9,6 +9,7 @@ import 'underline_tabs.dart';
 import 'agent_ap3.dart';
 import 'agent_starters.dart';
 import 'channel_view.dart' show slugFor;
+import 'code_auto.dart';
 import 'manage.dart';
 import 'model_chain_editor.dart';
 import 'model_picker.dart' show ModelList;
@@ -111,6 +112,14 @@ class _AgentSheetState extends State<AgentSheet> {
 
   /// Its autonomy ceiling (`readonly`..`yolo`); null = none.
   late String? _autonomy = widget.editing?.autonomy;
+
+  /// Code auto mode (opt-in, not fully sandboxed): chosen by picking `Code`
+  /// in the selector; saving a new opt-in asks to confirm first.
+  late bool _codeAuto = widget.editing?.codeAuto ?? false;
+
+  /// The ceiling before `Code` was picked, for the confirm dialog's "this
+  /// raises the ceiling from ..." line.
+  String? _ceilingBeforeCode;
 
   /// The NAME of the secret holding its own Telegram bot's token; null =
   /// no bot of its own.
@@ -238,6 +247,23 @@ class _AgentSheetState extends State<AgentSheet> {
       );
       return;
     }
+    // Never silent: turning code auto mode on is confirmed here, with what
+    // it does and does not protect, and says when it raises the ceiling.
+    if (_codeAuto && !(widget.editing?.codeAuto ?? false)) {
+      final before = AutonomyLevel.parse(
+        _ceilingBeforeCode ?? widget.editing?.autonomy,
+      );
+      final raises = before != null && before.index < AutonomyLevel.code.index
+          ? before.label.toLowerCase()
+          : null;
+      final name = _name.text.trim().isEmpty ? 'This agent' : _name.text.trim();
+      final yes = await CodeAutoConfirmDialog.show(
+        context,
+        agentName: name,
+        raisesFrom: raises,
+      );
+      if (!yes || !mounted) return;
+    }
     setState(() {
       _busy = true;
       _error = null;
@@ -269,6 +295,8 @@ class _AgentSheetState extends State<AgentSheet> {
         'delegates': ?_delegates,
         // `null` removes the ceiling: sent, not left out.
         if (_autonomy != a.autonomy) 'autonomy': _autonomy,
+        // Sent with the ceiling in one request, so the raise is visible.
+        if (_codeAuto != a.codeAuto) 'code_auto': _codeAuto,
         if (!_isDefault && _bot != a.telegramSecret)
           'telegram': _bot == null ? null : {'bot_token_secret': _bot},
       };
@@ -292,6 +320,7 @@ class _AgentSheetState extends State<AgentSheet> {
         memory: _memory,
         egress: _browse ? 'allow' : null,
         autonomy: _autonomy,
+        codeAuto: _codeAuto,
         template: _template,
         routine: _addRoutine ? _routine : null,
       );
@@ -662,7 +691,21 @@ class _AgentSheetState extends State<AgentSheet> {
                           _section('Autonomy ceiling'),
                           AutonomyPicker(
                             value: _autonomy,
-                            onChanged: (v) => setState(() => _autonomy = v),
+                            codeAuto: _codeAuto,
+                            // A read-only agent can't opt in; change its
+                            // ceiling first, as its own step.
+                            codeEnabled:
+                                _autonomy != 'readonly' &&
+                                widget.editing?.autonomy != 'readonly',
+                            onChanged: (v) => setState(() {
+                              if (v == 'code' && _autonomy != 'code') {
+                                _ceilingBeforeCode = _autonomy;
+                              }
+                              _autonomy = v;
+                              // Picking Code is the opt-in; anything else
+                              // is the opt-out.
+                              _codeAuto = v == 'code';
+                            }),
                           ),
                           if (widget.editing case final a?
                               when widget.store.agents.any(
