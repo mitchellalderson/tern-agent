@@ -600,6 +600,30 @@ class _ApprovalCardState extends State<ApprovalCard> {
                 style: mono.copyWith(color: c.text),
               ),
             ),
+            if (a.notice case final notice?) ...[
+              const SizedBox(height: 6),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.info_outline, size: 13, color: c.muted),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      notice,
+                      key: const ValueKey('approval-notice'),
+                      style: TextStyle(fontSize: 12.5, color: c.muted),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (a.grant case final grant?) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Allowing covers: ${grant.label}',
+                style: TextStyle(fontSize: 12.5, color: c.muted),
+              ),
+            ],
             const SizedBox(height: 12),
             Row(
               children: [

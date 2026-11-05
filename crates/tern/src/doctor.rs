@@ -248,6 +248,7 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
         },
     }
 
+    check_script_grants(&mut r, home, &config);
     check_shell_network(&mut r, home, &config);
 
     r.section("Autonomy");
@@ -698,6 +699,30 @@ fn check_database(r: &mut Report, path: &Path) {
             ),
             (Err(e), _) | (_, Err(e)) => r.check(Status::Fail, e.to_string(), None),
         },
+    }
+}
+
+/// Script grants (`python3 file.py` covered for a run) need the sandbox
+/// confirmed active, not just detected: say whether it is.
+fn check_script_grants(r: &mut Report, home: &TernHome, config: &Config) {
+    let v = crate::runtime::shell_sandbox_status(config, home);
+    let net = config.sandbox.network;
+    match &v {
+        tern_sandbox::Verification::Verified(how) if !net => r.check(
+            Status::Ok,
+            format!("sandbox verified active ({how}): python script grants can apply"),
+            None,
+        ),
+        tern_sandbox::Verification::Verified(_) => r.check(
+            Status::Info,
+            "sandbox is active, but sandbox.network = true: python script grants are off",
+            Some("Remove network = true under [sandbox] to allow script grants."),
+        ),
+        tern_sandbox::Verification::NotVerified(why) => r.check(
+            Status::Info,
+            format!("sandbox not verified active ({why}): python script grants are off, every script asks"),
+            Some("Run tern outside another sandbox on macOS, or on Linux with Landlock, and keep sandbox.confine = \"auto\"."),
+        ),
     }
 }
 

@@ -336,3 +336,57 @@ fn first_line(s: &str) -> String {
         None => String::new(),
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::{Confine, HostPolicy};
+
+    #[test]
+    fn no_confinement_is_never_verified() {
+        let ws = tempfile::tempdir().unwrap();
+        let b = HostBackend::unconfined();
+        let v = b.verify_fresh(ws.path());
+        assert!(!v.is_verified(), "{v:?}");
+        assert!(v.reason().unwrap().contains("off"), "{v:?}");
+        assert!(v.describe().starts_with("not verified"));
+    }
+
+    #[test]
+    fn a_missing_workspace_is_not_verified() {
+        let ws = tempfile::tempdir().unwrap();
+        let b = HostBackend::new(HostPolicy {
+            confine: Confine::Auto,
+            ..HostPolicy::default()
+        });
+        let v = b.verify_fresh(&ws.path().join("nope"));
+        assert!(!v.is_verified(), "{v:?}");
+    }
+
+    #[test]
+    fn a_probe_leaves_no_files_and_its_answer_is_cached() {
+        let ws = tempfile::tempdir().unwrap();
+        let b = HostBackend::default();
+        let first = b.verify_fresh(ws.path());
+        // Whatever the answer on this machine (a nested sandbox can't start
+        // another, and says so), nothing is left in the workspace.
+        let left: Vec<_> = std::fs::read_dir(ws.path()).unwrap().collect();
+        assert!(left.is_empty(), "{left:?}");
+        // Cached: the same answer without probing again.
+        assert_eq!(b.verify(ws.path()), first);
+    }
+
+    #[test]
+    fn the_outside_target_is_never_a_writable_place() {
+        let ws = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(ws.path()).unwrap();
+        let b = HostBackend::default();
+        if let Some(t) = b.outside_target(&ws) {
+            let roots = policy::writable_roots(&b.policy, &ws);
+            assert!(
+                !roots.iter().any(|r| t.starts_with(r)),
+                "{t:?} in {roots:?}"
+            );
+        }
+    }
+}

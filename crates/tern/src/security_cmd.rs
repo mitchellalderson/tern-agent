@@ -341,6 +341,23 @@ fn sandbox(a: &mut Audit, home: &TernHome, config: &Config) {
         ),
         (false, false) => {}
     }
+    let v = crate::runtime::shell_sandbox_status(config, home);
+    a.add(
+        Severity::Info,
+        "sandbox",
+        if v.is_verified() {
+            format!(
+                "sandbox confirmed active ({}): approved python scripts can be allowed for a run",
+                v.describe().trim_start_matches("verified: ")
+            )
+        } else {
+            format!(
+                "sandbox not confirmed active ({}): every python script asks",
+                v.reason().unwrap_or_default()
+            )
+        },
+        None,
+    );
 }
 
 fn egress(a: &mut Audit, config: &Config, store: Option<&Store>) {
@@ -608,6 +625,20 @@ fn grants(a: &mut Audit, store: &Store) {
                 everything.join(", ")
             ),
             Some("Review them with `tern grants`."),
+        );
+    }
+    let scripts = all
+        .iter()
+        .filter(|(t, p)| t == "shell" && p.starts_with("key:python script "))
+        .count();
+    if scripts > 0 {
+        a.add(
+            Severity::Info,
+            "grants",
+            format!(
+                "{scripts} python script(s) always allowed (each one exact file version and arguments; they never cover tainted runs or an unverified sandbox)"
+            ),
+            Some("Review or revoke them with `tern grants`."),
         );
     }
 }

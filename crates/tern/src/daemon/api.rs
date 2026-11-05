@@ -215,6 +215,17 @@ pub struct Info {
     /// gateway connectors alike, by name.
     #[serde(default)]
     pub gateways: Vec<InfoGateway>,
+    /// Whether the OS sandbox is confirmed active for shell commands. Script
+    /// grants ("allow this python script for this run") apply only then.
+    #[serde(default)]
+    pub sandbox: Option<InfoSandbox>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct InfoSandbox {
+    pub verified: bool,
+    /// One line: what confines commands, or why that isn't confirmed.
+    pub detail: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -239,7 +250,18 @@ async fn info(State(m): State<Shared>) -> Json<Info> {
         })
         .unwrap_or_default();
     gateways.sort_by(|a, b| a.name.cmp(&b.name));
+    let sandbox = {
+        let (config, home) = (m.rt.config.clone(), m.rt.home.clone());
+        tokio::task::spawn_blocking(move || crate::runtime::shell_sandbox_status(&config, &home))
+            .await
+            .ok()
+            .map(|v| InfoSandbox {
+                verified: v.is_verified(),
+                detail: v.describe(),
+            })
+    };
     Json(Info {
+        sandbox,
         gateways,
         default_model: m.rt.pick_model(None, None).ok().map(|x| x.to_string()),
         setup_needed: m.rt.setup_needed(),

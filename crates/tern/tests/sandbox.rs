@@ -257,3 +257,47 @@ fn which(cmd: &str) -> Option<PathBuf> {
         .map(|d| d.join(cmd))
         .find(|p| p.is_file())
 }
+
+/// The canary agrees with what the sandbox really does: "verified" only
+/// where a write outside the workspace and an outbound connection fail for
+/// a real command, and anything else says why. Inside another sandbox a
+/// second one can't start, so there this checks the fail-closed side.
+#[test]
+fn the_canary_verifies_only_a_sandbox_that_really_blocks() {
+    let ws = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let b = HostBackend::new(HostPolicy {
+        helper: Some(tern_bin()),
+        network: false,
+        ..HostPolicy::confined()
+    });
+    let v = b.verify_fresh(ws.path());
+    eprintln!("canary on this machine: {}", v.describe());
+    match (&v, b.confinement()) {
+        (tern_sandbox::Verification::Verified(how), c) => {
+            assert!(matches!(
+                c,
+                Confinement::Seatbelt | Confinement::Landlock { .. }
+            ));
+            assert!(how.contains("outbound"), "{how}");
+        }
+        (tern_sandbox::Verification::NotVerified(why), _) => assert!(!why.is_empty()),
+    }
+    // Cached, and no probe files left behind.
+    assert_eq!(b.verify(ws.path()), v);
+    assert_eq!(std::fs::read_dir(ws.path()).unwrap().count(), 0);
+    // Confinement off never verifies.
+    let off = HostBackend::new(HostPolicy {
+        confine: tern_sandbox::Confine::Off,
+        ..HostPolicy::confined()
+    });
+    assert!(!off.verify_fresh(ws.path()).is_verified());
+    // No helper to apply the sandbox (Linux): not verified.
+    let broken = HostBackend::new(HostPolicy {
+        helper: Some(ws.path().join("no-such-helper")),
+        network: false,
+        ..HostPolicy::confined()
+    });
+    if cfg!(target_os = "linux") {
+        assert!(!broken.verify_fresh(ws.path()).is_verified());
+    }
+}

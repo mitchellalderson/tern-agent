@@ -133,9 +133,17 @@ class Info {
     required this.tools,
     this.setupNeeded = false,
     this.gateways = const [],
+    this.sandbox,
   });
 
   factory Info.fromJson(Json j) => Info(
+    sandbox: switch (j['sandbox']) {
+      final Map<String, dynamic> s => (
+        verified: s['verified'] as bool? ?? false,
+        detail: s['detail'] as String? ?? '',
+      ),
+      _ => null,
+    },
     defaultModel: j['default_model'] as String?,
     setupNeeded: j['setup_needed'] as bool? ?? false,
     tools: [
@@ -160,6 +168,11 @@ class Info {
 
   /// No usable model yet: offer provider setup.
   final bool setupNeeded;
+
+  /// Whether the OS sandbox is confirmed active for shell commands (python
+  /// script grants apply only then), and a line saying what or why not.
+  /// Null from older daemons.
+  final ({bool verified, String detail})? sandbox;
 }
 
 class Started {
@@ -430,6 +443,7 @@ class Approval {
     this.egressHost,
     this.script,
     this.grant,
+    this.notice,
     this.count = 1,
   });
 
@@ -454,6 +468,7 @@ class Approval {
       final Map<String, dynamic> g => GrantOffer.fromJson(g),
       _ => null,
     },
+    notice: j['notice'] as String?,
     count: (j['count'] as num?)?.toInt() ?? 1,
   );
 
@@ -519,6 +534,12 @@ class Approval {
   /// tool, draft or set of hosts. Null in tainted runs and for destructive
   /// calls.
   final GrantOffer? grant;
+
+  /// A plain-words line from tern (never the agent's) for the card: what an
+  /// offered grant does not cover ("Imports from other files aren't
+  /// covered"), or why none is offered ("Not auto-approved: the sandbox
+  /// isn't confirmed active").
+  final String? notice;
 
   /// How many identical simultaneous requests this one card answers. A
   /// card whose count grows arrives again with the same [id].

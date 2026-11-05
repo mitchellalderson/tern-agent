@@ -297,6 +297,10 @@ impl ApprovalHandler for TerminalApprover {
             .taint_note()
             .map(|n| format!("⚠ {n}\n"))
             .unwrap_or_default();
+        let why = match &req.notice {
+            Some(n) => format!("{why}{n}\n"),
+            None => why,
+        };
         let egress = match &req.egress_host {
             Some(h) => format!(" / all sites this [r]un / always [h]ost {h}"),
             None => String::new(),

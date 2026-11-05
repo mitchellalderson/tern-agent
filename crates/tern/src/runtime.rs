@@ -1055,6 +1055,34 @@ fn python_tool(config: &Config, home: &TernHome) -> tern_python::Python {
     tern_python::Python::with_helper(limits, tern_python::Helper { program, sandbox })
 }
 
+/// The backend `shell` runs commands through.
+pub(crate) fn shell_backend(
+    config: &Config,
+    home: &TernHome,
+) -> Arc<dyn tern_sandbox::SandboxBackend> {
+    match config.sandbox.backend {
+        SandboxBackendKind::Host => {
+            Arc::new(tern_sandbox::HostBackend::new(host_policy(config, home)))
+        }
+        SandboxBackendKind::Docker => Arc::new(tern_sandbox::DockerBackend::new(
+            "docker",
+            &config.workspace_dir(),
+            docker_settings(config),
+        )),
+    }
+}
+
+/// Whether the OS sandbox is confirmed active for `shell` in the configured
+/// workspace (cached; see `tern_sandbox::HostBackend::verify`), for `tern
+/// doctor` and `/v1/info`. Script grants only apply when this is verified.
+pub fn shell_sandbox_status(config: &Config, home: &TernHome) -> tern_sandbox::Verification {
+    let workspace = config.workspace_dir();
+    if let Err(e) = std::fs::create_dir_all(&workspace) {
+        return tern_sandbox::Verification::not_verified(format!("workspace: {e}"));
+    }
+    shell_backend(config, home).verify(&workspace)
+}
+
 fn docker_settings(config: &Config) -> tern_sandbox::DockerSettings {
     let sb = &config.sandbox;
     tern_sandbox::DockerSettings {
@@ -1109,16 +1137,7 @@ fn build_tools(
     let schedules: tern_tools::schedule::Notify = Arc::new(move |id| {
         let _ = schedule_changes.send(Change::SchedulesChanged { id: id.to_owned() });
     });
-    let sandbox: Arc<dyn tern_sandbox::SandboxBackend> = match config.sandbox.backend {
-        SandboxBackendKind::Host => {
-            Arc::new(tern_sandbox::HostBackend::new(host_policy(config, home)))
-        }
-        SandboxBackendKind::Docker => Arc::new(tern_sandbox::DockerBackend::new(
-            "docker",
-            &config.workspace_dir(),
-            docker_settings(config),
-        )),
-    };
+    let sandbox = shell_backend(config, home);
     let mut registry = ToolRegistry::new();
     tern_tools::register_builtins(
         &mut registry,

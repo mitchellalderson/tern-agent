@@ -376,6 +376,11 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 out.push(Line::from(Span::styled(l, Style::new().fg(Color::Yellow))));
             }
         }
+        if let Some(note) = &p.request.notice {
+            for l in wrap(note, width) {
+                out.push(Line::from(Span::styled(l, Style::new().fg(Color::Cyan))));
+            }
+        }
         let mut options = vec![Span::styled("[y]", warn), Span::raw(" yes once   ")];
         if let Some(pattern) = &p.request.pattern {
             options.push(Span::styled("[a]", warn));

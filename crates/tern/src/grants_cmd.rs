@@ -40,6 +40,14 @@ pub fn run(home: &TernHome, command: Option<GrantsCommand>) -> anyhow::Result<Ex
 }
 
 fn describe(pattern: &str) -> String {
+    if let Some(key) = pattern.strip_prefix("key:") {
+        return match key.strip_prefix("python script ") {
+            Some(_) => format!(
+                "{pattern}   (this exact python script version with these arguments only; `tern grants remove shell '{pattern}'` revokes it)"
+            ),
+            None => format!("{pattern}   (one exact target, as shown when you approved it)"),
+        };
+    }
     match pattern.strip_prefix("host:") {
         Some(h) => format!("{pattern}   (reads from {h}, even after untrusted content)"),
         None if pattern == "*" => "*   (every call)".into(),
