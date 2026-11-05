@@ -6,7 +6,6 @@ pub mod fs;
 pub mod history;
 pub mod http;
 pub mod memory;
-pub mod paths;
 pub mod schedule;
 pub mod secret_request;
 pub mod shell;
@@ -24,8 +23,6 @@ use tern_sandbox::SandboxBackend;
 
 pub struct BuiltinOptions {
     pub store: tern_store::Store,
-    /// Paths the file tools refuse to touch.
-    pub guard: paths::Guard,
     pub skills_dir: std::path::PathBuf,
     pub sandbox: Arc<dyn SandboxBackend>,
     pub shell_timeout: Duration,
@@ -33,20 +30,9 @@ pub struct BuiltinOptions {
 
 /// Register the built-ins: file, shell, http, memory, and session search.
 pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> Result<(), String> {
-    let guard = Arc::new(opts.guard);
-    registry.register(Arc::new(fs::ReadFile {
-        guard: guard.clone(),
-    }));
-    registry.register(Arc::new(fs::ListDir {
-        guard: guard.clone(),
-    }));
-    registry.register(Arc::new(fs::SearchFiles {
-        guard: guard.clone(),
-    }));
-    registry.register(Arc::new(fs::WriteFile {
-        guard: guard.clone(),
-    }));
-    registry.register(Arc::new(fs::EditFile { guard }));
+    for tool in fs::all() {
+        registry.register(tool);
+    }
     registry.register(Arc::new(shell::Shell::new(
         opts.sandbox,
         opts.shell_timeout,

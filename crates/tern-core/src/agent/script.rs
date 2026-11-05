@@ -403,6 +403,10 @@ impl Agent {
                 self.tools.forget_plans(&s.run.id, Some(&call.id));
                 return refuse(approval::READONLY_MESSAGE.to_owned());
             }
+            Check::Unbounded => {
+                self.tools.forget_plans(&s.run.id, Some(&call.id));
+                return refuse(approval::UNBOUNDED_MESSAGE.to_owned());
+            }
             Check::Allow => recorded,
             Check::Ask { .. } => !host_granted || recorded,
         };

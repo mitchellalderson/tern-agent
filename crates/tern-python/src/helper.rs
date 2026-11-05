@@ -73,7 +73,14 @@ impl Helper {
         let program: Vec<OsString> = vec![self.program.clone().into(), HELPER_ARG.into()];
         let argv = match &self.sandbox {
             Some(sb) => sb
-                .confine_argv(program, &job.workspace)
+                .confine_argv_reading(
+                    program,
+                    &job.workspace,
+                    &job.read_roots
+                        .iter()
+                        .map(|(_, p)| p.clone())
+                        .collect::<Vec<_>>(),
+                )
                 .map_err(|e| format!("could not start the interpreter: {e}"))?,
             None => program,
         };

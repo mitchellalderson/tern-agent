@@ -380,10 +380,10 @@ async fn an_agents_outbox_item_waits_in_its_dm_and_closes_when_approved() {
     let env = Env::with_config(
         &json!({ "conversations": [
             { "matches": "Save it", "turns": [
-                // Outside the workspace: a write that asks. Approved below
-                // with an edit that keeps it inside, so nothing lands here.
-                { "text": "Saving.", "tool_calls": [{ "name": "write_file",
-                    "input": { "path": "/tmp/tern-t3-dm-outside.txt", "content": "x" } }] },
+                // A command always asks. Approved below with an edit that
+                // makes it a no-op.
+                { "text": "Saving.", "tool_calls": [{ "name": "shell",
+                    "input": { "command": "echo saving" } }] },
                 { "text": "It waits for you." }
             ]}
         ]}),
@@ -394,7 +394,7 @@ async fn an_agents_outbox_item_waits_in_its_dm_and_closes_when_approved() {
     let (code, a) = post(
         &s,
         "/v1/agents",
-        json!({ "name": "Scout", "tools": { "builtins": ["write_file"], "connectors": [], "mcp": [] } }),
+        json!({ "name": "Scout", "tools": { "builtins": ["shell"], "connectors": [], "mcp": [] } }),
     )
     .await;
     assert_eq!(code, 201, "{a}");
@@ -417,7 +417,7 @@ async fn an_agents_outbox_item_waits_in_its_dm_and_closes_when_approved() {
     let (code, _) = post(
         &s,
         &format!("/v1/outbox/{id}/approve"),
-        json!({ "input": { "path": "inside.txt", "content": "x" } }),
+        json!({ "input": { "command": "true" } }),
     )
     .await;
     assert_eq!(code, 200);

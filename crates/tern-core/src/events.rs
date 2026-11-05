@@ -103,6 +103,18 @@ pub enum AgentEvent {
         run_id: String,
         usage: Usage,
     },
+    /// A file call was refused because it left the run's folder (or was
+    /// aimed at something protected): the signal that a model is probing the
+    /// boundary. Also written to the ledger as `workspace_refused`.
+    WorkspaceRefused {
+        run_id: String,
+        tool: String,
+        /// The path as the model wrote it.
+        path: String,
+        /// `outside`, `denied`, `special`, `moved`, `read_only`, `invalid`.
+        kind: String,
+        message: String,
+    },
     RunFinished {
         run_id: String,
         status: String,
@@ -131,6 +143,7 @@ impl AgentEvent {
             | Self::Retrying { run_id, .. }
             | Self::Compacted { run_id, .. }
             | Self::Usage { run_id, .. }
+            | Self::WorkspaceRefused { run_id, .. }
             | Self::RunFinished { run_id, .. } => run_id,
         }
     }

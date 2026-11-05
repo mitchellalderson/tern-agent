@@ -68,6 +68,8 @@ async fn run_for(b: &HostBackend, ws: &Path, cmd: &str, timeout: Duration) -> Ex
             max_output: 64 * 1024,
             on_output: None,
             network: false,
+            env: Vec::new(),
+            read_roots: Vec::new(),
         },
         CancellationToken::new(),
     )
@@ -191,6 +193,8 @@ async fn network_off_blocks_ip_connections() {
             max_output: 64 * 1024,
             on_output: None,
             network: true,
+            env: Vec::new(),
+            read_roots: Vec::new(),
         },
         CancellationToken::new(),
     )

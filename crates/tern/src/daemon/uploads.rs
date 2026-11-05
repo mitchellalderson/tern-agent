@@ -14,7 +14,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::io::AsyncWriteExt;
 
 use super::manager::Manager;
 
@@ -73,32 +72,39 @@ async fn upload(
         };
         let name = clean_name(raw).ok_or_else(|| bad("the file needs a name"))?;
         let rel = format!("uploads/{}/{name}", uuid::Uuid::now_v7());
-        let path = m.rt.config.workspace_dir().join(&rel);
-        let internal =
-            |e: std::io::Error| UploadError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
-        if let Some(dir) = path.parent() {
-            tokio::fs::create_dir_all(dir).await.map_err(internal)?;
-        }
-        let mut file = tokio::fs::File::create(&path).await.map_err(internal)?;
-        let mut size = 0u64;
+        // The folder of the conversation the file is for, through the same
+        // capability handle the file tools use: a symlinked `uploads` can't
+        // redirect the write outside it.
+        let scope = tern_core::workspace::WorkspaceScope::for_dir_guarded(
+            m.rt.config.workspace_dir(),
+            m.rt.deny.clone(),
+        );
+        let mut bytes: Vec<u8> = Vec::new();
         loop {
             match field.chunk().await {
                 Ok(Some(chunk)) => {
-                    size += chunk.len() as u64;
-                    file.write_all(&chunk).await.map_err(internal)?;
+                    if bytes.len() + chunk.len() > UPLOAD_LIMIT {
+                        return Err(UploadError(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            format!("the file is over {} MB", UPLOAD_LIMIT / (1024 * 1024)),
+                        ));
+                    }
+                    bytes.extend_from_slice(&chunk);
                 }
                 Ok(None) => break,
-                Err(e) => {
-                    drop(file);
-                    let _ = tokio::fs::remove_file(&path).await;
-                    if let Some(dir) = path.parent() {
-                        let _ = tokio::fs::remove_dir(dir).await;
-                    }
-                    return Err(UploadError(e.status(), e.body_text()));
-                }
+                Err(e) => return Err(UploadError(e.status(), e.body_text())),
             }
         }
-        file.flush().await.map_err(internal)?;
+        let size = bytes.len() as u64;
+        let (target, data) = (rel.clone(), bytes);
+        let s2 = scope.clone();
+        tokio::task::spawn_blocking(move || s2.write_file(&target, &data))
+            .await
+            .map_err(|e| UploadError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(|e| {
+                let msg = scope.fail("upload", &rel, e);
+                UploadError(StatusCode::INTERNAL_SERVER_ERROR, msg)
+            })?;
         tracing::info!(path = %rel, size, "file uploaded");
         return Ok(Json(Uploaded { path: rel, size }));
     }

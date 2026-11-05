@@ -224,8 +224,8 @@ async fn sub_agent_and_delegated_approvals_wait_in_the_top_level_conversation() 
             { "text": "Counted." }
         ]},
         { "matches": "Draft the permit note", "turns": [
-            { "text": "", "tool_calls": [{ "name": "write_file",
-                "input": { "path": "/tmp/tern-in-place-permit.txt", "content": "permit" } }] },
+            { "text": "", "tool_calls": [{ "name": "shell",
+                "input": { "command": "echo permit" } }] },
             { "text": "Drafted." }
         ]},
         { "matches": "Split it up", "turns": [
@@ -242,7 +242,7 @@ async fn sub_agent_and_delegated_approvals_wait_in_the_top_level_conversation() 
     post(
         &s,
         "/v1/agents",
-        json!({ "name": "Writer", "model": "mock:writer" }),
+        json!({ "name": "Writer", "model": "mock:writer", "tools": { "builtins": ["shell"], "connectors": [], "mcp": [] } }),
     )
     .await;
     post(&s, "/v1/channels", json!({ "slug": "renovation" })).await;
@@ -387,8 +387,8 @@ async fn a_routines_requests_wait_in_the_channel_it_posts_to() {
 async fn an_agents_dm_run_asks_in_its_dm() {
     let env = Env::new(&json!({ "conversations": [
         { "matches": "Tidy the notes", "turns": [
-            { "text": "", "tool_calls": [{ "name": "write_file",
-                "input": { "path": "/tmp/tern-in-place-notes.txt", "content": "tidy" } }] },
+            { "text": "", "tool_calls": [{ "name": "shell",
+                "input": { "command": "echo tidy" } }] },
             { "text": "Tidied." }
         ]}
     ]}));
@@ -397,7 +397,7 @@ async fn an_agents_dm_run_asks_in_its_dm() {
     post(
         &s,
         "/v1/agents",
-        json!({ "name": "Notes", "model": "mock:notes" }),
+        json!({ "name": "Notes", "model": "mock:notes", "tools": { "builtins": ["shell"], "connectors": [], "mcp": [] } }),
     )
     .await;
     let dm = dm(&s, "notes").await;

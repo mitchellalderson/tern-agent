@@ -251,6 +251,10 @@ impl SandboxBackend for DockerBackend {
         self.settings.network
     }
 
+    fn is_container(&self) -> bool {
+        true
+    }
+
     async fn exec(
         &self,
         cmd: &str,
@@ -266,14 +270,13 @@ impl SandboxBackend for DockerBackend {
         let cwd = self.container_cwd(&opts.cwd);
         let mut command = Command::new(&self.docker);
         command
-            .args([
-                "exec",
-                "-w",
-                &cwd,
-                "-e",
-                &format!("TERN_EXEC_ID={id}"),
-                &self.container,
-            ])
+            .args(["exec", "-w", &cwd, "-e", &format!("TERN_EXEC_ID={id}")])
+            .args(
+                opts.env
+                    .iter()
+                    .flat_map(|(k, v)| ["-e".to_owned(), format!("{k}={v}")]),
+            )
+            .arg(&self.container)
             .args(["sh", "-c", WRAPPER, "tern-sh", cmd])
             // `docker exec` passes no host environment into the container;
             // the CLI itself only needs enough to find the daemon.
@@ -385,6 +388,8 @@ esac
             max_output: 4096,
             on_output: None,
             network: false,
+            env: Vec::new(),
+            read_roots: Vec::new(),
         }
     }
 

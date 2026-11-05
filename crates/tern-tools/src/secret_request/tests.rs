@@ -73,7 +73,7 @@ fn tool(env: &Env, asker: Arc<dyn ApprovalHandler>) -> SecretRequest {
 
 fn ctx(run: &str) -> ToolCtx {
     ToolCtx {
-        workspace: std::env::temp_dir(),
+        scope: tern_core::workspace::WorkspaceScope::for_dir(std::env::temp_dir()),
         run_id: run.into(),
         session_id: "s".into(),
         cancel: CancellationToken::new(),

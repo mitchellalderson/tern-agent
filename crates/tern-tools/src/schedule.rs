@@ -1069,7 +1069,7 @@ mod tests {
             .create_session_with_ref("chat", "telegram", "555", None)
             .unwrap();
         let ctx = ToolCtx {
-            workspace: std::env::temp_dir(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(std::env::temp_dir()),
             run_id: "r".into(),
             session_id: "chat".into(),
             cancel: CancellationToken::new(),
@@ -1176,7 +1176,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         store.create_session("s", "api", None).unwrap();
         let ctx = ToolCtx {
-            workspace: std::env::temp_dir(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(std::env::temp_dir()),
             run_id: "r".into(),
             session_id: "s".into(),
             cancel: CancellationToken::new(),
@@ -1256,7 +1256,7 @@ mod tests {
             .unwrap();
         store.create_session("home", "api", None).unwrap();
         let ctx = |session: &str| ToolCtx {
-            workspace: std::env::temp_dir(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(std::env::temp_dir()),
             run_id: "r".into(),
             session_id: session.into(),
             cancel: CancellationToken::new(),
@@ -1347,7 +1347,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         store.create_session("s", "api", None).unwrap();
         let ctx = ToolCtx {
-            workspace: std::env::temp_dir(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(std::env::temp_dir()),
             run_id: "r".into(),
             session_id: "s".into(),
             cancel: CancellationToken::new(),
@@ -1417,7 +1417,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         store.create_session("s", "api", None).unwrap();
         let ctx = ToolCtx {
-            workspace: std::env::temp_dir(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(std::env::temp_dir()),
             run_id: "r".into(),
             session_id: "s".into(),
             cancel: CancellationToken::new(),

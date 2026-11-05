@@ -129,6 +129,8 @@ pub struct Runtime {
     pub auth_targets: tern_auth::tools::Targets,
     /// Set when `TERN_PROVIDER=mock:<script>` overrides real providers.
     pub mock: bool,
+    /// What file tools must never touch (tern's data directory).
+    pub deny: Arc<tern_core::workspace::DenySet>,
 }
 
 impl Runtime {
@@ -240,6 +242,8 @@ impl Runtime {
             .with_secrets(secrets.clone())
             .with_crash_after_from_env();
 
+        // What file tools never touch, by identity (tern's data directory).
+        let deny = Arc::new(tern_core::workspace::DenySet::for_data_dir(home.root()));
         let agent = Agent::new(
             journal.clone(),
             providers,
@@ -247,6 +251,7 @@ impl Runtime {
             approvals,
             AgentConfig {
                 workspace: canonical(workspace),
+                deny: deny.clone(),
                 max_iterations: config.max_iterations,
                 default_context_window: config.context_window,
                 context_windows: config
@@ -319,6 +324,7 @@ impl Runtime {
             auth: auth_host,
             auth_targets: targets,
             mock,
+            deny,
         };
         rt.seed_starter_agents();
         rt.refresh_agent_chains();
@@ -1266,7 +1272,6 @@ fn build_tools(
         &mut registry,
         tern_tools::BuiltinOptions {
             store: store.clone(),
-            guard: tern_tools::paths::Guard::for_data_dir(home.root()),
             skills_dir: home.skills_dir(),
             sandbox,
             shell_timeout: Duration::from_secs(config.sandbox.shell_timeout_secs),

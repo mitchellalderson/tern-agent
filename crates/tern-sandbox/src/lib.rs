@@ -60,6 +60,15 @@ pub struct ExecOpts {
     /// IP networking for this command even when the backend's default is
     /// off (an approved `shell` call with `network: true`).
     pub network: bool,
+    /// Environment set on top of the scrubbed one (the run's workspace-local
+    /// `TMPDIR` and tool caches).
+    pub env: Vec<(String, String)>,
+    /// Extra read-only folders for this command (the workspace's user-added
+    /// read roots), granted in addition to the policy's `read_paths`. This is
+    /// also the input the macOS read-denial phase builds on: the profile will
+    /// deny reads under `/Users` and `/Volumes` except the workspace, these
+    /// roots and the detected toolchain directories.
+    pub read_roots: Vec<PathBuf>,
 }
 
 /// Live output is batched for this long before it is handed to the sink.
@@ -95,6 +104,12 @@ pub trait SandboxBackend: Send + Sync {
     /// Whether the OS sandbox is confirmed active for commands run in
     /// `workspace` (see [`HostBackend::verify`]). A backend that can't be
     /// probed says so: nothing may waive an approval on its account.
+    /// Whether commands run in a container (so confinement is by mounts and
+    /// can't be probed), as opposed to a sandbox on this machine.
+    fn is_container(&self) -> bool {
+        false
+    }
+
     fn verify(&self, _workspace: &Path) -> Verification {
         Verification::not_verified("this backend's confinement can't be probed")
     }
@@ -214,14 +229,17 @@ impl HostBackend {
         cmd: &str,
         cwd: &Path,
         network: bool,
+        read_roots: &[PathBuf],
     ) -> Result<Vec<std::ffi::OsString>, SandboxError> {
-        let networked;
-        let policy = if network && !self.policy.network {
-            networked = HostPolicy {
-                network: true,
+        let adjusted;
+        let policy = if (network && !self.policy.network) || !read_roots.is_empty() {
+            let mut p = HostPolicy {
+                network: self.policy.network || network,
                 ..self.policy.clone()
             };
-            &networked
+            p.read_paths.extend(read_roots.iter().cloned());
+            adjusted = p;
+            &adjusted
         } else {
             &self.policy
         };
@@ -243,6 +261,22 @@ impl HostBackend {
         cwd: &Path,
     ) -> Result<Vec<std::ffi::OsString>, SandboxError> {
         self.wrap(&self.policy, program, cwd)
+    }
+
+    /// [`HostBackend::confine_argv`] with extra read-only folders (the run's
+    /// user-added read roots, which the interpreter mounts).
+    pub fn confine_argv_reading(
+        &self,
+        program: Vec<std::ffi::OsString>,
+        cwd: &Path,
+        read_roots: &[PathBuf],
+    ) -> Result<Vec<std::ffi::OsString>, SandboxError> {
+        if read_roots.is_empty() {
+            return self.confine_argv(program, cwd);
+        }
+        let mut policy = self.policy.clone();
+        policy.read_paths.extend(read_roots.iter().cloned());
+        self.wrap(&policy, program, cwd)
     }
 
     fn wrap(
@@ -412,7 +446,7 @@ impl SandboxBackend for HostBackend {
         opts: ExecOpts,
         cancel: CancellationToken,
     ) -> Result<ExecOutput, SandboxError> {
-        let argv = self.argv(cmd, &opts.cwd, opts.network)?;
+        let argv = self.argv(cmd, &opts.cwd, opts.network, &opts.read_roots)?;
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| SandboxError::Spawn(std::io::Error::other("empty command")))?;
@@ -423,6 +457,7 @@ impl SandboxBackend for HostBackend {
                 .iter()
                 .filter_map(|k| std::env::var_os(k).map(|v| (k, v))),
         );
+        command.envs(opts.env.iter().map(|(k, v)| (k, v)));
         run_captured(command, &opts, &cancel, || async {}).await
     }
 }
@@ -669,6 +704,8 @@ mod tests {
             max_output: 1024,
             on_output: None,
             network: false,
+            env: Vec::new(),
+            read_roots: Vec::new(),
         }
     }
 

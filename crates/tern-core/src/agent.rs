@@ -3,7 +3,7 @@
 //! again from step 0: completed steps replay from storage.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +28,7 @@ use crate::types::{
     AssistantTurn, ChatRequest, ContentBlock, Message, Provider, ProviderError, Role, StopReason,
     StreamEvent, ToolCall, Usage,
 };
+use crate::workspace::WorkspaceScope;
 
 mod carry;
 mod channel;
@@ -63,7 +64,11 @@ pub type ProviderFactory =
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
+    /// The default workspace's folder: what a run with no workspace frozen
+    /// on it (one that predates workspaces) reaches.
     pub workspace: PathBuf,
+    /// What file tools must never touch (tern's data directory).
+    pub deny: Arc<crate::workspace::DenySet>,
     pub max_iterations: u32,
     pub max_tokens: u32,
     pub approval_timeout: Duration,
@@ -88,6 +93,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             workspace: PathBuf::from("."),
+            deny: Arc::default(),
             max_iterations: 40,
             max_tokens: 8192,
             approval_timeout: Duration::from_secs(600),
@@ -175,6 +181,8 @@ pub struct Agent {
     cfg: AgentConfig,
     subagents: HostSlot,
     scoped: std::sync::Mutex<ScopedGrants>,
+    /// The open workspace handle of each run being driven.
+    scopes: std::sync::Mutex<std::collections::HashMap<String, Arc<WorkspaceScope>>>,
 }
 
 /// Grants of "allow for this run" and "allow for this conversation", keyed
@@ -225,7 +233,84 @@ impl Agent {
             cfg,
             subagents: HostSlot::default(),
             scoped: Default::default(),
+            scopes: Default::default(),
         }
+    }
+
+    /// The workspace `run` reaches, opened once and held while it is driven:
+    /// the folder frozen on the run (`workspace_root`, narrowed to
+    /// `workspace_subdir`) with its read-only extra folders, or the default
+    /// workspace for a run that has none frozen. A folder that can't be
+    /// opened gives a scope that refuses every file call and says why.
+    pub fn scope_for(&self, run: &RunRow) -> Arc<WorkspaceScope> {
+        if let Ok(m) = self.scopes.lock()
+            && let Some(s) = m.get(&run.id)
+        {
+            return s.clone();
+        }
+        let id = "default";
+        let root = self.cfg.workspace.clone();
+        let ro: Vec<Arc<crate::workspace::ReadRoot>> = Vec::new();
+        let sub: Option<&Path> = None;
+        let sink = self.refusal_sink(run);
+        let scope = match WorkspaceScope::open(
+            id,
+            &root,
+            sub,
+            self.cfg.deny.clone(),
+            ro,
+            crate::workspace::FsFlags::default(),
+        ) {
+            Ok(s) => s.with_sink(sink),
+            Err(e) => {
+                tracing::warn!(run = %run.id, error = %e, "the run's folder isn't available");
+                WorkspaceScope::closed(id, root, e.message().to_owned()).with_sink(sink)
+            }
+        };
+        let scope = Arc::new(scope);
+        if let Ok(mut m) = self.scopes.lock() {
+            m.insert(run.id.clone(), scope.clone());
+        }
+        scope
+    }
+
+    fn forget_scope(&self, run_id: &str) {
+        if let Ok(mut m) = self.scopes.lock() {
+            m.remove(run_id);
+        }
+    }
+
+    /// Where a refused file call goes: the ledger (`workspace_refused`) and
+    /// the run stream.
+    fn refusal_sink(&self, run: &RunRow) -> crate::workspace::RefusalSink {
+        let store = self.store.clone();
+        let events = self.events.clone();
+        let (run_id, session_id) = (run.id.clone(), run.session_id.clone());
+        Arc::new(move |r| {
+            let entry = tern_store::LedgerEntry::new(
+                "workspace_refused",
+                &r.tool,
+                format!("refused {} {:?}: {}", r.tool, r.path, r.kind.as_str()),
+            )
+            .actor(tern_store::ACTOR_TERN)
+            .run(&run_id, &session_id)
+            .detail(serde_json::json!({
+                "kind": r.kind.as_str(),
+                "path": r.path,
+                "workspace": r.workspace_id,
+                "root": r.workspace_root.display().to_string(),
+            }));
+            if let Err(e) = store.ledger_append(&entry) {
+                tracing::warn!(error = %e, "couldn't record a refused file call");
+            }
+            let _ = events.send(AgentEvent::WorkspaceRefused {
+                run_id: run_id.clone(),
+                tool: r.tool,
+                path: r.path,
+                kind: r.kind.as_str().to_owned(),
+                message: r.message,
+            });
+        })
     }
 
     /// Whether a grant for exactly `key` of `tool` holds for `run`: given
@@ -409,6 +494,7 @@ impl Agent {
         // Whatever the tools planned for this run's calls dies with it, however
         // it ended (completed, failed, cancelled).
         self.tools.forget_plans(&run.id, None);
+        self.forget_scope(&run.id);
         match result {
             Ok(status) => outcome.status = status,
             Err(e) => {
@@ -458,7 +544,7 @@ impl Agent {
         // A call from an MCP client runs no model.
         if run.trigger == mcp::TRIGGER {
             let ctx = ToolCtx {
-                workspace: self.cfg.workspace.clone(),
+                scope: self.scope_for(run),
                 run_id: run.id.clone(),
                 session_id: run.session_id.clone(),
                 cancel: cancel.clone(),
@@ -474,7 +560,7 @@ impl Agent {
         let provider = (self.providers)(&model)?;
         let system = run.system_prompt.clone().unwrap_or_default();
         let ctx = ToolCtx {
-            workspace: self.cfg.workspace.clone(),
+            scope: self.scope_for(run),
             run_id: run.id.clone(),
             session_id: run.session_id.clone(),
             cancel: cancel.clone(),
@@ -1051,6 +1137,12 @@ impl Agent {
                 let why = approval::READONLY_MESSAGE.to_owned();
                 return Ok((ApprovalOutcome::Denied, why));
             }
+            approval::Check::Unbounded => {
+                tracing::warn!(run = %run.id, tool = %call.name, "refused an unconfined command in an unattended run");
+                self.ledger_unbounded(run, call)?;
+                let why = approval::UNBOUNDED_MESSAGE.to_owned();
+                return Ok((ApprovalOutcome::Denied, why));
+            }
             approval::Check::Ask { effect, always } => {
                 // No scoped grant for a destructive effect (`always` is
                 // false there) or in a tainted run. `always` alone is not
@@ -1396,7 +1488,7 @@ impl Agent {
                             out.usage = turn.usage;
                             answered = turn.fallback.clone();
                             let ctx = ToolCtx {
-                                workspace: self.cfg.workspace.clone(),
+                                scope: self.scope_for(run),
                                 run_id: run.id.clone(),
                                 session_id: run.session_id.clone(),
                                 cancel: cancel.clone(),

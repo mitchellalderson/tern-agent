@@ -1716,7 +1716,7 @@ mod tests {
             host.report(&row, None).unwrap();
         }
         let ctx = ToolCtx {
-            workspace: std::path::PathBuf::new(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(std::path::PathBuf::new()),
             run_id: "p".into(),
             session_id: "s-p".into(),
             cancel: CancellationToken::new(),

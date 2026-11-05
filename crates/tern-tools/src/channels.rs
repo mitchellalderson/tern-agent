@@ -621,7 +621,7 @@ mod tests {
             store.set_run_taint("r", t).unwrap();
         }
         let ctx = ToolCtx {
-            workspace: std::env::temp_dir(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(std::env::temp_dir()),
             run_id: "r".into(),
             session_id: "s".into(),
             cancel: CancellationToken::new(),
@@ -689,7 +689,7 @@ mod tests {
             )
             .unwrap();
         ToolCtx {
-            workspace: std::env::temp_dir(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(std::env::temp_dir()),
             run_id: id.into(),
             session_id: id.into(),
             cancel: CancellationToken::new(),

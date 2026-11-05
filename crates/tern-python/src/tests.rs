@@ -9,7 +9,7 @@ use super::*;
 
 fn ctx(workspace: &std::path::Path) -> ToolCtx {
     ToolCtx {
-        workspace: workspace.to_owned(),
+        scope: tern_core::workspace::WorkspaceScope::for_dir(workspace.to_owned()),
         run_id: "r".into(),
         session_id: "s".into(),
         cancel: CancellationToken::new(),
