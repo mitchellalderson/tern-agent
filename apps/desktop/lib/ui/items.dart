@@ -516,6 +516,9 @@ class _ApprovalCardState extends State<ApprovalCard> {
             child: Text(
               outcome == 'deferred'
                   ? 'Nobody answered, so it waits in the outbox: ${a.summary}'
+                  : outcome == 'approved_by_grant'
+                  // Not an answer: an earlier one for the same thing covered it.
+                  ? 'Covered by a grant: ${a.summary}'
                   : '${outcome[0].toUpperCase()}${outcome.substring(1)}: ${a.summary}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,

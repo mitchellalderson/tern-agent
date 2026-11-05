@@ -167,6 +167,7 @@ const approvedOutcomes = {
   'approved',
   'always allowed',
   'approved_for_run',
+  'approved_by_grant',
   'allowed for this run',
   'allowed for this conversation',
   'allowed all sites for this run',
@@ -219,7 +220,8 @@ String approvalLabel(String tool, String summary) {
         when post.approvalId != null &&
             post.kind == 'needs_you' &&
             post.resolvedAt != null &&
-            post.text.startsWith('Approved'):
+            (post.text.startsWith('Approved') ||
+                post.text.startsWith('Covered by a grant')):
       // "Approved for this run: connector_test draft x.y (…)".
       final colon = post.text.indexOf(': ');
       if (colon < 0) return null;

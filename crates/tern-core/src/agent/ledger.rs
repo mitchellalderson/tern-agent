@@ -29,6 +29,7 @@ pub(crate) fn decision_label(d: Option<Decision>) -> &'static str {
         Some(Decision::AllowRun) => "allowed for this run",
         Some(Decision::AlwaysAllowHost) => "always allowed the site",
         Some(Decision::AllowSession) => "allowed for this conversation",
+        Some(Decision::CoveredByGrant) => "covered by a grant",
         Some(Decision::Deny) => "denied",
         Some(Decision::Unanswered) => "unanswered",
         None => "timed out",
@@ -73,7 +74,12 @@ impl Agent {
                 // What a scoped answer covers: this key, in that scope.
                 "grant": req.grant.as_ref().filter(|_| matches!(
                     decision,
-                    Some(Decision::AllowRun | Decision::AllowSession | Decision::AlwaysAllow)
+                    Some(
+                        Decision::AllowRun
+                            | Decision::AllowSession
+                            | Decision::AlwaysAllow
+                            | Decision::CoveredByGrant
+                    )
                 )),
                 "taint": req.taint,
                 "egress_host": req.egress_host,

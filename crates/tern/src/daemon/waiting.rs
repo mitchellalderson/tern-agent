@@ -230,6 +230,7 @@ pub(crate) fn close_approval(w: Option<Waiting>, d: &Decision) {
             Decision::AlwaysAllow => "Approved always",
             Decision::AllowRun => "Approved for this run",
             Decision::AllowSession => "Approved for this conversation",
+            Decision::CoveredByGrant => "Covered by a grant",
             Decision::AlwaysAllowHost => "Approved this site always",
             Decision::Deny => "Denied",
             Decision::Unanswered => "Not answered in time",

@@ -10,6 +10,7 @@ use crate::tool::GrantKey;
 struct Keyed {
     name: &'static str,
     effect: Effect,
+    always: bool,
     calls: AtomicU32,
 }
 
@@ -18,9 +19,120 @@ impl Keyed {
         Arc::new(Self {
             name,
             effect,
+            always: false,
             calls: AtomicU32::new(0),
         })
     }
+
+    /// Like `new`, but also allows an "always" command pattern.
+    fn with_pattern(name: &'static str, effect: Effect) -> Arc<Self> {
+        Arc::new(Self {
+            name,
+            effect,
+            always: true,
+            calls: AtomicU32::new(0),
+        })
+    }
+}
+
+/// A run tainted from the start.
+fn tainted_run(h: &Harness) -> String {
+    let model: ModelRef = "script:m".parse().unwrap();
+    let input = Journal::new(h.store.clone())
+        .to_row(&Message::user_text("from a stranger"))
+        .unwrap();
+    h.store
+        .create_run(
+            &tern_store::NewRun {
+                id: "tainted",
+                session_id: &h.session,
+                trigger: "telegram",
+                model: &model.to_string(),
+                system_prompt: "system",
+                taint: Some("message from a non-paired sender"),
+                ..tern_store::NewRun::default()
+            },
+            &input,
+        )
+        .unwrap()
+        .id
+}
+
+#[tokio::test]
+async fn a_tainted_run_offers_no_grant_even_for_a_taint_contained_tool() {
+    // `channel_post` keeps its grants in a tainted run, so `check` asks as
+    // if clean; the grant offer must still test the run's taint.
+    let h = Harness::new();
+    let tool = Keyed::new("channel_post", Effect::Write);
+    let asks = Answer::new(Decision::AllowOnce);
+    let script = Arc::new(Script::new(vec![
+        call("channel_post", "a", 1),
+        Reply::Text("ok"),
+    ]));
+    let agent = h.agent(script, vec![tool], asks.clone());
+    let run = tainted_run(&h);
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let asked = asks.asked();
+    assert_eq!(asked.len(), 1);
+    assert!(
+        asked[0].grant.is_none() && asked[0].taint.is_some(),
+        "{asked:?}"
+    );
+}
+
+#[tokio::test]
+async fn always_with_both_a_pattern_and_a_grant_stores_the_key_only() {
+    let h = Harness::new();
+    let tool = Keyed::with_pattern("shell", Effect::Write);
+    let asks = Answer::new(Decision::AlwaysAllow);
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("shell", json!({"command": "echo hi", "target": "a"})),
+        Reply::Text("ok"),
+    ]));
+    let agent = h.agent(script, vec![tool], asks.clone());
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let asked = asks.asked();
+    // One meaning of "always": the prompt offers the key, not the pattern.
+    assert!(
+        asked[0].pattern.is_none() && asked[0].grant.is_some(),
+        "{asked:?}"
+    );
+    assert_eq!(
+        h.store.allowlist("shell").unwrap(),
+        ["key:target a#abc".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn a_call_covered_by_a_grant_runs_and_the_ledger_says_so() {
+    let h = Harness::new();
+    let tool = Keyed::new("keyed", Effect::Read);
+    let asks = Answer::new(Decision::CoveredByGrant);
+    let script = Arc::new(Script::new(vec![call("keyed", "a", 1), Reply::Text("ok")]));
+    let agent = h.agent(script, vec![tool.clone()], asks);
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    let rows = h
+        .store
+        .ledger(&tern_store::LedgerFilter {
+            kind: Some("approval".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let e = &rows[0].entry;
+    assert!(
+        e.summary.starts_with("covered by a grant: "),
+        "{}",
+        e.summary
+    );
+    assert_eq!(e.detail.as_ref().unwrap()["decision"], "covered by a grant");
+    assert_eq!(e.detail.as_ref().unwrap()["grant"]["key"], "target a#abc");
+    // The journaled outcome says so too, for clients.
+    let step = &h.store.steps(&run).unwrap()[1];
+    assert_eq!(step.kind, "approval");
+    assert_eq!(step.output_json.as_deref(), Some("\"approved_by_grant\""));
 }
 
 #[async_trait]
@@ -39,7 +151,7 @@ impl Tool for Keyed {
         ToolPolicy::new(self.effect, false).forced(true)
     }
     fn allow_always(&self) -> bool {
-        false
+        self.always
     }
     fn grant_key(&self, args: &Value) -> Option<GrantKey> {
         let t = args["target"].as_str()?;

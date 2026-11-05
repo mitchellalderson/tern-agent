@@ -244,6 +244,24 @@ void main() {
     });
   });
 
+  testWidgets('a call covered by a grant says so, not "Approved"', (
+    tester,
+  ) async {
+    await _pump(tester, _answered('a1', 'approved_by_grant'));
+    expect(find.textContaining('Covered by a grant: connector_test'), findsOne);
+    expect(find.textContaining('Approved:'), findsNothing);
+  });
+
+  test('a covered call groups with the approvals of the same thing', () {
+    final out = groupApprovals([
+      _answered('a1'),
+      _work(),
+      _answered('a2', 'approved_by_grant'),
+      _work(),
+    ]);
+    expect((out.single as ApprovalGroupItem).count, 2);
+  });
+
   group('the grouped row', () {
     testWidgets('says how many were approved and expands to the items', (
       tester,

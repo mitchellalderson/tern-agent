@@ -689,7 +689,7 @@ impl Agent {
                         .await;
                     idx += 1;
                     match decision {
-                        Ok(ApprovalOutcome::Approved) => {}
+                        Ok(ApprovalOutcome::Approved | ApprovalOutcome::ApprovedByGrant) => {}
                         Ok(ApprovalOutcome::ApprovedForRun) => taint.allow_all_egress(),
                         Ok(_) => continue,
                         Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
@@ -943,9 +943,10 @@ impl Agent {
                     let (decision, why) = self
                         .decide(run, call, policy, gate, taint, egress, None, cancel)
                         .await?;
-                    let messages = match decision {
-                        ApprovalOutcome::Approved | ApprovalOutcome::ApprovedForRun => vec![],
-                        _ => vec![tool_result(call, &ToolResult::error(why))],
+                    let messages = if decision.runs() {
+                        vec![]
+                    } else {
+                        vec![tool_result(call, &ToolResult::error(why))]
                     };
                     Ok(StepOutput::new(decision).with_messages(messages))
                 },
@@ -1004,12 +1005,14 @@ impl Agent {
                 return Ok((ApprovalOutcome::Denied, why));
             }
             approval::Check::Ask { effect, always } => {
-                // `always` is false for a destructive effect and in a
-                // tainted run: no scoped grant is offered there either.
+                // No scoped grant for a destructive effect (`always` is
+                // false there) or in a tainted run. `always` alone is not
+                // enough for the latter: for TAINT_CONTAINED tools `check`
+                // re-asks as if clean, so the run's taint is tested here.
                 (
                     effect,
                     always && always_ok && approval::pattern_for(call).is_some(),
-                    always,
+                    always && !gate.tainted,
                 )
             }
         };
@@ -1030,7 +1033,9 @@ impl Agent {
             call: call.clone(),
             summary: self.tools.summarize(call),
             effect,
-            pattern: approval::pattern_for(call).filter(|_| always),
+            // One meaning of "always" per prompt: a grant, when offered.
+            pattern: approval::pattern_for(call)
+                .filter(|_| always && !(offer_grant && grant_key.is_some())),
             parent_run_id: run.parent_run_id.clone(),
             agent_label: run.label.clone(),
             taint: taint.map(Into::into),
@@ -1089,15 +1094,18 @@ impl Agent {
                 (ApprovalOutcome::Approved, String::new())
             }
             Ok(Decision::AlwaysAllow) => {
-                // Without a pattern or a grant "always" can only mean "this once".
-                if let Some(p) = &req.pattern {
-                    self.store.add_allowlist(&call.name, p)?;
-                } else if let Some(g) = &req.grant {
+                // A grant offered means "always" is for exactly that key (the
+                // prompt says so); else the command pattern; with neither it
+                // can only mean "this once".
+                if let Some(g) = &req.grant {
                     self.store
                         .add_allowlist(&call.name, &approval::key_pattern(&g.key))?;
+                } else if let Some(p) = &req.pattern {
+                    self.store.add_allowlist(&call.name, p)?;
                 }
                 (ApprovalOutcome::Approved, String::new())
             }
+            Ok(Decision::CoveredByGrant) => (ApprovalOutcome::ApprovedByGrant, String::new()),
             Ok(Decision::Deny) => denied("denied: the user did not approve this call"),
             Ok(Decision::Unanswered) | Err(_) if deferrable => {
                 let id = self.defer(run, &req).await?;

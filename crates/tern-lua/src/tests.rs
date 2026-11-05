@@ -493,10 +493,6 @@ fn a_networked_drafts_test_names_a_grant_key_for_exactly_what_was_shown() {
     );
     // Another tool, another account, or a missing tool: other keys / none.
     assert_ne!(key(json!({"name": "net", "tool": "u"})).unwrap(), t1);
-    assert_ne!(
-        key(json!({"name": "net", "tool": "t", "connection": "work"})).unwrap(),
-        t1
-    );
     assert_eq!(key(json!({"name": "net", "tool": "nope"})), None);
     assert_eq!(key(json!({"name": "missing", "tool": "t"})), None);
     // Reaching a new host (or any source change) is a different grant.
@@ -511,6 +507,131 @@ fn a_networked_drafts_test_names_a_grant_key_for_exactly_what_was_shown() {
         key(json!({"name": "net", "tool": "t"})),
         key(json!({"name": "net", "tool": "t"}))
     );
+}
+
+/// The key is the one `policy` planned: a fixture recorded between the
+/// policy and the grant key must not turn a live call's key into the
+/// offline one's (or the call would run live under an offline grant).
+#[tokio::test]
+async fn the_grant_key_is_the_one_the_policy_planned_not_a_fresh_guess() {
+    let (host, tmp) = host_with(&[]);
+    let dirs = Dirs {
+        active: tmp.path().join("c"),
+        drafts: tmp.path().join("c/drafts"),
+    };
+    std::fs::create_dir_all(&dirs.drafts).unwrap();
+    std::fs::write(
+        dirs.draft_path("net"),
+        connector(
+            "net",
+            r#"http = { "api.example.com" }, secrets = { "TOKEN" }"#,
+            r#"t = { description = "d", run = function() return "ok" end }"#,
+        ),
+    )
+    .unwrap();
+    let test = ConnectorTest {
+        host,
+        dirs: dirs.clone(),
+        inspected: Default::default(),
+    };
+    let args = json!({"name": "net", "tool": "t", "args": {"id": 1}});
+    let live_key = {
+        // No fixture yet: judged live.
+        assert!(test.policy(&ctx(), &args).requires_approval);
+        test.grant_key(&args).unwrap().key
+    };
+    // Another run records a fixture for exactly these arguments after the
+    // policy judged the call live.
+    let mut f = crate::fixtures::Fixtures::new("net");
+    f.upsert(crate::fixtures::Case {
+        tool: "t".into(),
+        args: json!({"id": 1}),
+        recorded_at: 0,
+        result: "ok".into(),
+        exchanges: vec![],
+    });
+    f.save(&crate::fixtures::path_for(&dirs.draft_path("net")))
+        .unwrap();
+    assert_eq!(
+        test.grant_key(&args).unwrap().key,
+        live_key,
+        "the key still describes the live call policy judged"
+    );
+    // Judged afresh, with the fixture there, it is an offline call: a
+    // different key, so a grant for one never covers the other.
+    test.policy(&ctx(), &args);
+    let replay_key = test.grant_key(&args).unwrap().key;
+    assert_ne!(replay_key, live_key);
+}
+
+#[tokio::test]
+async fn the_grant_key_names_the_account_not_just_the_name_asked_for() {
+    let server = MockServer::start().await;
+    let (mut host, tmp) = host_with(&[]);
+    let tokens = Arc::new(tern_auth::Tokens::new(
+        (*host.secrets).clone(),
+        tern_auth::Guard::new(&[server.uri()]),
+    ));
+    let conns = Arc::new(tern_auth::Connections::new(host.store.clone(), tokens, 10));
+    let key_auth = tern_auth::ConnAuth::Key { names: vec![] };
+    let work = conns
+        .add(
+            tern_auth::Kind::Connector,
+            "mail",
+            "work",
+            None,
+            Some("me@work.com"),
+            &key_auth,
+        )
+        .unwrap();
+    let home = conns
+        .add(
+            tern_auth::Kind::Connector,
+            "mail",
+            "home",
+            None,
+            Some("me@home.com"),
+            &key_auth,
+        )
+        .unwrap();
+    conns.set_default(&work).unwrap();
+    host.connections = Some(conns.clone());
+    let dirs = Dirs {
+        active: tmp.path().join("c"),
+        drafts: tmp.path().join("c/drafts"),
+    };
+    std::fs::create_dir_all(&dirs.drafts).unwrap();
+    std::fs::write(
+        dirs.draft_path("mail"),
+        connector(
+            "mail",
+            r#"http = { "api.example.com" }"#,
+            r#"t = { description = "d", effect = "read", run = function() return "ok" end }"#,
+        ),
+    )
+    .unwrap();
+    let test = ConnectorTest {
+        host,
+        dirs,
+        inspected: Default::default(),
+    };
+    let key = |conn: Option<&str>| {
+        let mut a = json!({"name": "mail", "tool": "t"});
+        if let Some(c) = conn {
+            a["connection"] = json!(c);
+        }
+        test.policy(&ctx(), &a);
+        test.grant_key(&a).map(|k| k.key)
+    };
+    let (w, h) = (key(Some("work")).unwrap(), key(Some("home")).unwrap());
+    assert_ne!(w, h, "another account is another grant");
+    // No account named: the default's, so it matches work today...
+    assert_eq!(key(None), Some(w.clone()));
+    // ...and changing the default asks again.
+    conns.set_default(&home).unwrap();
+    assert_eq!(key(None), Some(h));
+    // An account that doesn't exist gets no key at all.
+    assert_eq!(key(Some("nope")), None);
 }
 
 #[test]

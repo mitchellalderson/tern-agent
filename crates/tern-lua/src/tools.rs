@@ -83,6 +83,20 @@ pub struct Inspected {
     /// when its approval was decided, by `replay_key`, so the call does
     /// what was approved even if the fixtures change in between.
     replays: Mutex<HashMap<String, bool>>,
+    /// The grant key `policy` decided a test call on, with the source hash
+    /// it was built from (by `replay_key` and account), peeked by
+    /// `grant_key` so the key always describes what `policy` judged and
+    /// `call` runs, and checked by `call`.
+    keys: Mutex<HashMap<String, (GrantKey, String)>>,
+}
+
+/// `replay_key` plus the account asked for.
+fn plan_key(name: &str, tool: &str, args: &Value) -> String {
+    format!(
+        "{}\0{}",
+        replay_key(name, tool, &test_args(args)),
+        args.get("connection").and_then(Value::as_str).unwrap_or("")
+    )
 }
 
 /// One test call: draft, tool and exact arguments.
@@ -235,6 +249,50 @@ fn test_args(args: &Value) -> Value {
 }
 
 impl ConnectorTest {
+    /// The grant key for `tool` of a loaded draft, judged `replay` (see
+    /// [`Tool::grant_key`]). `None` if the account can't be resolved.
+    fn build_key(
+        &self,
+        loaded: &Loaded,
+        name: &str,
+        tool: &str,
+        def: &crate::spec::ToolDef,
+        replay: bool,
+        args: &Value,
+    ) -> Option<GrantKey> {
+        let c = &loaded.fingerprint.capabilities;
+        // The account the call would run under, by identity: connecting
+        // another account or changing the default changes the key.
+        let account = match &self.host.connections {
+            Some(conns) => match conns.resolve(
+                tern_auth::Kind::Connector,
+                name,
+                args.get("connection").and_then(Value::as_str),
+                Effect::Read,
+            ) {
+                Ok(Some(r)) => json!([r.conn.id, r.conn.slug, r.conn.account]),
+                Ok(None) => json!("default"),
+                Err(_) => return None,
+            },
+            None => json!("default"),
+        };
+        let material = json!({
+            "source": loaded.fingerprint.hash,
+            "http": c.http,
+            "secrets": c.secrets,
+            "auth": c.auth.iter().map(|a| a.describe()).collect::<Vec<_>>(),
+            "rate": c.rate.map(|r| r.to_string()),
+            "effect": def.effect().as_str(),
+            "replay": replay,
+            "account": account,
+        });
+        let digest = blake3::hash(material.to_string().as_bytes()).to_hex();
+        Some(GrantKey {
+            key: format!("draft {name}.{tool}#{}", &digest[..24]),
+            label: format!("draft {name}.{tool}"),
+        })
+    }
+
     /// Whether this test call replays fixtures rather than calling the API.
     fn replays(&self, name: &str, tool: &str, args: &Value) -> bool {
         match mode_arg(args) {
@@ -311,6 +369,19 @@ impl Tool for ConnectorTest {
             Some(d) if risky => d.effect(),
             _ => Effect::Write,
         };
+        // The grant key is built here, from the same snapshot (source,
+        // capabilities, replay) the policy and the call use.
+        if let (Some(n), Some(t), Some(l), Some(d)) = (name, tool, loaded.as_ref(), def) {
+            let planned = self
+                .build_key(l, n, t, d, replay, args)
+                .map(|k| (k, l.fingerprint.hash.clone()));
+            if let Ok(mut m) = self.inspected.keys.lock() {
+                match planned {
+                    Some(p) => m.insert(plan_key(n, t, args), p),
+                    None => m.remove(&plan_key(n, t, args)),
+                };
+            }
+        }
         ToolPolicy {
             granted: !risky,
             forbidden: def.and_then(|d| d.forbidden),
@@ -324,33 +395,30 @@ impl Tool for ConnectorTest {
 
     /// What a scoped grant covers: this one tool of this draft, at exactly
     /// this source and these declared capabilities (hosts, secrets, auth,
-    /// rate), with this effect, offline or live, under this account. Edit
-    /// the draft, test another tool, or reach a new host and the key
-    /// changes, so the user is asked again. Arguments are not part of it:
-    /// they can only reach what the capabilities allow.
+    /// rate), with this effect, offline or live, under this account (the
+    /// resolved account's id, slug and address, so a different account or a
+    /// changed default asks again). Edit the draft, test another tool, or
+    /// reach a new host and the key changes, so the user is asked again.
+    /// Arguments are not part of it: they can only reach what the
+    /// capabilities allow. It is the key `policy` planned for this call,
+    /// so it can't disagree with the replay-or-live decision `call` runs.
     fn grant_key(&self, args: &Value) -> Option<GrantKey> {
         let name = name_arg(args).ok()?;
         let tool = args.get("tool").and_then(Value::as_str)?;
+        if let Some((k, _)) = self
+            .inspected
+            .keys
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&plan_key(name, tool, args)).cloned())
+        {
+            return Some(k);
+        }
+        // Not planned (no policy call first): judge it now, the same way.
         let loaded = self.inspected.inspect(&self.host, &self.dirs, name).ok()?;
         let def = loaded.vm.spec.tools.iter().find(|t| t.name == tool)?;
-        let c = &loaded.fingerprint.capabilities;
         let replay = self.replays(name, tool, args);
-        let connection = args.get("connection").and_then(Value::as_str).unwrap_or("");
-        let material = json!({
-            "source": loaded.fingerprint.hash,
-            "http": c.http,
-            "secrets": c.secrets,
-            "auth": c.auth.iter().map(|a| a.describe()).collect::<Vec<_>>(),
-            "rate": c.rate.map(|r| r.to_string()),
-            "effect": def.effect().as_str(),
-            "replay": replay,
-            "connection": connection,
-        });
-        let digest = blake3::hash(material.to_string().as_bytes()).to_hex();
-        Some(GrantKey {
-            key: format!("draft {name}.{tool}#{}", &digest[..24]),
-            label: format!("draft {name}.{tool}"),
-        })
+        self.build_key(&loaded, name, tool, def, replay, args)
     }
 
     fn summary(&self, args: &Value) -> Option<String> {
@@ -373,11 +441,25 @@ impl Tool for ConnectorTest {
             Ok(m) => m,
             Err(e) => return ToolResult::error(e),
         };
-        let vm = match self.inspected.verify(&self.host, &self.dirs, name) {
-            Ok(l) => l.vm,
+        let (vm, loaded_hash) = match self.inspected.verify(&self.host, &self.dirs, name) {
+            Ok(l) => (l.vm, l.fingerprint.hash),
             Err(e) => return ToolResult::error(e),
         };
         let tool_args = test_args(&args);
+        // The draft must be the one the policy and grant key were judged on.
+        let planned_source = self
+            .inspected
+            .keys
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&plan_key(name, tool, &args)).map(|(_, h)| h.clone()));
+        if let Some(h) = planned_source
+            && h != loaded_hash
+        {
+            return ToolResult::error(format!(
+                "draft {name} changed since its approval was decided; nothing was run"
+            ));
+        }
         // What the approval was decided on; offline only if it said so (or
         // replay was asked for), so a fixture removed in between can't turn
         // an unapproved replay into a live call.

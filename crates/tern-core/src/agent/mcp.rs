@@ -127,10 +127,7 @@ impl Agent {
                         )
                         .await?;
                     asked = Some(decision);
-                    if !matches!(
-                        decision,
-                        ApprovalOutcome::Approved | ApprovalOutcome::ApprovedForRun
-                    ) {
+                    if !decision.runs() {
                         let r = ToolResult::error(why);
                         let note = note(&summary, &call.name, &r);
                         return Ok(StepOutput::new(McpCallOutput {
@@ -172,12 +169,7 @@ impl Agent {
                 outcome,
             });
         }
-        let ran = approval.is_none_or(|a| {
-            matches!(
-                a,
-                ApprovalOutcome::Approved | ApprovalOutcome::ApprovedForRun
-            )
-        });
+        let ran = approval.is_none_or(ApprovalOutcome::runs);
         if ran {
             self.emit(AgentEvent::ToolFinished {
                 run_id: run.id.clone(),

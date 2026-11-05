@@ -211,6 +211,7 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                             Decision::AlwaysAllow => "always",
                             Decision::AllowRun => "run",
                             Decision::AllowSession => "session",
+                            Decision::CoveredByGrant => "once",
                             Decision::AlwaysAllowHost => "host",
                             Decision::Deny | Decision::Unanswered => "deny",
                         };

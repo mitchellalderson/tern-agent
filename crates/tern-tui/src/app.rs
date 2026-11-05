@@ -1640,7 +1640,10 @@ impl App {
             AgentEvent::Approval {
                 id, name, outcome, ..
             } => {
-                if outcome != ApprovalOutcome::Approved {
+                if !matches!(
+                    outcome,
+                    ApprovalOutcome::Approved | ApprovalOutcome::ApprovedByGrant
+                ) {
                     let why = if outcome == ApprovalOutcome::Timeout {
                         "approval timed out"
                     } else {

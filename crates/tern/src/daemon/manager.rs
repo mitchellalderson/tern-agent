@@ -215,10 +215,13 @@ impl ApiApprovals {
     /// answer (`run`, `session`, `always`) also releases the other cards
     /// already waiting for exactly the same grant key (same tool, and the
     /// same run, conversation or anything for "always"): they would be
-    /// granted by it on their next ask, so each is answered "once". Only
-    /// cards that offered a grant qualify, so never a tainted or
-    /// destructive one.
-    pub fn answer(&self, id: &str, decision: Decision) -> bool {
+    /// granted by it on their next ask, so each is answered
+    /// [`Decision::CoveredByGrant`] (the ledger and transcript say it was
+    /// covered, not that anyone approved it). Only cards that offered a
+    /// grant qualify, so never a tainted or destructive one, and a
+    /// local-only card is left alone when the answer came from a remote
+    /// device (`remote`).
+    pub fn answer(&self, id: &str, decision: Decision, remote: bool) -> bool {
         let (card, released) = {
             let Ok(mut p) = self.pending.lock() else {
                 return false;
@@ -237,6 +240,7 @@ impl ApiApprovals {
                     .iter()
                     .filter(|(_, c)| {
                         c.msg.tool == card.msg.tool
+                            && !(remote && c.msg.local_only)
                             && c.msg.grant.as_ref().is_some_and(|o| o.key == g.key)
                             && match decision {
                                 Decision::AllowRun => c.msg.run_id == card.msg.run_id,
@@ -256,7 +260,7 @@ impl ApiApprovals {
                 .fold(false, |any, (_, tx)| tx.send(d).is_ok() || any)
         };
         for c in released {
-            send(c, Decision::AllowOnce);
+            send(c, Decision::CoveredByGrant);
         }
         send(card, decision)
     }

@@ -263,6 +263,10 @@ pub enum Decision {
     /// this exact thing in this conversation (session). [`Decision::AllowRun`]
     /// is the same for this run, [`Decision::AlwaysAllow`] for good.
     AllowSession,
+    /// Not an answer from the user: a scoped answer to an identical request
+    /// ([`ApprovalRequest::grant`]) already covers this one. The call runs;
+    /// the ledger and transcript say it was covered, not that it was approved.
+    CoveredByGrant,
 }
 
 /// Journaled output of an `approval` step.
@@ -279,6 +283,21 @@ pub enum ApprovalOutcome {
     /// sites for this run"). Journaled, so a replay lifts the limit at the
     /// same step.
     ApprovedForRun,
+    /// Approved because the user's scoped answer to an identical request
+    /// covered this one ([`Decision::CoveredByGrant`]): they never saw it.
+    ApprovedByGrant,
+}
+
+impl ApprovalOutcome {
+    /// The call may run.
+    pub fn runs(self) -> bool {
+        matches!(
+            self,
+            ApprovalOutcome::Approved
+                | ApprovalOutcome::ApprovedForRun
+                | ApprovalOutcome::ApprovedByGrant
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

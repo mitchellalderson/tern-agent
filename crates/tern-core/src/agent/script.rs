@@ -457,7 +457,7 @@ impl Agent {
             });
             let Asked { outcome, why } = asked.value;
             match outcome {
-                ApprovalOutcome::Approved => {}
+                ApprovalOutcome::Approved | ApprovalOutcome::ApprovedByGrant => {}
                 ApprovalOutcome::ApprovedForRun => s.egress.allow_all = true,
                 ApprovalOutcome::Deferred => {
                     // The outbox's contract: carry on with whatever doesn't

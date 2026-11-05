@@ -874,7 +874,7 @@ async fn approve(
             )));
         }
     };
-    if m.routes.api.answer(&id, decision) {
+    if m.routes.api.answer(&id, decision, auth.is_some()) {
         Ok(Json(json!({ "ok": true })))
     } else {
         Err(not_found("pending approval"))
