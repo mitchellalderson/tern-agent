@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -35,7 +36,12 @@ class ItemView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => switch (item) {
-    UserItem(:final text, :final queued) => _UserMessage(text, queued: queued),
+    final UserItem u => _UserMessage(
+      u.text,
+      queued: u.queued,
+      failed: u.failed,
+      onRetry: () => store.retrySend(u),
+    ),
     AssistantItem(:final text, :final streaming) => _AssistantMessage(
       text,
       streaming: streaming,
@@ -82,9 +88,18 @@ class ItemView extends StatelessWidget {
 }
 
 class _UserMessage extends StatelessWidget {
-  const _UserMessage(this.text, {this.queued = false});
+  const _UserMessage(
+    this.text, {
+    this.queued = false,
+    this.failed = false,
+    this.onRetry,
+  });
 
   final String text;
+
+  /// The send failed: say so, with a way to try again.
+  final bool failed;
+  final VoidCallback? onRetry;
 
   /// Sent while a run worked: it reads it at its next step.
   final bool queued;
@@ -100,6 +115,39 @@ class _UserMessage extends StatelessWidget {
       ),
       child: SelectableText(text),
     );
+    if (failed) {
+      final c = context.colors;
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            bubble,
+            Padding(
+              padding: const EdgeInsets.only(top: 3, right: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Not sent',
+                    key: const Key('not-sent'),
+                    style: TextStyle(fontSize: 11.5, color: c.error),
+                  ),
+                  TextButton(
+                    onPressed: onRetry,
+                    style: TextButton.styleFrom(
+                      minimumSize: const Size(0, 24),
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    child: const Text('Retry'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return Align(
       alignment: Alignment.centerRight,
       child: queued
@@ -532,7 +580,13 @@ class _ApprovalCardState extends State<ApprovalCard> {
     final input = const JsonEncoder.withIndent('  ').convert(a.input);
     return CallbackShortcuts(
       bindings: {
-        const SingleActivator(LogicalKeyboardKey.enter): () =>
+        // Enter alone never approves: a stray keypress must not run a
+        // command. ⌘Enter / Ctrl+Enter is the deliberate shortcut.
+        SingleActivator(
+          LogicalKeyboardKey.enter,
+          meta: Platform.isMacOS,
+          control: !Platform.isMacOS,
+        ): () =>
             _answer(Decision.once),
         const SingleActivator(LogicalKeyboardKey.escape): () =>
             _answer(Decision.deny),
@@ -628,7 +682,6 @@ class _ApprovalCardState extends State<ApprovalCard> {
             Row(
               children: [
                 FilledButton(
-                  autofocus: true,
                   onPressed: _busy ? null : () => _answer(Decision.once),
                   style: FilledButton.styleFrom(
                     backgroundColor: c.accent,
