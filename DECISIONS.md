@@ -1651,3 +1651,12 @@ A new autonomy level `code`, `readonly < supervised < code < autonomous < yolo`,
 - **Audit**: `approval` ledger rows with `reason: "code-mode"` (decision `approved_by_mode`, workspace id and root, sandbox state, command), a `code_auto.checkpoint` row, and `ApprovalOutcome::ApprovedByMode` plus a `checkpoint` event on the run stream. File writes and script-originated calls take the same path.
 - **UI**: the agent sheet's ceiling list gets **Code** (the opt-in; read-only agents have it disabled; saving shows the confirm dialog with the disclaimer, the "I understand" checkbox and the ceiling-raise line, then sends `autonomy: "code"` and `code_auto: true` in one request); a header chip (amber `Code auto`, grey `Code auto · edits only` when the sandbox is not verified); an `auto` badge on rows that ran under the mode. TUI: `/autonomy [code|code yes|off]` and a status segment. CLI: `tern agents code-auto`. `tern doctor` and `tern security audit` list opted-in agents.
 - **Not built** (honest list): the read-only `.git/hooks`, `.git/config`, `.envrc` carve-out in the OS sandbox (W3's `ExecOpts.protect`; here only the classifier asks about those paths), private `TMPDIR` with `/tmp` denied, the "Prepare workspace" fetch step and a registry-only egress proxy (installs just ask), a chip state for a tainted run ("paused"), an "Undo" button in the desktop run footer (the API and CLI exist), and a live pass with a real model and real toolchains.
+## CI cost rules (2026-11-05)
+
+macOS runner minutes cost about 10x Linux, so: Linux runs the full OS-independent suite on every code change; macOS
+runs only macOS-specific checks (clippy for cfg(macos) code, Seatbelt/path/tui crates, the shipped aarch64 binary,
+platform-sensitive Dart tests), and only after Linux is green, on main pushes, release checks, manual dispatch,
+nightly, or PRs labelled `ci-macos`. The universal DMG is built only on dispatch, nightly and release tags. Newer
+pushes cancel older runs on the same ref, but never tag (release) runs. Docs-only changes skip everything except
+gitleaks. Every job has a timeout (macOS 30). A release tag still requires the full Linux suite and the macOS job to
+pass. Details and expected minutes: docs/ci-cost.md.

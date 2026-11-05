@@ -68,6 +68,9 @@ release, `gh release edit v0.1.0-alpha.1 --draft`. Never reuse a version number 
       `TERN_APP_VERSION`, which Settings › About and the version banner compare with the running core.
 - [ ] CI is green on the commit: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace --no-fail-fast`, `flutter analyze` and `flutter test` in `apps/desktop`, `shellcheck`.
+- [ ] macOS coverage is current: pull-request CI skips macOS unless labelled `ci-macos`, so look for a green
+      `macOS-specific tests` job on the commit (main pushes and the tag's own `ci` run have it). See
+      [ci-cost.md](ci-cost.md). Optionally run `ci` by hand on the commit for the universal DMG first.
 - [ ] Tag the commit `vX.Y.Z` (or `vX.Y.Z-alpha.N`; the version job accepts semver with a pre-release part). `release.yml` owns `v*`: CLI tarballs for four targets, each with `.sha256`, an ad-hoc or
       signed DMG, and build provenance attestations, published as a release. `desktop-release.yml` owns `desktop-v*`
       and only leaves a draft; do not push both tags for the same version unless you mean to.
