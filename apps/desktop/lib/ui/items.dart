@@ -107,12 +107,14 @@ class _UserMessage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // A flat, full-width tint: where the user's message starts and ends.
     final bubble = Container(
-      constraints: const BoxConstraints(maxWidth: 560),
+      key: const Key('user-message'),
+      width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
       decoration: BoxDecoration(
         color: context.colors.userBubble,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: Collapsible(text: text, builder: SelectableText.new),
     );
@@ -186,10 +188,14 @@ class _AssistantMessage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Collapsible(
-      text: text,
-      collapsible: !streaming,
-      builder: (shown) => _markdown(context, shown),
+    // Same side padding as the user's block so the text edges line up.
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: Collapsible(
+        text: text,
+        collapsible: !streaming,
+        builder: (shown) => _markdown(context, shown),
+      ),
     );
   }
 

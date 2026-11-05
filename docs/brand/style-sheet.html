@@ -17,7 +17,7 @@
   /* surfaces */
   --cream: #F7EEDC;
   --paper: #FCF7EB;
-  --sand: #EFE3CB;
+  --sand: #EFE3CB; --sand-deep: #E9DBBF;
   --hairline: #E0D2B6;
   /* type */
   --ink: #2B2118;
@@ -130,14 +130,14 @@ p.lede { max-width: 620px; color: var(--muted); margin-bottom: 8px; }
 .app .topbar .bar { padding: 10px 16px; font-weight: 700; font-size: 14px; border-bottom: 1px solid var(--hairline); }
 .app .chat { padding: 16px; display: grid; gap: 12px; flex: 1; align-content: start; font-size: 14px; }
 .bubble { padding: 9px 13px; border-radius: 12px; max-width: 80%; }
-.bubble.user { background: var(--sand); justify-self: end; }
-.bubble.agent { background: var(--paper); border: 1px solid var(--hairline); }
+.bubble.user { background: var(--sand-deep); max-width: none; border-radius: 8px; }
+.bubble.agent { background: none; }
 .composer { margin: 0 16px 16px; border: 1.5px solid var(--ink); border-radius: 10px; padding: 10px 12px; background: var(--paper); color: var(--muted); font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
 .composer .send { background: var(--orange); color: var(--ink); font-weight: 700; border-radius: 6px; padding: 4px 12px; font-size: 13px; }
 
 /* ---------- dark ---------- */
 .dark-panel {
-  --cream: #1F1812; --paper: #2A211A; --sand: #261E17; --hairline: #3D3226;
+  --cream: #1F1812; --paper: #2A211A; --sand: #261E17; --sand-deep: #33281E; --hairline: #3D3226;
   --ink: #F3E8D2; --muted: #B3A58F; --link: #F08A7A;
   --red: #E5483A; --teal: #4DB3AE; --orange: #F58A3D; --yellow: #F9C846;
   --ok: #8DB56F; --warn: #E3B04B; --error: #F08A7A;
@@ -188,8 +188,9 @@ footer { padding: 40px 0 64px; border-top: 1px solid var(--hairline); color: var
     <h3>Paper and ink</h3>
     <div class="swatches">
       <div class="sw"><div class="chip" style="background:var(--cream)"></div><div class="meta"><b>Cream</b><code>#F7EEDC</code><small>App background.</small></div></div>
-      <div class="sw"><div class="chip" style="background:var(--paper)"></div><div class="meta"><b>Paper</b><code>#FCF7EB</code><small>Raised: cards, inputs, agent bubbles.</small></div></div>
-      <div class="sw"><div class="chip" style="background:var(--sand)"></div><div class="meta"><b>Sand</b><code>#EFE3CB</code><small>Sidebar, user bubble, code.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--paper)"></div><div class="meta"><b>Paper</b><code>#FCF7EB</code><small>Raised: cards, inputs, agent cards.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--sand)"></div><div class="meta"><b>Sand</b><code>#EFE3CB</code><small>Sidebar, code.</small></div></div>
+      <div class="sw"><div class="chip" style="background:var(--sand-deep)"></div><div class="meta"><b>Sand deep</b><code>#E9DBBF</code><small>User messages only. 11:1 with ink.</small></div></div>
       <div class="sw"><div class="chip" style="background:var(--hairline)"></div><div class="meta"><b>Hairline</b><code>#E0D2B6</code><small>Dividers and quiet borders.</small></div></div>
       <div class="sw"><div class="chip" style="background:var(--ink)"></div><div class="meta"><b>Ink</b><code>#2B2118</code><small>Text and strong borders. 14:1 on cream.</small></div></div>
       <div class="sw"><div class="chip" style="background:var(--muted)"></div><div class="meta"><b>Muted</b><code>#6F604F</code><small>Secondary text. 5:1 on cream.</small></div></div>
