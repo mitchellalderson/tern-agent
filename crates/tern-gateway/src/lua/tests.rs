@@ -208,6 +208,7 @@ fn request(pattern: Option<&str>) -> ApprovalRequest {
         local_only: false,
         egress_host: None,
         script: None,
+        grant: None,
     }
 }
 

@@ -137,7 +137,11 @@ pub fn collect(m: &Manager) -> anyhow::Result<Tasks> {
             section: "needs_you".into(),
             kind: "approval".into(),
             id: a.id.clone(),
-            title: format!("{} · {}", a.effect, a.summary),
+            title: if a.count > 1 {
+                format!("{} · {} ×{}", a.effect, a.summary, a.count)
+            } else {
+                format!("{} · {}", a.effect, a.summary)
+            },
             detail: a.taint.as_deref().map(tern_core::approval::taint_note),
             run_id: Some(a.run_id.clone()),
             parent_run_id: a.parent_run_id.clone(),

@@ -110,6 +110,13 @@ pub fn host_pattern(host: &str) -> String {
     format!("host:{host}")
 }
 
+/// The allowlist pattern of an "always allow this" grant keyed on a
+/// [`crate::tool::GrantKey`]. Like [`host_pattern`] it never matches a
+/// call's subject, so it can't grant the tool as a whole.
+pub fn key_pattern(key: &str) -> String {
+    format!("key:{key}")
+}
+
 /// What a run brings to [`check`]: its taint and its autonomy profile.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Gate {
@@ -252,6 +259,10 @@ pub enum Decision {
     /// The tainted host limit only: allow, and grant reads from this host
     /// for good ([`host_pattern`]).
     AlwaysAllowHost,
+    /// With [`ApprovalRequest::grant`]: allow, and don't ask again about
+    /// this exact thing in this conversation (session). [`Decision::AllowRun`]
+    /// is the same for this run, [`Decision::AlwaysAllow`] for good.
+    AllowSession,
 }
 
 /// Journaled output of an `approval` step.
@@ -305,6 +316,21 @@ pub struct ApprovalRequest {
     /// cut to a screenful, for a front end's detail view
     /// ([`ApprovalRequest::script_note`], [`ApprovalRequest::script_text`]).
     pub script: Option<String>,
+    /// Set when a scoped grant may be offered: the precise thing it would
+    /// cover. Front ends then offer "this run", "this conversation" and
+    /// "always" for it ([`Decision::AllowRun`], [`Decision::AllowSession`],
+    /// [`Decision::AlwaysAllow`]). Never set in a tainted run or for a
+    /// `destructive` call.
+    pub grant: Option<GrantOffer>,
+}
+
+/// What a scoped grant would cover ([`crate::tool::GrantKey`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantOffer {
+    /// Exact key; also what identical requests are coalesced on.
+    pub key: String,
+    /// Short name of the target, for grouping and card text.
+    pub label: String,
 }
 
 impl ApprovalRequest {

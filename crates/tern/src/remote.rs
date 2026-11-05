@@ -193,6 +193,7 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                         taint: a.taint,
                         egress_host: a.egress_host,
                         script: a.script,
+                        grant: a.grant,
                         local_only: a.local_only,
                     };
                     if prompts
@@ -209,6 +210,7 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                             Decision::AllowOnce => "once",
                             Decision::AlwaysAllow => "always",
                             Decision::AllowRun => "run",
+                            Decision::AllowSession => "session",
                             Decision::AlwaysAllowHost => "host",
                             Decision::Deny | Decision::Unanswered => "deny",
                         };

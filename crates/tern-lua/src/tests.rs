@@ -451,6 +451,68 @@ fn testing_a_networked_draft_needs_approval_showing_capabilities() {
     );
 }
 
+/// Why a networked draft's test asked on every call: it always asks and
+/// offered no "always"; now it names a grant key for exactly what the user
+/// saw, which changes with anything material.
+#[test]
+fn a_networked_drafts_test_names_a_grant_key_for_exactly_what_was_shown() {
+    let (host, tmp) = host_with(&[]);
+    let dirs = Dirs {
+        active: tmp.path().join("c"),
+        drafts: tmp.path().join("c/drafts"),
+    };
+    std::fs::create_dir_all(&dirs.drafts).unwrap();
+    let tools = r#"t = { description = "d", run = function() end },
+                   u = { description = "d", run = function() end }"#;
+    let write = |hosts: &str| {
+        std::fs::write(
+            dirs.draft_path("net"),
+            connector("net", &format!(r#"http = {{ {hosts} }}"#), tools),
+        )
+        .unwrap();
+    };
+    write(r#""api.example.com""#);
+    let test = ConnectorTest {
+        host,
+        dirs: dirs.clone(),
+        inspected: Default::default(),
+    };
+    let key = |args: Value| test.grant_key(&args).map(|k| k.key);
+
+    let t1 = key(json!({"name": "net", "tool": "t", "args": {"id": 1}})).unwrap();
+    // Different arguments, same key: they can only reach what was shown.
+    assert_eq!(
+        key(json!({"name": "net", "tool": "t", "args": {"id": 2}})).as_deref(),
+        Some(t1.as_str())
+    );
+    assert_eq!(
+        test.grant_key(&json!({"name": "net", "tool": "t"}))
+            .unwrap()
+            .label,
+        "draft net.t"
+    );
+    // Another tool, another account, or a missing tool: other keys / none.
+    assert_ne!(key(json!({"name": "net", "tool": "u"})).unwrap(), t1);
+    assert_ne!(
+        key(json!({"name": "net", "tool": "t", "connection": "work"})).unwrap(),
+        t1
+    );
+    assert_eq!(key(json!({"name": "net", "tool": "nope"})), None);
+    assert_eq!(key(json!({"name": "missing", "tool": "t"})), None);
+    // Reaching a new host (or any source change) is a different grant.
+    write(r#""api.example.com", "evil.example.com""#);
+    assert_ne!(key(json!({"name": "net", "tool": "t"})).unwrap(), t1);
+    // Still asks every time without a grant, and the key is stable.
+    assert!(
+        test.policy(&ctx(), &json!({"name": "net", "tool": "t"}))
+            .requires_approval
+    );
+    assert_eq!(
+        key(json!({"name": "net", "tool": "t"})),
+        key(json!({"name": "net", "tool": "t"}))
+    );
+}
+
 #[test]
 fn active_connectors_must_match_their_file_name() {
     let (host, tmp) = host_with(&[]);

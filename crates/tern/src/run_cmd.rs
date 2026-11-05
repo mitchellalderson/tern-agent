@@ -272,9 +272,13 @@ struct TerminalApprover;
 #[async_trait]
 impl ApprovalHandler for TerminalApprover {
     async fn ask(&self, req: &ApprovalRequest) -> Decision {
-        let always = match &req.pattern {
-            Some(p) => format!(" / [a]lways ({} {p})", req.call.name),
-            None => String::new(),
+        let always = match (&req.pattern, &req.grant) {
+            (Some(p), _) => format!(" / [a]lways ({} {p})", req.call.name),
+            (None, Some(g)) => format!(
+                " / this [r]un / this [c]onversation / [a]lways (just {})",
+                g.label
+            ),
+            (None, None) => String::new(),
         };
         let who = req
             .agent_label
@@ -305,6 +309,7 @@ impl ApprovalHandler for TerminalApprover {
                 "y" | "yes" => Decision::AllowOnce,
                 "a" | "always" => Decision::AlwaysAllow,
                 "r" | "run" => Decision::AllowRun,
+                "c" | "conversation" => Decision::AllowSession,
                 "h" | "host" => Decision::AlwaysAllowHost,
                 _ => Decision::Deny,
             }

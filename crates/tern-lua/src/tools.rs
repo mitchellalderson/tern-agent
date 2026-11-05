@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult};
+use tern_core::tool::{Effect, GrantKey, Tool, ToolCtx, ToolPolicy, ToolResult};
 use tern_core::types::ToolSpec;
 
 use crate::{
@@ -320,6 +320,37 @@ impl Tool for ConnectorTest {
 
     fn allow_always(&self) -> bool {
         false
+    }
+
+    /// What a scoped grant covers: this one tool of this draft, at exactly
+    /// this source and these declared capabilities (hosts, secrets, auth,
+    /// rate), with this effect, offline or live, under this account. Edit
+    /// the draft, test another tool, or reach a new host and the key
+    /// changes, so the user is asked again. Arguments are not part of it:
+    /// they can only reach what the capabilities allow.
+    fn grant_key(&self, args: &Value) -> Option<GrantKey> {
+        let name = name_arg(args).ok()?;
+        let tool = args.get("tool").and_then(Value::as_str)?;
+        let loaded = self.inspected.inspect(&self.host, &self.dirs, name).ok()?;
+        let def = loaded.vm.spec.tools.iter().find(|t| t.name == tool)?;
+        let c = &loaded.fingerprint.capabilities;
+        let replay = self.replays(name, tool, args);
+        let connection = args.get("connection").and_then(Value::as_str).unwrap_or("");
+        let material = json!({
+            "source": loaded.fingerprint.hash,
+            "http": c.http,
+            "secrets": c.secrets,
+            "auth": c.auth.iter().map(|a| a.describe()).collect::<Vec<_>>(),
+            "rate": c.rate.map(|r| r.to_string()),
+            "effect": def.effect().as_str(),
+            "replay": replay,
+            "connection": connection,
+        });
+        let digest = blake3::hash(material.to_string().as_bytes()).to_hex();
+        Some(GrantKey {
+            key: format!("draft {name}.{tool}#{}", &digest[..24]),
+            label: format!("draft {name}.{tool}"),
+        })
     }
 
     fn summary(&self, args: &Value) -> Option<String> {

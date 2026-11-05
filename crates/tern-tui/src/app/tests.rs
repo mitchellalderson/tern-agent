@@ -609,6 +609,7 @@ fn approvals_are_answered_inline() {
             local_only: false,
             egress_host: None,
             script: None,
+            grant: None,
         },
         reply: tx,
     });
@@ -622,6 +623,81 @@ fn approvals_are_answered_inline() {
     app.on_key(key(KeyCode::Char('a')), Instant::now());
     assert_eq!(rx.try_recv().unwrap(), Decision::AlwaysAllow);
     assert!(app.approval.is_none());
+}
+
+#[test]
+fn a_scoped_grant_prompt_offers_run_conversation_and_always() {
+    for (k, want) in [
+        ('r', Decision::AllowRun),
+        ('c', Decision::AllowSession),
+        ('a', Decision::AlwaysAllow),
+        ('y', Decision::AllowOnce),
+    ] {
+        let (mut app, _) = new_app();
+        submit(&mut app, "go");
+        let (tx, mut rx) = oneshot::channel();
+        app.on_approval(PendingApproval {
+            request: ApprovalRequest {
+                id: "a1".into(),
+                run_id: "r1".into(),
+                session_id: "s1".into(),
+                call: ToolCall {
+                    id: "t".into(),
+                    name: "connector_test".into(),
+                    input: json!({"name": "net", "tool": "a"}),
+                },
+                summary: "connector_test draft net.a".into(),
+                effect: tern_core::tool::Effect::Read,
+                pattern: None,
+                parent_run_id: None,
+                agent_label: None,
+                taint: None,
+                local_only: false,
+                egress_host: None,
+                script: None,
+                grant: Some(tern_core::approval::GrantOffer {
+                    key: "draft net.a#1".into(),
+                    label: "draft net.a".into(),
+                }),
+            },
+            reply: tx,
+        });
+        let s = screen(&mut app, 100, 12);
+        assert!(s.contains("[r] this run (draft net.a)"), "{s}");
+        assert!(s.contains("[c] this conversation"), "{s}");
+        assert!(s.contains("[a] always"), "{s}");
+        app.on_key(key(KeyCode::Char(k)), Instant::now());
+        assert_eq!(rx.try_recv().unwrap(), want);
+    }
+    // Without a grant, c does nothing.
+    let (mut app, _) = new_app();
+    submit(&mut app, "go");
+    let (tx, mut rx) = oneshot::channel();
+    app.on_approval(PendingApproval {
+        request: ApprovalRequest {
+            id: "a1".into(),
+            run_id: "r1".into(),
+            session_id: "s1".into(),
+            call: ToolCall {
+                id: "t".into(),
+                name: "x".into(),
+                input: json!({}),
+            },
+            summary: "x".into(),
+            effect: tern_core::tool::Effect::Write,
+            pattern: None,
+            parent_run_id: None,
+            agent_label: None,
+            taint: None,
+            local_only: false,
+            egress_host: None,
+            script: None,
+            grant: None,
+        },
+        reply: tx,
+    });
+    app.on_key(key(KeyCode::Char('c')), Instant::now());
+    assert!(rx.try_recv().is_err());
 }
 
 #[test]
@@ -671,6 +747,7 @@ fn ctrl_c_denies_a_pending_approval() {
             local_only: false,
             egress_host: None,
             script: None,
+            grant: None,
         },
         reply: tx,
     });
@@ -1221,6 +1298,7 @@ fn approval(
                 local_only: false,
                 egress_host: None,
                 script: None,
+                grant: None,
             },
             reply: tx,
         },

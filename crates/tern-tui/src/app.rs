@@ -390,10 +390,13 @@ impl App {
                     if self
                         .approval
                         .as_ref()
-                        .is_some_and(|p| p.request.pattern.is_some()) =>
+                        .is_some_and(|p| p.request.pattern.is_some() || p.request.grant.is_some()) =>
                 {
                     Decision::AlwaysAllow
                 }
+                // A scoped grant: this run, or this conversation.
+                KeyCode::Char('r' | 'R') if self.grant_prompt() => Decision::AllowRun,
+                KeyCode::Char('c' | 'C') if self.grant_prompt() => Decision::AllowSession,
                 // The tainted host limit's choices.
                 KeyCode::Char('r' | 'R') if self.egress_prompt() => Decision::AllowRun,
                 KeyCode::Char('h' | 'H') if self.egress_prompt() => Decision::AlwaysAllowHost,
@@ -502,6 +505,13 @@ impl App {
         }
         self.input.clear();
         vec![]
+    }
+
+    /// The prompt offers scoped grants (run, conversation, always).
+    fn grant_prompt(&self) -> bool {
+        self.approval
+            .as_ref()
+            .is_some_and(|p| p.request.grant.is_some())
     }
 
     /// The prompt asks only because of the tainted host limit.

@@ -235,6 +235,24 @@ pub trait Tool: Send + Sync {
     fn allow_always(&self) -> bool {
         true
     }
+    /// What a scoped grant ("allow for this run / conversation", "always
+    /// allow this") for this call covers, or `None` if the tool offers none.
+    /// It must name everything the user is shown and approving (the exact
+    /// target, hosts, secrets, effect), so a grant can never cover a
+    /// different target, and change whenever any of that changes.
+    fn grant_key(&self, _args: &Value) -> Option<GrantKey> {
+        None
+    }
+}
+
+/// The precise thing a scoped grant covers ([`Tool::grant_key`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GrantKey {
+    /// Compared exactly; stored for "always" as `key:<key>` on the tool's
+    /// allowlist. Includes a digest of everything the user saw.
+    pub key: String,
+    /// Short, for cards and grouping: `draft maricopa_assessor.city_stats`.
+    pub label: String,
 }
 
 /// Tools that come from somewhere that has to be started first (an MCP
@@ -328,6 +346,11 @@ impl ToolRegistry {
             .filter(|(name, _)| in_scope(scope, name))
             .map(|(_, t)| t.spec())
             .collect()
+    }
+
+    /// The scoped-grant key of `call` ([`Tool::grant_key`]).
+    pub fn grant_key(&self, call: &ToolCall) -> Option<GrantKey> {
+        self.get(&call.name).and_then(|t| t.grant_key(&call.input))
     }
 
     pub fn allow_always(&self, call: &ToolCall) -> bool {

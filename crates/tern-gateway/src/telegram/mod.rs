@@ -679,6 +679,7 @@ impl TelegramGateway {
             Decision::AllowOnce => "Allowed",
             Decision::AlwaysAllow => "Always allowed",
             Decision::AllowRun => "Allowed all sites for this run",
+            Decision::AllowSession => "Allowed for this conversation",
             Decision::AlwaysAllowHost => "Site always allowed",
             Decision::Deny | Decision::Unanswered => "Denied",
         };

@@ -865,11 +865,12 @@ async fn approve(
         "once" => Decision::AllowOnce,
         "always" => Decision::AlwaysAllow,
         "run" => Decision::AllowRun,
+        "session" => Decision::AllowSession,
         "host" => Decision::AlwaysAllowHost,
         "deny" => Decision::Deny,
         other => {
             return Err(bad(format!(
-                "decision {other:?} must be once, always, run, host, or deny"
+                "decision {other:?} must be once, always, run, session, host, or deny"
             )));
         }
     };

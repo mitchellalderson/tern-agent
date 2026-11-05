@@ -229,6 +229,7 @@ pub(crate) fn close_approval(w: Option<Waiting>, d: &Decision) {
             Decision::AllowOnce => "Approved",
             Decision::AlwaysAllow => "Approved always",
             Decision::AllowRun => "Approved for this run",
+            Decision::AllowSession => "Approved for this conversation",
             Decision::AlwaysAllowHost => "Approved this site always",
             Decision::Deny => "Denied",
             Decision::Unanswered => "Not answered in time",

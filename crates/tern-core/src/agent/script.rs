@@ -369,9 +369,14 @@ impl Agent {
         let only_limit = limited && !approval::needs_check(&name, &policy, gate);
         let prompt_host = host.clone().filter(|_| only_limit);
         let policy = if limited { policy.forced(true) } else { policy };
+        let key_granted = match self.tools.grant_key(&call) {
+            Some(k) if policy.forbidden.is_none() => self.key_granted(s.run, &name, &k)?,
+            _ => false,
+        };
         let granted = policy.forbidden.is_none()
-            && self.tools.allow_always(&call)
-            && approval::allowed_by(&self.store.allowlist(&name)?, &call);
+            && (key_granted
+                || self.tools.allow_always(&call)
+                    && approval::allowed_by(&self.store.allowlist(&name)?, &call));
         // A standing grant for the host answers the host limit.
         let host_granted = only_limit
             && host.as_deref().is_some_and(|h| {

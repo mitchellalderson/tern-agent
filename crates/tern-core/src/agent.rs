@@ -170,6 +170,26 @@ pub struct Agent {
     events: broadcast::Sender<AgentEvent>,
     cfg: AgentConfig,
     subagents: HostSlot,
+    scoped: std::sync::Mutex<ScopedGrants>,
+}
+
+/// Grants of "allow for this run" and "allow for this conversation", keyed
+/// on (run or session, tool, [`crate::tool::GrantKey::key`]). In memory
+/// only: a restarted daemon forgets them and asks again, the safe way round.
+/// They are consulted only through [`approval::check`], so a tainted run,
+/// a `destructive` effect or a `readonly` run is limited exactly as for any
+/// other grant.
+#[derive(Default)]
+struct ScopedGrants {
+    runs: std::collections::HashSet<(String, String, String)>,
+    sessions: std::collections::HashSet<(String, String, String)>,
+}
+
+/// What an approved call's grant answer covers.
+#[derive(Clone, Copy)]
+enum GrantScope {
+    Run,
+    Session,
 }
 
 /// What the journal stores as an `llm` step's input: a digest of the full
@@ -200,6 +220,40 @@ impl Agent {
             events,
             cfg,
             subagents: HostSlot::default(),
+            scoped: Default::default(),
+        }
+    }
+
+    /// Whether a grant for exactly `key` of `tool` holds for `run`: given
+    /// for this run or its conversation, or standing ("always").
+    pub(crate) fn key_granted(
+        &self,
+        run: &RunRow,
+        tool: &str,
+        key: &crate::tool::GrantKey,
+    ) -> Result<bool, StepError> {
+        let held = self.scoped.lock().is_ok_and(|g| {
+            g.runs
+                .contains(&(run.id.clone(), tool.to_owned(), key.key.clone()))
+                || g.sessions
+                    .contains(&(run.session_id.clone(), tool.to_owned(), key.key.clone()))
+        });
+        Ok(held
+            || self
+                .store
+                .allowlist(tool)?
+                .contains(&approval::key_pattern(&key.key)))
+    }
+
+    fn grant_scoped(&self, run: &RunRow, tool: &str, key: &str, scope: GrantScope) {
+        if let Ok(mut g) = self.scoped.lock() {
+            match scope {
+                GrantScope::Run => g.runs.insert((run.id.clone(), tool.to_owned(), key.to_owned())),
+                GrantScope::Session => {
+                    g.sessions
+                        .insert((run.session_id.clone(), tool.to_owned(), key.to_owned()))
+                }
+            };
         }
     }
 
@@ -923,10 +977,18 @@ impl Agent {
     ) -> Result<(ApprovalOutcome, String), StepError> {
         let always_ok = self.tools.allow_always(call);
         // A tool that opts out ignores old allowlist entries too.
+        let grant_key = self
+            .tools
+            .grant_key(call)
+            .filter(|_| policy.forbidden.is_none());
+        let key_granted = match &grant_key {
+            Some(k) => self.key_granted(run, &call.name, k)?,
+            None => false,
+        };
         let granted = policy.forbidden.is_none()
-            && always_ok
-            && approval::allowed_by(&self.store.allowlist(&call.name)?, call);
-        let (effect, always) = match approval::check(&call.name, policy, granted, gate) {
+            && (key_granted
+                || always_ok && approval::allowed_by(&self.store.allowlist(&call.name)?, call));
+        let (effect, always, offer_grant) = match approval::check(&call.name, policy, granted, gate) {
             approval::Check::Allow => return Ok((ApprovalOutcome::Approved, String::new())),
             approval::Check::Forbid(flag) => {
                 tracing::warn!(run = %run.id, tool = %call.name, flag, "refused a forbidden tool");
@@ -938,10 +1000,15 @@ impl Agent {
                 let why = approval::READONLY_MESSAGE.to_owned();
                 return Ok((ApprovalOutcome::Denied, why));
             }
-            approval::Check::Ask { effect, always } => (
-                effect,
-                always && always_ok && approval::pattern_for(call).is_some(),
-            ),
+            approval::Check::Ask { effect, always } => {
+                // `always` is false for a destructive effect and in a
+                // tainted run: no scoped grant is offered there either.
+                (
+                    effect,
+                    always && always_ok && approval::pattern_for(call).is_some(),
+                    always,
+                )
+            }
         };
         // The tainted host limit: a standing grant for this host answers it.
         let egress = egress.filter(|_| effect == crate::tool::Effect::Read);
@@ -967,6 +1034,10 @@ impl Agent {
             local_only: policy.local_approval,
             egress_host: egress.map(Into::into),
             script,
+            grant: grant_key.filter(|_| offer_grant).map(|k| approval::GrantOffer {
+                key: k.key,
+                label: k.label,
+            }),
         };
         // A write may wait in the outbox instead (tooling spec §5.2).
         let deferrable = effect != crate::tool::Effect::Read && self.approvals.can_defer();
@@ -999,11 +1070,26 @@ impl Agent {
                 }
                 (ApprovalOutcome::Approved, String::new())
             }
-            Ok(Decision::AllowRun) => (ApprovalOutcome::Approved, String::new()),
+            // Scoped answers: only with a grant offered, else "once".
+            Ok(Decision::AllowRun) => {
+                if let Some(g) = &req.grant {
+                    self.grant_scoped(run, &call.name, &g.key, GrantScope::Run);
+                }
+                (ApprovalOutcome::Approved, String::new())
+            }
+            Ok(Decision::AllowSession) => {
+                if let Some(g) = &req.grant {
+                    self.grant_scoped(run, &call.name, &g.key, GrantScope::Session);
+                }
+                (ApprovalOutcome::Approved, String::new())
+            }
             Ok(Decision::AlwaysAllow) => {
-                // Without a pattern "always" can only mean "this once".
+                // Without a pattern or a grant "always" can only mean "this once".
                 if let Some(p) = &req.pattern {
                     self.store.add_allowlist(&call.name, p)?;
+                } else if let Some(g) = &req.grant {
+                    self.store
+                        .add_allowlist(&call.name, &approval::key_pattern(&g.key))?;
                 }
                 (ApprovalOutcome::Approved, String::new())
             }

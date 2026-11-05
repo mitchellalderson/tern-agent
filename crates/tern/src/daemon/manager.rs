@@ -64,17 +64,63 @@ pub struct ApiApproval {
     pub channel_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// Set when scoped grants may be offered: what they would cover. Answers
+    /// may then be `run` (this run), `session` (this conversation) or
+    /// `always` (for good), each only for exactly this key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<tern_core::approval::GrantOffer>,
+    /// How many identical simultaneous requests this one card answers
+    /// (1 when alone). A card whose count grows is sent again, same `id`.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub count: u32,
     /// Only a client on this host (the Unix socket) may answer: the call
     /// would run a command here outside the sandbox.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub local_only: bool,
 }
 
+fn one() -> u32 {
+    1
+}
+
+fn is_one(n: &u32) -> bool {
+    *n == 1
+}
+
 /// Approvals for API clients: published on a channel, answered over HTTP.
 #[derive(Default)]
 pub struct ApiApprovals {
-    pending: Mutex<HashMap<String, (ApiApproval, oneshot::Sender<Decision>)>>,
+    pending: Mutex<HashMap<String, Card>>,
     tx: OnceLock<broadcast::Sender<ApiApproval>>,
+}
+
+/// One card for the user, answering every identical request that joined it.
+struct Card {
+    msg: ApiApproval,
+    /// What makes a request identical to this card's: same run, call and
+    /// shown details. Only then may one answer cover several requests.
+    same: String,
+    /// The requests behind the card: (request id, its asker).
+    waiters: Vec<(String, oneshot::Sender<Decision>)>,
+}
+
+/// What must match for two pending requests to share a card: everything the
+/// user sees and everything that decides what an answer means.
+fn same_request(req: &ApprovalRequest) -> String {
+    serde_json::json!([
+        req.run_id,
+        req.call.name,
+        req.call.input,
+        req.summary,
+        req.effect.as_str(),
+        req.pattern,
+        req.grant,
+        req.taint,
+        req.egress_host,
+        req.script,
+        req.local_only,
+    ])
+    .to_string()
 }
 
 impl ApiApprovals {
@@ -97,6 +143,7 @@ impl ApiApprovals {
         at: Where,
     ) -> Decision {
         let (tx, rx) = oneshot::channel();
+        let same = same_request(req);
         let msg = ApiApproval {
             id: req.id.clone(),
             run_id: req.run_id.clone(),
@@ -112,18 +159,51 @@ impl ApiApprovals {
             taint: req.taint.clone(),
             egress_host: req.egress_host.clone(),
             script: req.script.clone(),
+            grant: req.grant.clone(),
+            count: 1,
             local_only: req.local_only,
             channel_id: at.0,
             agent_id: at.1,
         };
-        if let Ok(mut p) = self.pending.lock() {
-            p.insert(req.id.clone(), (msg.clone(), tx));
-        }
+        // An identical request already waiting shares its card: one answer
+        // covers both, and clients see the count go up.
+        let shown = {
+            let Ok(mut p) = self.pending.lock() else {
+                return Decision::Unanswered;
+            };
+            match p.values_mut().find(|c| c.same == same) {
+                Some(card) => {
+                    card.waiters.push((req.id.clone(), tx));
+                    card.msg.count = card.waiters.len() as u32;
+                    card.msg.clone()
+                }
+                None => {
+                    p.insert(
+                        req.id.clone(),
+                        Card {
+                            msg: msg.clone(),
+                            same,
+                            waiters: vec![(req.id.clone(), tx)],
+                        },
+                    );
+                    msg
+                }
+            }
+        };
         let _unlist = UnlistApproval(self, req.id.clone());
-        if self.tx().send(msg).is_err() {
+        if self.tx().send(shown).is_err() {
             return Decision::Unanswered;
         }
         rx.await.unwrap_or(Decision::Unanswered)
+    }
+
+    /// Whether an identical request is already waiting, so a new one joins
+    /// its card rather than opening another.
+    pub(crate) fn joins_card(&self, req: &ApprovalRequest) -> bool {
+        let same = same_request(req);
+        self.pending
+            .lock()
+            .is_ok_and(|p| p.values().any(|c| c.same == same))
     }
 
     /// Whether any client is attached to hear an approval.
@@ -131,9 +211,54 @@ impl ApiApprovals {
         self.tx().receiver_count() > 0
     }
 
+    /// Answer a card: every request behind it gets `decision`. A scoped
+    /// answer (`run`, `session`, `always`) also releases the other cards
+    /// already waiting for exactly the same grant key (same tool, and the
+    /// same run, conversation or anything for "always"): they would be
+    /// granted by it on their next ask, so each is answered "once". Only
+    /// cards that offered a grant qualify, so never a tainted or
+    /// destructive one.
     pub fn answer(&self, id: &str, decision: Decision) -> bool {
-        let tx = self.pending.lock().ok().and_then(|mut p| p.remove(id));
-        tx.is_some_and(|(_, tx)| tx.send(decision).is_ok())
+        let (card, released) = {
+            let Ok(mut p) = self.pending.lock() else {
+                return false;
+            };
+            let Some(card) = p.remove(id) else {
+                return false;
+            };
+            let mut released = Vec::new();
+            if let Some(g) = card.msg.grant.as_ref().filter(|_| {
+                matches!(
+                    decision,
+                    Decision::AllowRun | Decision::AllowSession | Decision::AlwaysAllow
+                )
+            }) {
+                let ids: Vec<String> = p
+                    .iter()
+                    .filter(|(_, c)| {
+                        c.msg.tool == card.msg.tool
+                            && c.msg.grant.as_ref().is_some_and(|o| o.key == g.key)
+                            && match decision {
+                                Decision::AllowRun => c.msg.run_id == card.msg.run_id,
+                                Decision::AllowSession => c.msg.session_id == card.msg.session_id,
+                                _ => true,
+                            }
+                    })
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                released.extend(ids.iter().filter_map(|k| p.remove(k)));
+            }
+            (card, released)
+        };
+        let send = |card: Card, d: Decision| {
+            card.waiters
+                .into_iter()
+                .fold(false, |any, (_, tx)| tx.send(d).is_ok() || any)
+        };
+        for c in released {
+            send(c, Decision::AllowOnce);
+        }
+        send(card, decision)
     }
 
     /// Whether `id` may only be answered from this host.
@@ -141,7 +266,7 @@ impl ApiApprovals {
         self.pending
             .lock()
             .ok()
-            .and_then(|p| p.get(id).map(|(a, _)| a.local_only))
+            .and_then(|p| p.get(id).map(|c| c.msg.local_only))
             .unwrap_or(false)
     }
 
@@ -149,19 +274,30 @@ impl ApiApprovals {
     pub fn pending(&self) -> Vec<ApiApproval> {
         self.pending
             .lock()
-            .map(|p| p.values().map(|(a, _)| a.clone()).collect())
+            .map(|p| p.values().map(|c| c.msg.clone()).collect())
             .unwrap_or_default()
     }
 }
 
-/// Drops an approval from the pending list when its asker stops waiting
-/// (answered, timed out into the outbox, or cancelled).
+/// Drops a request from its card when its asker stops waiting (answered,
+/// timed out into the outbox, or cancelled); the card goes with its last one.
 struct UnlistApproval<'a>(&'a ApiApprovals, String);
 
 impl Drop for UnlistApproval<'_> {
     fn drop(&mut self) {
-        if let Ok(mut p) = self.0.pending.lock() {
-            p.remove(&self.1);
+        let Ok(mut p) = self.0.pending.lock() else {
+            return;
+        };
+        let card = p
+            .iter_mut()
+            .find(|(_, c)| c.waiters.iter().any(|(r, _)| r == &self.1))
+            .map(|(k, c)| {
+                c.waiters.retain(|(r, _)| r != &self.1);
+                c.msg.count = c.waiters.len().max(1) as u32;
+                (k.clone(), c.waiters.is_empty())
+            });
+        if let Some((k, true)) = card {
+            p.remove(&k);
         }
     }
 }
@@ -468,7 +604,9 @@ impl Router {
     /// goes to the outbox at once, which posts its own).
     async fn ask_api(&self, req: &ApprovalRequest, root: Option<String>, at: Where) -> Decision {
         let waiting = match self.manager() {
-            Some(m) if self.0.api.listening() => super::waiting::open_approval(&m, req, &at),
+            Some(m) if self.0.api.listening() && !self.0.api.joins_card(req) => {
+                super::waiting::open_approval(&m, req, &at)
+            }
             _ => None,
         };
         let d = self.0.api.ask(req, root, at).await;
@@ -1431,3 +1569,6 @@ impl ChatHost for Chats {
         self.0.rt.agent.subscribe()
     }
 }
+
+#[cfg(test)]
+mod approval_card_tests;

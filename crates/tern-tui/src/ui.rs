@@ -384,6 +384,14 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 p.request.call.name
             )));
         }
+        if let Some(grant) = &p.request.grant {
+            options.push(Span::styled("[r]", warn));
+            options.push(Span::raw(format!(" this run ({})   ", grant.label)));
+            options.push(Span::styled("[c]", warn));
+            options.push(Span::raw(" this conversation   "));
+            options.push(Span::styled("[a]", warn));
+            options.push(Span::raw(" always   "));
+        }
         if let Some(host) = &p.request.egress_host {
             options.push(Span::styled("[r]", warn));
             options.push(Span::raw(" all sites this run   "));
