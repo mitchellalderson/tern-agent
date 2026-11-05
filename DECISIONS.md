@@ -1505,3 +1505,13 @@ What was missing: the model had no cap on the roster, no ceiling in it, a soft p
 - **Not done.** Ranking is lexical, not semantic; the persona rule names starter slugs that may not exist in a
   user's home; the "Let agents decide" router is unchanged. The TUI labels a hand-off from the agent id suffix
   (`tern:seo` -> `@seo`), which equals the slug unless the agent was renamed after creation.
+
+## CI cost rules (2026-11-05)
+
+macOS runner minutes cost about 10x Linux, so: Linux runs the full OS-independent suite on every code change; macOS
+runs only macOS-specific checks (clippy for cfg(macos) code, Seatbelt/path/tui crates, the shipped aarch64 binary,
+platform-sensitive Dart tests), and only after Linux is green, on main pushes, release checks, manual dispatch,
+nightly, or PRs labelled `ci-macos`. The universal DMG is built only on dispatch, nightly and release tags. Newer
+pushes cancel older runs on the same ref, but never tag (release) runs. Docs-only changes skip everything except
+gitleaks. Every job has a timeout (macOS 30). A release tag still requires the full Linux suite and the macOS job to
+pass. Details and expected minutes: docs/ci-cost.md.
