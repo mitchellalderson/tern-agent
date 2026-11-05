@@ -4,13 +4,18 @@
 //!
 //! | Method | Path | |
 //! |---|---|---|
-//! | GET | `/v1/config/settings` | `{path, error?, sections: [{id, title, description?, settings: [Setting]}]}` |
+//! | GET | `/v1/config/settings` | `{path, error?, restart_required, sections: [{id, title, description?, settings: [Setting]}]}` |
 //! | PUT | `/v1/config/settings/{key}` | set `{value}` (`null` unsets an optional one) → the `Setting` |
 //! | DELETE | `/v1/config/settings/{key}` | back to the default (removed from the file) → the `Setting` |
 //!
 //! A `Setting` is `{key, kind, choices?, min?, max?, optional, value,
 //! default, set, description, applies: "live" | "restart",
-//! restart_pending, security?, risky, editable}`. Writes keep the file's
+//! restart_pending, restart_required, security?, risky, editable,
+//! group, advanced}`. `group` places it in the platform Settings window
+//! (`general`, `models`, `permissions`, `limits`, `servers`, `advanced`);
+//! `advanced` marks tuning knobs. Secrets are never returned: `*_secret`
+//! keys hold only a secret's name, are not editable here and refuse writes
+//! (400); values go through `/v1/secrets`, write-only. Writes keep the file's
 //! comments and layout, and are refused (400) when the value has the wrong
 //! type or range, or the config wouldn't load with it; unknown keys are
 //! 404.

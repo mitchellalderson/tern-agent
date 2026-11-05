@@ -18,6 +18,7 @@ impl Runtime {
             Err(e) => ConfigView {
                 path: path.display().to_string(),
                 error: Some(e.to_string()),
+                restart_required: false,
                 sections: Vec::new(),
             },
         }
