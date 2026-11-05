@@ -20,6 +20,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/icon/tern-mark.png
   fonts:
     # SIL OFL 1.1 fonts (Archivo, DM Sans, JetBrains Mono); see docs/brand/brand-guide.md.
     - family: TernDisplay

@@ -54,7 +54,7 @@ Three bars, hard-edged, no gaps, always in this order: orange, yellow, teal (top
 |-----------|---------------|-----|
 | Page edge | 6 to 8px      | Top of a window or page |
 | Slanted   | 12 to 14px, skewed -18° | Hero, empty states, onboarding |
-| Small     | 3 to 4px, skewed -18°   | Under the sidebar logo |
+| Small     | 3 to 4px, skewed -18°   | Dividers and quiet accents (the sidebar logo uses the bird, not a stripe) |
 | Vertical  | 12px          | Side tab or divider |
 
 - At most one stripe element per view, plus the logo lockup.

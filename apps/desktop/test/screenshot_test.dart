@@ -500,6 +500,13 @@ void main() {
           ),
         ),
       );
+      // Images decode asynchronously; load the sidebar mark before the shot.
+      await tester.runAsync(
+        () => precacheImage(
+          const AssetImage('assets/icon/tern-mark.png'),
+          tester.element(find.byType(Home)),
+        ),
+      );
       await tester.pump(const Duration(milliseconds: 100));
       expect(tester.takeException(), isNull);
       // The approval card leads with the call's effect.
