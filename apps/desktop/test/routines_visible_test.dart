@@ -232,7 +232,7 @@ void main() {
     expect(client.reads, 1);
 
     // #news: the panel's list, the header's count and the answer's card.
-    expect(find.text('ROUTINES · #NEWS'), findsOneWidget);
+    expect(find.text('Routines · #news'), findsOneWidget);
     expect(
       find.text("Look up this week's AI news and summarise it."),
       findsOneWidget,
@@ -266,7 +266,7 @@ void main() {
     store.channel = 'dm:research';
     store.notifyListeners();
     await tester.pump();
-    expect(find.text('ROUTINES · RESEARCH'), findsOneWidget);
+    expect(find.text('Routines · Research'), findsOneWidget);
     expect(
       find.text("Look up this week's AI news and summarise it."),
       findsOneWidget,

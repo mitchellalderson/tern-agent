@@ -363,11 +363,10 @@ class _ChainRow extends StatelessWidget {
                   SizedBox(
                     width: 62,
                     child: Text(
-                      primary ? 'PRIMARY' : 'THEN TRY',
+                      primary ? 'Primary' : 'Then try',
                       key: Key('chain-label-$index'),
                       style: TextStyle(
                         fontSize: 10,
-                        letterSpacing: 0.6,
                         fontWeight: FontWeight.w700,
                         color: primary ? c.ink : c.muted,
                       ),

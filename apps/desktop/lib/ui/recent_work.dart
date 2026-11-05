@@ -47,7 +47,7 @@ class _RecentWorkSectionState extends State<RecentWorkSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text('RECENT WORK', style: Theme.of(context).textTheme.labelSmall),
+        Text('Recent work', style: Theme.of(context).textTheme.labelSmall),
         const SizedBox(height: 6),
         if (work.isEmpty)
           Text(

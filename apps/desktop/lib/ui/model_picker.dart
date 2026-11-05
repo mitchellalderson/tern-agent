@@ -105,12 +105,7 @@ List<ModelRow> modelRows(
     for (final m in models) {
       final full = '${l.provider}:${m.id}';
       rows.add(
-        ModelChoice(
-          full,
-          m,
-          current: full == current,
-          providerLabel: l.label,
-        ),
+        ModelChoice(full, m, current: full == current, providerLabel: l.label),
       );
     }
     for (final s in suggested) {
@@ -361,67 +356,67 @@ class ModelListState extends State<ModelList> {
     var choice = -1;
     final grouped = (widget.lists?.length ?? 0) > 1;
     return [
-        ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: widget.maxHeight),
-          child: widget.lists == null && widget.loading
-              ? const Padding(
-                  padding: EdgeInsets.all(20),
-                  child: Center(
-                    child: SizedBox.square(
-                      dimension: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
+      ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: widget.maxHeight),
+        child: widget.lists == null && widget.loading
+            ? const Padding(
+                padding: EdgeInsets.all(20),
+                child: Center(
+                  child: SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   ),
-                )
-              : rows.isEmpty
-              ? Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Text(
-                    'No models listed. Type a model id.',
-                    style: TextStyle(fontSize: 12.5, color: c.muted),
-                  ),
-                )
-              : ListView(
-                  controller: _scroll,
-                  shrinkWrap: true,
-                  children: [
-                    for (final r in rows)
-                      switch (r) {
-                        // One provider with nothing to say needs no heading:
-                        // each row carries its provider as a badge.
-                        ModelHeader(:final title, :final note)
-                            when !grouped && note == null && title != 'Current' =>
-                          const SizedBox.shrink(),
-                        ModelHeader(:final title, :final note) => _Header(
-                          title: title,
-                          note: note,
-                        ),
-                        _ => () {
-                          choice++;
-                          final i = choice;
-                          return _Choice(
-                            row: r,
-                            selected: i == _selected,
-                            onTap: () => widget.onChoose(_choiceOf(r)!),
-                            onHover: () => setState(() => _selected = i),
-                          );
-                        }(),
-                      },
-                  ],
                 ),
+              )
+            : rows.isEmpty
+            ? Padding(
+                padding: const EdgeInsets.all(14),
+                child: Text(
+                  'No models listed. Type a model id.',
+                  style: TextStyle(fontSize: 12.5, color: c.muted),
+                ),
+              )
+            : ListView(
+                controller: _scroll,
+                shrinkWrap: true,
+                children: [
+                  for (final r in rows)
+                    switch (r) {
+                      // One provider with nothing to say needs no heading:
+                      // each row carries its provider as a badge.
+                      ModelHeader(:final title, :final note)
+                          when !grouped && note == null && title != 'Current' =>
+                        const SizedBox.shrink(),
+                      ModelHeader(:final title, :final note) => _Header(
+                        title: title,
+                        note: note,
+                      ),
+                      _ => () {
+                        choice++;
+                        final i = choice;
+                        return _Choice(
+                          row: r,
+                          selected: i == _selected,
+                          onTap: () => widget.onChoose(_choiceOf(r)!),
+                          onHover: () => setState(() => _selected = i),
+                        );
+                      }(),
+                    },
+                ],
+              ),
+      ),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton(
+          key: const ValueKey('enter-model-id'),
+          onPressed: () => setState(() {
+            _manual = true;
+            _filter.clear();
+            _selected = 0;
+          }),
+          child: const Text('Enter a model id'),
         ),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton(
-            key: const ValueKey('enter-model-id'),
-            onPressed: () => setState(() {
-              _manual = true;
-              _filter.clear();
-              _selected = 0;
-            }),
-            child: const Text('Enter a model id'),
-          ),
-        ),
+      ),
     ];
   }
 }
@@ -557,14 +552,9 @@ class ProviderBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.colors;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(
-        color: c.selection,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(label, style: TextStyle(fontSize: 10.5, color: c.muted)),
+    return Text(
+      label,
+      style: TextStyle(fontSize: 11, color: context.colors.muted),
     );
   }
 }

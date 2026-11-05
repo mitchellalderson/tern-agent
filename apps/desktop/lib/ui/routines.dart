@@ -42,9 +42,9 @@ class _RoutinesSectionState extends State<RoutinesSection> {
         ? store.schedulesOf(agent)
         : store.schedulesIn(topic!.id);
     final scope = agent != null
-        ? agent.name.toUpperCase()
+        ? agent.name
         : topic != null
-        ? '#${topic.slug.toUpperCase()}'
+        ? '#${topic.slug}'
         : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -53,7 +53,7 @@ class _RoutinesSectionState extends State<RoutinesSection> {
           children: [
             Expanded(
               child: Text(
-                scope == null || _all ? 'ROUTINES' : 'ROUTINES · $scope',
+                scope == null || _all ? 'Routines' : 'Routines · $scope',
                 style: Theme.of(context).textTheme.labelSmall,
               ),
             ),
@@ -992,7 +992,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
         );
     return [
       const SizedBox(height: 6),
-      Text('QUIET HOURS', style: labels),
+      Text('Quiet hours', style: labels),
       const SizedBox(height: 6),
       UnderlineTabs(
         tabs: [
@@ -1038,7 +1038,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
         title: const Text('Urgent: send even during quiet hours'),
       ),
       const SizedBox(height: 6),
-      Text('LIMITS', style: labels),
+      Text('Limits', style: labels),
       const SizedBox(height: 6),
       Row(
         children: [
@@ -1057,7 +1057,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
       ),
       if (_trigger != 'watch') ...[
         const SizedBox(height: 12),
-        Text('GATE', style: labels),
+        Text('Gate', style: labels),
         const SizedBox(height: 6),
         TextField(
           key: const Key('routine-gate'),
@@ -1191,7 +1191,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 18),
-              Text('WHAT TO DO', style: labels),
+              Text('What to do', style: labels),
               const SizedBox(height: 6),
               TextField(
                 controller: _prompt,
@@ -1204,7 +1204,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
                 ),
               ),
               const SizedBox(height: 16),
-              Text('WHEN', style: labels),
+              Text('When', style: labels),
               const SizedBox(height: 6),
               // A webhook routine keeps its trigger (its secret goes with
               // it); others can't become one, since that needs a secret.
@@ -1301,7 +1301,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
                   ),
               ],
               const SizedBox(height: 16),
-              Text('RESULTS', style: labels),
+              Text('Results', style: labels),
               const SizedBox(height: 6),
               if (widget.store.hasAgents && widget.store.agents.length > 1) ...[
                 DropdownButtonFormField<String>(
@@ -1518,7 +1518,7 @@ Future<void> showWebhookSecret(
           children: [
             field('URL', w.url ?? w.path, const Key('webhook-url')),
             const SizedBox(height: 10),
-            field('SECRET', w.secret ?? '', const Key('webhook-secret')),
+            field('Secret', w.secret ?? '', const Key('webhook-secret')),
             const SizedBox(height: 10),
             Text(w.howToSign, style: TextStyle(fontSize: 12, color: c.muted)),
             const SizedBox(height: 6),

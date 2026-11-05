@@ -456,7 +456,7 @@ class _McpDetailState extends State<McpDetail> {
                     ),
                   ),
                 const SizedBox(height: 18),
-                Text('CONFIG', style: labels),
+                Text('Config', style: labels),
                 const SizedBox(height: 6),
                 for (final (k, v) in summary)
                   Padding(
@@ -481,7 +481,7 @@ class _McpDetailState extends State<McpDetail> {
                     ),
                   ),
                 const SizedBox(height: 20),
-                Text('TOOLS · ${s.tools.length}', style: labels),
+                Text('Tools · ${s.tools.length}', style: labels),
                 const SizedBox(height: 4),
                 if (s.tools.isEmpty)
                   Text(
@@ -556,7 +556,7 @@ class _McpDetailState extends State<McpDetail> {
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          'LOGS · ${s.stderrTail.length} lines',
+                          'Logs · ${s.stderrTail.length} lines',
                           style: labels,
                         ),
                         const Spacer(),
@@ -648,14 +648,8 @@ class McpChip extends StatelessWidget {
   final Color color;
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-    decoration: BoxDecoration(
-      color: color.withValues(alpha: 0.12),
-      borderRadius: BorderRadius.circular(5),
-    ),
-    child: Text(label, style: mono.copyWith(fontSize: 11, color: color)),
-  );
+  Widget build(BuildContext context) =>
+      Text(label, style: mono.copyWith(fontSize: 11, color: color));
 }
 
 /// "retry in 12s", ticking down.

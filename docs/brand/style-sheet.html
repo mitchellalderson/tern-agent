@@ -54,7 +54,7 @@ body {
 /* ---------- layout ---------- */
 header.hero { padding: 72px 0 56px; }
 .eyebrow {
-  font: 600 12px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase;
+  font: 600 13px/1 var(--body);
   color: var(--muted); margin-bottom: 18px;
 }
 .wordmark {
@@ -68,7 +68,7 @@ section { padding: 56px 0; border-top: 1px solid var(--hairline); }
 .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 28px; }
 .sec-head .n { font: 600 12px var(--mono); color: var(--muted); }
 h2 { font: italic 800 34px/1.05 var(--display); font-stretch: 112%; letter-spacing: -.01em; }
-h3 { font: 700 13px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 32px 0 14px; }
+h3 { font: 600 14px/1 var(--body); color: var(--muted); margin: 32px 0 14px; }
 p.lede { max-width: 620px; color: var(--muted); margin-bottom: 8px; }
 
 /* ---------- swatches ---------- */
@@ -112,8 +112,8 @@ p.lede { max-width: 620px; color: var(--muted); margin-bottom: 8px; }
   border: 1.5px solid var(--hairline); border-radius: 8px; padding: 10px 12px;
 }
 .input:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px color-mix(in srgb, var(--yellow) 55%, transparent); }
-.pill { font: 600 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 4px 9px; border-radius: 99px; border: 1.5px solid currentColor; }
-.pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.err { color: var(--error); }
+.status { display: inline-flex; align-items: center; font: 500 13px var(--body); color: var(--ink); }
+.status.ok .dot { color: var(--ok); } .status.warn .dot { color: var(--warn); } .status.err .dot { color: var(--error); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin-right: 6px; }
 
 .app {
@@ -234,7 +234,7 @@ footer { padding: 40px 0 64px; border-top: 1px solid var(--hairline); color: var
       <div class="card" style="grid-column: 1 / -1">
         <div class="eyebrow">Mono · JetBrains Mono</div>
         <div class="sample-mono">$ tern run --profile accounting<br>▸ read_file ledger/2026-q3.csv · 412 rows</div>
-        <p style="margin-top:14px;color:var(--muted);font-size:14px">Code, commands, tool calls, small uppercase labels with letter-spacing.</p>
+        <p style="margin-top:14px;color:var(--muted);font-size:14px">Code, commands and tool calls.</p>
       </div>
     </div>
 
@@ -268,9 +268,9 @@ footer { padding: 40px 0 64px; border-top: 1px solid var(--hairline); color: var
 
         <h3>Status</h3>
         <div class="row-flex">
-          <span class="pill ok"><span class="dot"></span>Done</span>
-          <span class="pill warn"><span class="dot"></span>Waiting</span>
-          <span class="pill err"><span class="dot"></span>Failed</span>
+          <span class="status ok"><span class="dot"></span>Done</span>
+          <span class="status warn"><span class="dot"></span>Waiting</span>
+          <span class="status err"><span class="dot"></span>Failed</span>
         </div>
       </div>
 
@@ -295,7 +295,7 @@ footer { padding: 40px 0 64px; border-top: 1px solid var(--hairline); color: var
       </div>
     </div>
     <h3>Shape</h3>
-    <p class="lede">Radius 8 for controls, 12 for cards and bubbles, full-round only for pills. Borders are 1px hairline for rest and 1.5–2px ink for anything interactive or active. No drop shadows; depth comes from paper vs. sand.</p>
+    <p class="lede">Radius 8 for controls, 12 for cards and bubbles, full-round only for avatars and dots. Borders are 1px hairline for rest and 1.5–2px ink for anything interactive or active. No drop shadows; depth comes from paper vs. sand.</p>
   </section>
 
   <!-- 05 -->
@@ -314,9 +314,9 @@ footer { padding: 40px 0 64px; border-top: 1px solid var(--hairline); color: var
       <div class="row-flex">
         <button class="btn primary" style="color:#2B2118;border-color:var(--ink)">Approve</button>
         <button class="btn">Cancel</button>
-        <span class="pill ok"><span class="dot"></span>Done</span>
-        <span class="pill warn"><span class="dot"></span>Waiting</span>
-        <span class="pill err"><span class="dot"></span>Failed</span>
+        <span class="status ok"><span class="dot"></span>Done</span>
+        <span class="status warn"><span class="dot"></span>Waiting</span>
+        <span class="status err"><span class="dot"></span>Failed</span>
       </div>
       <p style="margin-top:16px;font-size:13px;color:var(--muted)">Dark stripes: orange <code style="font-family:var(--mono)">#F58A3D</code> · yellow <code style="font-family:var(--mono)">#F9C846</code> · teal <code style="font-family:var(--mono)">#4DB3AE</code>. Primary button text stays dark ink in both modes.</p>
     </div>

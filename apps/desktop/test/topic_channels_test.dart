@@ -376,7 +376,7 @@ void main() {
     await _pump(tester, store);
 
     // CHANNELS in the sidebar, with an unread dot on #finances only.
-    expect(find.text('CHANNELS'), findsOneWidget);
+    expect(find.text('Channels'), findsOneWidget);
     expect(find.text('Finances'), findsOneWidget);
     expect(find.byTooltip('New posts'), findsOneWidget);
 

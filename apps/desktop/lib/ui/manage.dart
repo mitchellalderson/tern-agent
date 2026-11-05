@@ -189,7 +189,7 @@ class _DeleteAgentDialogState extends State<DeleteAgentDialog> {
                     if (i.routines.isNotEmpty) ...[
                       const SizedBox(height: 8),
                       Text(
-                        'ITS ${_n(i.routines.length, 'ROUTINE')}',
+                        'Its ${_n(i.routines.length, 'routine')}',
                         style: Theme.of(context).textTheme.labelSmall,
                       ),
                       for (final r in i.routines)
@@ -472,7 +472,7 @@ class _ArchivedDialogState extends State<ArchivedDialog> {
                       ),
                     if (agents.isNotEmpty)
                       Text(
-                        'AGENTS',
+                        'Agents',
                         style: Theme.of(context).textTheme.labelSmall,
                       ),
                     for (final a in agents)
@@ -489,7 +489,7 @@ class _ArchivedDialogState extends State<ArchivedDialog> {
                     if (channels.isNotEmpty) ...[
                       const SizedBox(height: 8),
                       Text(
-                        'CHANNELS',
+                        'Channels',
                         style: Theme.of(context).textTheme.labelSmall,
                       ),
                     ],

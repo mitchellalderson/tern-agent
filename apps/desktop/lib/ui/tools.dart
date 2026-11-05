@@ -24,6 +24,9 @@ class ToolsSection extends StatefulWidget {
 class _ToolsSectionState extends State<ToolsSection> {
   final _query = TextEditingController();
 
+  /// The list is long and rarely needed, so it starts folded.
+  bool _open = false;
+
   @override
   void dispose() {
     _query.dispose();
@@ -55,57 +58,73 @@ class _ToolsSectionState extends State<ToolsSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          'TOOLS · ${tools.length}',
-          style: Theme.of(context).textTheme.labelSmall,
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          height: 30,
-          child: TextField(
-            controller: _query,
-            onChanged: (_) => setState(() {}),
-            style: const TextStyle(fontSize: 12.5),
-            decoration: InputDecoration(
-              hintText: 'Search tools',
-              hintStyle: TextStyle(color: c.muted),
-              prefixIcon: Icon(Icons.search, size: 15, color: c.muted),
-              prefixIconConstraints: const BoxConstraints(minWidth: 30),
-              isDense: true,
-              filled: true,
-              fillColor: c.background,
-              contentPadding: const EdgeInsets.symmetric(vertical: 8),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide(color: c.hairline),
+        InkWell(
+          onTap: () => setState(() => _open = !_open),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Tools · ${tools.length}',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
               ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide(color: c.hairline),
+              Icon(
+                _open ? Icons.expand_less : Icons.expand_more,
+                size: 16,
+                color: c.muted,
+              ),
+            ],
+          ),
+        ),
+        if (_open) ...[
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 30,
+            child: TextField(
+              controller: _query,
+              onChanged: (_) => setState(() {}),
+              style: const TextStyle(fontSize: 12.5),
+              decoration: InputDecoration(
+                hintText: 'Search tools',
+                hintStyle: TextStyle(color: c.muted),
+                prefixIcon: Icon(Icons.search, size: 15, color: c.muted),
+                prefixIconConstraints: const BoxConstraints(minWidth: 30),
+                isDense: true,
+                filled: true,
+                fillColor: c.background,
+                contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: c.hairline),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: c.hairline),
+                ),
               ),
             ),
           ),
-        ),
-        const SizedBox(height: 6),
-        if (shown.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Text(
-              'No tools match',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-        for (final t in shown)
-          if (!t.name.startsWith('mcp__')) _tool(context, t.name, t),
-        for (final MapEntry(key: server, value: list) in groups.entries)
-          if (q.isEmpty || list.isNotEmpty) ...[
-            _serverRow(context, server, list.length),
-            for (final (short, t) in list)
-              Padding(
-                padding: const EdgeInsets.only(left: 14),
-                child: _tool(context, short, t),
+          const SizedBox(height: 6),
+          if (shown.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Text(
+                'No tools match',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
-          ],
+            ),
+          for (final t in shown)
+            if (!t.name.startsWith('mcp__')) _tool(context, t.name, t),
+          for (final MapEntry(key: server, value: list) in groups.entries)
+            if (q.isEmpty || list.isNotEmpty) ...[
+              _serverRow(context, server, list.length),
+              for (final (short, t) in list)
+                Padding(
+                  padding: const EdgeInsets.only(left: 14),
+                  child: _tool(context, short, t),
+                ),
+            ],
+        ],
       ],
     );
   }
@@ -319,14 +338,14 @@ class _Formatted extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('DESCRIPTION', style: labels),
+        Text('Description', style: labels),
         const SizedBox(height: 6),
         SelectableText(
           spec.description.isEmpty ? '(none)' : spec.description,
           style: const TextStyle(fontSize: 13, height: 1.45),
         ),
         const SizedBox(height: 20),
-        Text('EFFECT', style: labels),
+        Text('Effect', style: labels),
         const SizedBox(height: 6),
         Text(
           [
@@ -336,7 +355,7 @@ class _Formatted extends StatelessWidget {
           style: const TextStyle(fontSize: 13, height: 1.45),
         ),
         const SizedBox(height: 20),
-        Text('ARGUMENTS', style: labels),
+        Text('Arguments', style: labels),
         const SizedBox(height: 6),
         if (params.isEmpty)
           Text('None', style: Theme.of(context).textTheme.bodySmall),

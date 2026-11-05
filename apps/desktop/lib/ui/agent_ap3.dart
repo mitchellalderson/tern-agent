@@ -86,14 +86,9 @@ class AutonomyChip extends StatelessWidget {
       message:
           '${agent.name} never runs above ${level.label.toLowerCase()} '
           'autonomy, whatever your setting is. ${level.line}',
-      child: Container(
+      child: Padding(
         key: const Key('autonomy-chip'),
-        margin: const EdgeInsets.only(right: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-        decoration: BoxDecoration(
-          border: Border.all(color: c.hairline),
-          borderRadius: BorderRadius.circular(6),
-        ),
+        padding: const EdgeInsets.only(right: 8),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [

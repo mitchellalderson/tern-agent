@@ -186,7 +186,7 @@ void main() {
     await tester.pumpWidget(_app(RoutineSheet(store: store, editing: editing)));
     await tester.pumpAndSettle();
     // Non-default limits open the section, filled in.
-    expect(find.text('QUIET HOURS'), findsOneWidget);
+    expect(find.text('Quiet hours'), findsOneWidget);
     expect(find.text('23:00-06:00'), findsOneWidget);
     expect(find.text('4'), findsOneWidget);
 

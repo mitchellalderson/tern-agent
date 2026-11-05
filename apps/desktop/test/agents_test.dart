@@ -554,7 +554,7 @@ void main() {
   ) async {
     final (store, client) = await _store();
     await _pump(tester, store);
-    expect(find.text('AGENTS'), findsOneWidget);
+    expect(find.text('Agents'), findsOneWidget);
     // Home carries tern's avatar; the lone agent row above it is gone.
     expect(find.text('Home'), findsWidgets);
     await tester.tap(find.text('Research').first);
@@ -566,10 +566,10 @@ void main() {
     expect(find.byTooltip('New topic (⌘N)'), findsWidgets);
     expect(find.byTooltip('Edit Research'), findsOneWidget);
     // Its side panel: its own routines, its tools, its memory.
-    expect(find.text('ROUTINES · RESEARCH'), findsOneWidget);
+    expect(find.text('Routines · Research'), findsOneWidget);
     expect(find.text('Weekly Acme digest'), findsOneWidget);
     expect(find.text('Morning brief'), findsNothing);
-    expect(find.text('TOOLS · 2'), findsOneWidget);
+    expect(find.text('Tools · 2'), findsOneWidget);
     expect(find.text('Acme runs Postgres 16.'), findsOneWidget);
     expect(client.memoryScopes.last, 'tern:research');
     await tester.tap(find.widgetWithText(UnderlineTab, 'Shared'));
@@ -1104,8 +1104,8 @@ void main() {
       await tester.ensureVisible(toggle);
       await tester.tap(toggle);
       await tester.pumpAndSettle();
-      expect(find.text('PRIMARY'), findsOneWidget);
-      expect(find.text('THEN TRY'), findsOneWidget);
+      expect(find.text('Primary'), findsOneWidget);
+      expect(find.text('Then try'), findsOneWidget);
 
       // Add one, then move it above the first fallback with the keyboard
       // buttons.
@@ -1113,7 +1113,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('claude-haiku-5-5', findRichText: true));
       await tester.pumpAndSettle();
-      expect(find.text('THEN TRY'), findsNWidgets(2));
+      expect(find.text('Then try'), findsNWidgets(2));
       await tester.tap(find.byKey(const Key('chain-up-2')));
       await tester.pumpAndSettle();
       final fields = await save(tester, client);
@@ -1304,7 +1304,7 @@ void main() {
       expect(find.textContaining('Working for Home'), findsNothing);
       expect(find.byType(TaintMark), findsWidgets);
       // Its side panel lists it too.
-      expect(find.text('RECENT WORK'), findsOneWidget);
+      expect(find.text('Recent work'), findsOneWidget);
       expect(find.text('Size the demand for home services'), findsOneWidget);
       await tester.tap(find.widgetWithText(TextButton, 'Open').first);
       await tester.pump();
@@ -1531,7 +1531,7 @@ void main() {
       await tester.tap(find.byTooltip('New agent'));
       await tester.pumpAndSettle();
       // No bot field until the agent exists.
-      expect(find.text('TELEGRAM BOT'), findsNothing);
+      expect(find.text('Telegram bot'), findsNothing);
       await openAdvanced(tester);
       await show(tester, find.byKey(const Key('autonomy-autonomous')));
       await tester.tap(find.byKey(const Key('autonomy-autonomous')));
@@ -1560,8 +1560,8 @@ void main() {
       await tester.pumpAndSettle();
       await openAdvanced(tester);
       await show(tester, find.byKey(const Key('autonomy-none')));
-      expect(find.text('AUTONOMY CEILING'), findsOneWidget);
-      expect(find.text('TELEGRAM BOT'), findsNothing);
+      expect(find.text('Autonomy ceiling'), findsOneWidget);
+      expect(find.text('Telegram bot'), findsNothing);
     });
 
     ap3Test('the header shows the ceiling, and nothing without one', (
@@ -1597,7 +1597,7 @@ void main() {
     ) async {
       await editing(tester, noBot, others: [ops]);
       await show(tester, find.byKey(const Key('agent-bot')));
-      expect(find.text('TELEGRAM BOT'), findsOneWidget);
+      expect(find.text('Telegram bot'), findsOneWidget);
       expect(find.byKey(const Key('agent-bot-restart-note')), findsOneWidget);
       expect(
         find.textContaining('applies when the daemon restarts'),

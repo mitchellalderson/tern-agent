@@ -172,8 +172,8 @@ void main() {
         'openrouter:kimi-k3',
         'anthropic:claude-haiku-5-5',
       ]);
-      expect(find.text('PRIMARY'), findsOneWidget);
-      expect(find.text('THEN TRY'), findsNWidgets(2));
+      expect(find.text('Primary'), findsOneWidget);
+      expect(find.text('Then try'), findsNWidgets(2));
       // The provider's name as a badge; the model id and its own name.
       expect(find.text('Anthropic'), findsNWidgets(2));
       expect(find.text('OpenRouter'), findsOneWidget);
@@ -205,7 +205,7 @@ void main() {
       // The primary changed, so the labels follow the models, not the rows.
       expect(
         tester.widget<Text>(find.byKey(const Key('chain-label-0'))).data,
-        'PRIMARY',
+        'Primary',
       );
       await tester.tap(find.byKey(const Key('chain-up-2')));
       await tester.pumpAndSettle();

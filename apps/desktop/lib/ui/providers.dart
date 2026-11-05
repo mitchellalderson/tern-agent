@@ -637,14 +637,22 @@ class _Chip extends StatelessWidget {
   final String label;
   final Color color;
 
+  /// A status is a dot in its color and a plain word, no box.
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-    decoration: BoxDecoration(
-      color: color.withValues(alpha: 0.12),
-      borderRadius: BorderRadius.circular(6),
-    ),
-    child: Text(label, style: TextStyle(fontSize: 11, color: color)),
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Container(
+        width: 6,
+        height: 6,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      ),
+      const SizedBox(width: 5),
+      Text(
+        label,
+        style: TextStyle(fontSize: 11.5, color: context.colors.muted),
+      ),
+    ],
   );
 }
 

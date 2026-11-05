@@ -405,7 +405,7 @@ class _RunInspectorState extends State<RunInspector> {
             Text(label, style: Theme.of(context).textTheme.labelSmall),
             const SizedBox(width: 2),
             CopyButton(
-              key: Key('copy-${s.idx}-$label'),
+              key: Key('copy-${s.idx}-${label.toUpperCase()}'),
               tooltip: 'Copy ${label.toLowerCase()}',
               size: 13,
               text: () => _pretty(v),
@@ -441,9 +441,9 @@ class _RunInspectorState extends State<RunInspector> {
             style: TextStyle(fontSize: 11.5, color: c.muted),
           ),
           const SizedBox(height: 6),
-          block('INPUT', s.input),
+          block('Input', s.input),
           if (s.output != null)
-            block('OUTPUT', s.output)
+            block('Output', s.output)
           else if (_callId(s) case final id?)
             // Not journaled until it ends; show what the daemon streamed.
             ListenableBuilder(
@@ -455,10 +455,10 @@ class _RunInspectorState extends State<RunInspector> {
                     .firstOrNull;
                 return live == null || live.isEmpty
                     ? const SizedBox.shrink()
-                    : block('OUTPUT SO FAR', live);
+                    : block('Output so far', live);
               },
             ),
-          if (s.error case final e?) block('ERROR', e),
+          if (s.error case final e?) block('Error', e),
         ],
       ),
     );

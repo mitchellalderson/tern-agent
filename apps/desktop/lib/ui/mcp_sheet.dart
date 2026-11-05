@@ -586,7 +586,7 @@ class _McpFormState extends State<McpForm> {
                 else
                   ..._httpFields(context),
                 const SizedBox(height: 16),
-                Text('SECRETS', style: labels),
+                Text('Secrets', style: labels),
                 const SizedBox(height: 6),
                 if (_needed.isEmpty)
                   Text(
@@ -733,7 +733,7 @@ class _McpFormState extends State<McpForm> {
         ],
       ),
       const SizedBox(height: 14),
-      Text('ENVIRONMENT', style: Theme.of(context).textTheme.labelSmall),
+      Text('Environment', style: Theme.of(context).textTheme.labelSmall),
       const SizedBox(height: 6),
       for (final p in _env)
         _pairRow(
@@ -802,7 +802,7 @@ class _McpFormState extends State<McpForm> {
       ),
     ),
     const SizedBox(height: 14),
-    Text('HEADERS', style: Theme.of(context).textTheme.labelSmall),
+    Text('Headers', style: Theme.of(context).textTheme.labelSmall),
     const SizedBox(height: 6),
     for (final p in _headers)
       _pairRow(
@@ -1001,7 +1001,7 @@ class _McpFormState extends State<McpForm> {
           const SizedBox(height: 6),
           Row(
             children: [
-              Text('STDERR', style: Theme.of(context).textTheme.labelSmall),
+              Text('Stderr', style: Theme.of(context).textTheme.labelSmall),
               const Spacer(),
               CopyButton(
                 text: () => e.stderrTail.join('\n'),
@@ -1032,7 +1032,7 @@ class _McpFormState extends State<McpForm> {
       if (v.tools.isNotEmpty) ...[
         const SizedBox(height: 10),
         Text(
-          'TOOLS · $on of ${v.tools.length} on',
+          'Tools · $on of ${v.tools.length} on',
           style: Theme.of(context).textTheme.labelSmall,
         ),
         for (final t in v.tools)

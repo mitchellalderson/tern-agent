@@ -60,7 +60,7 @@ class SidePanel extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
               children: [
-                Text('NOW', style: labels),
+                Text('Now', style: labels),
                 const SizedBox(height: 8),
                 if (t?.activeRun == null && work == null)
                   Text('Idle', style: Theme.of(context).textTheme.bodySmall)
@@ -181,7 +181,7 @@ class SidePanel extends StatelessWidget {
                 const SizedBox(height: 22),
                 RoutinesSection(store: store),
                 const SizedBox(height: 16),
-                Text('USAGE', style: labels),
+                Text('Usage', style: labels),
                 const SizedBox(height: 8),
                 if (usage == null || usage.total == 0)
                   Text(
@@ -189,17 +189,22 @@ class SidePanel extends StatelessWidget {
                     style: Theme.of(context).textTheme.bodySmall,
                   )
                 else ...[
-                  _Stat('Input', formatTokens(usage.inputTokens)),
-                  _Stat('Output', formatTokens(usage.outputTokens)),
-                  if (usage.cacheReadTokens > 0)
-                    _Stat('Cache read', formatTokens(usage.cacheReadTokens)),
+                  Text(
+                    [
+                      '${formatTokens(usage.inputTokens)} in',
+                      '${formatTokens(usage.outputTokens)} out',
+                      if (usage.cacheReadTokens > 0)
+                        '${formatTokens(usage.cacheReadTokens)} cached',
+                    ].join(' · '),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                   if ((usage.contextTokens, usage.contextWindow) case (
                     final used?,
                     final window?,
                   ))
-                    _Stat(
-                      'Context',
-                      '${formatTokens(used)} / ${formatTokens(window)}',
+                    Text(
+                      'Context ${formatTokens(used)} / ${formatTokens(window)}',
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
                 ],
                 const SizedBox(height: 22),
@@ -215,27 +220,4 @@ class SidePanel extends StatelessWidget {
       ),
     );
   }
-}
-
-class _Stat extends StatelessWidget {
-  const _Stat(this.label, this.value);
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 2),
-    child: Row(
-      children: [
-        Expanded(
-          child: Text(
-            label,
-            style: TextStyle(fontSize: 12.5, color: context.colors.muted),
-          ),
-        ),
-        Text(value, style: const TextStyle(fontSize: 12.5)),
-      ],
-    ),
-  );
 }

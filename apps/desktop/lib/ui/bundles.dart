@@ -533,7 +533,7 @@ class BundlePlanView extends StatelessWidget {
             ),
             for (final x in preview.conflicts) warning(x, severe: true),
             if (plan.isUpdate) ...[
-              heading('CHANGES FROM ${plan.installedVersion}'),
+              heading('Changes from ${plan.installedVersion}'),
               if (plan.added.isEmpty &&
                   plan.removed.isEmpty &&
                   plan.changed.isEmpty)
@@ -544,7 +544,7 @@ class BundlePlanView extends StatelessWidget {
               for (final x in plan.changed) Text('~ $x', style: small),
             ],
             if (plan.connectors.isNotEmpty) ...[
-              heading('CONNECTORS · INSTALLED INACTIVE'),
+              heading('Connectors · installed inactive'),
               for (final k in plan.connectors) ...[
                 Text(
                   '${k.name} — ${k.description}',
@@ -568,7 +568,7 @@ class BundlePlanView extends StatelessWidget {
               ],
             ],
             if (plan.skills.isNotEmpty) ...[
-              heading('SKILLS'),
+              heading('Skills'),
               for (final s in plan.skills) ...[
                 Text('${s.name} — ${s.description}'),
                 if (s.runnable.isNotEmpty)
@@ -576,7 +576,7 @@ class BundlePlanView extends StatelessWidget {
               ],
             ],
             if (plan.agents.isNotEmpty) ...[
-              heading('AGENTS · MADE AT INSTALL, EACH WITH ITS OWN CHAT'),
+              heading('Agents · made at install, each with its own chat'),
               for (final a in plan.agents)
                 BundleAgentCard(
                   agent: a,
@@ -594,7 +594,7 @@ class BundlePlanView extends StatelessWidget {
                 ),
             ],
             if (plan.routines.isNotEmpty) ...[
-              heading('ROUTINES · INSTALLED PAUSED'),
+              heading('Routines · installed paused'),
               for (final r in plan.routines) ...[
                 Text(
                   '${r.name} — ${r.trigger}',
@@ -611,7 +611,7 @@ class BundlePlanView extends StatelessWidget {
               ],
             ],
             if (plan.secrets.isNotEmpty || plan.connections.isNotEmpty) ...[
-              heading('NEEDS · NOTHING SECRET COMES WITH IT'),
+              heading('Needs · nothing secret comes with it'),
               for (final s in plan.secrets)
                 Text(
                   'Secret ${s.name} for ${s.usedBy.join(', ')}'
@@ -629,7 +629,7 @@ class BundlePlanView extends StatelessWidget {
             if (plan.warnings.any(
               (w) => !plan.agents.any((a) => w.startsWith('agent @${a.slug} ')),
             )) ...[
-              heading('WARNINGS'),
+              heading('Warnings'),
               // An agent's own lines show on its card above.
               for (final w in plan.warnings.where(
                 (w) =>

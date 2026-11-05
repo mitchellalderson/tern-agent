@@ -82,7 +82,7 @@ A tern in flight, seen from below, on an `orange` circle. Source: `apps/desktop/
 |---------|----------------------|-------|
 | Display | Archivo (Expanded)   | Weight 800 to 900, italic, width 112 to 125%. Wordmark, titles, big numbers. |
 | Body    | DM Sans              | 400 for text, 700 for emphasis and buttons. |
-| Mono    | JetBrains Mono       | Code, commands, tool calls, small uppercase labels. |
+| Mono    | JetBrains Mono       | Code, commands and tool calls. |
 
 The wordmark is always lowercase: `tern`, Archivo 900 italic, width 125%, letter-spacing -0.03em. Everywhere else is sentence case.
 
@@ -92,20 +92,20 @@ The wordmark is always lowercase: `tern`, Archivo 900 italic, width 125%, letter
 | Heading | 18 / 700 | Body |
 | Body    | 14 / 400, line height 1.45 to 1.5 | Body |
 | Small   | 12.5 / 400, `muted` | Body |
-| Label   | 11 / 600, uppercase, letter-spacing 0.1em, `muted` | Mono |
+| Label   | 12 / 600, sentence case, `muted` | Body |
 
 Flutter note: the three families must be bundled as app assets, not fetched at runtime.
 
 ## 5. Shape and components
 
-- **Radius:** 8 for controls, 12 for cards and bubbles, full only for pills.
+- **Radius:** 8 for controls, 12 for cards and bubbles, full only for avatars and dots.
 - **Borders:** 1px `hairline` at rest. 1.5 to 2px `ink` for anything interactive or active.
 - **Primary button:** `orange` fill, `ink` text, 2px `ink` border, 8px radius, weight 700. Hover: `yellow` fill.
 - **Secondary button:** transparent, `ink` text, 2px `ink` border.
 - **Ghost button:** same, with a `hairline` border.
 - **Destructive button:** `red` fill, `paper` text.
 - **Input:** `paper` fill, 1.5px `hairline` border. Focus: `ink` border plus a 3px `yellow` glow at about 55% opacity.
-- **Status pill:** mono, 11px, uppercase, 1.5px border in the status color, with a dot.
+- **Status:** a dot in the status color, then the word in `ink`, body 13px weight 500. No border, no fill, no uppercase. Where state shows in a list, the dot alone is fine.
 - **Sidebar selection:** `cream` fill, `ink` text weight 600, 3px `orange` bar on the left edge.
 - **Bubbles:** user is `sand`. Agent is `paper` with a 1px `hairline` border. Max width 80%.
 - **Composer:** `paper` fill, 1.5px `ink` border, 10px radius, orange Send button with `ink` text.
@@ -124,6 +124,7 @@ Plain, short, calm. Sentence case. Say what happened and what is needed next. No
 **Don't**
 - Put orange or yellow text on cream, or white text on orange.
 - Use gradients, glows, glass, or shadows.
+- Wrap labels or statuses in bordered pills, chips or badges. Prefer a dot and a word, or plain text with a hairline rule.
 - Use pure white or neutral gray.
 - Reorder, recolor, or space out the stripes.
 

@@ -228,7 +228,7 @@ void main() {
     expect(client.patches.single, 'github enabled=null disabled=[delete_repo]');
 
     expect(find.text('listening on stdio'), findsNothing);
-    await tester.tap(find.textContaining('LOGS'));
+    await tester.tap(find.textContaining('Logs'));
     await tester.pumpAndSettle();
     expect(find.text('listening on stdio'), findsOneWidget);
 
@@ -269,7 +269,7 @@ void main() {
     // Unchecked tools are saved as disabled.
     await tester.tap(find.text('delete_repo'));
     await tester.pump();
-    expect(find.text('TOOLS · 1 of 2 on'), findsOneWidget);
+    expect(find.text('Tools · 1 of 2 on'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
     final add = client.adds.single;
@@ -418,6 +418,10 @@ void main() {
     await tester.pumpWidget(
       _app(SingleChildScrollView(child: ToolsSection(store: store))),
     );
+    // The list starts folded; open it.
+    expect(find.text('shell'), findsNothing);
+    await tester.tap(find.textContaining('Tools ·'));
+    await tester.pump();
     expect(find.text('shell'), findsOneWidget);
     expect(find.text('github'), findsOneWidget);
     expect(find.text('search'), findsOneWidget);

@@ -117,7 +117,7 @@ class _SidebarState extends State<Sidebar> {
                     Padding(
                       padding: const EdgeInsets.fromLTRB(10, 14, 10, 4),
                       child: Text(
-                        group.$1.toUpperCase(),
+                        group.$1,
                         style: Theme.of(context).textTheme.labelSmall,
                       ),
                     ),
@@ -277,7 +277,7 @@ List<Widget> agentsSection(BuildContext context, TernStore store) {
         children: [
           Expanded(
             child: Text(
-              'AGENTS',
+              'Agents',
               style: Theme.of(context).textTheme.labelSmall,
             ),
           ),
@@ -405,7 +405,7 @@ List<Widget> channelsSection(BuildContext context, TernStore store) {
         children: [
           Expanded(
             child: Text(
-              'CHANNELS',
+              'Channels',
               style: Theme.of(context).textTheme.labelSmall,
             ),
           ),
@@ -632,7 +632,7 @@ class _Library extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 10, 10, 4),
             child: Text(
-              'LIBRARY',
+              'Library',
               style: Theme.of(context).textTheme.labelSmall,
             ),
           ),
@@ -642,20 +642,6 @@ class _Library extends StatelessWidget {
               label: 'Tasks',
               selected: store.page == LibraryPage.tasks,
               onTap: store.openTasks,
-              trailing: switch (store.needsYouCount) {
-                0 => null,
-                final n => Tooltip(
-                  message: '$n waiting for you',
-                  child: Text(
-                    '$n',
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w600,
-                      color: c.accent,
-                    ),
-                  ),
-                ),
-              },
             ),
           _LibraryRow(
             icon: Icons.schedule,

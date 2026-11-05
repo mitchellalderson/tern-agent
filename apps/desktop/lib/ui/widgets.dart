@@ -108,14 +108,15 @@ class AgentAvatar extends StatelessWidget {
   /// Glyphs offered by the agent sheet.
   static const glyphs = ['●', '■', '▲', '★', '♥', '♦', '♣', '♠', '☾', '✓'];
 
+  /// Stripe, status and earth tones only (no red, no pastels).
   static const _palette = [
     Color(0xFFF6B92B),
     Color(0xFF8DB56F),
     Color(0xFFB89A78),
-    Color(0xFFE58C7A),
+    Color(0xFFF5A55F),
     Color(0xFF7FA6A0),
     Color(0xFFF07A2B),
-    Color(0xFFD93A2B),
+    Color(0xFF6F604F),
     Color(0xFF6F8F4E),
   ];
 
@@ -295,20 +296,13 @@ class TaintBadge extends StatelessWidget {
       message: reason == null
           ? 'Written by a run that read untrusted content'
           : 'This run read untrusted content ($reason), so its changes ask first',
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-        decoration: BoxDecoration(
-          border: Border.all(color: c.warn.withValues(alpha: 0.6)),
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.shield_outlined, size: 11, color: c.warn),
-            const SizedBox(width: 3),
-            Text(label, style: TextStyle(fontSize: 10.5, color: c.warn)),
-          ],
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.shield_outlined, size: 11, color: c.warn),
+          const SizedBox(width: 3),
+          Text(label, style: TextStyle(fontSize: 11, color: c.warn)),
+        ],
       ),
     );
   }

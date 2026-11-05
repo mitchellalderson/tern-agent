@@ -239,10 +239,9 @@ class _StarterChooserState extends State<_StarterChooser> {
                           key: Key('starter-category-$e'),
                           padding: const EdgeInsets.fromLTRB(8, 10, 8, 2),
                           child: Text(
-                            e.toUpperCase(),
+                            e,
                             style: TextStyle(
                               fontSize: 10.5,
-                              letterSpacing: 0.6,
                               fontWeight: FontWeight.w600,
                               color: c.muted,
                             ),

@@ -113,7 +113,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('A google account for gmail'), findsOneWidget);
-    expect(find.text('ROUTINES · INSTALLED PAUSED'), findsOneWidget);
+    expect(find.text('Routines · installed paused'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Update'));
     await tester.pumpAndSettle();
@@ -159,7 +159,7 @@ void main() {
     expect(client.calls, ['preview https://example.com/pack.tar.zst']);
 
     expect(
-      find.text('AGENTS · MADE AT INSTALL, EACH WITH ITS OWN CHAT'),
+      find.text('Agents · made at install, each with its own chat'),
       findsOneWidget,
     );
     final scout = find.byKey(const Key('bundle-agent-scout'));
@@ -192,7 +192,7 @@ void main() {
       findsOneWidget,
     );
     // Not repeated in the general WARNINGS list.
-    expect(find.text('WARNINGS'), findsNothing);
+    expect(find.text('Warnings'), findsNothing);
     expect(
       find.textContaining('can use every built-in tool'),
       findsOneWidget,

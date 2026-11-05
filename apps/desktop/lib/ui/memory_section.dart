@@ -176,7 +176,7 @@ class _MemorySectionState extends State<MemorySection> {
           children: [
             Expanded(
               child: Text(
-                'MEMORY',
+                'Memory',
                 style: Theme.of(context).textTheme.labelSmall,
               ),
             ),

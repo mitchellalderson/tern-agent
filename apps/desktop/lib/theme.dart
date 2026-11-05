@@ -149,9 +149,8 @@ ThemeData ternTheme(TernColors c, Brightness b) {
             color: c.text,
           ),
           labelSmall: base.textTheme.labelSmall?.copyWith(
-            fontFamily: 'TernMono',
-            fontSize: 11,
-            letterSpacing: 1.0,
+            fontFamily: 'TernSans',
+            fontSize: 12,
             fontWeight: FontWeight.w600,
             color: c.muted,
           ),

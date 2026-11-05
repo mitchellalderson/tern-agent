@@ -924,7 +924,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 16),
-              Text('NAME', style: labels),
+              Text('Name', style: labels),
               const SizedBox(height: 6),
               TextField(
                 controller: _title,
@@ -942,7 +942,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
               ),
               if (editing != null && editing.kind == 'topic') ...[
                 const SizedBox(height: 14),
-                Text('#NAME', style: labels),
+                Text('#name', style: labels),
                 const SizedBox(height: 6),
                 TextField(
                   key: const Key('channel-slug'),
@@ -960,7 +960,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
                 ),
               ],
               const SizedBox(height: 14),
-              Text('INSTRUCTIONS', style: labels),
+              Text('Instructions', style: labels),
               const SizedBox(height: 6),
               TextField(
                 controller: _instructions,
@@ -978,7 +978,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
               if (editing?.agents case final agents?
                   when widget.store.hasAgents) ...[
                 const SizedBox(height: 14),
-                Text('LEAD', style: labels),
+                Text('Lead', style: labels),
                 const SizedBox(height: 6),
                 DropdownButtonFormField<String>(
                   initialValue: _lead,

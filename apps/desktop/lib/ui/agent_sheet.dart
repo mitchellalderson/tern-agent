@@ -575,14 +575,14 @@ class _AgentSheetState extends State<AgentSheet> {
                           style: TextStyle(fontSize: 11.5, color: c.muted),
                         ),
                         children: [
-                          _section('AVATAR'),
+                          _section('Avatar'),
                           _AvatarPicker(
                             glyph: _glyph,
                             color: _color,
                             onGlyph: (g) => setState(() => _glyph = g),
                             onColor: (v) => setState(() => _color = v),
                           ),
-                          _section('SUB-AGENT MODEL'),
+                          _section('Sub-agent model'),
                           AgentModelField(
                             key: const Key('agent-subagent-model'),
                             store: widget.store,
@@ -595,7 +595,7 @@ class _AgentSheetState extends State<AgentSheet> {
                             onChanged: (v) =>
                                 setState(() => _subagentModel = v),
                           ),
-                          _section('TOOLS'),
+                          _section('Tools'),
                           _ToolScopeEditor(
                             scope: _tools,
                             builtins: _builtins,
@@ -603,7 +603,7 @@ class _AgentSheetState extends State<AgentSheet> {
                             mcp: widget.store.mcpServers,
                             onChanged: (t) => setState(() => _tools = t),
                           ),
-                          _section('MEMORY'),
+                          _section('Memory'),
                           RadioGroup<String>(
                             groupValue: _memory,
                             onChanged: (v) {
@@ -637,7 +637,7 @@ class _AgentSheetState extends State<AgentSheet> {
                               ],
                             ),
                           ),
-                          _section('BROWSING'),
+                          _section('Browsing'),
                           CheckboxListTile(
                             contentPadding: EdgeInsets.zero,
                             dense: true,
@@ -653,7 +653,7 @@ class _AgentSheetState extends State<AgentSheet> {
                               'knows somewhere new.',
                             ),
                           ),
-                          _section('AUTONOMY CEILING'),
+                          _section('Autonomy ceiling'),
                           AutonomyPicker(
                             value: _autonomy,
                             onChanged: (v) => setState(() => _autonomy = v),
@@ -662,7 +662,7 @@ class _AgentSheetState extends State<AgentSheet> {
                               when widget.store.agents.any(
                                 (o) => o.id != a.id && !o.archived,
                               )) ...[
-                            _section('CAN HAND WORK TO'),
+                            _section('Can hand work to'),
                             _DelegatesPicker(
                               agent: a,
                               agents: [
@@ -675,7 +675,7 @@ class _AgentSheetState extends State<AgentSheet> {
                           ],
                           if (widget.editing case final a?
                               when !a.isDefault) ...[
-                            _section('TELEGRAM BOT'),
+                            _section('Telegram bot'),
                             TelegramBotField(
                               agent: a,
                               agents: widget.store.agents,

@@ -375,7 +375,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
     await _settle(tester);
     expect(find.byType(ChannelDialog), findsOneWidget);
-    expect(find.text('LEAD'), findsOneWidget);
+    expect(find.text('Lead'), findsOneWidget);
     expect(
       find.textContaining("Agents' @mentions are shown but start nothing"),
       findsOneWidget,
