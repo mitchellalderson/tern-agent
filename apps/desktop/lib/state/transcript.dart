@@ -166,6 +166,104 @@ class ApprovalItem extends Item {
   String? outcome;
 }
 
+/// Several approvals still waiting, all read-only calls of a tainted run
+/// tree (the run and its sub-agents), shown as one card with bulk answers.
+class PendingApprovalGroupItem extends Item {
+  PendingApprovalGroupItem(this.members);
+
+  /// The waiting cards, oldest first.
+  final List<ApprovalItem> members;
+
+  /// Calls waiting (a shared card counts for each).
+  int get count => members.fold(0, (n, m) => n + m.approval.count);
+
+  /// The tools asking, in the order they first appeared.
+  List<String> get tools => [
+    for (final t in {for (final m in members) m.approval.tool}) t,
+  ];
+
+  /// "spawned by a tainted run" etc., from the first member.
+  String? get taintNote => members.first.approval.taintNote;
+
+  /// The folder every member's `path` is in, if they share one.
+  String? get folder {
+    final dirs = <List<String>>[];
+    for (final m in members) {
+      final input = m.approval.input;
+      final p = input is Map ? input['path'] : null;
+      if (p is! String || !p.startsWith('/')) return null;
+      final parts = p.split('/')..removeWhere((s) => s.isEmpty);
+      // A file's folder; a list_dir's own path.
+      if (m.approval.tool != 'list_dir' && parts.isNotEmpty) parts.removeLast();
+      dirs.add(parts);
+    }
+    var common = dirs.first;
+    for (final d in dirs.skip(1)) {
+      var n = 0;
+      while (n < common.length && n < d.length && common[n] == d[n]) {
+        n++;
+      }
+      common = common.sublist(0, n);
+    }
+    return '/${common.join('/')}';
+  }
+
+  /// Members that offer a run-level grant, one per distinct grant key.
+  List<ApprovalItem> get grantRepresentatives {
+    final seen = <String>{};
+    return [
+      for (final m in members)
+        if (m.approval.grant case final g? when seen.add(g.key)) m,
+    ];
+  }
+}
+
+/// A pending card that can join a [PendingApprovalGroupItem]: an unanswered
+/// read-only request from a tainted run (not the host limit, which has its
+/// own choices).
+bool _groupablePending(Item i) =>
+    i is ApprovalItem &&
+    i.outcome == null &&
+    i.approval.effect == 'read' &&
+    i.approval.taint != null &&
+    i.approval.egressHost == null &&
+    i.approval.scriptText == null;
+
+/// Collapse two or more waiting read-only approvals of the same run tree
+/// (across sub-agents and across read-only tools) into one group at the
+/// place of the first. A lone card stays as it is.
+List<Item> groupPendingApprovals(List<Item> items) {
+  final byRoot = <String, List<ApprovalItem>>{};
+  for (final i in items) {
+    if (_groupablePending(i)) {
+      final a = (i as ApprovalItem).approval;
+      byRoot.putIfAbsent(a.rootSessionId ?? a.sessionId, () => []).add(i);
+    }
+  }
+  final groups = {
+    for (final e in byRoot.entries)
+      if (e.value.length > 1) e.key: PendingApprovalGroupItem(e.value),
+  };
+  if (groups.isEmpty) return items;
+  final out = <Item>[];
+  final placed = <String>{};
+  for (final i in items) {
+    if (!_groupablePending(i)) {
+      out.add(i);
+      continue;
+    }
+    final a = (i as ApprovalItem).approval;
+    final root = a.rootSessionId ?? a.sessionId;
+    final g = groups[root];
+    if (g == null) {
+      out.add(i);
+    } else if (placed.add(root)) {
+      out.add(g);
+    }
+  }
+  return out;
+}
+
 /// Outcomes of an [ApprovalItem] that let the call run.
 const approvedOutcomes = {
   'approved',
@@ -253,7 +351,10 @@ bool _finishedCallOf(Item i, String tool) =>
 /// Collapse consecutive identical approved requests (each with its finished
 /// tool card) into [ApprovalGroupItem]s. Denials, an unfinished call, and
 /// anything different stay as they are; a lone approval is not grouped.
-List<Item> groupApprovals(List<Item> items) {
+List<Item> groupApprovals(List<Item> items) =>
+    groupPendingApprovals(_groupAnswered(items));
+
+List<Item> _groupAnswered(List<Item> items) {
   final out = <Item>[];
   var i = 0;
   while (i < items.length) {

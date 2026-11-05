@@ -17,7 +17,11 @@ const _holdOffset = 240.0;
 
 /// A key that follows an item through rebuilds (a grouped approval is
 /// rebuilt each time, so it takes its first member's).
-Key itemKey(Item i) => ObjectKey(i is ApprovalGroupItem ? i.members.first : i);
+Key itemKey(Item i) => ObjectKey(switch (i) {
+  ApprovalGroupItem() => i.members.first,
+  PendingApprovalGroupItem() => i.members.first,
+  _ => i,
+});
 
 /// What a feed shows of its history: the newest [visible] entries, and,
 /// while the reader is scrolled up, none of those that arrived after they

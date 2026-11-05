@@ -63,6 +63,11 @@ class ItemView extends StatelessWidget {
     final AgentsItem a => AgentsCard(agents: a, store: store),
     final PillItem p => _Pill(p),
     final ApprovalItem a => ApprovalCard(item: a, store: store),
+    final PendingApprovalGroupItem g => PendingApprovalGroupCard(
+      key: ObjectKey(g.members.first),
+      group: g,
+      store: store,
+    ),
     final ApprovalGroupItem g => ApprovalGroupRow(
       key: ObjectKey(g.members.first),
       group: g,
@@ -585,6 +590,180 @@ class _ApprovalGroupRowState extends State<ApprovalGroupRow> {
   }
 }
 
+/// Several read-only requests of one tainted run tree waiting at once (its
+/// sub-agents, `read_file` and `list_dir`): one card, answered together.
+class PendingApprovalGroupCard extends StatefulWidget {
+  const PendingApprovalGroupCard({
+    super.key,
+    required this.group,
+    required this.store,
+  });
+
+  final PendingApprovalGroupItem group;
+  final TernStore store;
+
+  @override
+  State<PendingApprovalGroupCard> createState() =>
+      _PendingApprovalGroupCardState();
+}
+
+class _PendingApprovalGroupCardState extends State<PendingApprovalGroupCard> {
+  var _open = false;
+  var _busy = false;
+  final _inputs = <ApprovalItem>{};
+
+  Future<void> _answer(Decision d) async {
+    setState(() => _busy = true);
+    await widget.store.answerGroup(widget.group, d);
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final g = widget.group;
+    final n = g.count;
+    final folder = g.folder;
+    final canRun = g.grantRepresentatives.isNotEmpty;
+    final spawned = g.members.any((m) => m.approval.parentRunId != null);
+    return Container(
+      key: const ValueKey('pending-approval-group'),
+      decoration: BoxDecoration(
+        color: c.card,
+        border: Border.all(color: c.warn.withValues(alpha: 0.6)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.front_hand_outlined, size: 16, color: c.warn),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '$n pending: ${g.tools.join(', ')}'
+                  '${folder == null ? '' : ' in $folder'}'
+                  '${spawned ? ' (spawned by tainted run)' : ''}',
+                  key: const ValueKey('pending-group-title'),
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              TextButton(
+                onPressed: () => setState(() => _open = !_open),
+                child: Text(
+                  _open ? 'Hide list' : 'Show list',
+                  style: TextStyle(fontSize: 12, color: c.muted),
+                ),
+              ),
+            ],
+          ),
+          if (g.taintNote case final note?) ...[
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Icon(Icons.shield_outlined, size: 13, color: c.warn),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Asking because $note',
+                    style: TextStyle(fontSize: 12.5, color: c.warn),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (_open) ...[
+            const SizedBox(height: 8),
+            for (final m in g.members)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: SelectableText(
+                            '${widget.store.askerName(m.approval)} · '
+                            '${m.approval.summary}',
+                            style: mono.copyWith(color: c.text, fontSize: 12),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => setState(
+                            () => _inputs.contains(m)
+                                ? _inputs.remove(m)
+                                : _inputs.add(m),
+                          ),
+                          child: Text(
+                            _inputs.contains(m) ? 'Hide input' : 'Show input',
+                            style: TextStyle(fontSize: 12, color: c.muted),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (_inputs.contains(m))
+                      SelectableText(
+                        const JsonEncoder.withIndent('  ')
+                            .convert(m.approval.input),
+                        style: mono.copyWith(color: c.muted, fontSize: 12),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              FilledButton(
+                onPressed: _busy ? null : () => _answer(Decision.once),
+                style: FilledButton.styleFrom(
+                  backgroundColor: c.accent,
+                  foregroundColor: c.onAccent,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                child: Text('Allow all $n'),
+              ),
+              if (canRun)
+                OutlinedButton(
+                  onPressed: _busy ? null : () => _answer(Decision.run),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: c.text,
+                    side: BorderSide(color: c.hairline),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  child: const Text('Allow all for this run'),
+                ),
+              TextButton(
+                onPressed: _busy ? null : () => _answer(Decision.deny),
+                style: TextButton.styleFrom(foregroundColor: c.muted),
+                child: const Text('Deny all'),
+              ),
+            ],
+          ),
+          if (canRun) ...[
+            const SizedBox(height: 4),
+            Text(
+              'For this run covers only the read-only file tools in the folders '
+              'shown, for this run and its sub-agents. Writes, shell and '
+              'network still ask.',
+              style: TextStyle(fontSize: 12, color: c.muted),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class ApprovalCard extends StatefulWidget {
   const ApprovalCard({super.key, required this.item, required this.store});
 
@@ -790,25 +969,40 @@ class _ApprovalCardState extends State<ApprovalCard> {
                       child: const Text('Allow for this run'),
                     ),
                   ),
-                  Tooltip(
-                    message:
-                        'Stops asking about ${grant.label} in this conversation',
-                    child: TextButton(
-                      onPressed: _busy ? null : () => _answer(Decision.session),
-                      child: const Text('Allow for this conversation'),
+                  if (!grant.runOnly) ...[
+                    Tooltip(
+                      message:
+                          'Stops asking about ${grant.label} in this conversation',
+                      child: TextButton(
+                        onPressed: _busy
+                            ? null
+                            : () => _answer(Decision.session),
+                        child: const Text('Allow for this conversation'),
+                      ),
                     ),
-                  ),
-                  Tooltip(
-                    message:
-                        'Only ${grant.label} as shown (a change to it asks again); '
-                        'remove it with `tern grants`',
-                    child: TextButton(
-                      onPressed: _busy ? null : () => _answer(Decision.always),
-                      child: const Text('Always allow this'),
+                    Tooltip(
+                      message:
+                          'Only ${grant.label} as shown (a change to it asks again); '
+                          'remove it with `tern grants`',
+                      child: TextButton(
+                        onPressed: _busy
+                            ? null
+                            : () => _answer(Decision.always),
+                        child: const Text('Always allow this'),
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
+              if (grant.runOnly)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    'No standing grants here: this run read untrusted content.',
+                    key: const ValueKey('approval-no-always'),
+                    style: TextStyle(fontSize: 12, color: c.muted),
+                  ),
+                ),
             ],
             // The tainted host limit: say yes once for many sites.
             if (a.egressHost case final host?) ...[
