@@ -7,6 +7,8 @@ import 'package:tern_client/tern_client.dart';
 import 'notifier.dart';
 import 'transcript.dart';
 import 'version.dart';
+import 'workspaces.dart';
+import 'workspaces_adapter.dart';
 
 enum Link { connecting, online, offline }
 
@@ -604,6 +606,28 @@ class TernStore extends ChangeNotifier {
     return n;
   }
 
+  /// The folder API, or null when this core has none (an older one) or the
+  /// adapter is not wired: every folder control hides then.
+  WorkspaceApi? get workspaces => _wsSet
+      ? _ws
+      : (health?.features.contains(workspacesFeature) ?? false)
+      ? (_ws ??= workspaceApiFor(this))
+      : null;
+  set workspaces(WorkspaceApi? api) {
+    _ws = api;
+    _wsSet = true;
+  }
+
+  WorkspaceApi? _ws;
+  var _wsSet = false;
+
+  /// A folder chosen for the next Home topic before it exists.
+  String? pendingFolder;
+  void setPendingFolder(String? path) {
+    pendingFolder = path;
+    notifyListeners();
+  }
+
   /// `tern security audit` on the core (tooling spec §8.4): owner-only.
   bool get hasSecurityAudit =>
       (health?.features.contains('security_audit') ?? false) &&
@@ -989,6 +1013,7 @@ class TernStore extends ChangeNotifier {
     page = null;
     channel = id;
     error = null;
+    pendingFolder = null;
     this.newTopic = newTopic;
     if (streamChannel != id) {
       streamChannel = id;
@@ -2084,6 +2109,17 @@ class TernStore extends ChangeNotifier {
     try {
       final sent = await client.sendToChannel(id, text, newTopic: topic);
       newTopic = false;
+      if (pendingFolder case final f?) {
+        pendingFolder = null;
+        // TODO(workspaces-wire): the core should take the folder on the send
+        // itself so the first run already uses it; until then it is bound
+        // right after.
+        try {
+          await workspaces?.set(WorkspaceTarget.session(sent.sessionId), f);
+        } on Object {
+          // The chip shows what the topic really uses.
+        }
+      }
       _runSession[sent.runId] = sent.sessionId;
       _runChannel[sent.runId] = id;
       _streamSessions.add(sent.sessionId);
