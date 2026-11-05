@@ -10,8 +10,8 @@ Related: [personal-agent-tooling-spec.md](personal-agent-tooling-spec.md) (the f
 ## 1. The one-liner
 
 > **tern is the always-on agent for technical founders, operations leaders and go-to-market leaders.** It connects to
-> your whole stack, including your own product's API and the tools nobody built a connector for, keeps working while
-> your laptop is closed, and never acts on your behalf without a receipt.
+> your whole stack, including your own product's API and the tools nobody built a connector for, picks up where it
+> stopped after a crash or a sleep, and never acts on your behalf without a receipt.
 
 Shorter: **"The agent for the business side of a technical company."**
 
@@ -126,7 +126,7 @@ research doc's observation: this is the property Inngest sells, delivered on a s
 
 ### 4.3 It's always on, and it's wherever you are
 
-**Say:** "Routines run while your laptop is closed. Approvals reach your phone. The same agent answers in the desktop
+**Say:** "Routines run around the clock when tern lives on an always-on server (yours today, ours when hosting ships). On a laptop alone, a sleeping machine pauses them and they catch up on wake without repeating work. Approvals reach your phone. The same agent answers in the desktop
 app and in Telegram, and it's one conversation, one memory. Run it on your own machine, on a server you control, or
 let us host it. Moving between the three is a file copy."
 
