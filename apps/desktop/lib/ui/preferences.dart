@@ -6,6 +6,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
+import '../state/version.dart';
 import '../theme.dart';
 import 'config_editor.dart';
 import 'providers.dart';
@@ -14,11 +15,7 @@ import 'security.dart';
 import 'servers.dart';
 import 'settings.dart';
 
-/// The desktop app's own version (the core's comes from `/v1/health`).
-const appVersion = String.fromEnvironment(
-  'TERN_APP_VERSION',
-  defaultValue: '0.1.0',
-);
+export '../state/version.dart' show appVersion;
 
 /// The platform Settings window's sections. Agent settings (an agent's model,
 /// tools, autonomy, channels) are not here: they stay in the agent sheet.
@@ -624,9 +621,30 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
       ),
     );
     return [
-      line('App', 'tern desktop $appVersion'),
+      line('App', 'tern desktop ${appVersionLabel()}'),
       line('Core', health == null ? 'Not connected' : 'tern ${health.version}'),
       if (health != null) line('Core API', '${health.api}'),
+      if (_local) line('Core program', widget.control.bin ?? 'not found'),
+      if (widget.store?.coreSkew case final skew?)
+        Padding(
+          padding: const EdgeInsets.only(top: 4, bottom: 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  skew,
+                  key: const Key('about-skew'),
+                  style: TextStyle(fontSize: 12.5, color: c.warn),
+                ),
+              ),
+              if (widget.onRestart != null)
+                TextButton(
+                  onPressed: _restarting ? null : _restart,
+                  child: const Text('Restart tern'),
+                ),
+            ],
+          ),
+        ),
       heading('Where things are kept'),
       line(
         'Data folder',
@@ -649,6 +667,26 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
             style: TextStyle(fontSize: 12, color: c.muted),
           ),
         ),
+      if (_local) ...[
+        heading('Back up and uninstall'),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Text(
+            'Everything tern keeps is in the data folder above, API keys '
+            'included. To back it up, stop tern, then copy the folder. '
+            'Dragging this app to the Trash does not stop tern or remove '
+            'its login items: run `tern uninstall` first (it keeps your '
+            'data; add --purge to delete it), or use tern › Quit tern '
+            'completely.',
+            key: const Key('about-uninstall'),
+            style: TextStyle(fontSize: 12.5, color: c.muted),
+          ),
+        ),
+        SelectableText(
+          'tern stop\ncp -R "${dir ?? '~/.tern'}" ~/tern-backup\ntern uninstall',
+          style: mono.copyWith(fontSize: 12),
+        ),
+      ],
       heading('Privacy and updates'),
       Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),

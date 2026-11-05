@@ -366,6 +366,11 @@ void main() {
     expect(find.text('/Users/you/.tern'), findsOneWidget);
     expect(find.text('/Users/you/.tern/logs'), findsOneWidget);
     expect(find.textContaining('no telemetry'), findsOneWidget);
+    expect(find.byKey(const Key('about-uninstall')), findsOneWidget);
+    expect(
+      find.textContaining('cp -R "/Users/you/.tern" ~/tern-backup'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('search finds settings and sections across the window', (

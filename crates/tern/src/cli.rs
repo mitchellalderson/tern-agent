@@ -197,6 +197,16 @@ pub enum Command {
         #[arg(long, short)]
         yes: bool,
     },
+    /// Stop tern and remove it from your login items, then list what is
+    /// still on this computer. Your data is kept unless you pass --purge.
+    Uninstall {
+        /// Also delete all local data (same as `tern reset`, and asks first).
+        #[arg(long)]
+        purge: bool,
+        /// With --purge: don't ask for confirmation.
+        #[arg(long, short, requires = "purge")]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

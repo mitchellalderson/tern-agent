@@ -16,6 +16,10 @@ class UserItem extends Item {
 
   /// Sent while a run was working: it reads it at its next step.
   bool queued;
+
+  /// The send failed (the daemon refused it or went away): shown as "Not
+  /// sent" with a Retry, never as if it had gone.
+  bool failed = false;
 }
 
 class AssistantItem extends Item {

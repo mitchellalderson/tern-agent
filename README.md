@@ -16,13 +16,23 @@ macOS and Linux (the desktop app is macOS for now). Anthropic or any OpenAI-comp
 
 ## Quick start
 
+**Status: pre-release.** No release is published yet, so the one-line installer and the DMG download below do not work until the first tagged release (what that needs: [docs/release-checklist.md](docs/release-checklist.md)). Until then, build from a clone of this repository with Rust 1.89+:
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mitchellalderson/tern-agent/main/install.sh | sh
+git clone https://github.com/mitchellalderson/tern-agent && cd tern-agent
+cargo build --profile dist -p tern                    # → target/dist/tern
+install -m 755 target/dist/tern ~/.local/bin/tern     # or any directory on your PATH
 tern setup     # choose a provider (Anthropic, OpenAI, OpenRouter, Gemini, Groq, Together, Ollama, LM Studio, or another), paste a key, pick a model
 tern           # chat in the terminal
 ```
 
-The installer picks the right build for your machine, verifies its checksum, and installs to `~/.local/bin`. `tern setup` checks the key with the provider before saving it to `~/.tern/secrets.toml` (mode 0600). For scripts, `tern providers add openrouter` (or `anthropic`, `openai`, `gemini`, `groq`, `together`, `ollama`, `lmstudio`, or `openai-compat --url ...`) does the same without the questions; it reads the key from stdin or asks for it hidden.
+**Available from the first release** (it replaces the `git clone`, `cargo build` and `install` lines):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mitchellalderson/tern-agent/main/install.sh | sh
+```
+
+The installer picks the right build for your machine, verifies its checksum, and installs to `~/.local/bin`; without a published release it says so and points here. To update, run it again (or rebuild), then `tern stop && tern start`: the background daemon keeps running the old version until restarted, and `tern start` and `tern doctor` warn when it differs from the `tern` you run. `tern setup` checks the key with the provider before saving it to `~/.tern/secrets.toml` (mode 0600). For scripts, `tern providers add openrouter` (or `anthropic`, `openai`, `gemini`, `groq`, `together`, `ollama`, `lmstudio`, or `openai-compat --url ...`) does the same without the questions; it reads the key from stdin or asks for it hidden.
 
 Then make an agent from a starter, and use the rest as you need it:
 
@@ -35,7 +45,7 @@ tern service install                    # ...and start it at login
 tern doctor                             # check everything and say what's missing
 ```
 
-**Desktop app** (macOS 12+): download [tern-desktop-macos.dmg](https://github.com/mitchellalderson/tern-agent/releases/latest/download/tern-desktop-macos.dmg) and drag tern to Applications. It carries its own `tern`, so you don't need the CLI. On first launch it asks where tern should run (this Mac, with an option to start at login and a menu-bar icon, or a tern server you pair with). Then open **Settings** (⌘,), go to **Models & Providers** and pick a provider from the presets (Anthropic, OpenAI, OpenRouter, Gemini, Groq, Together, Ollama, LM Studio, or another OpenAI-compatible address), paste a key, and choose a model. Under AGENTS in the sidebar, **+** opens the agent sheet: pick a starter from the searchable list, adjust it if you like, and Create. If a run fails because of a key, address or quota, the conversation says so in plain words, with the raw error under "Show details".
+**Desktop app** (macOS 12+): from the first release, download `tern-desktop-macos.dmg` from the [releases page](https://github.com/mitchellalderson/tern-agent/releases/latest) and drag tern to Applications. Until then, build it on a Mac with Flutter installed: after the `cargo build` above, `scripts/release-macos.sh --dry-run target/dist/tern out/` writes an ad-hoc signed DMG (see [docs/desktop-release.md](docs/desktop-release.md)). The app is not notarized yet, so macOS blocks the first open ("Apple cannot check it for malicious software"). To open it once: double-click it and dismiss the warning, open **System Settings › Privacy & Security**, scroll to the message about tern, click **Open Anyway** and confirm with your password (on macOS 12 to 14, right-click the app and choose **Open** instead). To remove tern later see [Back up, update and uninstall](docs/reference.md#back-up-update-and-uninstall): trashing the app does not stop its background process. The app carries its own `tern`, so you don't need the CLI. On first launch it asks where tern should run (this Mac, with an option to start at login and a menu-bar icon, or a tern server you pair with). Then open **Settings** (⌘,), go to **Models & Providers** and pick a provider from the presets (Anthropic, OpenAI, OpenRouter, Gemini, Groq, Together, Ollama, LM Studio, or another OpenAI-compatible address), paste a key, and choose a model. Under AGENTS in the sidebar, **+** opens the agent sheet: pick a starter from the searchable list, adjust it if you like, and Create. If a run fails because of a key, address or quota, the conversation says so in plain words, with the raw error under "Show details".
 
 **Telegram**, remote devices, schedules, MCP servers, connectors, sandboxing and every other option are covered in the [reference](docs/reference.md).
 

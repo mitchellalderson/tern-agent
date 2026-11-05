@@ -482,11 +482,17 @@ class _ComposerState extends State<Composer> {
     super.dispose();
   }
 
-  void _send() {
+  Future<void> _send() async {
     final text = _text.text.trim();
     if (text.isEmpty || widget.store.link != Link.online) return;
     _text.clear();
-    widget.store.send(text);
+    final sent = await widget.store.send(text);
+    // Nothing in the transcript to retry: give the text back, unless
+    // something new was typed meanwhile.
+    if (!sent && mounted && _text.text.isEmpty) {
+      _text.text = text;
+      _text.selection = TextSelection.collapsed(offset: text.length);
+    }
   }
 
   static String _hint(TernStore store) {

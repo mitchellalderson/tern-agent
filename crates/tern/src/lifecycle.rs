@@ -84,6 +84,32 @@ fn healthy(home: &TernHome) -> bool {
     .unwrap_or(false)
 }
 
+/// The version the running daemon reports on `/v1/health`, if it answers.
+pub(crate) fn running_version(home: &TernHome) -> Option<String> {
+    let http = socket_client(home)?;
+    block_on(async move {
+        let resp = http.get("http://tern/v1/health").send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let j = resp.json::<serde_json::Value>().await.ok()?;
+        j.get("version")?.as_str().map(str::to_owned)
+    })
+    .ok()
+    .flatten()
+}
+
+/// What to say when the daemon that's running isn't this binary's version.
+/// `None` when they match.
+pub(crate) fn skew_note(running: &str, installed: &str) -> Option<String> {
+    (running != installed).then(|| {
+        format!(
+            "The running daemon is v{running} but this `tern` is v{installed}. \
+             Restart it to use the new version: `tern stop && tern start`."
+        )
+    })
+}
+
 #[cfg(unix)]
 fn alive(pid: u32) -> bool {
     i32::try_from(pid)
@@ -221,6 +247,11 @@ pub fn stop(home: &TernHome) -> anyhow::Result<ExitCode> {
 pub fn start(home: &TernHome) -> anyhow::Result<ExitCode> {
     if let Some(pid) = running_pid(home) {
         println!("tern is already running (pid {pid}).");
+        if let Some(note) =
+            running_version(home).and_then(|v| skew_note(&v, env!("CARGO_PKG_VERSION")))
+        {
+            println!("{note}");
+        }
         return Ok(ExitCode::SUCCESS);
     }
     home.ensure_layout()?;
@@ -277,4 +308,21 @@ pub fn spawn_detached(home: &TernHome) -> anyhow::Result<()> {
     let child = cmd.spawn().context("starting tern daemon")?;
     drop(child);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::skew_note;
+
+    #[test]
+    fn same_version_is_quiet() {
+        assert_eq!(skew_note("0.1.0", "0.1.0"), None);
+    }
+
+    #[test]
+    fn different_version_says_how_to_restart() {
+        let n = skew_note("0.1.0", "0.1.1").unwrap();
+        assert!(n.contains("v0.1.0") && n.contains("v0.1.1"), "{n}");
+        assert!(n.contains("tern stop && tern start"), "{n}");
+    }
 }

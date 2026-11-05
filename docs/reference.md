@@ -20,11 +20,13 @@ Everything tern does, command by command. For installing and a first chat, see t
 
 ## Install
 
+No release is published yet ([release-checklist.md](release-checklist.md)), so until the first tagged release build from source (below). From the first release:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mitchellalderson/tern-agent/main/install.sh | sh
 ```
 
-The script picks the right build (Linux x86_64/aarch64, static musl; macOS Apple Silicon/Intel), verifies its SHA-256 checksum, and installs to `~/.local/bin` (`TERN_INSTALL_DIR` to change; `TERN_VERSION=v0.1.0` pins a release, `TERN_REPO=owner/name` installs from a fork). Or build from source with Rust 1.89+:
+If there is no release, the script says so and points at the source build. The script picks the right build (Linux x86_64/aarch64, static musl; macOS Apple Silicon/Intel), verifies its SHA-256 checksum, and installs to `~/.local/bin` (`TERN_INSTALL_DIR` to change; `TERN_VERSION=v0.1.0` pins a release, `TERN_REPO=owner/name` installs from a fork). Or build from source with Rust 1.89+:
 
 ```sh
 cargo build --profile dist -p tern    # → target/dist/tern
@@ -32,13 +34,13 @@ cargo build --profile dist -p tern    # → target/dist/tern
 
 ### Desktop app
 
-macOS 12+ (Apple Silicon and Intel): download [tern-desktop-macos.dmg](https://github.com/mitchellalderson/tern-agent/releases/latest/download/tern-desktop-macos.dmg) and drag tern to Applications. The app carries its own `tern`, so you don't need the CLI. On first launch it asks where tern should run: **On this Mac** (with **Start tern when I log in**, which starts tern and its menu-bar icon at login; both appear in System Settings › General › Login Items), or **On a tern server**: paste the pairing link from `tern devices pair` on that server. You can switch later in Settings. Then add a model. To also use that binary from a terminal:
+macOS 12+ (Apple Silicon and Intel): from the first release, download `tern-desktop-macos.dmg` from the [releases page](https://github.com/mitchellalderson/tern-agent/releases/latest) (until then build it: [desktop-release.md](desktop-release.md)) and drag tern to Applications. The app carries its own `tern`, so you don't need the CLI. On first launch it asks where tern should run: **On this Mac** (with **Start tern when I log in**, which starts tern and its menu-bar icon at login; both appear in System Settings › General › Login Items), or **On a tern server**: paste the pairing link from `tern devices pair` on that server. You can switch later in Settings. Then add a model. To also use that binary from a terminal:
 
 ```sh
 ln -s "/Applications/tern.app/Contents/Library/LoginItems/tern Tray.app/Contents/MacOS/tern-tray" ~/.local/bin/tern
 ```
 
-Until the app is notarized, macOS blocks the first open: open it once, then allow it under **System Settings → Privacy & Security → Open Anyway**.
+Until the app is notarized, macOS blocks the first open ("Apple cannot check it for malicious software"). Double-click it once and dismiss the warning, then open **System Settings → Privacy & Security**, scroll to the message about tern, click **Open Anyway** and confirm with your password. (On macOS 12 to 14, right-click the app and choose **Open** instead.) You only do this once.
 
 ### Verify a download
 
@@ -434,6 +436,29 @@ tern reset [--keep-config] [-y]
 ```
 
 Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, skills, connectors, logs, config and secrets. `--keep-config` keeps `config.toml` and `secrets.toml` (your providers and keys). It asks first unless `-y`.
+
+### Back up, update and uninstall
+
+**Where your data is.** Everything lives in one folder, `~/.tern` unless `TERN_HOME` says otherwise: `config.toml`, `secrets.toml` (your API keys, not encrypted), the SQLite database and `logs/`. The desktop app shows the path in **Settings › About** with a **Reveal** button. The app's own few settings are in `~/Library/Application Support/tern/desktop.json` on macOS (`~/.config/tern/desktop.json` on Linux).
+
+**Back up.** Stop tern first so the database is not copied mid-write, then copy the folder:
+
+```sh
+tern stop
+cp -R ~/.tern ~/tern-backup     # includes secrets.toml: keep the copy private
+tern start
+```
+
+**Update.** Install the new version (re-run the installer, or replace the app), then restart the daemon, which keeps running the old version until you do: `tern stop && tern start`. `tern start` and `tern doctor` tell you when the running daemon is a different version from the `tern` you are using, and the desktop app shows a banner with a **Restart tern** button.
+
+**Uninstall.**
+
+```sh
+tern uninstall            # stop tern, remove the login service and menu-bar icon; keeps your data
+tern uninstall --purge    # the same, then delete your data like `tern reset` (asks first)
+```
+
+It prints what is left for you to remove by hand: the `tern` binary, `~/.tern` (unless purged), the desktop app's settings folder, and on macOS `tern.app` and any "tern" entries in Keychain Access. **Dragging `tern.app` to the Trash does not stop a running daemon** and leaves its login items pointing at nothing, so run `tern stop` (or **tern › Quit tern completely** in the app) and `tern uninstall` first. If `tern` is not on your PATH, use the copy inside the app, before you trash it: `"/Applications/tern.app/Contents/Library/LoginItems/tern Tray.app/Contents/MacOS/tern-tray" uninstall`. If the app is already gone and tern is still running, `pkill -x tern` (or `pkill -f 'tern daemon'`) stops it, and its login item can be removed in System Settings › General › Login Items. Nothing is deleted without `--purge`.
 
 ## Configuration
 

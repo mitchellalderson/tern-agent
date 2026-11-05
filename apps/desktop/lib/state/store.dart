@@ -6,6 +6,7 @@ import 'package:tern_client/tern_client.dart';
 
 import 'notifier.dart';
 import 'transcript.dart';
+import 'version.dart';
 
 enum Link { connecting, online, offline }
 
@@ -643,6 +644,18 @@ class TernStore extends ChangeNotifier {
   /// so say why instead.
   bool get daemonTooOld =>
       health != null && !health!.features.contains('providers');
+
+  /// The core running here is not the version this app was built with:
+  /// what to tell the user, else null (see [coreSkewMessage]).
+  String? get coreSkew {
+    final h = health;
+    if (h == null) return null;
+    return coreSkewMessage(
+      appVersion: appVersion,
+      coreVersion: h.version,
+      local: h.isLocal,
+    );
+  }
 
   static const daemonTooOldMessage =
       'The running tern daemon is older than this app and has no model '
@@ -1332,7 +1345,7 @@ class TernStore extends ChangeNotifier {
 
   /// Send into the open topic channel: a post and a run in its main
   /// thread, or queued for the run already working there.
-  Future<void> _sendChannel(String text) async {
+  Future<bool> _sendChannel(String text) async {
     error = null;
     final id = channel!;
     try {
@@ -1353,8 +1366,11 @@ class TernStore extends ChangeNotifier {
           sent.runId;
     } on TernException catch (e) {
       error = e.message;
+      notifyListeners();
+      return false;
     }
     notifyListeners();
+    return true;
   }
 
   /// Open a conversation to read in the right pane (a History entry, a
@@ -1915,13 +1931,17 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> send(String text) async {
+  /// Send [text]. False when it failed and no message was left in the
+  /// transcript to retry (a new conversation or topic, a channel post): the
+  /// caller should give the text back to the composer.
+  Future<bool> send(String text) async {
     if (streamOpen) return _sendHome(text);
     if (topicOpen) return _sendChannel(text);
     error = null;
     final session = selected;
+    final shown = session == null ? null : UserItem(text);
     if (session != null) {
-      _transcriptFor(session)!.items.add(UserItem(text));
+      _transcriptFor(session)!.items.add(shown!);
       notifyListeners();
     }
     try {
@@ -1943,14 +1963,29 @@ class TernStore extends ChangeNotifier {
       _transcriptFor(started.sessionId)!.activeRun ??= started.runId;
     } on TernException catch (e) {
       error = e.message;
+      shown?.failed = true;
+      notifyListeners();
+      return shown != null;
     }
     notifyListeners();
+    return true;
+  }
+
+  /// Send a message that failed again: it leaves the transcript and goes
+  /// through [send] like a new one.
+  Future<void> retrySend(UserItem item) async {
+    for (final t in transcripts.values) {
+      t.items.remove(item);
+    }
+    item.failed = false;
+    notifyListeners();
+    await send(item.text);
   }
 
   /// Send into the open stream (Home or a DM): to the current segment, a
   /// new one when the daemon cuts (or [newTopic]), or queued for the run
   /// already working there.
-  Future<void> _sendHome(String text) async {
+  Future<bool> _sendHome(String text) async {
     error = null;
     final topic = newTopic;
     final item = UserItem(text);
@@ -1978,8 +2013,12 @@ class TernStore extends ChangeNotifier {
       sessions = await client.sessions();
     } on TernException catch (e) {
       error = e.message;
+      if (!topic) item.failed = true;
+      notifyListeners();
+      return !topic;
     }
     notifyListeners();
+    return true;
   }
 
   Future<void> stop() async {

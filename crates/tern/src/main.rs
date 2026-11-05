@@ -38,6 +38,7 @@ mod subagents;
 mod tasks_cmd;
 mod tray;
 mod tui_backend;
+mod uninstall_cmd;
 
 use std::process::ExitCode;
 
@@ -165,6 +166,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Daemon) => daemon::run(&home),
         Some(Command::Start) => lifecycle::start(&home),
         Some(Command::Reset { keep_config, yes }) => reset_cmd::run(&home, keep_config, yes),
+        Some(Command::Uninstall { purge, yes }) => uninstall_cmd::run(&home, purge, yes),
         Some(Command::Stop) => lifecycle::stop(&home),
         Some(Command::Service { command }) => match command {
             ServiceCommand::Install { no_login, tray } => service::install(&home, !no_login, tray),

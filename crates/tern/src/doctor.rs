@@ -985,6 +985,11 @@ fn check_daemon(r: &mut Report, home: &TernHome) {
                 ),
                 None,
             );
+            if let Some(note) = crate::lifecycle::running_version(home)
+                .and_then(|v| crate::lifecycle::skew_note(&v, env!("CARGO_PKG_VERSION")))
+            {
+                r.check(Status::Warn, note, None);
+            }
         }
     }
 }

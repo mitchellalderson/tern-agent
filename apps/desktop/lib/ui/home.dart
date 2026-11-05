@@ -24,6 +24,7 @@ import 'side_panel.dart';
 import 'sidebar.dart';
 import 'tasks.dart';
 import 'thread_pane.dart';
+import 'version_banner.dart';
 import 'where_to_run.dart';
 import 'widgets.dart';
 
@@ -75,9 +76,25 @@ class _HomeState extends State<Home> {
   /// Closing the window quits the app; Settings decides whether tern
   /// stops with it.
   Future<AppExitResponse> _onExit() async {
-    if (_remote || _prefs.onClose != OnClose.quitTern) {
-      return AppExitResponse.exit;
+    if (_remote) return AppExitResponse.exit;
+    if (_prefs.onClose != OnClose.quitTern) {
+      // Leaving tern running with nothing in the menu bar: say so once, here.
+      if ((widget.store.health?.isLocal ?? false) &&
+          await daemonHasNoTray(_control)) {
+        if (!mounted) return AppExitResponse.exit;
+        switch (await askCloseTrayless(context)) {
+          case CloseChoice.cancel:
+            return AppExitResponse.cancel;
+          case CloseChoice.keepRunning:
+            return AppExitResponse.exit;
+          case CloseChoice.stop:
+            break;
+        }
+      } else {
+        return AppExitResponse.exit;
+      }
     }
+    if (!mounted) return AppExitResponse.exit;
     final quit = await quitTernCompletely(
       context,
       widget.store,
@@ -137,7 +154,7 @@ class _HomeState extends State<Home> {
                 if (store.health == null) {
                   return OfflineView(store: store, onSettings: _settings);
                 }
-                return LayoutBuilder(
+                final content = LayoutBuilder(
                   builder: (context, box) {
                     // Narrow windows drop the panel before the conversation.
                     final panel = _panel && box.maxWidth > 980;
@@ -224,6 +241,18 @@ class _HomeState extends State<Home> {
                       ],
                     );
                   },
+                );
+                final skew = store.coreSkew;
+                if (skew == null) return content;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    VersionBanner(
+                      message: skew,
+                      onRestart: _canRestart ? _restartTern : null,
+                    ),
+                    Expanded(child: content),
+                  ],
                 );
               },
             ),

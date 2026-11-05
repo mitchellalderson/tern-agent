@@ -66,6 +66,9 @@ mkdir -p "$2"
 out="$(cd "$2" && pwd)"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 desktop="$root/apps/desktop"
+# The app compares the core's version with this one (Settings > About, version banner).
+workspace_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$root/Cargo.toml")"
+[ -n "$workspace_version" ] || { echo "no workspace version in Cargo.toml" >&2; exit 1; }
 app="$desktop/build/macos/Build/Products/Release/tern.app"
 name=tern-desktop-macos
 
@@ -154,7 +157,7 @@ if [ "$skip_build" = 1 ]; then
   [ -d "$app" ] || { echo "no $app; build it first" >&2; exit 1; }
 else
   step "flutter build macos --release"
-  (cd "$desktop" && flutter build macos --release)
+  (cd "$desktop" && flutter build macos --release --dart-define=TERN_APP_VERSION="$workspace_version")
 fi
 [ -d "$app" ] || { echo "Flutter didn't produce $app" >&2; exit 1; }
 
