@@ -997,6 +997,11 @@ impl Backend for Remote {
         }
     }
 
+    fn spend_today(&self) -> Option<(f64, f64)> {
+        let list: Vec<crate::daemon::api_schedules::Schedule> = self.get("/v1/schedules").ok()?;
+        sum_spend(&list)
+    }
+
     fn agents(&self) -> BackendResult<Vec<AgentInfo>> {
         let list: Vec<crate::daemon::api_agents::Agent> = match self.get("/v1/agents") {
             Ok(l) => l,
@@ -1059,6 +1064,21 @@ impl Backend for Remote {
     }
 }
 
+/// Today's spend and caps summed over the routines that have both; `None`
+/// when none does (no cap, or no known price).
+fn sum_spend(list: &[crate::daemon::api_schedules::Schedule]) -> Option<(f64, f64)> {
+    let pairs: Vec<(f64, f64)> = list
+        .iter()
+        .filter_map(|s| Some((s.spent_usd?, s.usd_cap?)))
+        .filter(|(_, cap)| *cap > 0.0)
+        .collect();
+    (!pairs.is_empty()).then(|| {
+        pairs
+            .iter()
+            .fold((0.0, 0.0), |(a, b), (spent, cap)| (a + spent, b + cap))
+    })
+}
+
 fn channel_info(c: crate::daemon::api_channels::Channel) -> tern_tui::ChannelInfo {
     tern_tui::ChannelInfo {
         id: c.id,
@@ -1081,5 +1101,37 @@ pub(crate) fn post_line(p: tern_core::channels::Post) -> tern_tui::PostLine {
         kind: p.kind,
         text: p.text,
         run_id: p.run_id,
+    }
+}
+
+#[cfg(test)]
+mod spend_tests {
+    use super::*;
+    use crate::daemon::api_schedules::Schedule;
+
+    fn sched(spent: Option<f64>, cap: Option<f64>) -> Schedule {
+        let mut s: Schedule = serde_json::from_value(json!({
+            "id": "s", "cron": "* * * * *", "prompt": "p", "session_id": "x", "enabled": true
+        }))
+        .unwrap();
+        s.spent_usd = spent;
+        s.usd_cap = cap;
+        s
+    }
+
+    #[test]
+    fn spend_sums_routines_with_both_numbers_and_hides_otherwise() {
+        assert_eq!(sum_spend(&[]), None);
+        assert_eq!(
+            sum_spend(&[sched(Some(0.1), None), sched(None, Some(1.0))]),
+            None
+        );
+        let (spent, cap) = sum_spend(&[
+            sched(Some(0.25), Some(0.5)),
+            sched(Some(1.0), Some(2.0)),
+            sched(None, Some(9.0)),
+        ])
+        .unwrap();
+        assert!((spent - 1.25).abs() < 1e-9 && (cap - 2.5).abs() < 1e-9);
     }
 }
