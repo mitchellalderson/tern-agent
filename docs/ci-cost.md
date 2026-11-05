@@ -39,6 +39,11 @@ never cancelled; unrelated PR labels do not re-trigger CI.
 
 Before: ~45-55 macOS min per green main push, for every push in a burst. After: ~15-20, once per burst.
 
+## Measured after (cold cache, run 42114363950 on ci/cost-down)
+
+`macOS-specific tests` 17.7 min (clippy 1.1, sandbox/tools/tui tests 0.4, dist build 7.9, `cargo test -p tern` + TUI
+smoke 7.3, Dart 0.2); the x86_64 build plus DMG job added ~10-12 min. Warm caches on main should be lower.
+
 ## What this can miss
 
 - OS-independent tests no longer run on macOS (a macOS-only failure of a generic Rust or Dart test, e.g. path or
