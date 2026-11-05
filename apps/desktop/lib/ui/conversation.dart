@@ -5,6 +5,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
+import 'feed.dart';
 import 'history.dart';
 import 'items.dart';
 import 'move_dialog.dart';
@@ -34,24 +35,60 @@ class ConversationView extends StatefulWidget {
 }
 
 class _ConversationViewState extends State<ConversationView> {
-  final _scroll = ScrollController();
+  final _window = FeedWindow();
+  Object? _open;
+  var _loadingEarlier = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _window.addListener(_changed);
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
 
   @override
   void dispose() {
-    _scroll.dispose();
+    _window
+      ..removeListener(_changed)
+      ..dispose();
     super.dispose();
+  }
+
+  /// Widen the window; at its end, fetch the page before what is loaded.
+  Future<void> _showEarlier(int hidden) async {
+    if (hidden > 0) {
+      _window.showEarlier();
+      return;
+    }
+    setState(() => _loadingEarlier = true);
+    await widget.store.loadOlderHome();
+    if (!mounted) return;
+    _loadingEarlier = false;
+    _window.showEarlier();
   }
 
   @override
   Widget build(BuildContext context) {
     final store = widget.store;
     final t = store.current;
-    final items = groupApprovals(t?.items ?? const <Item>[]);
+    // A different conversation starts at its newest again.
+    final open = store.streamOpen ? store.streamChannel : store.selected;
+    if (open != _open) {
+      if (_open != null) _window.reset();
+      _open = open;
+    }
+    final all = t?.items ?? const <Item>[];
+    final hiddenEarlier = _window.hiddenEarlier(all.length);
+    // Only the window is grouped and built: the rest costs nothing.
+    final items = groupApprovals(_window.slice(all));
     final phase = t?.phase;
-    // The activity line sits below the newest item (index 0, reversed).
-    final extra = phase == null ? 0 : 1;
-    // Home: "Load earlier" above the oldest item.
-    final earlier = store.streamOpen && store.homeNext != null ? 1 : 0;
+    // The activity line sits below the newest item (index 0, reversed),
+    // and waits with the other new arrivals while the reader is scrolled up.
+    final extra = phase == null || _window.held ? 0 : 1;
+    final moreEarlier = store.streamOpen && store.homeNext != null;
     // Home keeps its name whatever the default agent is called (agent
     // profiles open question 7); a DM is its agent's name.
     final title = store.homeOpen
@@ -79,20 +116,18 @@ class _ConversationViewState extends State<ConversationView> {
               ? _Empty(store: store)
               // Reversed, so the newest content stays pinned to the bottom
               // while it streams.
-              : ListView.builder(
-                  controller: _scroll,
-                  reverse: true,
-                  padding: const EdgeInsets.symmetric(vertical: 20),
-                  itemCount: items.length + extra + earlier,
+              : FeedList(
+                  window: _window,
+                  count: items.length + extra,
+                  total: all.length,
+                  hiddenEarlier: hiddenEarlier,
+                  moreEarlier: moreEarlier,
+                  loadingEarlier: _loadingEarlier,
+                  onShowEarlier: () => _showEarlier(hiddenEarlier),
+                  keyFor: (i) => i < extra
+                      ? const ValueKey('activity')
+                      : itemKey(items[items.length - 1 - (i - extra)]),
                   itemBuilder: (context, i) {
-                    if (i == items.length + extra) {
-                      return Center(
-                        child: TextButton(
-                          onPressed: store.loadOlderHome,
-                          child: const Text('Load earlier'),
-                        ),
-                      );
-                    }
                     final item = i < extra
                         ? null
                         : items[items.length - 1 - (i - extra)];

@@ -130,7 +130,7 @@ class _FakeClient extends TernClient {
       ];
 
   @override
-  Future<SessionDetail> session(String id) async =>
+  Future<SessionDetail> session(String id, {int? limit, int? before}) async =>
       SessionDetail(id: id, messages: const []);
 
   @override

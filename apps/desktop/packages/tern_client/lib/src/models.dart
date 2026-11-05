@@ -368,7 +368,7 @@ class SessionDetail {
     required this.messages,
     int? total,
     this.offset = 0,
-  }) : total = total ?? messages.length + offset;
+  }) : _total = total;
 
   factory SessionDetail.fromJson(Json j) {
     final messages = [
@@ -393,7 +393,8 @@ class SessionDetail {
 
   /// Messages the session has in all, and the index of `messages[0]`
   /// among them (0 unless this is a page of a long session).
-  final int total;
+  int get total => _total ?? messages.length + offset;
+  final int? _total;
   final int offset;
 
   /// Messages before this page that were not sent.

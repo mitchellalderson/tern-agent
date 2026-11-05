@@ -145,17 +145,18 @@ class _FakeClient extends TernClient {
       ];
 
   @override
-  Future<SessionDetail> session(String id) async => SessionDetail(
-    id: id,
-    title: 'Northwind is 310 EUR',
-    messages: const [
-      SessionMessage(
-        role: 'user',
-        content: [TextBlock('Northwind is 310 EUR')],
-        summary: false,
-      ),
-    ],
-  );
+  Future<SessionDetail> session(String id, {int? limit, int? before}) async =>
+      SessionDetail(
+        id: id,
+        title: 'Northwind is 310 EUR',
+        messages: const [
+          SessionMessage(
+            role: 'user',
+            content: [TextBlock('Northwind is 310 EUR')],
+            summary: false,
+          ),
+        ],
+      );
 
   @override
   Future<Sent> sendToChannel(
@@ -296,7 +297,7 @@ void main() {
       find.text('Sent while tern was working · read at its next step'),
       findsOneWidget,
     );
-    expect(find.text('Load earlier'), findsOneWidget);
+    expect(find.text('Show earlier'), findsOneWidget);
 
     // The divider expands to what was carried over.
     await tester.tap(find.byType(CutDivider));
