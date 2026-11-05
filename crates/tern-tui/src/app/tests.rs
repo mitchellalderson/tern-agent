@@ -712,6 +712,7 @@ fn a_scoped_grant_prompt_offers_run_conversation_and_always() {
                 grant: Some(tern_core::approval::GrantOffer {
                     key: "draft net.a#1".into(),
                     label: "draft net.a".into(),
+                    run_only: false,
                 }),
                 notice: None,
             },

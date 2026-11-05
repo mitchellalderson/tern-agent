@@ -122,6 +122,62 @@ impl Agent {
         Ok(())
     }
 
+    /// A tainted run's reads of the workspace go through unasked: one row
+    /// for the run, not one per read.
+    pub(super) fn ledger_tainted_read(
+        &self,
+        run: &RunRow,
+        call: &ToolCall,
+    ) -> Result<(), StepError> {
+        let e = self
+            .ledger_entry(
+                "approval",
+                run,
+                call,
+                "tainted run reads in the workspace without asking (first of this run's reads; \
+                 not recorded one by one)"
+                    .to_owned(),
+            )
+            .actor(ACTOR_TERN)
+            .detail(json!({
+                "decision": crate::approval::TAINTED_READ_REASON,
+                "taint": run.taint,
+                "agent": run.label,
+            }));
+        self.store.ledger_append(&e)?;
+        Ok(())
+    }
+
+    /// A tainted run's read outside the workspace ran on the user's "allow
+    /// reads in this folder for this run".
+    pub(super) fn ledger_tainted_read_grant(
+        &self,
+        run: &RunRow,
+        call: &ToolCall,
+        dir: &std::path::Path,
+    ) -> Result<(), StepError> {
+        let e = self
+            .ledger_entry(
+                "approval",
+                run,
+                call,
+                format!(
+                    "approved by this run's read grant for {}: {}",
+                    dir.display(),
+                    self.tools.summarize(call)
+                ),
+            )
+            .actor(ACTOR_TERN)
+            .detail(json!({
+                "decision": "approved_by_grant",
+                "reason": "tainted-read-granted-for-run",
+                "folder": dir.display().to_string(),
+                "agent": run.label,
+            }));
+        self.store.ledger_append(&e)?;
+        Ok(())
+    }
+
     /// A call refused without asking (`money_movement`, `trade`).
     pub(super) fn ledger_refused(
         &self,

@@ -242,13 +242,24 @@ impl ApiApprovals {
                     Decision::AllowRun | Decision::AllowSession | Decision::AlwaysAllow
                 )
             }) {
+                // A tainted run's read scope is shared by the read-only file
+                // tools and by the sub-agents of the run's tree (same root
+                // session); it is only ever answered "for this run".
+                let reads = g.run_only
+                    && tern_core::approval::READ_FS_TOOLS.contains(&card.msg.tool.as_str());
+                let root =
+                    |m: &ApiApproval| m.root_session_id.clone().unwrap_or(m.session_id.clone());
                 let ids: Vec<String> = p
                     .iter()
                     .filter(|(_, c)| {
-                        c.msg.tool == card.msg.tool
+                        (c.msg.tool == card.msg.tool
+                            || reads
+                                && tern_core::approval::READ_FS_TOOLS
+                                    .contains(&c.msg.tool.as_str()))
                             && !(remote && c.msg.local_only)
                             && c.msg.grant.as_ref().is_some_and(|o| o.key == g.key)
                             && match decision {
+                                Decision::AllowRun if reads => root(&c.msg) == root(&card.msg),
                                 Decision::AllowRun => c.msg.run_id == card.msg.run_id,
                                 Decision::AllowSession => c.msg.session_id == card.msg.session_id,
                                 _ => true,

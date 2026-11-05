@@ -1,6 +1,8 @@
 //! Approval prompts and the persistent allowlist (spec §8.2), and the
 //! effect policy that decides when to ask (tooling spec §5.1).
 
+use std::path::{Path, PathBuf};
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -234,6 +236,84 @@ pub const TAINT_CONTAINED: &[&str] = &[
 /// is part of every system prompt, so writing it stays a write.
 pub const MEMORY_TOOLS: &[&str] = &["memory_save", "memory_forget"];
 
+/// The read-only file tools. In a tainted run a read of the workspace never
+/// asks ([`TAINTED_READ_REASON`]); one outside it asks, and the answer "for
+/// this run" is a [`read_scope_key`] grant, never a tool-wide one.
+pub const READ_FS_TOOLS: &[&str] = &["read_file", "list_dir", "search_files"];
+
+/// Why a tainted run's workspace read went through unasked (ledger).
+pub const TAINTED_READ_REASON: &str = "tainted-read-in-workspace";
+
+const READ_SCOPE_PREFIX: &str = "readscope:";
+
+/// The grant key of "allow these read-only file tools under `dir` for this
+/// run" (tainted runs only; see [`read_scope`]).
+pub fn read_scope_key(dir: &Path) -> String {
+    format!("{READ_SCOPE_PREFIX}{}", dir.display())
+}
+
+/// The folder a [`read_scope_key`] covers.
+pub fn read_scope_dir(key: &str) -> Option<PathBuf> {
+    key.strip_prefix(READ_SCOPE_PREFIX).map(PathBuf::from)
+}
+
+/// For a read-only file tool call outside the workspace: the canonical target
+/// and the folder an "allow for this run" would cover (the nearest enclosing
+/// git repository, else the target's own folder; never `/` or the home
+/// directory). `None` for anything else, and for any path with `..`: those
+/// only ever get a one-off answer.
+pub fn read_scope(workspace: &Path, call: &ToolCall) -> Option<(PathBuf, PathBuf)> {
+    if !READ_FS_TOOLS.contains(&call.name.as_str()) {
+        return None;
+    }
+    let raw = call
+        .input
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if raw.is_empty() {
+        return None;
+    }
+    let given = crate::home::expand_tilde(Path::new(raw));
+    let joined = if given.is_relative() {
+        workspace.join(given)
+    } else {
+        given
+    };
+    if joined
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    // Symlinks resolve through the deepest ancestor that exists.
+    let mut tail = Vec::new();
+    let mut base = joined.as_path();
+    let canon = loop {
+        match base.canonicalize() {
+            Ok(c) => break c,
+            Err(_) => {
+                tail.push(base.file_name()?.to_owned());
+                base = base.parent()?;
+            }
+        }
+    };
+    let target = tail.iter().rev().fold(canon, |p, n| p.join(n));
+    let own = if target.is_dir() {
+        target.clone()
+    } else {
+        target.parent()?.to_path_buf()
+    };
+    let home = crate::home::expand_tilde(Path::new("~"));
+    let scope = own
+        .ancestors()
+        .find(|a| a.join(".git").exists())
+        .filter(|a| *a != home && a.parent().is_some())
+        .unwrap_or(&own)
+        .to_path_buf();
+    (scope.parent().is_some() && scope != home).then_some((target, scope))
+}
+
 /// Why a tainted run asks, for approval prompts.
 pub fn taint_note(reason: &str) -> String {
     format!("this run read untrusted content ({reason})")
@@ -368,6 +448,9 @@ pub struct GrantOffer {
     pub key: String,
     /// Short name of the target, for grouping and card text.
     pub label: String,
+    /// Only "for this run" may be offered (a tainted run's read scope).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub run_only: bool,
 }
 
 impl ApprovalRequest {

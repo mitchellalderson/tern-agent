@@ -28,6 +28,7 @@ fn req(id: &str, run: &str, session: &str, target: &str, n: u32, grant: bool) ->
         grant: grant.then(|| GrantOffer {
             key: format!("draft {target}.t#1"),
             label: format!("draft {target}.t"),
+            run_only: false,
         }),
         notice: None,
     }
