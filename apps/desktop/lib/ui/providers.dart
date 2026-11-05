@@ -6,6 +6,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'model_chain_editor.dart';
 import 'model_picker.dart';
 import 'secrets.dart';
 import 'widgets.dart';
@@ -211,9 +212,13 @@ class _ProvidersDialogState extends State<ProvidersDialog> {
                       : Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            _DefaultRow(
-                              model: widget.store.info?.defaultModel,
+                            _DefaultModelSection(
+                              store: widget.store,
                               onChange: _chooseDefault,
+                              onNotice: (n) => setState(() {
+                                _error = null;
+                                _notice = n;
+                              }),
                             ),
                             const SizedBox(height: 10),
                             const Hairline(),
@@ -290,31 +295,213 @@ class _ProvidersDialogState extends State<ProvidersDialog> {
   }
 }
 
-class _DefaultRow extends StatelessWidget {
-  const _DefaultRow({required this.model, required this.onChange});
+/// The default model and its fallbacks (T6a): the primary with Change (as
+/// before), the fallbacks in a line, and the visual editor behind
+/// "Edit fallbacks", which writes `default_model` as a list.
+class _DefaultModelSection extends StatefulWidget {
+  const _DefaultModelSection({
+    required this.store,
+    required this.onChange,
+    required this.onNotice,
+  });
 
-  final String? model;
+  final TernStore store;
   final VoidCallback onChange;
+  final ValueChanged<String> onNotice;
+
+  @override
+  State<_DefaultModelSection> createState() => _DefaultModelSectionState();
+}
+
+class _DefaultModelSectionState extends State<_DefaultModelSection> {
+  /// The saved chain, once read.
+  List<String>? _saved;
+
+  /// What the editor shows while editing; null when not editing.
+  List<String>? _draft;
+  String? _error;
+  var _busy = false;
+
+  /// The default model the chain was read for.
+  String? _loadedFor;
+
+  TernStore get _store => widget.store;
+
+  /// Fallbacks may be edited by an owner (a config write); a paired chat
+  /// device is told so instead of offered a button that fails.
+  bool get _canEdit => _store.health?.isOwner ?? true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadedFor = _store.info?.defaultModel;
+    _load();
+    // Loading notifies, so not during this build.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _store.modelLists == null && !_store.loadingModels) {
+        unawaited(_store.loadModels());
+      }
+    });
+  }
+
+  Future<void> _load() async {
+    final chain = await _store.loadDefaultChain();
+    if (mounted && _draft == null) setState(() => _saved = chain);
+  }
+
+  bool get _changed =>
+      _draft != null && _draft!.join('\n') != (_saved ?? const []).join('\n');
+
+  Future<void> _save() async {
+    final draft = _draft;
+    if (draft == null) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final err = await _store.saveDefaultChain(draft);
+    if (!mounted) return;
+    if (err != null) {
+      setState(() {
+        _busy = false;
+        _error = err;
+      });
+      return;
+    }
+    setState(() {
+      _busy = false;
+      _saved = draft;
+      _draft = null;
+    });
+    widget.onNotice(
+      draft.length > 1
+          ? 'Default model: ${draft.first}, then ${draft.skip(1).join(', ')}.'
+          : 'Default model: ${draft.first}, with no fallbacks.',
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
-    return Row(
-      children: [
-        Text('Default model', style: TextStyle(fontSize: 13, color: c.muted)),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            model ?? 'None yet',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: model == null
-                ? TextStyle(fontSize: 13, color: c.warn)
-                : mono.copyWith(fontSize: 13),
-          ),
-        ),
-        TextButton(onPressed: onChange, child: const Text('Change')),
-      ],
+    return ListenableBuilder(
+      listenable: _store,
+      builder: (context, _) {
+        final model = _store.info?.defaultModel;
+        // Another primary was chosen (Change, or a provider's default):
+        // read the chain again, once.
+        if (_loadedFor != model) {
+          _loadedFor = model;
+          WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+        }
+        final chain = _saved ?? [?model];
+        final draft = _draft;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Text(
+                  'Default model',
+                  style: TextStyle(fontSize: 13, color: c.muted),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    model ?? 'None yet',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: model == null
+                        ? TextStyle(fontSize: 13, color: c.warn)
+                        : mono.copyWith(fontSize: 13),
+                  ),
+                ),
+                TextButton(
+                  onPressed: draft == null ? widget.onChange : null,
+                  child: const Text('Change'),
+                ),
+              ],
+            ),
+            if (draft == null && model != null)
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      chain.length > 1
+                          ? 'Then, if it fails: ${chain.skip(1).join(' → ')}'
+                          : 'No fallbacks: if it fails, the message fails.',
+                      key: const Key('default-fallbacks-summary'),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                  if (_canEdit)
+                    TextButton(
+                      key: const Key('edit-default-fallbacks'),
+                      onPressed: () => setState(() {
+                        _draft = [...chain];
+                        _error = null;
+                      }),
+                      child: Text(
+                        chain.length > 1 ? 'Edit fallbacks' : 'Add fallbacks',
+                      ),
+                    ),
+                ],
+              ),
+            if (draft != null) ...[
+              const SizedBox(height: 6),
+              ModelChainEditor(
+                store: _store,
+                chain: draft,
+                enabled: !_busy,
+                onChanged: (v) => setState(() {
+                  _draft = v;
+                  _error = null;
+                }),
+              ),
+              if (_error case final e?)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    e,
+                    key: const Key('default-chain-error'),
+                    style: TextStyle(fontSize: 12.5, color: c.error),
+                  ),
+                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    key: const Key('cancel-default-fallbacks'),
+                    onPressed: _busy
+                        ? null
+                        : () => setState(() {
+                            _draft = null;
+                            _error = null;
+                          }),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 6),
+                  FilledButton(
+                    key: const Key('save-default-fallbacks'),
+                    onPressed:
+                        _busy ||
+                            !_changed ||
+                            chainBlocked(
+                              _store,
+                              draft,
+                              saved: _saved ?? const [],
+                            )
+                        ? null
+                        : _save,
+                    child: Text(_busy ? 'Saving…' : 'Save'),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        );
+      },
     );
   }
 }
@@ -518,7 +705,8 @@ const fallbackPresets = [
     blurb: 'Any server that speaks the OpenAI API',
     kind: ProviderKind.openaiCompat,
     name: 'custom',
-    keyHint: "Enter the server's base URL. Leave the key blank if it doesn't "
+    keyHint:
+        "Enter the server's base URL. Leave the key blank if it doesn't "
         'need one.',
     needsKey: false,
     local: false,
@@ -617,7 +805,8 @@ class ProviderSetupState extends State<ProviderSetup> {
       preset: preset?.id,
       // A preset's name and address come from the daemon, which also picks
       // a free name when that service is connected twice.
-      name: _verified?.name ?? (preset?.isOther ?? true ? opt(_name.text) : null),
+      name:
+          _verified?.name ?? (preset?.isOther ?? true ? opt(_name.text) : null),
       baseUrl:
           _verified?.suggestedBaseUrl ??
           (preset?.isOther ?? true ? opt(_url.text) : null),
@@ -681,10 +870,7 @@ class ProviderSetupState extends State<ProviderSetup> {
       if (!v.ok) {
         setState(() {
           _busy = false;
-          _error = [
-            v.message ?? "That didn't work.",
-            ...v.warnings,
-          ].join(' ');
+          _error = [v.message ?? "That didn't work.", ...v.warnings].join(' ');
         });
         return;
       }
@@ -946,10 +1132,7 @@ class ProviderSetupState extends State<ProviderSetup> {
     final hideKey = existing == null && preset != null && preset.local;
     final (title, sub) = switch ((existing, preset)) {
       (final p?, _) => ('New API key for ${p.label}', null),
-      (null, final p?) when p.local => (
-        '${p.label} needs no key',
-        p.keyHint,
-      ),
+      (null, final p?) when p.local => ('${p.label} needs no key', p.keyHint),
       (null, final p?) when !p.isOther => (
         'Paste your ${p.label} API key',
         p.keyHint,

@@ -823,6 +823,10 @@ pub struct SubagentsConfig {
     pub budget_tokens_ceiling: u64,
     /// How long `agent_ask_parent` waits for an answer.
     pub ask_parent_timeout_secs: u64,
+    /// The most characters of a sub-agent's final report that reach the
+    /// parent's context. A longer report is cut with a marker, and the
+    /// parent fetches the rest with `agent_result`.
+    pub max_result_chars: usize,
 }
 
 impl Default for SubagentsConfig {
@@ -840,6 +844,7 @@ impl Default for SubagentsConfig {
             budget_tokens: 400_000,
             budget_tokens_ceiling: 2_000_000,
             ask_parent_timeout_secs: 900,
+            max_result_chars: crate::subagent::DEFAULT_RESULT_CHARS,
         }
     }
 }

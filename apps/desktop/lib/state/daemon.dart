@@ -189,8 +189,11 @@ class AppPrefs {
     this.file, {
     this.onClose = OnClose.keepRunning,
     this.connection,
+    List<RemoteProfile>? servers,
     Map<String, int>? read,
-  }) : read = read ?? {};
+  }) : servers = servers ?? [] {
+    if (read != null) _read[connection?.id ?? LocalProfile.localId] = read;
+  }
 
   /// `~/Library/Application Support/tern/desktop.json` on macOS,
   /// `$XDG_CONFIG_HOME/tern/desktop.json` elsewhere.
@@ -209,20 +212,47 @@ class AppPrefs {
   factory AppPrefs.fromFile(File file) {
     var onClose = OnClose.keepRunning;
     Profile? connection;
-    final read = <String, int>{};
+    final servers = <RemoteProfile>[];
+    final byServer = <String, Map<String, int>>{};
+    Map<String, int> ints(Object? m) => {
+      if (m is Map)
+        for (final e in m.entries)
+          if (e.value case final int v) '${e.key}': v,
+    };
     try {
       final j = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
       if (j['on_close'] == 'quit_tern') onClose = OnClose.quitTern;
       connection = Profile.fromJson(j['connection']);
-      if (j['read'] case final Map m) {
-        for (final e in m.entries) {
-          if (e.value case final int v) read['${e.key}'] = v;
+      for (final s in j['servers'] as List? ?? const []) {
+        if (RemoteProfile.fromJson(s as Map<String, dynamic>) case final p?
+            when !servers.any((x) => x.id == p.id)) {
+          servers.add(p);
         }
+      }
+      // An app that kept one server saved just `connection`: it becomes the
+      // first of the list, with its token where it was.
+      if (connection case final RemoteProfile c) {
+        final i = servers.indexWhere((s) => s.id == c.id);
+        if (i < 0) {
+          servers.add(c);
+        } else {
+          connection = servers[i];
+        }
+      }
+      if (j['read_by_server'] case final Map m) {
+        for (final e in m.entries) {
+          byServer['${e.key}'] = ints(e.value);
+        }
+      } else if (j['read'] case final Map m) {
+        // Before several servers: what was read belongs to the one in use.
+        byServer[connection?.id ?? LocalProfile.localId] = ints(m);
       }
     } on Object {
       // Missing or unreadable: defaults.
     }
-    return AppPrefs(file, onClose: onClose, connection: connection, read: read);
+    return AppPrefs(file, onClose: onClose, connection: connection)
+      ..servers.addAll(servers)
+      .._read.addAll(byServer);
   }
 
   final File file;
@@ -231,16 +261,35 @@ class AppPrefs {
   /// Where tern runs; null until the first-launch chooser is answered.
   Profile? connection;
 
-  /// Channel → the newest post seen here (unread dots; not synced).
-  final Map<String, int> read;
+  /// The saved servers (this computer is always there and isn't listed).
+  /// Their tokens are in the Keychain, never here.
+  final List<RemoteProfile> servers;
+
+  final Map<String, Map<String, int>> _read = {};
+
+  /// Channel → the newest post seen here, for the server in use (unread
+  /// dots; not synced). Channel ids repeat across servers, so each one
+  /// keeps its own.
+  Map<String, int> get read =>
+      _read.putIfAbsent(connection?.id ?? LocalProfile.localId, () => {});
+
+  /// Drop what was read on a server that was removed.
+  void forgetRead(String serverId) => _read.remove(serverId);
 
   Future<void> save() async {
     await file.parent.create(recursive: true);
     await file.writeAsString(
       jsonEncode({
         'on_close': onClose == OnClose.quitTern ? 'quit_tern' : 'keep_running',
+        // Still written, so an older app finds the server in use.
         'connection': ?connection?.toJson(),
-        if (read.isNotEmpty) 'read': read,
+        if (servers.isNotEmpty)
+          'servers': [for (final s in servers) s.toJson()],
+        if (_read.values.any((m) => m.isNotEmpty))
+          'read_by_server': {
+            for (final e in _read.entries)
+              if (e.value.isNotEmpty) e.key: e.value,
+          },
       }),
     );
   }

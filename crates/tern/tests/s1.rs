@@ -611,3 +611,236 @@ fn status_and_cancel_tools() {
     let kids = env.children();
     assert_eq!(kids[0].1, "interrupted");
 }
+
+// ---- context isolation: what the parent's model calls actually carry ----
+
+/// One line of the mock provider's request log (`TERN_MOCK_REQUEST_LOG`).
+struct Req {
+    first_user: String,
+    messages: u64,
+    messages_bytes: u64,
+}
+
+fn request_log(path: &Path) -> Vec<Req> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| {
+            let v: Value = serde_json::from_str(l).unwrap();
+            Req {
+                first_user: v["first_user"].as_str().unwrap().to_owned(),
+                messages: v["messages"].as_u64().unwrap(),
+                messages_bytes: v["messages_bytes"].as_u64().unwrap(),
+            }
+        })
+        .collect()
+}
+
+/// Length of the noisy child's report: 4,998 x "finding " + "TAIL-MARKER".
+const NOISY_REPORT_LEN: usize = 40_000;
+const NOISY_TOTAL: usize = NOISY_REPORT_LEN - 16 + 11;
+
+/// A noisy child: three 50 KB file reads, then a 40 KB report that ends in
+/// a marker only the tail of the report carries.
+fn noisy_script() -> Value {
+    let read = |f: &str| json!({ "tool_calls": [{ "name": "read_file", "input": { "path": f } }] });
+    let mut report = "finding ".repeat(NOISY_REPORT_LEN / 8 - 2);
+    report.push_str("TAIL-MARKER");
+    json!({
+        "turns": [
+            { "text": "Delegating.", "tool_calls": [
+                { "name": "agent_spawn", "input": {
+                    "label": "noisy", "task": "SUBTASK-noisy: read the big files", "tools": "read_only" } },
+                { "name": "agent_wait", "input": {} }
+            ] },
+            { "text": "Done with the noisy child." }
+        ],
+        "conversations": [
+            { "when_task_contains": "SUBTASK-noisy", "turns": [
+                read("big1.txt"), read("big2.txt"), read("big3.txt"), { "text": report }
+            ] }
+        ]
+    })
+}
+
+struct Noisy {
+    env: Env,
+    log: PathBuf,
+}
+
+impl Noisy {
+    fn run(config: &str, script: &Value) -> Self {
+        let env = Env::with_config(script, config);
+        let ws = env.home.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        for f in ["big1.txt", "big2.txt", "big3.txt"] {
+            std::fs::write(ws.join(f), format!("{f} ").repeat(50_000 / (f.len() + 1))).unwrap();
+        }
+        std::fs::write(
+            env.tern_home.join("config.toml"),
+            format!("workspace = {:?}\n{config}", ws.display().to_string()),
+        )
+        .unwrap();
+        let log = env.home.join("requests.jsonl");
+        let o = env
+            .cmd(&["run", "--yes", "PARENT-TASK: investigate"])
+            .env("TERN_MOCK_REQUEST_LOG", &log)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        Self { env, log }
+    }
+
+    fn parent_requests(&self) -> Vec<Req> {
+        request_log(&self.log)
+            .into_iter()
+            .filter(|r| r.first_user.starts_with("PARENT-TASK"))
+            .collect()
+    }
+
+    fn child_requests(&self) -> Vec<Req> {
+        request_log(&self.log)
+            .into_iter()
+            .filter(|r| r.first_user.starts_with("SUBTASK-noisy"))
+            .collect()
+    }
+}
+
+/// The parent's last model call, as a noisy child leaves it.
+fn parent_last(n: &Noisy) -> Req {
+    n.parent_requests().pop().unwrap()
+}
+
+/// The parent's context holds the bounded report, never the child's work.
+#[test]
+fn a_noisy_child_does_not_fill_the_parents_context() {
+    let n = Noisy::run("[subagents]\nenabled = true\n", &noisy_script());
+    let parent = n.parent_requests();
+    let child = n.child_requests();
+    // Two parent calls (spawn+wait, then the answer); four child calls.
+    assert_eq!((parent.len(), child.len()), (2, 4));
+    let last = parent_last(&n);
+    eprintln!(
+        "parent final call: {} messages, {} bytes; child final call: {} messages, {} bytes",
+        last.messages, last.messages_bytes, child[3].messages, child[3].messages_bytes
+    );
+    // 8,000 characters of report + the marker + JSON framing; nothing of the
+    // three 50 KB reads or the 40 KB report's tail.
+    assert!(last.messages_bytes < 10_000, "{}", last.messages_bytes);
+    // The child's own context did grow: that is where the noise lives.
+    assert!(
+        child[3].messages_bytes > 90_000,
+        "{}",
+        child[3].messages_bytes
+    );
+    let (_, all) = n.env.parent_transcript();
+    assert!(all.contains(&format!(
+        "report truncated: showing the first 8000 of {NOISY_TOTAL} characters"
+    )));
+    assert!(all.contains("agent_result"));
+    assert!(!all.contains("TAIL-MARKER"), "the cut tail stays out");
+    assert!(!all.contains("big1.txt big1.txt"), "tool output stays out");
+}
+
+/// What the parent doesn't get is still there: the child's session holds its
+/// whole transcript, and its steps are journaled.
+#[test]
+fn the_childs_full_work_stays_recorded() {
+    let n = Noisy::run("[subagents]\nenabled = true\n", &noisy_script());
+    let env = &n.env;
+    let child_run: String = env.query("SELECT id FROM runs WHERE label = 'noisy'");
+    let session: String = env.query("SELECT session_id FROM runs WHERE label = 'noisy'");
+    let tool_steps: i64 = env.query(&format!(
+        "SELECT count(*) FROM steps WHERE run_id = '{child_run}' AND kind = 'tool' AND status = 'completed'"
+    ));
+    assert_eq!(tool_steps, 3);
+    let llm_steps: i64 = env.query(&format!(
+        "SELECT count(*) FROM steps WHERE run_id = '{child_run}' AND kind = 'llm'"
+    ));
+    assert_eq!(llm_steps, 4);
+    let session_bytes: i64 = env.query(&format!(
+        "SELECT sum(length(content_json)) FROM messages WHERE session_id = '{session}'"
+    ));
+    assert!(session_bytes > 90_000, "{session_bytes}");
+    let tail: i64 = env.query(&format!(
+        "SELECT count(*) FROM messages WHERE session_id = '{session}' AND text LIKE '%TAIL-MARKER%'"
+    ));
+    assert_eq!(tail, 1, "the whole report is in the child's session");
+    // Nothing of the child's working messages is in the parent's session.
+    let parent_session: String =
+        env.query("SELECT session_id FROM runs WHERE parent_run_id IS NULL");
+    assert_ne!(parent_session, session);
+    let leaked: i64 = env.query(&format!(
+        "SELECT count(*) FROM messages WHERE session_id = '{parent_session}' AND text LIKE '%big1.txt%'"
+    ));
+    assert_eq!(leaked, 0);
+}
+
+/// The marker's pointer works: `agent_result` returns the rest, a slice at a
+/// time, and only what the parent asks for enters its context.
+#[test]
+fn the_rest_of_a_cut_report_is_fetched_on_demand() {
+    let mut script = noisy_script();
+    // After the wait, the parent reads the last 8,000 characters.
+    script["turns"] = json!([
+        { "text": "Delegating.", "tool_calls": [
+            { "name": "agent_spawn", "input": {
+                "label": "noisy", "task": "SUBTASK-noisy: read the big files", "tools": "read_only" } },
+            { "name": "agent_wait", "input": {} }
+        ] },
+        { "tool_calls": [
+            { "name": "agent_result", "input": { "agent": "noisy", "offset": 32_000 } }
+        ] },
+        { "text": "Read the tail." }
+    ]);
+    let n = Noisy::run("[subagents]\nenabled = true\n", &script);
+    let (last, all) = n.env.parent_transcript();
+    assert_eq!(last, "Read the tail.");
+    assert!(
+        all.contains("TAIL-MARKER"),
+        "the fetched slice has the tail"
+    );
+    assert!(
+        all.contains(&format!("\"total_chars\":{NOISY_TOTAL}")),
+        "{}",
+        &all[all.len() - 400..]
+    );
+    assert!(all.contains("\"complete\":true"), "{all}");
+    // Cut once, fetched once: the parent holds 8,000 + 8,000 characters.
+    let l = parent_last(&n);
+    assert!(l.messages_bytes < 22_000, "{}", l.messages_bytes);
+}
+
+/// `max_result_chars` is the knob.
+#[test]
+fn max_result_chars_sets_the_bound() {
+    let n = Noisy::run(
+        "[subagents]\nenabled = true\nmax_result_chars = 1000\n",
+        &noisy_script(),
+    );
+    let (_, all) = n.env.parent_transcript();
+    assert!(
+        all.contains(&format!(
+            "showing the first 1000 of {NOISY_TOTAL} characters"
+        )),
+        "{}",
+        &all[all.len().saturating_sub(600)..]
+    );
+    assert!(parent_last(&n).messages_bytes < 3_000);
+}
+
+/// A short report is untouched: no marker, no extra field.
+#[test]
+fn a_short_report_arrives_whole() {
+    let env = Env::new(&fan_out_script(0));
+    let o = env
+        .cmd(&["run", "--yes", "research three things"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (_, all) = env.parent_transcript();
+    assert!(
+        all.contains("report from a") && !all.contains("truncated"),
+        "{all}"
+    );
+}

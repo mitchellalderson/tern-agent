@@ -45,6 +45,7 @@ impl PromptMaker {
                 max_concurrent: s.max_concurrent,
                 max_iterations: s.max_iterations,
                 budget_tokens: s.budget_tokens,
+                max_result_chars: s.max_result_chars,
                 models: s
                     .models
                     .iter()

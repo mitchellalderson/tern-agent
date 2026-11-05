@@ -56,6 +56,42 @@ fn summarized_turns(text: &str) -> usize {
         .sum()
 }
 
+/// With `TERN_MOCK_REQUEST_LOG=<file>`, append one JSON line per model call:
+/// the first user message's start (which tells a parent from its children),
+/// how many messages the request carried, their serialized size and the
+/// token estimate of the whole request. Lets tests measure what a run's
+/// context actually holds.
+fn log_request(req: &ChatRequest) {
+    let Some(path) = std::env::var_os("TERN_MOCK_REQUEST_LOG") else {
+        return;
+    };
+    let first: String = req
+        .messages
+        .iter()
+        .find(|m| m.role == Role::User)
+        .map(|m| m.text())
+        .unwrap_or_default()
+        .chars()
+        .take(80)
+        .collect();
+    let messages_bytes = serde_json::to_string(&req.messages).map_or(0, |s| s.len());
+    let line = serde_json::json!({
+        "first_user": first,
+        "messages": req.messages.len(),
+        "messages_bytes": messages_bytes,
+        "system_bytes": req.system.len(),
+        "est_tokens": tern_core::compaction::estimate_tokens(&req.system, &req.messages, &req.tools),
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 fn text_stream(text: String) -> EventStream {
     let usage = Usage {
         output_tokens: text.len() as u64 / 4,
@@ -182,6 +218,7 @@ impl Provider for MockProvider {
                 },
             )));
         }
+        log_request(&req);
         let n = turns_so_far(&req);
         let turn = if req.system == tern_core::memory::FLUSH_SYSTEM_PROMPT {
             Turn {

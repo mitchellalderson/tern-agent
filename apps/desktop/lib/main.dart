@@ -43,7 +43,12 @@ class TernApp extends StatefulWidget {
 }
 
 class _TernAppState extends State<TernApp> {
-  late TernStore _store = _storeFor(widget.endpoint, widget.prefs);
+  /// The store for the server in use; null for the frame between one
+  /// server's window and the next.
+  late TernStore? _store = _storeFor(widget.endpoint, widget.prefs);
+
+  /// Where the window goes next while switching.
+  Endpoint? _next;
   late final _connections = Connections(
     prefs: widget.prefs,
     tokens: widget.tokens,
@@ -57,16 +62,26 @@ class _TernAppState extends State<TernApp> {
     onReadChanged: prefs.save,
   )..connect();
 
+  /// Another server (or this computer): the window for the old one is torn
+  /// down completely first (its streams, caches, selection, drafts), then
+  /// a new store connects to [e] alone. A second switch before that
+  /// finishes just changes where it ends up.
   void _switchTo(Endpoint e) {
+    _next = e;
     final old = _store;
-    setState(() => _store = _storeFor(e, widget.prefs));
+    if (old == null) return;
+    setState(() => _store = null);
     // After the frame that stops using it.
-    WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      old.dispose();
+      if (!mounted) return;
+      setState(() => _store = _storeFor(_next!, widget.prefs));
+    });
   }
 
   @override
   void dispose() {
-    _store.dispose();
+    _store?.dispose();
     super.dispose();
   }
 
@@ -76,11 +91,14 @@ class _TernAppState extends State<TernApp> {
     debugShowCheckedModeBanner: false,
     theme: ternTheme(TernColors.light, Brightness.light),
     darkTheme: ternTheme(TernColors.dark, Brightness.dark),
-    home: Home(
-      key: ObjectKey(_store),
-      store: _store,
-      prefs: widget.prefs,
-      connections: _connections,
-    ),
+    home: switch (_store) {
+      final store? => Home(
+        key: ObjectKey(store),
+        store: store,
+        prefs: widget.prefs,
+        connections: _connections,
+      ),
+      null => const Scaffold(body: Center(child: CircularProgressIndicator())),
+    },
   );
 }

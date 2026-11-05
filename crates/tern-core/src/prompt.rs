@@ -34,6 +34,8 @@ pub struct SubagentPrompt {
     pub max_iterations: u32,
     /// Per child unless `agent_spawn` asks for a different number (`[subagents].budget_tokens`).
     pub budget_tokens: u64,
+    /// Characters of a report that reach the caller (`[subagents].max_result_chars`).
+    pub max_result_chars: usize,
     /// What `agent_spawn` accepts as `model`: aliases, described.
     pub models: Vec<String>,
     /// Whether its sub-agents may start their own.
@@ -235,6 +237,7 @@ fn subagents_section(sub: &SubagentPrompt) -> String {
         .replace("{max_concurrent}", &sub.max_concurrent.to_string())
         .replace("{max_iterations}", &sub.max_iterations.to_string())
         .replace("{budget_tokens}", &with_thousands(sub.budget_tokens))
+        .replace("{max_result}", &with_thousands(sub.max_result_chars as u64))
         .replace("{models}", &models)
         .replace("{nest}", nest)
 }
@@ -278,7 +281,9 @@ walked in:
 - what you already know or have ruled out, with exact paths, URLs, names and numbers, so it doesn't rediscover them;
 - constraints: what not to touch, what to avoid that would need the user's approval, how far to go;
 - the exact shape of the report you want back, for example \"a table of name, URL, stage and one line of evidence, \
-under 300 words; list what you couldn't verify\".
+under 300 words; list what you couldn't verify\". Only the report comes back to you, never what the sub-agent read or \
+did, and at most {max_result} characters of it: the rest is cut, with a marker. Ask for a short report, and for \
+anything long to be written to a file in the workspace that the report names. `agent_result` reads on past a cut.
 Give your hypotheses as things to confirm or refute, not as facts.
 
 While they work:
@@ -332,8 +337,11 @@ report.
 - Don't ask the user anything. Save what your own job will need again with `memory_save` (it goes to your memory); \
 don't create routines or change connectors unless the task says to.
 - Check your work before you finish: rerun the test, re-read the file, confirm the source.
-- Your final message is the report. Lead with the answer in the shape the brief asked for, then what you checked, what \
-you assumed, and anything left undone. Use exact paths, links and figures. No preamble, and no \"let me know if…\".";
+- Your final message is the report, and it is all the main agent gets: not the files you read, the tool output or your \
+reasoning, and only the start of a long report. Keep it short, a page at most. Lead with the answer in the shape the \
+brief asked for, then what you checked, what you assumed, and anything left undone. Use exact paths, links and \
+figures. Don't paste file contents, logs or transcripts: name the path and quote only the lines that matter; put \
+anything long in a file in the workspace and name it. No preamble, and no \"let me know if…\".";
 
 const MEMORY: &str = "## Memory\n\n`user.md` (about the user, above) and `memory.md` (core facts, below) are in \
 this prompt in every conversation, capped at {user} and {memory} tokens. Keep them short and current with \
@@ -472,6 +480,7 @@ mod tests {
             max_concurrent: 3,
             max_iterations: 30,
             budget_tokens: 400_000,
+            max_result_chars: 8000,
             models: vec!["fast (anthropic:claude-haiku-5-5)".to_owned()],
             can_nest: false,
         };
@@ -624,6 +633,7 @@ mod tests {
             max_concurrent: 2,
             max_iterations: 10,
             budget_tokens: 1000,
+            max_result_chars: 8000,
             models: vec![],
             can_nest: false,
         };

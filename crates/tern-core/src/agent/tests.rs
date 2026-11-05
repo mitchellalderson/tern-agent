@@ -1232,6 +1232,7 @@ impl FakeHost {
             status: "completed".into(),
             result: Some(report.into()),
             error: None,
+            result_chars: None,
             iterations: 1,
             tokens: 1,
         };
@@ -1258,6 +1259,13 @@ impl crate::subagent::SubagentHost for FakeHost {
         unreachable!()
     }
     async fn wait(&self, _: &ToolCtx, _: crate::subagent::WaitRequest) -> Result<Value, String> {
+        unreachable!()
+    }
+    async fn result(
+        &self,
+        _: &ToolCtx,
+        _: crate::subagent::ResultRequest,
+    ) -> Result<Value, String> {
         unreachable!()
     }
     async fn cancel(

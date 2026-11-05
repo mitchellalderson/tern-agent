@@ -1,12 +1,13 @@
 //! Sub-agent tools (docs/subagents-design.md §2.2–§2.3): `agent_spawn`,
-//! `agent_wait`, `agent_send`, `agent_cancel`, `agent_status` for the parent
+//! `agent_wait`, `agent_result`, `agent_send`, `agent_cancel`, `agent_status` for the parent
 //! side and `agent_ask_parent` for children. Each is a thin shell over the
 //! [`SubagentHost`] bound into the slot at startup.
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tern_core::subagent::{
-    AskRequest, CancelRequest, HostSlot, SendRequest, SpawnRequest, SubagentHost, WaitRequest,
+    AskRequest, CancelRequest, HostSlot, ResultRequest, SendRequest, SpawnRequest, SubagentHost,
+    WaitRequest,
 };
 use tern_core::tool::{
     Effect, Tool, ToolCtx, ToolPolicy, ToolRegistry, ToolResult, current_call_id,
@@ -20,6 +21,7 @@ use crate::{args, spec};
 pub fn register(registry: &mut ToolRegistry, slot: HostSlot) {
     registry.register(std::sync::Arc::new(AgentSpawn(slot.clone())));
     registry.register(std::sync::Arc::new(AgentWait(slot.clone())));
+    registry.register(std::sync::Arc::new(AgentResult(slot.clone())));
     registry.register(std::sync::Arc::new(AgentSend(slot.clone())));
     registry.register(std::sync::Arc::new(AgentCancel(slot.clone())));
     registry.register(std::sync::Arc::new(AgentStatus(slot.clone())));
@@ -42,9 +44,17 @@ fn host(slot: &HostSlot) -> Result<&std::sync::Arc<dyn SubagentHost>, ToolResult
         .ok_or_else(|| ToolResult::error("sub-agents are not available in this process"))
 }
 
+/// A host reply as a tool result. A reply carrying `"tainted": true` holds
+/// text a tainted sub-agent wrote: it is third-party text for the reader,
+/// so it taints the run that reads it and arrives wrapped (tooling spec
+/// 5.3), as a tainted run's mail does.
 fn result(r: Result<Value, String>) -> ToolResult {
     match r {
-        Ok(v) => ToolResult::ok(v.to_string()),
+        Ok(v) => {
+            let mut out = ToolResult::ok(v.to_string());
+            out.untrusted = v.get("tainted").and_then(Value::as_bool) == Some(true);
+            out
+        }
         Err(e) => ToolResult::error(e),
     }
 }
@@ -162,6 +172,53 @@ impl Tool for AgentWait {
         };
         match host(&self.0) {
             Ok(h) => result(h.wait(ctx, req).await),
+            Err(e) => e,
+        }
+    }
+}
+
+// ---- agent_result ----
+
+pub struct AgentResult(pub HostSlot);
+
+#[async_trait]
+impl Tool for AgentResult {
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "agent_result",
+            "Read more of a finished sub-agent's report. Reports reach you cut to a limit, with a marker saying how much there is; call this with the marker's `offset` to read on. Returns a slice and the next offset. Only fetch what you need.",
+            json!({
+                "type": "object",
+                "required": ["agent"],
+                "properties": {
+                    "agent": { "type": "string", "description": "The sub-agent's label." },
+                    "offset": { "type": "integer", "minimum": 0, "description": "Characters to skip (default 0)." },
+                    "limit": { "type": "integer", "minimum": 1, "description": "At most this many characters (default and ceiling: the report limit)." }
+                }
+            }),
+        )
+    }
+
+    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+        policy(self.effect())
+    }
+
+    fn summary(&self, args: &Value) -> Option<String> {
+        let label = args.get("agent").and_then(Value::as_str).unwrap_or("?");
+        Some(format!("agent_result {label}"))
+    }
+
+    async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
+        let req: ResultRequest = match args(raw) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        match host(&self.0) {
+            Ok(h) => result(h.result(ctx, req).await),
             Err(e) => e,
         }
     }
@@ -344,5 +401,19 @@ impl Tool for AgentAskParent {
             return ToolResult::error("agent_ask_parent must be called by the agent loop");
         };
         result(host.ask_parent(ctx, &call_id, req).await)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tainted_reply_is_untrusted_text_for_the_reader() {
+        let clean = result(Ok(json!({ "agents": [] })));
+        assert!(!clean.untrusted && !clean.is_error);
+        let dirty = result(Ok(json!({ "agents": [], "tainted": true })));
+        assert!(dirty.untrusted);
+        assert!(!result(Err("no".into())).untrusted);
     }
 }

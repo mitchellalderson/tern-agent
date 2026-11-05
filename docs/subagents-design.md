@@ -39,7 +39,7 @@ and not covered here.
 | Its conversation | its **own session**, `source = "subagent"`, `external_ref = parent_run_id` | `Store::run_context` (crates/tern-store/src/repo.rs) builds context from *all* session messages up to the run's input. Children in the parent's session would leak into each other's and the parent's context. A separate session gives a clean context for free. |
 | Its identity | `label` (short slug, unique per parent run: `research-1`, `reviewer`) | What the model, the UI and approvals call it. |
 | Its brief | the child run's input message | Already how runs start (`Agent::start_run`). |
-| Its result | the child's final assistant text (`RunOutcome::final_text`), capped at 16 KB | Returned to the parent through `agent_wait` or the inbox. The full transcript stays in the child session. |
+| Its result | the child's final assistant text (`RunOutcome::final_text`), cut to `[subagents].max_result_chars` (default 8,000 characters) | Returned to the parent through `agent_wait` or the inbox, with a marker naming `agent_result` when cut. The full text and transcript stay in the child session. |
 
 A child session is never reused: one spawn, one session, one run. Follow-up work for the same child goes through
 `agent_send` while it runs; after it finishes the parent spawns a new one (and can include the old result in the
@@ -678,3 +678,13 @@ Details in DECISIONS.md "S2–S3".
 - `/v1/health` reports `subagents` whether or not `[subagents].enabled` is set: it says the API exists.
 - The cancel cascade on `/v1/runs/{id}/cancel` was already in S1 (a parent's drive ending cancels its children).
 - The `tern_client` fixture test (gui-spec §6.4) doesn't exist on the Rust side yet, so S2 added none.
+
+## Implementation notes (context isolation)
+
+Details in DECISIONS.md "Sub-agent context isolation".
+
+- **What enters the parent's context** is only: the `agent_spawn` handle, `agent_wait` / `agent_status` / `agent_result` JSON, and inbox messages for `finished`, `question` and steering mail. A child's own messages, tool calls, tool results and reasoning live in its own session and are never merged into the parent's (`Store::run_context` is per session). Journal steps, ledger entries, the activity feed and events are for the run inspector and UIs, not model context. Each child compacts on its own.
+- **Bounded reports.** A report is cut to `[subagents].max_result_chars` (default 8,000 characters, min 200) when the `finished` mail is posted. The cut ends in `[... report truncated: showing the first N of M characters. Fetch the rest with agent_result {"agent": "<label>", "offset": N}]` and `Finished.result_chars` holds M. A parent with many children still receives one bounded report each; lower the cap for wide fan-outs.
+- **`agent_result {agent, offset?, limit?}`**: read-only slice of a finished child's final text (at most the cap per call, character offsets), answering `{agent, run_id, total_chars, offset, text, next_offset | complete}`. A child still running is an error that points at `agent_wait`.
+- **Child prompt.** The role section tells the child its final message is all its caller gets, to keep it to a page, to name paths instead of pasting contents, and to put long material in a workspace file.
+- **Taint.** A reply of `agent_wait` or `agent_result` that includes a tainted child's text carries `"tainted": true`; the tool result is then untrusted (wrapped, and it taints the reader), the same as tainted mail through the inbox.

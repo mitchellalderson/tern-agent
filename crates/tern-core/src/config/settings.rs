@@ -213,6 +213,7 @@ fn meta(key: &str) -> Meta {
         | "subagents.max_iterations_ceiling"
         | "subagents.ask_parent_timeout_secs" => at_least(1.0),
         "subagents.budget_tokens" | "subagents.budget_tokens_ceiling" => at_least(0.0),
+        "subagents.max_result_chars" => at_least(200.0),
         "schedules.quiet_hours" => Meta { live: true, ..m },
         "schedules.runs_per_day" | "schedules.tokens_per_run" => Meta {
             kind: Some(Kind::Int),

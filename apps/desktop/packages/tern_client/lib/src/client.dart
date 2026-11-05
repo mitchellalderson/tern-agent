@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'agents.dart';
 import 'bundles.dart';
+import 'chain.dart';
 import 'channels.dart';
 import 'config.dart';
 import 'connections.dart';
@@ -77,6 +78,8 @@ class TernClient {
     required String deviceName,
     String? platform,
   }) async {
+    final problem = remoteUrlProblem(link.url);
+    if (problem != null) throw TernException(problem);
     // A throwaway token: pairing is the one route that needs none.
     final bootstrap = RemoteEndpoint(
       link.url,
@@ -104,6 +107,33 @@ class TernClient {
     } on SignedOutException catch (e) {
       // On this route a 401 means the code, not a token.
       throw TernException(e.message, status: 401);
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Whether a tern server answers at [url] (its `/healthz`, which needs no
+  /// token), checking its certificate against [pin] when given. Sends no
+  /// credentials, so it is safe to try before anything is saved. Throws
+  /// [TernException]: unreachable (status null), a bad certificate, or an
+  /// answer that isn't tern's.
+  static Future<void> probe(
+    Uri url, {
+    String? pin,
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    final problem = remoteUrlProblem(url);
+    if (problem != null) throw TernException(problem);
+    final client = TernClient(RemoteEndpoint(url, token: '', pin: pin));
+    try {
+      await client
+          ._request('GET', '/healthz', null, auth: false)
+          .timeout(
+            timeout,
+            onTimeout: () => throw TernException(
+              "can't reach tern at ${client.endpoint.describe()}: timed out",
+            ),
+          );
     } finally {
       client.close();
     }
@@ -211,6 +241,17 @@ class TernClient {
         await _json('PUT', '/v1/config/default_model', {'model': model})
             as Json;
     return Resolved.fromJson(j, model);
+  }
+
+  /// Set `default_model` to a chain: the primary first, then the fallbacks
+  /// tried in order (T6a). The daemon checks every entry and keeps the
+  /// file's comments; it applies to the next message. Owner only, as every
+  /// config write is.
+  Future<ConfigSetting> setDefaultModelChain(List<String> chain) {
+    if (chain.isEmpty) {
+      throw ArgumentError('a default model needs at least one model');
+    }
+    return setSetting('default_model', chainToWire(chain));
   }
 
   /// Configured MCP servers with their state. Check `features` in
@@ -346,8 +387,8 @@ class TernClient {
   }) => _json(
     'DELETE',
     '/v1/agents/${_seg(id)}?confirm=true'
-    '${reassignTo == null ? '' : '&reassign_to=${Uri.encodeQueryComponent(reassignTo)}'}'
-    '${deleteRoutines ? '&delete_routines=true' : ''}',
+        '${reassignTo == null ? '' : '&reassign_to=${Uri.encodeQueryComponent(reassignTo)}'}'
+        '${deleteRoutines ? '&delete_routines=true' : ''}',
   );
 
   Future<List<AgentTemplate>> agentTemplates() async => [
@@ -1079,7 +1120,7 @@ class TernClient {
         await out.close();
         return;
       }
-      if (res.statusCode >= 400) {
+      if (res.statusCode >= 300) {
         final text = await res.transform(utf8.decoder).join();
         String? msg;
         try {
@@ -1140,7 +1181,7 @@ class TernClient {
     } on FormatException {
       decoded = text;
     }
-    if (res.statusCode >= 400) {
+    if (res.statusCode >= 300) {
       final msg = decoded is Json ? decoded['error'] as String? : null;
       throw _error(res.statusCode, msg);
     }
@@ -1152,6 +1193,14 @@ class TernClient {
       return SignedOutException(
         'Signed out of ${endpoint.describe()}: ${msg ?? 'the device token was revoked'}',
         core: endpoint.describe(),
+      );
+    }
+    if (status >= 300 && status < 400) {
+      return TernException(
+        'the server at ${endpoint.describe()} redirected the request '
+        '(HTTP $status); not followed, so the device token stays with the '
+        'address it was paired with',
+        status: status,
       );
     }
     return TernException(msg ?? 'HTTP $status', status: status);
@@ -1171,6 +1220,9 @@ class TernClient {
         method,
         endpoint.base.resolve(path),
       );
+      // A server that answers with a redirect isn't followed: the token is
+      // for the address that was paired, never for wherever it points.
+      if (endpoint is RemoteEndpoint) req.followRedirects = false;
       req.headers.set(HttpHeaders.acceptHeader, accept);
       if (auth) endpoint.headers.forEach(req.headers.set);
       if (body is List<int> && contentType != null) {

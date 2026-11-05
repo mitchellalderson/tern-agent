@@ -145,7 +145,13 @@ class _HomeState extends State<Home> {
                     return Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        SizedBox(width: 260, child: Sidebar(store: store)),
+                        SizedBox(
+                          width: 260,
+                          child: Sidebar(
+                            store: store,
+                            connections: widget.connections,
+                          ),
+                        ),
                         const Hairline(vertical: true),
                         Expanded(
                           child:

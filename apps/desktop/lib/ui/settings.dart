@@ -9,7 +9,7 @@ import '../state/store.dart';
 import '../theme.dart';
 import 'config_editor.dart';
 import 'security.dart';
-import 'where_to_run.dart';
+import 'servers.dart';
 
 Future<void> showSettingsDialog(
   BuildContext context,
@@ -75,12 +75,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
   Future<void> _changeServer() async {
     final c = widget.connections;
     if (c == null) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => ConnectServerDialog(connections: c),
-    );
-    // The app now shows the new server: this dialog belonged to the old.
-    if (ok == true && mounted) Navigator.pop(context);
+    final before = c.activeId;
+    await showServersDialog(context, c);
+    // The app now shows another server: this dialog belonged to the old.
+    if (mounted && c.activeId != before) Navigator.pop(context);
   }
 
   Future<void> _useThisComputer() async {
@@ -133,9 +131,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
           children: [
             OutlinedButton(
               onPressed: _busy ? null : _changeServer,
-              child: Text(
-                server == null ? 'Connect to a server…' : 'Change server…',
-              ),
+              child: const Text('Servers…'),
             ),
             if (server != null)
               TextButton(

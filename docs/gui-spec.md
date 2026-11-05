@@ -210,6 +210,11 @@ The GUI ships before this (phase G1–G3 list conversations under the single def
 
 The socket is local only, which is right for now. A phone or second machine needs a TCP listener with a token, or a relay. Designed in [deployment-spec.md](deployment-spec.md) §6–§8 (listeners, device pairing, connection profiles, push), which supersedes this section and §6.1. Noted here so the client package doesn't assume Unix sockets everywhere.
 
+### 7.5 Saved servers and fallback lists (built, 2026-11-04)
+
+- **Several saved servers.** "This Mac" is built in; any number of paired tern servers are saved beside it, each with a name, address and its own Keychain token. The sidebar footer shows the one in use with its status (`Connected · tern 0.2.0`) and opens a switcher (every server with its reachability, Add, Manage); Settings › Servers adds, renames, edits (re-pair, change address) and removes. A switch rebuilds the whole window on a new store, so no stream, cache, selection or unread mark crosses servers. https is required except for this computer. See DECISIONS.md, "Several saved servers".
+- **Fallback lists.** The Models dialog and the agent sheet edit a model's fallbacks visually: ordered rows (PRIMARY, then THEN TRY), drag or up/down buttons, add from the model picker, remove, checked against the providers' lists. Written as `default_model` through the config API (T6a's format).
+
 ## 8. Visual design
 
 - **Palette (light)**: background `#FFFFFF`, sidebar `#F6F6F4` with vibrancy, cards `#F7F7F5`, hairlines `#E7E7E3`, text `#1C1C1A` / secondary `#6B6B66`, one accent (warm orange `#F07A2B`, from the tern mark) for primary buttons and the send button, green `#2F9E5B` for ✓, amber `#D9902B` for approvals, red `#D2453B` for errors. Dark mode is a separate token set, not an inversion.
