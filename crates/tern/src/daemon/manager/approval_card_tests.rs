@@ -34,6 +34,55 @@ fn req(id: &str, run: &str, session: &str, target: &str, n: u32, grant: bool) ->
     }
 }
 
+/// A tainted run's read-scope card: `tool` asking in `session` (a sub-agent
+/// when `parent`), for the folder `dir`.
+fn read_card(id: &str, tool: &str, session: &str, parent: bool, dir: &str) -> ApprovalRequest {
+    let mut r = req(id, id, session, "x", 1, true);
+    r.call.name = tool.into();
+    r.summary = format!("{tool} {dir}/{id}");
+    r.taint = Some("result of http_fetch".into());
+    r.parent_run_id = parent.then(|| "root".into());
+    r.grant = Some(GrantOffer {
+        key: format!("readscope:{dir}"),
+        label: dir.into(),
+        run_only: true,
+    });
+    r
+}
+
+#[tokio::test]
+async fn a_read_scope_answer_releases_other_read_tools_and_sub_agents_of_the_same_run() {
+    let api = Arc::new(ApiApprovals::default());
+    let _rx = api.subscribe();
+    let ask_in = |r: ApprovalRequest, root: Option<&str>| {
+        let api = api.clone();
+        let root = root.map(str::to_owned);
+        tokio::spawn(async move { api.ask(&r, root, (None, None)).await })
+    };
+    let first = ask_in(read_card("a1", "read_file", "s", false, "/p"), None);
+    // list_dir by a sub-agent (its own session, rooted at "s"): same tree.
+    let child = ask_in(read_card("a2", "list_dir", "s2", true, "/p"), Some("s"));
+    // Another folder, another tree, a write: never released by it.
+    let other_dir = ask_in(read_card("a3", "read_file", "s", false, "/q"), None);
+    let other_tree = ask_in(read_card("a4", "read_file", "t", false, "/p"), None);
+    let mut w = read_card("a5", "write_file", "s", false, "/p");
+    w.grant = None;
+    let write = ask_in(w, None);
+    settle().await;
+    assert_eq!(api.pending().len(), 5);
+    assert!(api.answer("a1", Decision::AllowRun, false));
+    assert_eq!(first.await.unwrap(), Decision::AllowRun);
+    assert_eq!(child.await.unwrap(), Decision::CoveredByGrant);
+    settle().await;
+    let mut left: Vec<String> = api.pending().into_iter().map(|a| a.id).collect();
+    left.sort();
+    assert_eq!(left, ["a3", "a4", "a5"]);
+    for id in ["a3", "a4", "a5"] {
+        assert!(api.answer(id, Decision::Deny, false));
+    }
+    let _ = (other_dir.await, other_tree.await, write.await);
+}
+
 async fn settle() {
     tokio::time::sleep(Duration::from_millis(30)).await;
 }

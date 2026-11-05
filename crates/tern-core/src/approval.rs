@@ -1109,6 +1109,37 @@ mod tests {
     }
 
     #[test]
+    fn tainted_reads_ask_only_outside_the_workspace_and_effects_always_ask() {
+        // `requires_approval` is how the file tools say "outside the workspace".
+        let inside = policy(Effect::Read);
+        let outside = policy(Effect::Read).forced(true);
+        let ask = |effect, always| Check::Ask { effect, always };
+        for tool in READ_FS_TOOLS {
+            assert_eq!(check(tool, &inside, false, Gate::TAINTED), Check::Allow);
+            assert_eq!(check(tool, &inside, false, Gate::CLEAN), Check::Allow);
+            // Outside: asks in both, but never "always" when tainted.
+            assert_eq!(
+                check(tool, &outside, false, Gate::TAINTED),
+                ask(Effect::Read, false)
+            );
+            assert_eq!(
+                check(tool, &outside, false, Gate::CLEAN),
+                ask(Effect::Read, true)
+            );
+        }
+        // Effectful tools ask under taint, inside the workspace or not, and
+        // grants don't cover them.
+        for effect in [Effect::Write, Effect::Destructive] {
+            for p in [policy(effect), policy(effect).forced(true)] {
+                assert_eq!(
+                    check("write_file", &p, true, Gate::TAINTED),
+                    ask(effect, false)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn non_shell_tools_are_never_offered_always() {
         let call = ToolCall {
             id: "1".into(),

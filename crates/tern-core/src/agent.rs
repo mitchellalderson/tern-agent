@@ -767,6 +767,15 @@ impl Agent {
                         Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
                         Err(e) => return Err(e.into()),
                     }
+                } else if gate.tainted
+                    && gate.autonomy != Autonomy::Yolo
+                    && in_scope
+                    && policy.effect == crate::tool::Effect::Read
+                    && approval::READ_FS_TOOLS.contains(&call.name.as_str())
+                {
+                    // A tainted run's read of the workspace: no prompt, one
+                    // ledger row per run.
+                    self.note_tainted_reads(run, &call)?;
                 }
 
                 self.emit(AgentEvent::ToolStarted {
@@ -1080,9 +1089,6 @@ impl Agent {
         let (effect, always, offer_grant) = match approval::check(&call.name, policy, granted, gate)
         {
             approval::Check::Allow => {
-                if tainted_read && gate.autonomy != Autonomy::Yolo {
-                    self.note_tainted_reads(run, call)?;
-                }
                 // Ran on a scoped grant nobody was asked about this time:
                 // the ledger says which grant, and what it was judged on.
                 // (Not under yolo, which allows before any grant is looked at.)
