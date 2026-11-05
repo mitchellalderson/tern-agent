@@ -193,7 +193,7 @@ mod linux {
 
     pub(super) fn run(args: Vec<OsString>) -> Result<Infallible, String> {
         let a = parse(args)?;
-        let status = if std::env::var_os("DIAG_NO_LANDLOCK").is_some() { RulesetStatus::FullyEnforced } else { landlock(&a)? };
+        let status = landlock(&a)?;
         if a.probe {
             let abi = (1..=6).rev().find(|&v| probe_abi(v)).unwrap_or_default();
             println!("landlock {abi} {status:?}");
@@ -205,13 +205,13 @@ mod linux {
                     .into(),
             );
         }
-        if std::env::var_os("DIAG_NO_SECCOMP").is_none() { match command_filter(a.network)
+        match command_filter(a.network)
             .and_then(|p| seccompiler::apply_filter(&p).map_err(|e| format!("seccomp: {e}")))
         {
             Ok(()) => {}
             Err(e) if a.require => return Err(e),
             Err(e) => eprintln!("tern sandbox: seccomp filter not applied: {e}"),
-        } }
+        }
         let (program, rest) = a.command.split_first().ok_or("no command given")?;
         let e = std::process::Command::new(program).args(rest).exec();
         Err(format!("exec {}: {e}", program.to_string_lossy()))

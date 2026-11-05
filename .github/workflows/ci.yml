@@ -70,23 +70,19 @@ jobs:
           cache: true
       - name: DIAG sandbox (temporary)
         if: runner.os == 'Linux'
+        continue-on-error: true
         run: |
-          set +e
-          sudo apt-get install -y strace >/dev/null 2>&1
+          sudo apt-get install -y strace >/dev/null 2>&1 || true
           cargo build -p tern 2>&1 | tail -2
           T=$PWD/target/debug/tern
+          uname -r; ulimit -a
+          $T __sandbox-exec --probe; echo "probe rc=$?"
           mkdir -p /tmp/w
-          R="--read /usr --read /bin --read /lib --read /lib64 --read /etc"
-          A="--no-network $R --write /tmp/w"
-          echo "== full"; $T __sandbox-exec $A -- sh -c 'echo hi'; echo "rc=$?"
-          echo "== net on"; $T __sandbox-exec $R --write /tmp/w -- sh -c 'echo hi'; echo "rc=$?"
-          echo "== no seccomp"; DIAG_NO_SECCOMP=1 $T __sandbox-exec $A -- sh -c 'echo hi'; echo "rc=$?"
-          echo "== no landlock"; DIAG_NO_LANDLOCK=1 $T __sandbox-exec $A -- sh -c 'echo hi'; echo "rc=$?"
-          echo "== neither"; DIAG_NO_LANDLOCK=1 DIAG_NO_SECCOMP=1 $T __sandbox-exec $A -- sh -c 'echo hi'; echo "rc=$?"
-          echo "== strace"; strace -f -o /tmp/st.txt $T __sandbox-exec $A -- sh -c 'echo hi'; echo "rc=$?"
-          tail -30 /tmp/st.txt
-          echo "== strace sh only (no sandbox)"; sh -c 'echo hi'; echo "rc=$?"
-          exit 1
+          A="--no-network --read /usr --read /bin --read /lib --read /lib64 --read /etc --write /tmp/w"
+          $T __sandbox-exec $A -- sh -c 'echo hi; ls /tmp/w'; echo "sh rc=$?"
+          $T __sandbox-exec --write /tmp/w --read /usr --read /bin --read /lib --read /lib64 --read /etc -- sh -c 'echo hi'; echo "net-on rc=$?"
+          strace -f -o /tmp/st.txt $T __sandbox-exec $A -- sh -c 'echo hi'; echo "strace rc=$?"
+          tail -40 /tmp/st.txt
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Analyze the desktop app
