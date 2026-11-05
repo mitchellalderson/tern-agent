@@ -477,6 +477,22 @@ class TernClient {
     ];
   }
 
+  /// Rewrite a memory; it becomes yours (`source: user`).
+  Future<Memory> editMemory(int id, String content) async => Memory.fromJson(
+    await _json('PATCH', '/v1/memories/$id', {'content': content}),
+  );
+
+  Future<void> deleteMemory(int id) => _json('DELETE', '/v1/memories/$id');
+
+  /// Delete every memory of one namespace: `shared` or an agent.
+  Future<int> clearMemories(String agent) async {
+    final r = await _json(
+      'DELETE',
+      '/v1/memories?agent=${Uri.encodeQueryComponent(agent)}',
+    );
+    return (r as Json)['deleted'] as int? ?? 0;
+  }
+
   Future<List<Channel>> channels({bool archived = false}) async => [
     for (final c
         in await _json('GET', '/v1/channels${archived ? '?archived=1' : ''}')
