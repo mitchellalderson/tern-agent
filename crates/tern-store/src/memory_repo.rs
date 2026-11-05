@@ -197,6 +197,7 @@ impl Store {
 
     /// Delete memory `id` the model asked to forget, only from `agent`'s
     /// own namespace (`None` = shared). Recorded as `memory.forget`.
+    #[allow(clippy::too_many_arguments)]
     pub fn forget_memory(
         &self,
         id: i64,
@@ -481,7 +482,10 @@ mod tests {
             .remember(&new("theirs", Some("tern:b"), "r"), &lim)
             .unwrap()
             .unwrap();
-        let shared = s.remember(&new("shared", None, "r"), &lim).unwrap().unwrap();
+        let shared = s
+            .remember(&new("shared", None, "r"), &lim)
+            .unwrap()
+            .unwrap();
         for id in [theirs, shared] {
             assert_eq!(
                 s.forget_memory(id, Some("tern:a"), false, "r", "s", "tern:a", &lim)
@@ -507,12 +511,19 @@ mod tests {
         assert_eq!(s.memory(id).unwrap().unwrap().source, SOURCE_UNVERIFIED);
         assert!(s.edit_memory(id, "Acme renews in March", None).unwrap());
         let row = s.memory(id).unwrap().unwrap();
-        assert_eq!((&*row.source, &*row.content), ("user", "Acme renews in March"));
+        assert_eq!(
+            (&*row.source, &*row.content),
+            ("user", "Acme renews in March")
+        );
         assert!(!s.edit_memory(999, "x", None).unwrap());
         assert!(s.delete_memory(id).unwrap());
         assert!(!s.delete_memory(id).unwrap());
-        s.remember(&new("a", Some("tern:a"), "r"), &lim).unwrap().unwrap();
-        s.remember(&new("b", Some("tern:a"), "r"), &lim).unwrap().unwrap();
+        s.remember(&new("a", Some("tern:a"), "r"), &lim)
+            .unwrap()
+            .unwrap();
+        s.remember(&new("b", Some("tern:a"), "r"), &lim)
+            .unwrap()
+            .unwrap();
         assert_eq!(s.clear_memories(Some("tern:a")).unwrap(), 2);
         let kinds: Vec<String> = s
             .ledger(&crate::LedgerFilter {

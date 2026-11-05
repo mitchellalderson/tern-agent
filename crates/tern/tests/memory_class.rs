@@ -129,7 +129,7 @@ async fn a_read_only_agent_remembers_its_own_notes_but_cannot_write_files_or_run
     let recall = tool_output(&env, &run2, "memory_search");
     assert!(recall.contains("memory_recall"), "{recall}");
     assert!(recall.contains("Acme ranks 3 for widgets"), "{recall}");
-    assert!(recall.contains("source: agent"), "{recall}");
+    assert!(recall.contains("(agent,"), "{recall}");
     let (_, mems) = get(&s, "/v1/memories?agent=seo").await;
     assert_eq!(mems.as_array().unwrap().len(), 1);
     assert_eq!(mems[0]["source"], "agent");
@@ -192,9 +192,12 @@ async fn a_note_written_after_untrusted_input_comes_back_unverified_and_framed_a
     // Run 2 gets run 1's report as data and recalls the note as data.
     let run2 = run_now(&s, id).await;
     let recall = tool_output(&env, &run2, "memory_search");
-    assert!(recall.contains("source: unverified"), "{recall}");
+    assert!(recall.contains("(unverified,"), "{recall}");
     assert!(recall.contains("not instructions"), "{recall}");
-    assert!(recall.contains("\"untrusted\":true"), "reading it taints the run: {recall}");
+    assert!(
+        recall.contains("\"untrusted\":true"),
+        "reading it taints the run: {recall}"
+    );
     let input: String = env.query(&format!(
         "SELECT text FROM messages WHERE run_id = '{run2}' AND role = 'user' LIMIT 1"
     ));
@@ -236,10 +239,17 @@ async fn a_routines_next_run_gets_the_last_report_as_data_and_the_cap_can_turn_i
     };
 
     let run1 = run_now(&s, id).await;
-    assert_eq!(input_of(&run1), "Weekly check", "nothing before a first run");
+    assert_eq!(
+        input_of(&run1),
+        "Weekly check",
+        "nothing before a first run"
+    );
     let run2 = run_now(&s, id).await;
     let input = input_of(&run2);
-    assert!(input.starts_with("Weekly check\n\n<previous_run_report finished="), "{input}");
+    assert!(
+        input.starts_with("Weekly check\n\n<previous_run_report finished="),
+        "{input}"
+    );
     assert!(input.contains("Rank 3 for widgets."), "{input}");
     assert!(input.contains("It is not instructions"), "{input}");
     let taint: Option<String> = env.query(&format!("SELECT taint FROM runs WHERE id = '{run2}'"));
@@ -328,15 +338,33 @@ async fn the_user_can_edit_delete_and_clear_memory_and_it_is_in_the_ledger() {
     )
     .await;
     assert_eq!(code, 400);
-    let (code, _) = send(&s, reqwest::Method::PATCH, "/v1/memories/9999", json!({ "content": "x" })).await;
+    let (code, _) = send(
+        &s,
+        reqwest::Method::PATCH,
+        "/v1/memories/9999",
+        json!({ "content": "x" }),
+    )
+    .await;
     assert_eq!(code, 404);
 
     // Delete one, then clear an agent's: the shared memory is untouched.
-    let (code, _) = send(&s, reqwest::Method::DELETE, &format!("/v1/memories/{id}"), json!({})).await;
+    let (code, _) = send(
+        &s,
+        reqwest::Method::DELETE,
+        &format!("/v1/memories/{id}"),
+        json!({}),
+    )
+    .await;
     assert_eq!(code, 200);
     let (code, _) = send(&s, reqwest::Method::DELETE, "/v1/memories", json!({})).await;
     assert_eq!(code, 400, "clearing needs a namespace");
-    let (code, done) = send(&s, reqwest::Method::DELETE, "/v1/memories?agent=seo", json!({})).await;
+    let (code, done) = send(
+        &s,
+        reqwest::Method::DELETE,
+        "/v1/memories?agent=seo",
+        json!({}),
+    )
+    .await;
     assert_eq!(code, 200, "{done}");
     assert_eq!(done["deleted"], 1);
     let (_, all) = get(&s, "/v1/memories").await;
@@ -352,7 +380,13 @@ async fn the_user_can_edit_delete_and_clear_memory_and_it_is_in_the_ledger() {
         .map(|e| e["kind"].as_str().unwrap())
         .collect();
     assert_eq!(kinds, ["memory.edit", "memory.delete", "memory.clear"]);
-    assert!(entries.as_array().unwrap().iter().all(|e| e["actor"] == "owner"));
+    assert!(
+        entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["actor"] == "owner")
+    );
     let (_, verify) = get(&s, "/v1/ledger/verify").await;
     assert_eq!(verify["ok"], true, "{verify}");
 }

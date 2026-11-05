@@ -135,8 +135,10 @@ fn memory_persists_across_sessions() {
         { "text": "Teal." }
     ]}));
     let o = env.tern(&["run", "what is my favorite color?"]);
-    let (run, _) = ids(&text(&o).1);
-    let show = text(&env.tern(&["runs", "show", &run])).0;
+    // The session view, which shows more of a result than the run's (a
+    // recall is framed as data, so its text starts a little further in).
+    let (_, session) = ids(&text(&o).1);
+    let show = text(&env.tern(&["sessions", "show", &session])).0;
     assert!(show.contains("favorite color is teal"), "{show}");
 
     env.set_script(json!({ "turns": [
@@ -189,8 +191,8 @@ fn long_runs_are_compacted() {
         { "text": "f0." }
     ]}));
     let o = env.tern(&["run", "where are my drafts?"]);
-    let (run, _) = ids(&text(&o).1);
-    let show = text(&env.tern(&["runs", "show", &run])).0;
+    let (_, session) = ids(&text(&o).1);
+    let show = text(&env.tern(&["sessions", "show", &session])).0;
     assert!(show.contains("User keeps drafts in f0.txt"), "{show}");
 }
 
