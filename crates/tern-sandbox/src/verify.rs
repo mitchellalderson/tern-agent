@@ -57,46 +57,114 @@ const VERIFIED_FOR: Duration = Duration::from_secs(600);
 const NOT_VERIFIED_FOR: Duration = Duration::from_secs(30);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// What the cache holds for one (policy, workspace).
+enum Slot {
+    Done(Instant, Verification),
+    /// A probe started at this time is running on its own thread.
+    Probing(Instant),
+}
+
 /// Results by (policy, workspace). The key holds everything the canary's
 /// outcome depends on, so a config change (confine mode, network, paths,
 /// helper) probes again; the time limits cover the environment changing
 /// under a running daemon. Shared by every backend with the same policy, so
-/// `tern doctor` and the daemon don't each probe.
-static CACHE: Mutex<Option<HashMap<String, (Instant, Verification)>>> = Mutex::new(None);
+/// `tern doctor` and the daemon don't each probe. The lock is only ever held
+/// to read or write an entry, never across a probe.
+static CACHE: Mutex<Option<HashMap<String, Slot>>> = Mutex::new(None);
+
+/// A probe that has run this long is taken to have died.
+const PROBING_STALE: Duration = Duration::from_secs(60);
+
+/// What the non-blocking [`HostBackend::verify`] says until a probe lands.
+pub const CHECKING: &str = "still checking the sandbox; ask again shortly";
 
 impl HostBackend {
-    /// Whether the OS sandbox is confirmed active for commands run in
-    /// `workspace`: cached (10 minutes; 30 seconds after a failure), so it is
-    /// cheap to ask before every call.
-    pub fn verify(&self, workspace: &Path) -> Verification {
-        let key = format!("{:?}|{}", self.policy, policy::canonical(workspace).display());
-        let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let cache = guard.get_or_insert_with(HashMap::new);
-        if let Some((at, v)) = cache.get(&key) {
-            let limit = if v.is_verified() {
-                VERIFIED_FOR
-            } else {
-                NOT_VERIFIED_FOR
-            };
-            if at.elapsed() < limit {
-                return v.clone();
-            }
-        }
-        // Held across the probe: concurrent callers wait for this result
-        // instead of each running one.
-        let v = self.run_canary(workspace);
-        cache.insert(key, (Instant::now(), v.clone()));
-        v
+    fn cache_key(&self, workspace: &Path) -> String {
+        format!("{:?}|{}", self.policy, policy::canonical(workspace).display())
     }
 
-    /// Probe now, ignoring and replacing the cache.
+    fn fresh(slot: &Slot) -> Option<Verification> {
+        match slot {
+            Slot::Done(at, v) => {
+                let limit = if v.is_verified() {
+                    VERIFIED_FOR
+                } else {
+                    NOT_VERIFIED_FOR
+                };
+                (at.elapsed() < limit).then(|| v.clone())
+            }
+            Slot::Probing(_) => None,
+        }
+    }
+
+    /// Whether the OS sandbox is confirmed active for commands run in
+    /// `workspace`, **without ever probing on the caller's thread**: it reads
+    /// the cache (10 minutes; 30 seconds after a failure). With nothing fresh
+    /// it starts a probe on a background thread and answers "not verified:
+    /// still checking" (not cached) until that lands, so the agent loop never
+    /// waits on a canary. Call [`HostBackend::warm`] at startup so the first
+    /// call finds an answer; use [`HostBackend::verify_now`] where blocking
+    /// is fine (`tern doctor`, tests).
+    pub fn verify(&self, workspace: &Path) -> Verification {
+        let key = self.cache_key(workspace);
+        {
+            let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            let cache = guard.get_or_insert_with(HashMap::new);
+            if let Some(slot) = cache.get(&key) {
+                if let Some(v) = Self::fresh(slot) {
+                    return v;
+                }
+                if let Slot::Probing(at) = slot
+                    && at.elapsed() < PROBING_STALE
+                {
+                    return Verification::not_verified(CHECKING);
+                }
+            }
+            cache.insert(key.clone(), Slot::Probing(Instant::now()));
+        }
+        let policy = self.policy.clone();
+        let workspace = workspace.to_path_buf();
+        let spawned = std::thread::Builder::new()
+            .name("tern-sandbox-canary".into())
+            .spawn(move || {
+                let v = HostBackend::new(policy).run_canary(&workspace);
+                let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                guard
+                    .get_or_insert_with(HashMap::new)
+                    .insert(key, Slot::Done(Instant::now(), v));
+            });
+        if spawned.is_err() {
+            return Verification::not_verified("couldn't start the sandbox check");
+        }
+        Verification::not_verified(CHECKING)
+    }
+
+    /// Start checking in the background if nothing fresh is cached.
+    pub fn warm(&self, workspace: &Path) {
+        let _ = self.verify(workspace);
+    }
+
+    /// The answer, probing on this thread if the cache has nothing fresh
+    /// (blocking: up to a few seconds). The lock is not held while probing.
+    pub fn verify_now(&self, workspace: &Path) -> Verification {
+        let key = self.cache_key(workspace);
+        {
+            let guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(v) = guard.as_ref().and_then(|c| c.get(&key)).and_then(Self::fresh) {
+                return v;
+            }
+        }
+        self.verify_fresh(workspace)
+    }
+
+    /// Probe now on this thread, ignoring and replacing the cache.
     pub fn verify_fresh(&self, workspace: &Path) -> Verification {
-        let key = format!("{:?}|{}", self.policy, policy::canonical(workspace).display());
+        let key = self.cache_key(workspace);
         let v = self.run_canary(workspace);
         let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         guard
             .get_or_insert_with(HashMap::new)
-            .insert(key, (Instant::now(), v.clone()));
+            .insert(key, Slot::Done(Instant::now(), v.clone()));
         v
     }
 
@@ -374,6 +442,47 @@ mod tests {
         assert!(left.is_empty(), "{left:?}");
         // Cached: the same answer without probing again.
         assert_eq!(b.verify(ws.path()), first);
+    }
+
+    #[test]
+    fn the_non_blocking_check_never_probes_on_the_callers_thread() {
+        let ws = tempfile::tempdir().unwrap();
+        let b = HostBackend::default();
+        // Nothing cached for this workspace: an immediate "still checking",
+        // not a probe, and not remembered as an answer.
+        let first = b.verify(ws.path());
+        assert_eq!(first, Verification::not_verified(CHECKING));
+        // A caller holding the cache lock is never needed to answer: while a
+        // probe is in flight, other callers get the same line at once.
+        // The background probe lands, and agrees with a blocking one.
+        let end = Instant::now() + Duration::from_secs(60);
+        let landed = loop {
+            let v = b.verify(ws.path());
+            if v.reason() != Some(CHECKING) {
+                break v;
+            }
+            assert!(Instant::now() < end, "the background probe never landed");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(landed, b.verify_now(ws.path()));
+        // And it left nothing behind.
+        assert_eq!(std::fs::read_dir(ws.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_blocking_check_does_not_hold_the_cache_while_probing() {
+        // Another thread can read and write the cache while a probe runs:
+        // start a blocking probe and take the lock from here meanwhile.
+        let ws = tempfile::tempdir().unwrap();
+        let path = ws.path().to_path_buf();
+        let probe = std::thread::spawn(move || HostBackend::default().verify_fresh(&path));
+        for _ in 0..50 {
+            let t = Instant::now();
+            drop(CACHE.lock().unwrap_or_else(|e| e.into_inner()));
+            assert!(t.elapsed() < Duration::from_millis(500));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        probe.join().unwrap();
     }
 
     #[test]

@@ -499,3 +499,95 @@ async fn without_a_key_the_card_says_why_and_every_call_asks() {
     }
     assert_eq!(tool.calls.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn yolo_runs_are_not_logged_as_decided_by_a_grant() {
+    // Yolo allows before any grant is looked at, so a stored grant didn't
+    // decide the call: no approved_by_grant entry (and no tainted: true one).
+    let h = Harness::new();
+    let tool = script_like(None);
+    let asks = Answer::new(Decision::AllowOnce);
+    h.store
+        .add_allowlist("shell", &approval::key_pattern("python script a.py#h1"))
+        .unwrap();
+    let script = Arc::new(Script::new(vec![run_script("a.py"), Reply::Text("ok")]));
+    let agent = h.agent(script, vec![tool.clone()], asks.clone());
+    let run = tainted_run(&h);
+    h.store.set_run_autonomy(&run, "yolo").unwrap();
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    assert!(asks.asked().is_empty());
+    let rows = h
+        .store
+        .ledger(&tern_store::LedgerFilter {
+            kind: Some("approval".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        rows.iter()
+            .all(|r| r.entry.detail.as_ref().unwrap()["decision"] != "approved_by_grant"),
+        "{rows:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_approval_replayed_for_a_call_that_never_ran_asks_again() {
+    // Crash between the journaled approval and the tool step: what the call
+    // would run may have changed, so the replayed approval isn't enough.
+    let h = Harness::new();
+    let tool = script_like(None);
+    let asks = Answer::new(Decision::AllowOnce);
+    let script = Arc::new(Script::new(vec![run_script("a.py"), Reply::Text("one")]));
+    let agent = h.agent(script, vec![tool.clone()], asks.clone());
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    let kinds = h.kinds(&run);
+    assert_eq!(
+        &kinds[..3],
+        ["llm:completed", "approval:completed", "tool:completed"]
+    );
+    // The process died before the tool step was recorded.
+    h.store.truncate_steps(&run, 2).unwrap();
+
+    let script2 = Arc::new(Script::new(vec![Reply::Text("after")]));
+    let agent2 = h.agent(script2, vec![tool.clone()], asks.clone());
+    agent2.drive(&run, CancellationToken::new()).await.unwrap();
+    // Not run again on the old answer, and the model is told why.
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    let steps = h.store.steps(&run).unwrap();
+    assert_eq!(steps[1].kind, "approval");
+    assert_eq!(steps[2].kind, "tool");
+    assert!(
+        steps[2]
+            .output_json
+            .as_deref()
+            .unwrap()
+            .contains("approved before tern restarted"),
+        "{:?}",
+        steps[2].output_json
+    );
+    assert_eq!(asks.asked().len(), 1, "the replayed approval isn't asked again");
+}
+
+#[tokio::test]
+async fn a_replayed_approval_for_a_tool_without_plans_still_runs() {
+    // Tools with no per-call key keep today's behaviour on resume.
+    let h = Harness::new();
+    let tool = Keyed::new("keyed", Effect::Read);
+    let asks = Answer::new(Decision::AllowOnce);
+    let script = Arc::new(Script::new(vec![Reply::Tool("keyed", json!({})), Reply::Text("one")]));
+    let agent = h.agent(script, vec![tool.clone()], asks.clone());
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    h.store.truncate_steps(&run, 2).unwrap();
+    let agent2 = h.agent(
+        Arc::new(Script::new(vec![Reply::Text("after")])),
+        vec![tool.clone()],
+        asks.clone(),
+    );
+    agent2.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 2, "ran on the replayed approval");
+}

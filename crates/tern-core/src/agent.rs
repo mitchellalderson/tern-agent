@@ -44,6 +44,10 @@ use taint::Taint;
 pub const MAX_LLM_ATTEMPTS: u32 = 5;
 /// The result of a tool call cut off by the output limit. Its arguments are
 /// incomplete, so it is never run.
+/// The result of a call whose approval was decided before a restart, with the
+/// call itself not yet run: what it covers (a script's contents) may have
+/// changed meanwhile, so it asks again instead of running on the old answer.
+pub const STALE_APPROVAL_MESSAGE: &str = "not run: this call was approved before tern restarted, and what it would run may have changed since. Nothing ran. Make the call again and it will ask again";
 pub const TRUNCATED_TOOL_MESSAGE: &str = "not run: your reply hit the output token limit before this call's arguments were complete, so they were cut off. Nothing ran. Send less in one call: split a long file into a smaller first version and add to it, or drop what isn't needed";
 pub const INTERRUPTED_TOOL_MESSAGE: &str = "interrupted: this call may have partially executed before a crash; verify state before retrying";
 /// Starts the note appended to the final text of a run stopped by a limit.
@@ -677,6 +681,10 @@ impl Agent {
                 if limited {
                     policy = policy.forced(true);
                 }
+                // Set when the approval below was replayed from the journal for a
+                // call that never ran (a crash between the two steps) and the
+                // tool plans per call: see STALE_APPROVAL_MESSAGE.
+                let mut stale = false;
                 if approval::needs_check(&call.name, &policy, gate) {
                     let decision = self
                         .approval_step(
@@ -692,8 +700,16 @@ impl Agent {
                         .await;
                     idx += 1;
                     match decision {
-                        Ok(ApprovalOutcome::Approved | ApprovalOutcome::ApprovedByGrant) => {}
-                        Ok(ApprovalOutcome::ApprovedForRun) => taint.allow_all_egress(),
+                        Ok((
+                            ApprovalOutcome::Approved | ApprovalOutcome::ApprovedByGrant,
+                            replayed,
+                        )) => {
+                            stale = replayed
+                                && runs
+                                && self.journal.peek(&run.id, idx)?.is_none()
+                                && self.tools.grant_key(&run.id, &call).is_some();
+                        }
+                        Ok((ApprovalOutcome::ApprovedForRun, _)) => taint.allow_all_egress(),
                         Ok(_) => {
                             self.tools.forget_plans(&run.id, Some(&call.id));
                             continue;
@@ -721,8 +737,15 @@ impl Agent {
                 let result = match self
                     .journal
                     .step_with(&run.id, idx, StepKind::Tool, &call, in_flight, || async {
-                        if truncated {
-                            let r = ToolResult::error(TRUNCATED_TOOL_MESSAGE);
+                        if truncated || stale {
+                            let r = ToolResult::error(if truncated {
+                                TRUNCATED_TOOL_MESSAGE
+                            } else {
+                                STALE_APPROVAL_MESSAGE
+                            });
+                            if stale {
+                                self.tools.forget_plans(&run.id, Some(&call.id));
+                            }
                             let msg = tool_result(&call, &r);
                             return Ok(StepOutput::new(r).with_messages(vec![msg]));
                         }
@@ -771,7 +794,7 @@ impl Agent {
                     Err(e) => return Err(e.into()),
                 };
                 idx += 1;
-                if !result.replayed && !truncated {
+                if !result.replayed && !truncated && !stale {
                     let summary = self.tools.summarize(&call);
                     self.ledger_effect(
                         run,
@@ -936,7 +959,7 @@ impl Agent {
         taint: Option<&str>,
         egress: Option<&str>,
         cancel: &CancellationToken,
-    ) -> Result<ApprovalOutcome, StepError> {
+    ) -> Result<(ApprovalOutcome, bool), StepError> {
         let out = self
             .journal
             .step_with(
@@ -964,7 +987,7 @@ impl Agent {
             name: call.name.clone(),
             outcome: out.value,
         });
-        Ok(out.value)
+        Ok((out.value, out.replayed))
     }
 
     /// The effect policy with the allowlist, the run's taint and autonomy,
@@ -1006,7 +1029,12 @@ impl Agent {
             approval::Check::Allow => {
                 // Ran on a scoped grant nobody was asked about this time:
                 // the ledger says which grant, and what it was judged on.
-                if key_granted && let Some(k) = &grant_key {
+                // (Not under yolo, which allows before any grant is looked at.)
+                if key_granted
+                    && gate.autonomy != Autonomy::Yolo
+                    && !gate.tainted
+                    && let Some(k) = &grant_key
+                {
                     self.ledger_grant_use(run, call, k, gate.tainted)?;
                 }
                 return Ok((ApprovalOutcome::Approved, String::new()));

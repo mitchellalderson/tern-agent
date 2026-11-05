@@ -192,7 +192,17 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The first executable regular file `name` on `path` (absolute entries
-/// only), and its canonical path, which must be outside `writable`.
+/// only), and its canonical path.
+///
+/// Python decides `sys.prefix` and site-packages (`pyvenv.cfg`, `.pth`
+/// files) from the path it was *started* from, so a launcher in a place the
+/// command can write is code the command controls even when it points at
+/// `/usr/bin/python3`. So: the as-found path, every directory on the way
+/// along its symlinks and the canonical target must all be outside
+/// `writable`; and the canonical file must be a native binary, not a
+/// version-manager shim (asdf, pyenv, mise pick the real interpreter at run
+/// time from `.tool-versions`-style files in the workspace). The caller runs
+/// the canonical path, never the one that was found.
 fn find_interpreter(
     name: &str,
     path: Option<OsString>,
@@ -210,15 +220,72 @@ fn find_interpreter(
         if !is_executable_file(&canonical) {
             continue;
         }
-        if writable.iter().any(|w| canonical.starts_with(w)) {
+        if let Some(at) = writable_hop(&candidate, writable)
+            .or_else(|| writable.iter().find(|w| canonical.starts_with(w)).cloned())
+        {
             return Err(format!(
-                "{name} resolves to {}, a place commands can write",
+                "{name} is found at {} (via {}), a place commands can write",
+                candidate.display(),
+                at.display()
+            ));
+        }
+        if !is_native_binary(&canonical) {
+            return Err(format!(
+                "{name} is {}, a script (a version-manager shim?) rather than a program",
                 canonical.display()
             ));
         }
         return Ok((candidate, canonical));
     }
     Err(format!("{name} wasn't found on PATH"))
+}
+
+/// The first place on the way from `candidate` to its target (the path
+/// itself, each directory it sits in, each symlink hop) that is under a
+/// writable root.
+fn writable_hop(candidate: &Path, writable: &[PathBuf]) -> Option<PathBuf> {
+    let under = |p: &Path| writable.iter().any(|w| p.starts_with(w));
+    let mut p = candidate.to_path_buf();
+    for _ in 0..40 {
+        if under(&p) {
+            return Some(p);
+        }
+        let parent = p.parent().map(Path::to_path_buf);
+        if let Some(parent) = &parent
+            && (under(parent) || std::fs::canonicalize(parent).is_ok_and(|c| under(&c)))
+        {
+            return Some(parent.clone());
+        }
+        match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => {
+                let target = std::fs::read_link(&p).ok()?;
+                p = match (&parent, target.is_absolute()) {
+                    (_, true) => target,
+                    (Some(parent), false) => parent.join(target),
+                    (None, false) => target,
+                };
+            }
+            _ => break,
+        }
+    }
+    None
+}
+
+/// Mach-O (thin or universal) or ELF, by magic number.
+fn is_native_binary(p: &Path) -> bool {
+    let mut magic = [0u8; 4];
+    let read = std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut magic));
+    read.is_ok()
+        && matches!(
+            magic,
+            [0x7f, b'E', b'L', b'F']
+                | [0xfe, 0xed, 0xfa, 0xce]
+                | [0xfe, 0xed, 0xfa, 0xcf]
+                | [0xce, 0xfa, 0xed, 0xfe]
+                | [0xcf, 0xfa, 0xed, 0xfe]
+                | [0xca, 0xfe, 0xba, 0xbe]
+                | [0xbe, 0xba, 0xfe, 0xca]
+        )
 }
 
 fn is_executable_file(p: &Path) -> bool {
@@ -233,12 +300,15 @@ fn is_executable_file(p: &Path) -> bool {
     }
 }
 
-/// The command `sh` runs for a resolved call: the exact interpreter and the
-/// exact (canonical) script that were hashed, and the plain arguments.
+/// The command `sh` runs for a resolved call: the canonical interpreter (never
+/// the path it was found at), isolated mode (`-I`: no script directory, no
+/// user site, no `PYTHON*` variables, so a module planted next to the script
+/// can't shadow the standard library), the exact (canonical) script that was
+/// hashed, and the plain arguments.
 pub fn command_line(r: &Resolved) -> String {
     let mut cmd = format!(
-        "{} {}",
-        sh_quote(&r.interpreter.to_string_lossy()),
+        "{} -I {}",
+        sh_quote(&r.interpreter_canonical.to_string_lossy()),
         sh_quote(&r.script_canonical.to_string_lossy())
     );
     for a in &r.args {
@@ -264,6 +334,8 @@ pub fn offline(args: &serde_json::Value) -> bool {
 #[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     fn ok(cmd: &str) -> Parsed {
@@ -417,6 +489,82 @@ mod tests {
         // Relative PATH entries are ignored.
         let e = resolve(&ok("python3 a.py"), &w, &[], Some(OsString::from("bin"))).unwrap_err();
         assert!(e.contains("wasn't found"), "{e}");
+    }
+
+    fn real_python() -> Option<PathBuf> {
+        let path = std::env::var_os("PATH")?;
+        std::env::split_paths(&path)
+            .map(|d| d.join("python3"))
+            .find_map(|c| std::fs::canonicalize(c).ok().filter(|c| is_native_binary(c)))
+    }
+
+    #[test]
+    fn a_venv_style_launcher_in_a_writable_place_is_refused() {
+        let Some(real) = real_python() else {
+            return;
+        };
+        let (_d, w) = ws();
+        std::fs::write(w.join("a.py"), "x").unwrap();
+        // <ws>/.venv/bin/python3 -> the real interpreter, with a pyvenv.cfg:
+        // python finds site-packages (and any .pth file) from where it was
+        // started, so this would run whatever the command drops there.
+        let bin = w.join(".venv/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(&real, bin.join("python3")).unwrap();
+        std::fs::write(w.join(".venv/pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+        let e = resolve(&ok("python3 a.py"), &w, std::slice::from_ref(&w), Some(bin.into()))
+            .unwrap_err();
+        assert!(e.contains("a place commands can write"), "{e}");
+        // A launcher dir outside the workspace but writable (write_paths, tmp).
+        let (_o, other) = ws();
+        let bin2 = other.join("bin");
+        std::fs::create_dir_all(&bin2).unwrap();
+        std::os::unix::fs::symlink(&real, bin2.join("python3")).unwrap();
+        let roots = [w.clone(), other.clone()];
+        let e = resolve(&ok("python3 a.py"), &w, &roots, Some(bin2.clone().into())).unwrap_err();
+        assert!(e.contains("a place commands can write"), "{e}");
+        // The same launcher in a place that is not writable is fine, and
+        // what runs is the canonical interpreter, never the launcher path.
+        let r = resolve(&ok("python3 a.py"), &w, std::slice::from_ref(&w), Some(bin2.into())).unwrap();
+        assert_eq!(r.interpreter_canonical, real);
+        let cmd = command_line(&r);
+        assert!(cmd.starts_with(&format!("'{}' -I '", real.display())), "{cmd}");
+        assert!(!cmd.contains("bin/python3 "), "{cmd}");
+    }
+
+    #[test]
+    fn a_symlink_hop_through_a_writable_directory_is_refused() {
+        let Some(real) = real_python() else {
+            return;
+        };
+        let (_d, w) = ws();
+        std::fs::write(w.join("a.py"), "x").unwrap();
+        // /safe/bin/python3 -> <ws>/hop -> real: the middle hop is writable.
+        let (_s, safe) = ws();
+        std::fs::create_dir(safe.join("bin")).unwrap();
+        std::os::unix::fs::symlink(&real, w.join("hop")).unwrap();
+        std::os::unix::fs::symlink(w.join("hop"), safe.join("bin/python3")).unwrap();
+        let e = resolve(
+            &ok("python3 a.py"),
+            &w,
+            std::slice::from_ref(&w),
+            Some(safe.join("bin").into()),
+        )
+        .unwrap_err();
+        assert!(e.contains("a place commands can write"), "{e}");
+    }
+
+    #[test]
+    fn a_version_manager_shim_is_not_a_program() {
+        let (_d, w) = ws();
+        std::fs::write(w.join("a.py"), "x").unwrap();
+        let (_s, safe) = ws();
+        let shim = safe.join("python3");
+        std::fs::write(&shim, "#!/bin/sh\nexec \"$(asdf which python3)\" \"$@\"\n").unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let e = resolve(&ok("python3 a.py"), &w, std::slice::from_ref(&w), Some(safe.into()))
+            .unwrap_err();
+        assert!(e.contains("version-manager shim"), "{e}");
     }
 
     #[test]

@@ -1081,7 +1081,7 @@ pub fn shell_sandbox_status(config: &Config, home: &TernHome) -> tern_sandbox::V
     if let Err(e) = std::fs::create_dir_all(&workspace) {
         return tern_sandbox::Verification::not_verified(format!("workspace: {e}"));
     }
-    shell_backend(config, home).verify(&workspace)
+    shell_backend(config, home).verify_now(&workspace)
 }
 
 fn docker_settings(config: &Config) -> tern_sandbox::DockerSettings {
@@ -1139,6 +1139,12 @@ fn build_tools(
         let _ = schedule_changes.send(Change::SchedulesChanged { id: id.to_owned() });
     });
     let sandbox = shell_backend(config, home);
+    // Probe the sandbox in the background now, so the first script call finds
+    // an answer instead of "still checking".
+    let workspace = config.workspace_dir();
+    if std::fs::create_dir_all(&workspace).is_ok() {
+        sandbox.warm(&workspace);
+    }
     let mut registry = ToolRegistry::new();
     tern_tools::register_builtins(
         &mut registry,

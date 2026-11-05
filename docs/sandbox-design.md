@@ -69,8 +69,13 @@ about `shell` asks exactly as before.
 - the script is relative, has no `..`, ends in `.py`, resolves (symlinks followed) to a regular file inside the
   workspace (checked on the open handle; a fifo can't hang the check), and is at most 8 MB;
 - `network` is absent or `false` for the call;
-- `python3` resolves, on the absolute `PATH` entries, to a file outside every place the sandbox can write (the
-  workspace, temp dirs, `write_paths`), so a command can't replace the interpreter it is approved to run.
+- `python3` resolves, on the absolute `PATH` entries, to a native program (Mach-O or ELF), not a script: asdf, pyenv
+  and mise shims pick the real interpreter at run time from `.tool-versions`, `.python-version` or `mise.toml` in
+  the workspace. Python finds `pyvenv.cfg`, site-packages and `.pth` files from the path it was *started* from, so
+  the path as found, every directory and symlink hop between it and the canonical target, and the target itself must
+  all be outside every place the sandbox can write (the workspace, temp dirs, `write_paths`): a `<workspace>/.venv`
+  or a writable launcher directory is refused. What runs is the canonical interpreter path, never the path it was
+  found at. All of this is checked again when the call runs.
 
 A python command that doesn't qualify says why on its card ("Not auto-approved: inline script. Saved as a .py file
 in the workspace and run as `python3 file.py`, it could be approved once for the whole run.").
@@ -80,6 +85,13 @@ canonical script path, the sha256 of the script's bytes, the arguments, and the 
 (edit the script, another argument, a copy of it under another name, another interpreter) and the key is different, so
 the call asks again. The card shows the script path, a short hash and the arguments, and "Imports from other files
 aren't covered".
+
+**Isolated mode.** A grant runs `python3 -I <script>`: no script directory and no current directory on `sys.path`,
+no user site, no `PYTHON*` variables. A `csv.py` or `json.py` planted next to an approved stdlib-only script is
+therefore never imported, and the standard library can't be shadowed. Installed site-packages (pandas, openpyxl)
+still import. The price: the script must be self-contained. `import helper` of a module next to it fails with
+`ModuleNotFoundError`, and the card says so. (This replaces "imports from other files aren't covered": they
+aren't allowed at all, rather than silently unreviewed.)
 
 **Imports are not covered.** Only the entry file is hashed. `import helper` loads `helper.py` from the script's
 folder (or any package on `sys.path`) as it is at run time, so a script that was approved can run different code if
@@ -92,7 +104,9 @@ the resolved interpreter and script, the hash, and the key. `call` uses up exact
 script and the interpreter, and refuses (running nothing, with a message saying the file changed since it was
 approved) if the hash, the canonical path or the interpreter differ. It then runs the planned interpreter and the
 canonical script path, not the text that was typed. Plans are dropped when a call won't run (denied, refused,
-cancelled) and when the run ends. A call with no plan never has a key, so it can't be auto-approved; it asks like
+cancelled) and when the run ends. A restart between the journaled approval and the tool step doesn't run on the old
+answer: the replayed approval of a call that never ran is refused ("approved before tern restarted ... make the
+call again") and asks again, since the script may have changed meanwhile. A call with no plan never has a key, so it can't be auto-approved; it asks like
 any command. The read-then-spawn window is milliseconds; a background process started by an earlier approved
 command could still rewrite the file inside it, but such a process already runs arbitrary code in the same sandbox.
 
@@ -118,8 +132,11 @@ loopback listener on the tern side as the oracle:
    probe tool (`perl`, else `python3`) reports it tried and failed (it must also work unsandboxed, so a missing tool
    can't pass for a block).
 
-The result is cached per (policy, workspace) for 10 minutes (30 seconds after a failure), so asking before every
-call is cheap; a config change is a different policy and probes again. It shows in `tern doctor`, `tern security
+The result is cached per (policy, workspace) for 10 minutes (30 seconds after a failure). The agent loop never
+probes: `verify` only reads the cache and, when nothing is fresh, starts the probe on its own thread and answers "not
+verified: still checking the sandbox; ask again shortly" (not cached) until it lands; the daemon warms it at start,
+and the cache lock is never held across a probe. `tern doctor`, `tern security audit` and `/v1/info` use the
+blocking `verify_now`; a config change is a different policy and probes again. It shows in `tern doctor`, `tern security
 audit`, and `/v1/info` (`sandbox.verified`, `sandbox.detail`). Verified means the profile bites on this machine now;
 it does not mean the profile is complete (see "Not covered").
 

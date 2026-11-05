@@ -68,7 +68,7 @@ before it runs. It applies only when a canary has verified that the OS sandbox i
 workspace and an outbound connection both fail), the network is off, and the run is untainted; otherwise the card says
 "Not auto-approved: ...". What it covers: arbitrary Python inside the sandbox. It can overwrite or delete any file in
 the workspace (originals aren't protected from it yet), and it isn't limited by the grant's label in any other way.
-Imports from other files are not hashed, so a module the script imports can change without asking. Reading a data file
+A granted script runs `python3 -I` (no script directory on `sys.path`, no user site), so planted modules can't shadow the standard library and local helper modules next to it won't import; the interpreter must be a native program outside every place the sandbox can write (no workspace venv, no version-manager shim) and is run by its canonical path. A restart between an approval and the run re-asks. Reading a data file
 (a spreadsheet, a PDF) does not taint the run, so injected text in a data file can steer the agent's next script,
 which then asks unless a grant covers that exact script. Docker, `confine = "off"` and an unverifiable sandbox never
 get grants. Auto-runs are recorded in the ledger (`approved_by_grant`); `tern grants` lists and revokes "always"

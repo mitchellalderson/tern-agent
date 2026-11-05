@@ -96,6 +96,15 @@ pub trait SandboxBackend: Send + Sync {
         Verification::not_verified("this backend's confinement can't be probed")
     }
 
+    /// [`SandboxBackend::verify`], but may block to probe (for `tern doctor`,
+    /// `/v1/info` and tests, never the agent loop).
+    fn verify_now(&self, workspace: &Path) -> Verification {
+        self.verify(workspace)
+    }
+
+    /// Start whatever [`SandboxBackend::verify`] needs in the background.
+    fn warm(&self, _workspace: &Path) {}
+
     /// Where a command can write, as canonical paths: an interpreter or
     /// other program found there could be replaced by the command itself.
     fn writable_roots(&self, workspace: &Path) -> Vec<PathBuf> {
@@ -353,6 +362,14 @@ fn detect_os(_policy: &HostPolicy) -> Confinement {
 impl SandboxBackend for HostBackend {
     fn verify(&self, workspace: &Path) -> Verification {
         HostBackend::verify(self, workspace)
+    }
+
+    fn verify_now(&self, workspace: &Path) -> Verification {
+        HostBackend::verify_now(self, workspace)
+    }
+
+    fn warm(&self, workspace: &Path) {
+        HostBackend::warm(self, workspace);
     }
 
     fn writable_roots(&self, workspace: &Path) -> Vec<PathBuf> {

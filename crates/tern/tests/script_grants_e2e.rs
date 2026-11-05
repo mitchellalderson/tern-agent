@@ -95,7 +95,7 @@ async fn an_identical_script_runs_on_the_run_grant_and_an_edited_one_asks_again(
     // it does not cover.
     let label = first["grant"]["label"].as_str().unwrap();
     assert!(label.contains("a.py") && label.contains("version") && label.contains("arguments x"), "{label}");
-    assert!(first["notice"].as_str().unwrap().contains("Imports from other files aren't covered"));
+    assert!(first["notice"].as_str().unwrap().contains("modules next to it won't import"));
     answer(&sock, &first, "run").await;
 
     // The second identical call ran without a card; the write_file didn't ask;

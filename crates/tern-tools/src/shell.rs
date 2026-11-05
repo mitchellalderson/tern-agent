@@ -132,7 +132,7 @@ impl Shell {
 /// Anything else (an edited script, other arguments) is a different key.
 fn grant_key(r: &Resolved, verification: &tern_sandbox::Verification) -> GrantKey {
     let material = json!({
-        "v": 1,
+        "v": 2,
         "interpreter": r.interpreter_canonical,
         "interpreter_as_found": r.interpreter,
         "script": r.script_canonical,
@@ -158,7 +158,7 @@ fn grant_key(r: &Resolved, verification: &tern_sandbox::Verification) -> GrantKe
         key: format!("python script {}#{digest}", r.script_rel),
         label: format!("python3 {} (version {short}, {args})", r.script_rel),
         note: Some(
-            "Covers this file as it is now, with these arguments, in the sandbox with no network. Imports from other files aren't covered, and the script can still change files in the workspace."
+            "Covers this file as it is now, with these arguments, in the sandbox with no network. It runs isolated (python -I): the script must be self-contained, because modules next to it won't import, and standard-library names can't be shadowed. It can still change files in the workspace."
                 .into(),
         ),
         audit: Some(
@@ -605,11 +605,10 @@ mod script_grant_tests {
         vec![e.ws.clone()]
     }
 
+    /// A different native "python3" (a copy of the shell: a program, not a
+    /// shim script), for keys that must differ by interpreter.
     fn fake_python(dir: &Path) {
-        let fake = dir.join("python3");
-        std::fs::write(&fake, "#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
+        std::fs::copy("/bin/sh", dir.join("python3")).unwrap();
     }
 
     #[test]
@@ -629,7 +628,7 @@ mod script_grant_tests {
             base.note
                 .as_deref()
                 .unwrap()
-                .contains("Imports from other files aren't covered")
+                .contains("modules next to it won't import")
         );
         assert_eq!(k("python3 a.py x").unwrap(), base, "stable");
         assert_eq!(k("  python3   a.py   x ").unwrap(), base, "spacing");
@@ -806,6 +805,38 @@ mod script_grant_tests {
         let file = e.ws.join("a.py").display().to_string();
         assert!(r.content.contains(&file), "{}", r.content);
         assert_eq!(shell.plans_held(), 0, "a call uses up its plan");
+    }
+
+    #[tokio::test]
+    async fn a_script_runs_isolated_so_a_planted_module_cannot_shadow_the_stdlib() {
+        if !have_python() {
+            return;
+        }
+        let e = env();
+        // Planted next to an approved, stdlib-only script.
+        std::fs::write(e.ws.join("csv.py"), "print('PLANTED csv')").unwrap();
+        std::fs::write(e.ws.join("json.py"), "print('PLANTED json')").unwrap();
+        std::fs::write(
+            e.ws.join("a.py"),
+            "import csv, json, sys\nprint('csv from', csv.__file__)\nprint('isolated', sys.flags.isolated)\nprint('argv', sys.argv[1:])",
+        )
+        .unwrap();
+        let (reg, _) = registry(Claim::new(verified(), roots(&e)));
+        let c = call("1", "python3 a.py -n 2 y");
+        key(&e, &reg, &c).unwrap();
+        let r = with_call("1", reg.call(&e.ctx, &c)).await.0;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(!r.content.contains("PLANTED"), "{}", r.content);
+        assert!(!r.content.contains(&e.ws.display().to_string()), "csv came from the workspace: {}", r.content);
+        assert!(r.content.contains("isolated 1"), "{}", r.content);
+        assert!(r.content.contains("argv ['-n', '2', 'y']"), "{}", r.content);
+        // Helper modules next to the script are not importable under a grant.
+        std::fs::write(e.ws.join("helper.py"), "X = 1").unwrap();
+        std::fs::write(e.ws.join("b.py"), "import helper\nprint(helper.X)").unwrap();
+        let c = call("2", "python3 b.py");
+        key(&e, &reg, &c).unwrap();
+        let r = with_call("2", reg.call(&e.ctx, &c)).await.0;
+        assert!(r.is_error && r.content.contains("ModuleNotFoundError"), "{}", r.content);
     }
 
     #[tokio::test]
