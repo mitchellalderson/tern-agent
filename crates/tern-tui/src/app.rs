@@ -1746,8 +1746,13 @@ impl App {
                 child_run_id,
                 label,
                 status,
+                agent,
                 ..
-            } => self.add_agent(child_run_id, label, &status),
+            } => self.add_agent(
+                child_run_id,
+                hand_off_label(&label, agent.as_deref()),
+                &status,
+            ),
             AgentEvent::SubagentMessage {
                 to_run_id,
                 kind,
@@ -1812,8 +1817,13 @@ impl App {
                 child_run_id,
                 label,
                 status,
+                agent,
                 ..
-            } => self.add_agent(child_run_id, label, &status),
+            } => self.add_agent(
+                child_run_id,
+                hand_off_label(&label, agent.as_deref()),
+                &status,
+            ),
             AgentEvent::SubagentMessage { kind, text, .. } if kind == "question" => {
                 let activity = format!("Asked: {}", first_line(&text));
                 self.set_agent_state(&run_id, AgentState::Question, Some(activity));
@@ -2186,6 +2196,15 @@ impl App {
 
     fn error(&mut self, s: impl Into<String>) {
         self.entries.push(Entry::Error(s.into()));
+    }
+}
+
+/// A sub-agent's line label: `@research acme` when it is another agent
+/// (a hand-off), so the user sees to whom the work went.
+fn hand_off_label(label: &str, agent: Option<&str>) -> String {
+    match agent {
+        Some(id) => format!("@{} {label}", id.strip_prefix("tern:").unwrap_or(id)),
+        None => label.to_owned(),
     }
 }
 
