@@ -11,6 +11,7 @@ import 'package:tern_desktop/state/transcript.dart';
 import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/agent_sheet.dart';
 import 'package:tern_desktop/ui/home.dart';
+import 'package:tern_desktop/ui/underline_tabs.dart';
 import 'package:tern_desktop/ui/widgets.dart';
 
 final _t0 = DateTime(2026, 11, 4, 9);
@@ -571,7 +572,7 @@ void main() {
     expect(find.text('TOOLS · 2'), findsOneWidget);
     expect(find.text('Acme runs Postgres 16.'), findsOneWidget);
     expect(client.memoryScopes.last, 'tern:research');
-    await tester.tap(find.widgetWithText(ChoiceChip, 'Shared'));
+    await tester.tap(find.widgetWithText(UnderlineTab, 'Shared'));
     await tester.pumpAndSettle();
     expect(find.text('Sam prefers email.'), findsOneWidget);
     // All agents' routines, on request.
@@ -871,7 +872,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     await openAdvanced(tester);
-    final chip = find.widgetWithText(FilterChip, 'Research');
+    final chip = find.widgetWithText(UnderlineTab, 'Research');
     final sheet = find
         .descendant(
           of: find.descendant(
@@ -884,7 +885,7 @@ void main() {
     await tester.scrollUntilVisible(chip.hitTestable(), 200, scrollable: sheet);
     await tester.pumpAndSettle();
     // tern may hand work to every agent until restricted.
-    expect(tester.widget<FilterChip>(chip).selected, isTrue);
+    expect(tester.widget<UnderlineTab>(chip).selected, isTrue);
     await tester.tap(chip);
     await tester.pump();
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));

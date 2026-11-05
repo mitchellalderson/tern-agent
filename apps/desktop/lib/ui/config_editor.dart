@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:tern_client/tern_client.dart';
 
 import '../theme.dart';
+import 'underline_tabs.dart';
 
 /// Show `path` in Finder (or open its folder elsewhere).
 Future<void> revealFile(String path) async {
@@ -337,23 +338,17 @@ class _SettingRowState extends State<SettingRow> {
           onChanged: enabled ? widget.onChanged : null,
         );
       case SettingKind.choice:
-        return SegmentedButton<String>(
-          showSelectedIcon: false,
-          style: const ButtonStyle(visualDensity: VisualDensity.compact),
-          segments: [
+        return UnderlineTabs(
+          spacing: 12,
+          tabs: [
             for (final ch in s.choices)
-              ButtonSegment(
-                value: ch,
-                label: Text(ch, style: const TextStyle(fontSize: 12.5)),
+              UnderlineTab(
+                label: ch,
+                fontSize: 12.5,
+                selected: s.value == ch,
+                onTap: enabled ? () => widget.onChanged(ch) : null,
               ),
           ],
-          selected: {if (s.value case final String v) v},
-          emptySelectionAllowed: true,
-          onSelectionChanged: enabled
-              ? (v) {
-                  if (v.isNotEmpty) widget.onChanged(v.first);
-                }
-              : null,
         );
       case SettingKind.other:
         return SizedBox(

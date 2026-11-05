@@ -5,6 +5,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'underline_tabs.dart';
 import 'agent_ap3.dart';
 import 'agent_starters.dart';
 import 'channel_view.dart' show slugFor;
@@ -796,19 +797,20 @@ class _DelegatesPicker extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
+        UnderlineTabs(
+          tabs: [
             for (final o in agents)
-              FilterChip(
-                avatar: AgentAvatar.of(o, size: 18),
-                label: Text(o.name, style: const TextStyle(fontSize: 12.5)),
+              UnderlineTab(
+                key: ValueKey('delegate-${o.id}'),
+                leading: AgentAvatar.of(o, size: 18),
+                label: o.name,
+                fontSize: 12.5,
+                exclusive: false,
                 selected: on.contains(o.id),
-                onSelected: (v) => onChanged([
+                onTap: () => onChanged([
                   for (final id in on)
                     if (id != o.id) id,
-                  if (v) o.id,
+                  if (!on.contains(o.id)) o.id,
                 ]),
               ),
           ],

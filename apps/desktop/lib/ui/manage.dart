@@ -7,6 +7,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'underline_tabs.dart';
 
 Future<void> showDeleteAgent(
   BuildContext context,
@@ -59,7 +60,11 @@ Widget _line(BuildContext context, String text, {bool bad = false}) => Padding(
 
 /// "Delete Research?": what goes, what stays, where its routines go.
 class DeleteAgentDialog extends StatefulWidget {
-  const DeleteAgentDialog({super.key, required this.store, required this.agent});
+  const DeleteAgentDialog({
+    super.key,
+    required this.store,
+    required this.agent,
+  });
 
   final TernStore store;
   final Agent agent;
@@ -188,23 +193,24 @@ class _DeleteAgentDialogState extends State<DeleteAgentDialog> {
                         style: Theme.of(context).textTheme.labelSmall,
                       ),
                       for (final r in i.routines)
-                        _line(context, r.label.isEmpty ? '(no prompt)' : r.label),
+                        _line(
+                          context,
+                          r.label.isEmpty ? '(no prompt)' : r.label,
+                        ),
                       const SizedBox(height: 4),
-                      Wrap(
-                        spacing: 8,
-                        children: [
-                          ChoiceChip(
+                      UnderlineTabs(
+                        tabs: [
+                          UnderlineTab(
                             key: const Key('routines-hand-over'),
-                            label: const Text('Hand them to another agent'),
+                            label: 'Hand them to another agent',
                             selected: _handOver,
-                            onSelected: (_) => setState(() => _handOver = true),
+                            onTap: () => setState(() => _handOver = true),
                           ),
-                          ChoiceChip(
+                          UnderlineTab(
                             key: const Key('routines-delete'),
-                            label: const Text('Delete them'),
+                            label: 'Delete them',
                             selected: !_handOver,
-                            onSelected: (_) =>
-                                setState(() => _handOver = false),
+                            onTap: () => setState(() => _handOver = false),
                           ),
                         ],
                       ),

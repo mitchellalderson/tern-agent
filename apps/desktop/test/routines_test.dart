@@ -169,7 +169,7 @@ void main() {
   });
 
   testWidgets('the editor sends quiet hours, urgent and caps', (tester) async {
-    tester.view.physicalSize = const Size(700, 1500) * 2;
+    tester.view.physicalSize = const Size(700, 1800) * 2;
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
     final client = _FakeClient();
@@ -222,7 +222,7 @@ void main() {
   testWidgets('a watch routine shows its trigger and the editor sends it', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(700, 1600) * 2;
+    tester.view.physicalSize = const Size(700, 1900) * 2;
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
     final client = _FakeClient();
@@ -301,7 +301,7 @@ void main() {
   testWidgets('a webhook routine shows its secret once, rotates and revokes', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(700, 1600) * 2;
+    tester.view.physicalSize = const Size(700, 1900) * 2;
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
     final client = _HookClient();
@@ -365,7 +365,7 @@ void main() {
   testWidgets('results can go to a gateway connector such as ntfy', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(700, 1500) * 2;
+    tester.view.physicalSize = const Size(700, 1800) * 2;
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
     final client = _FakeClient();
