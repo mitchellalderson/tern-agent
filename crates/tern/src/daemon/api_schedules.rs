@@ -74,6 +74,12 @@ pub struct Schedule {
     pub usd_per_day: Option<f64>,
     #[serde(default)]
     pub tokens_per_run: Option<u64>,
+    /// USD spent today and the daily cap it counts against (its own or
+    /// the `[schedules]` default); both absent without a cap or a price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd_cap: Option<f64>,
     /// `budget` while a daily cap has paused it.
     #[serde(default)]
     pub paused: Option<String>,
@@ -145,7 +151,10 @@ pub(super) fn view(m: &Shared, s: ScheduleRow) -> Schedule {
             s.next_run_at
         }
     });
+    let spend = super::scheduler::spend_today(m, &s);
     Schedule {
+        spent_usd: spend.map(|(spent, _)| spent),
+        usd_cap: spend.map(|(_, cap)| cap),
         next_run_at: (s.enabled && s.next_run_at != i64::MAX).then_some(s.next_run_at),
         trigger: s.trigger().to_owned(),
         at,
