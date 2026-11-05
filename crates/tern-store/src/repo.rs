@@ -86,6 +86,13 @@ pub struct RunRow {
     /// The tainted host limit's setting, frozen at start: `allow` turns it
     /// off for this run; `None` = `ask`.
     pub egress: Option<String>,
+    /// The workspace the run had when it started (frozen; docs/alpha-workspaces.md
+    /// §2): its id, the canonical folder, and the subdirectory a sub-agent
+    /// was narrowed to. All `None` on a run that predates workspaces: the
+    /// default workspace.
+    pub workspace_id: Option<String>,
+    pub workspace_root: Option<String>,
+    pub workspace_subdir: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +198,7 @@ pub(crate) const SESSION_COLS: &str = "id, title, source, external_ref, model, c
 pub(crate) const RUN_COLS: &str = "id, session_id, status, trigger, model, system_prompt, \
     input_message_id, started_at, updated_at, finished_at, error, parent_run_id, parent_call_id, \
     label, depth, tool_scope, budget_tokens, max_iterations, quiet, input_taint, taint, autonomy, \
-    memory_scope, egress";
+    memory_scope, egress, workspace_id, workspace_root, workspace_subdir";
 const STEP_COLS: &str = "run_id, idx, kind, input_hash, input_json, output_json, status, \
                          usage_json, error, started_at, finished_at";
 const MESSAGE_COLS: &str =
@@ -241,6 +248,9 @@ pub(crate) fn run_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         autonomy: r.get(21)?,
         memory_scope: r.get(22)?,
         egress: r.get(23)?,
+        workspace_id: r.get(24)?,
+        workspace_root: r.get(25)?,
+        workspace_subdir: r.get(26)?,
     })
 }
 
@@ -388,6 +398,14 @@ impl Store {
             tx.execute(
                 "UPDATE runs SET memory_scope = (SELECT memory_scope FROM runs WHERE id = ?2)
                  WHERE id = ?1 AND memory_scope IS NULL",
+                params![run.id, parent],
+            )?;
+            // And its parent's workspace (narrowing to a subdirectory is a
+            // separate, explicit step that can only go deeper).
+            tx.execute(
+                "UPDATE runs SET (workspace_id, workspace_root, workspace_subdir) =
+                   (SELECT workspace_id, workspace_root, workspace_subdir FROM runs WHERE id = ?2)
+                 WHERE id = ?1",
                 params![run.id, parent],
             )?;
         }

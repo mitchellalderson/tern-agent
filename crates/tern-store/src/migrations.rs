@@ -34,6 +34,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0024_agent_tombstones.sql"),
     include_str!("../migrations/0025_starter_seed.sql"),
     include_str!("../migrations/0026_memory_provenance.sql"),
+    include_str!("../migrations/0027_workspaces.sql"),
 ];
 
 /// The migration that introduced first-run seeding.
@@ -214,5 +215,40 @@ mod tests {
             .query_row("SELECT count(*) FROM routine_events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(events, 0);
+    }
+
+    #[test]
+    fn workspaces_migration_leaves_every_existing_row_unbound() {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate_to(&mut c, 26);
+        c.execute_batch(
+            "INSERT INTO sessions (id, source, created_at, updated_at) VALUES ('s', 'api', 0, 0);
+             INSERT INTO runs (id, session_id, status, trigger, started_at, updated_at)
+               VALUES ('r', 's', 'completed', 'user', 0, 0);
+             INSERT INTO schedules (id, cron, prompt, session_id, next_run_at)
+               VALUES ('sch', '0 8 * * *', 'brief', 's', 0);",
+        )
+        .unwrap();
+        migrate(&mut c).unwrap();
+        let nulls = |sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).unwrap() };
+        // Nothing is bound anywhere, so everything resolves to the default.
+        for table in ["channels", "sessions", "agents", "schedules"] {
+            assert_eq!(
+                nulls(&format!(
+                    "SELECT count(*) FROM {table} WHERE workspace_id IS NOT NULL"
+                )),
+                0,
+                "{table}"
+            );
+        }
+        assert_eq!(
+            nulls(
+                "SELECT count(*) FROM runs WHERE workspace_id IS NOT NULL OR workspace_root IS NOT NULL OR workspace_subdir IS NOT NULL"
+            ),
+            0
+        );
+        assert_eq!(nulls("SELECT count(*) FROM workspaces"), 0);
+        assert_eq!(user_version(&c).unwrap(), LATEST_VERSION);
     }
 }

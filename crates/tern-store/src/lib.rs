@@ -19,6 +19,7 @@ mod subagents_repo;
 mod suggestions_repo;
 mod tasks_repo;
 mod webhooks_repo;
+mod workspaces_repo;
 
 pub use agents_repo::{AgentChange, AgentRow, DEFAULT_AGENT, dm_slug};
 pub use channels_repo::{ChannelRow, HOME, Moved, NewPost, NewThread, PostRow};
@@ -39,6 +40,10 @@ pub use skill_offers_repo::SkillOfferRow;
 pub use subagents_repo::{MailRow, NewMail};
 pub use suggestions_repo::{NewSuggestion, SuggestionRow};
 pub use webhooks_repo::WebhookRow;
+pub use workspaces_repo::{
+    Bind, DEFAULT_WORKSPACE, NewWorkspace, WorkspaceRoot, WorkspaceRow, WorkspaceSource,
+    WorkspaceUse,
+};
 
 pub use repo::{
     MemoryRow, MessageHit, MessageRow, NewMessage, NewRun, RunRow, SPAWNED_BY_TAINTED, SessionRow,
@@ -66,6 +71,8 @@ pub enum StoreError {
     /// A change the store refuses (deleting the default agent, say).
     #[error("{0}")]
     Invalid(String),
+    #[error("{0} not found")]
+    NotFound(String),
 }
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
