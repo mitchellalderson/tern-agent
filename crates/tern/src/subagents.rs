@@ -21,7 +21,8 @@ use tern_core::journal::{Journal, StepError};
 use tern_core::subagent::{
     self, AGENT_TOOLS, ASK_PREFIX, AskRequest, CHILD_EXCLUDED_TOOLS, CHILD_ONLY_TOOLS,
     CancelRequest, ChildRun, FINISHED_PREFIX, Finished, Note, Question, READ_ONLY_TOOLS,
-    SendRequest, SpawnRequest, SubagentHost, SubagentLimits, ToolsArg, WaitMode, WaitRequest,
+    ResultRequest, SendRequest, SpawnRequest, SubagentHost, SubagentLimits, ToolsArg, WaitMode,
+    WaitRequest,
 };
 use tern_core::tool::{ToolCtx, ToolRegistry, consume_mail, progress_sink};
 use tern_core::types::Usage;
@@ -313,11 +314,21 @@ impl Subagents {
         };
         let status = subagent::finished_status(&row.status, &text);
         let (i, o, cr, cw) = self.store.run_usage(&row.id)?;
+        // Only a bounded report reaches the parent's context; the full text
+        // stays in the child's session (`agent_result` reads it).
+        let label = row.label.clone().unwrap_or_default();
+        let (result, result_chars) = if text.trim().is_empty() {
+            (None, None)
+        } else {
+            let (t, total) = subagent::cap_report(&text, self.limits.max_result_chars, &label);
+            (Some(t), total)
+        };
         let body = Finished {
-            agent: row.label.clone().unwrap_or_default(),
+            agent: label,
             run_id: row.id.clone(),
             status: status.into(),
-            result: (!text.trim().is_empty()).then(|| subagent::cap(&text, subagent::RESULT_MAX)),
+            result,
+            result_chars,
             error: row.error.clone(),
             iterations: self.store.step_count(&row.id, "llm")?,
             tokens: i + o + cr + cw,
@@ -959,6 +970,18 @@ impl Subagents {
                     }
                 }
                 let mut out = json!({ "agents": entries });
+                // A report written by a tainted child taints its reader.
+                let mut tainted = false;
+                for m in &done {
+                    if let Some(from) = &m.from_run_id
+                        && self.store.run(from)?.is_some_and(|r| r.taint.is_some())
+                    {
+                        tainted = true;
+                    }
+                }
+                if tainted {
+                    out["tainted"] = true.into();
+                }
                 if !asking.is_empty() {
                     out["note"] = "a sub-agent asked a question and is blocked until you answer it with agent_send".into();
                 } else if !met {
@@ -1350,6 +1373,54 @@ impl SubagentHost for Subagents {
         self.try_wait(ctx, req).await.map_err(|e| format!("{e:#}"))
     }
 
+    async fn result(&self, ctx: &ToolCtx, req: ResultRequest) -> Result<Value, String> {
+        let kids = self.store.children(&ctx.run_id).map_err(err)?;
+        let Some(child) = kids
+            .iter()
+            .find(|k| k.label.as_deref() == Some(req.agent.as_str()))
+        else {
+            return Err(format!(
+                "no sub-agent {:?}; yours are: {}",
+                req.agent,
+                labels_of(&kids)
+            ));
+        };
+        let row = self
+            .store
+            .run(&child.id)
+            .map_err(err)?
+            .unwrap_or_else(|| child.clone());
+        if !is_ended(&row) {
+            return Err(format!(
+                "sub-agent {:?} is still running; use agent_wait to get its report",
+                req.agent
+            ));
+        }
+        let text = final_text(&self.store, &row).map_err(err)?;
+        let max = self.limits.max_result_chars;
+        let total = text.chars().count();
+        let offset = req.offset.unwrap_or(0).min(total);
+        let limit = req.limit.unwrap_or(max).clamp(1, max);
+        let slice: String = text.chars().skip(offset).take(limit).collect();
+        let end = offset + slice.chars().count();
+        let mut out = json!({
+            "agent": req.agent,
+            "run_id": row.id,
+            "total_chars": total,
+            "offset": offset,
+            "text": slice,
+        });
+        if end < total {
+            out["next_offset"] = end.into();
+        } else {
+            out["complete"] = true.into();
+        }
+        if row.taint.is_some() {
+            out["tainted"] = true.into();
+        }
+        Ok(out)
+    }
+
     async fn cancel(&self, ctx: &ToolCtx, req: CancelRequest) -> Result<Value, String> {
         let kids = self.store.children(&ctx.run_id).map_err(err)?;
         let Some(child) = kids
@@ -1584,6 +1655,163 @@ mod tests {
             child_limits(&open, &req(None, Some(9_000_000))).budget_tokens,
             Some(9_000_000)
         );
+    }
+
+    /// A host over an in-memory store with a parent run `p` and two ended
+    /// children whose reports are `chars` long: `clean` and `dirty` (tainted).
+    fn host_with_children(chars: usize) -> (Subagents, ToolCtx) {
+        let store = Store::open_in_memory().unwrap();
+        let journal = Journal::new(store.clone());
+        let config = tern_core::Config::default();
+        let host = Subagents::new(
+            store.clone(),
+            journal.clone(),
+            broadcast::channel(8).0,
+            Weak::new(),
+            &config,
+            Arc::new(RwLock::new(config.clone())),
+            true,
+        );
+        let input = journal.to_row(&Message::user_text("brief")).unwrap();
+        let mk = |id: &str, parent: Option<&str>| {
+            store
+                .create_session(&format!("s-{id}"), "subagent", None)
+                .unwrap();
+            store
+                .create_run(
+                    &NewRun {
+                        id,
+                        session_id: &format!("s-{id}"),
+                        trigger: "subagent",
+                        model: "mock:mock",
+                        system_prompt: "system",
+                        parent_run_id: parent,
+                        parent_call_id: parent.map(|_| id),
+                        label: parent.map(|_| id),
+                        depth: u32::from(parent.is_some()),
+                        ..NewRun::default()
+                    },
+                    &input,
+                )
+                .unwrap();
+        };
+        mk("p", None);
+        for id in ["clean", "dirty"] {
+            mk(id, Some("p"));
+            let report = journal
+                .to_row(&Message {
+                    role: tern_core::types::Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "é".repeat(chars),
+                    }],
+                })
+                .unwrap();
+            store.start_step(id, 0, "llm", "h", "{}").unwrap();
+            store.complete_step(id, 0, "{}", None, &[report]).unwrap();
+            store.set_run_status(id, "completed", None).unwrap();
+            if id == "dirty" {
+                store.set_run_taint(id, "result of http_fetch").unwrap();
+            }
+            let row = store.run(id).unwrap().unwrap();
+            host.report(&row, None).unwrap();
+        }
+        let ctx = ToolCtx {
+            workspace: std::path::PathBuf::new(),
+            run_id: "p".into(),
+            session_id: "s-p".into(),
+            cancel: CancellationToken::new(),
+        };
+        (host, ctx)
+    }
+
+    #[tokio::test]
+    async fn a_long_report_reaches_the_parent_cut_and_the_rest_is_fetchable() {
+        let (host, ctx) = host_with_children(20_000);
+        let wait = |agents: &[&str]| WaitRequest {
+            agents: Some(agents.iter().map(|a| (*a).to_owned()).collect()),
+            ..WaitRequest::default()
+        };
+        let out = host.wait(&ctx, wait(&["clean"])).await.unwrap();
+        let entry = &out["agents"][0];
+        let result = entry["result"].as_str().unwrap();
+        assert_eq!(
+            result.chars().filter(|c| *c == 'é').count(),
+            subagent::DEFAULT_RESULT_CHARS
+        );
+        assert!(
+            result.contains("report truncated: showing the first 8000 of 20000 characters")
+                && result.contains("agent_result {\"agent\": \"clean\", \"offset\": 8000}"),
+            "{result}"
+        );
+        assert!(out.get("tainted").is_none(), "a clean child is not framed");
+
+        // Reading on: slices of at most the cap, until complete.
+        let mut offset = 8_000;
+        let mut got = 0;
+        loop {
+            let r = host
+                .result(
+                    &ctx,
+                    ResultRequest {
+                        agent: "clean".into(),
+                        offset: Some(offset),
+                        limit: None,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(r["total_chars"], 20_000);
+            got += r["text"].as_str().unwrap().chars().count();
+            match r["next_offset"].as_u64() {
+                Some(n) => offset = n as usize,
+                None => {
+                    assert_eq!(r["complete"], true);
+                    break;
+                }
+            }
+        }
+        assert_eq!(got, 12_000);
+        // An unknown label and a running child are errors the model can read.
+        let e = host
+            .result(
+                &ctx,
+                ResultRequest {
+                    agent: "nope".into(),
+                    offset: None,
+                    limit: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(e.contains("no sub-agent"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_tainted_childs_report_taints_whoever_reads_it() {
+        let (host, ctx) = host_with_children(100);
+        let waited = host
+            .wait(
+                &ctx,
+                WaitRequest {
+                    agents: Some(vec!["dirty".into()]),
+                    ..WaitRequest::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(waited["tainted"], true, "{waited}");
+        let fetched = host
+            .result(
+                &ctx,
+                ResultRequest {
+                    agent: "dirty".into(),
+                    offset: None,
+                    limit: Some(10),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(fetched["tainted"], true, "{fetched}");
     }
 
     #[test]

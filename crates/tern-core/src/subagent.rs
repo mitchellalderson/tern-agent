@@ -18,8 +18,10 @@ use crate::tool::ToolCtx;
 
 /// Dedupe-key prefix of the mail a child posts to its parent when it ends.
 pub const FINISHED_PREFIX: &str = "finished:";
-/// A child's report (its final text) is cut to this many bytes.
-pub const RESULT_MAX: usize = 16 * 1024;
+/// Default for `[subagents].max_result_chars`: a child's report reaches its
+/// parent cut to this many characters (about 2,000 tokens); the rest stays
+/// in the child's session and is fetched with `agent_result`.
+pub const DEFAULT_RESULT_CHARS: usize = 8_000;
 /// How much of the brief events and status lists carry.
 pub const TASK_PREVIEW: usize = 500;
 /// Session source of a child's session.
@@ -38,6 +40,7 @@ pub const AGENT_TOOLS: &[&str] = &[
     "agent_send",
     "agent_cancel",
     "agent_status",
+    "agent_result",
 ];
 /// Tools only sub-agents get; top-level runs never see them.
 pub const CHILD_ONLY_TOOLS: &[&str] = &["agent_ask_parent"];
@@ -73,6 +76,8 @@ pub struct SubagentLimits {
     pub budget_tokens: u64,
     /// 0 = no ceiling.
     pub budget_tokens_ceiling: u64,
+    /// The most characters of a report that reach the parent's context.
+    pub max_result_chars: usize,
 }
 
 impl From<&SubagentsConfig> for SubagentLimits {
@@ -89,6 +94,7 @@ impl From<&SubagentsConfig> for SubagentLimits {
                 0 => 0,
                 ceiling => ceiling.max(c.budget_tokens),
             },
+            max_result_chars: c.max_result_chars.max(200),
         }
     }
 }
@@ -144,6 +150,19 @@ pub struct WaitRequest {
     pub mode: WaitMode,
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+}
+
+/// `agent_result` arguments: fetch (more of) a finished child's report.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResultRequest {
+    pub agent: String,
+    /// Characters to skip; default 0.
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// At most this many characters (default and ceiling: `max_result_chars`).
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 /// `agent_cancel` arguments.
@@ -234,9 +253,13 @@ pub struct Finished {
     pub run_id: String,
     /// `completed`, `stopped` (budget or iterations), `failed` or `cancelled`.
     pub status: String,
-    /// The final text (capped at [`RESULT_MAX`]); partial for `stopped`.
+    /// The final text, cut to `max_result_chars` with a marker naming
+    /// `agent_result` when it was longer; partial for `stopped`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    /// The full report's length in characters, set when `result` is cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_chars: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub iterations: u32,
@@ -277,6 +300,8 @@ pub trait SubagentHost: Send + Sync {
     /// Block until children finish (see `agent_wait`). Reports it delivers
     /// are consumed with [`crate::tool::consume_mail`].
     async fn wait(&self, ctx: &ToolCtx, req: WaitRequest) -> Result<Value, String>;
+    /// A finished child's full report, a slice at a time (`agent_result`).
+    async fn result(&self, ctx: &ToolCtx, req: ResultRequest) -> Result<Value, String>;
     /// Cancel a child and its subtree.
     async fn cancel(&self, ctx: &ToolCtx, req: CancelRequest) -> Result<Value, String>;
     /// Every child of `ctx.run_id` with status, activity and usage.
@@ -394,6 +419,25 @@ pub fn render_mail(m: &MailRow) -> String {
     }
 }
 
+/// `text` cut to at most `max` characters for the parent's context. When it
+/// was longer, the cut text ends in a marker that says how much was shown,
+/// of how many, and how to get the rest. Returns the text and, when cut, the
+/// full length in characters.
+pub fn cap_report(text: &str, max: usize, agent: &str) -> (String, Option<usize>) {
+    let total = text.chars().count();
+    if total <= max {
+        return (text.to_owned(), None);
+    }
+    let end = text.char_indices().nth(max).map_or(text.len(), |(i, _)| i);
+    (
+        format!(
+            "{}\n[... report truncated: showing the first {max} of {total} characters. Fetch the rest with agent_result {{\"agent\": \"{agent}\", \"offset\": {max}}}]",
+            &text[..end]
+        ),
+        Some(total),
+    )
+}
+
 /// `s` cut to at most `max` bytes on a char boundary.
 pub fn cap(s: &str, max: usize) -> String {
     if s.len() <= max {
@@ -433,6 +477,7 @@ mod tests {
                 status: status.into(),
                 result: result.map(Into::into),
                 error: error.map(Into::into),
+                result_chars: None,
                 iterations: 2,
                 tokens: 10,
             })

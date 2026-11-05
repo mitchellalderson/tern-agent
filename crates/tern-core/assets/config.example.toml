@@ -95,7 +95,7 @@ docker_pids = 512          # 0 for no limit
 # agent = "scribe"             # whose tool scope applies (unset: memory_search, channel_read, schedule_list, skill_read)
 # autonomy = "readonly"        # caps `autonomy` for MCP calls; it can't raise it
 
-# Sub-agents: the agent_spawn / agent_wait / agent_cancel / agent_status tools.
+# Sub-agents: the agent_spawn / agent_wait / agent_cancel / agent_status / agent_result tools.
 # [subagents]
 # enabled = true             # false: no agent_* tools, and the prompt doesn't mention them
 # default_model = "anthropic:claude-sonnet-4-5"   # unset = the parent's model; may be a chain
@@ -109,6 +109,7 @@ docker_pids = 512          # 0 for no limit
 # budget_tokens = 400000      # per sub-agent: input + output + cache tokens, on every model call
 # budget_tokens_ceiling = 2000000  # the most agent_spawn may ask for (0 = no ceiling)
 # ask_parent_timeout_secs = 900  # how long agent_ask_parent waits for an answer
+# max_result_chars = 8000     # most of a sub-agent's final report that reaches the parent (the rest: agent_result)
 
 # Memory: user.md and memory.md are in every system prompt, each within a
 # token cap (chars / 4). Writes past a cap are refused with a request to
