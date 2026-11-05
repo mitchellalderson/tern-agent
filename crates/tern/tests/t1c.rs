@@ -190,6 +190,10 @@ impl Env {
 fn http() -> reqwest::Client {
     reqwest::Client::builder()
         .tls_danger_accept_invalid_certs(true)
+        // One request per connection: nothing idle left in a pool for the
+        // server to time out or reset, and its slot is released as soon as
+        // the response is read.
+        .pool_max_idle_per_host(0)
         .build()
         .unwrap()
 }
@@ -573,6 +577,32 @@ async fn read_until_closed(s: &mut tokio::net::TcpStream, within: Duration) -> (
     }
 }
 
+/// Read until one whole response (headers plus its content-length body)
+/// has arrived, the peer closes or resets, or `within` passes.
+async fn read_response(s: &mut tokio::net::TcpStream, within: Duration) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut got = Vec::new();
+    let mut buf = [0u8; 1024];
+    let end = tokio::time::Instant::now() + within;
+    loop {
+        let text = String::from_utf8_lossy(&got).into_owned();
+        if let Some((head, body)) = text.split_once("\r\n\r\n") {
+            let len = head
+                .to_ascii_lowercase()
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:")?.trim().parse().ok())
+                .unwrap_or(0usize);
+            if body.len() >= len {
+                return text;
+            }
+        }
+        match tokio::time::timeout_at(end, s.read(&mut buf)).await {
+            Ok(Ok(0) | Err(_)) | Err(_) => return text,
+            Ok(Ok(n)) => got.extend_from_slice(&buf[..n]),
+        }
+    }
+}
+
 async fn raw(port: u16) -> tokio::net::TcpStream {
     tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
@@ -652,20 +682,32 @@ async fn connections_past_the_cap_are_refused_and_deliveries_resume() {
     // Under the cap, deliveries work (each client closes its connection).
     assert_eq!(deliver(1).await.0, StatusCode::ACCEPTED);
 
-    // Two idle connections fill it. A connection counts as held once the
-    // server leaves it open (a slot the last delivery hadn't yet released
-    // would refuse it and close it at once), so no timing is assumed.
+    // Two idle connections fill it. A connection counts as held only once
+    // the server has answered a request on it and left it open: that proves
+    // it was accepted with a permit (a slot the last delivery hadn't yet
+    // released would refuse it with a 503 and close it). Merely seeing no
+    // close within some window would not: under load the accept can come
+    // later than any window, and a late refusal would free the slot for the
+    // wrong connection.
     let idle = || async {
-        let end = Instant::now() + Duration::from_secs(10);
+        use tokio::io::AsyncWriteExt;
+        let end = Instant::now() + Duration::from_secs(20);
         loop {
             let mut s = raw(env.hooks_port).await;
-            if !read_until_closed(&mut s, Duration::from_millis(300))
-                .await
-                .1
-            {
+            // A refused connection may already be closed; ignore that here.
+            let _ = s
+                .write_all(b"GET /healthz HTTP/1.1\r\nhost: x\r\n\r\n")
+                .await;
+            let resp = read_response(&mut s, Duration::from_secs(10)).await;
+            if resp.starts_with("HTTP/1.1 200") {
                 return s;
             }
+            assert!(
+                resp.is_empty() || resp.starts_with("HTTP/1.1 503"),
+                "{resp}"
+            );
             assert!(Instant::now() < end, "no free connection slot");
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     };
     let a = idle().await;
@@ -684,7 +726,23 @@ async fn connections_past_the_cap_are_refused_and_deliveries_resume() {
     drop(a);
     let end = Instant::now() + Duration::from_secs(10);
     loop {
-        let status = deliver(2).await.0;
+        // A refused connection is closed with this request unread, which
+        // can reach the client as a reset instead of the 503: both mean
+        // "not yet".
+        let body = r#"{"n":2}"#;
+        let sent = http()
+            .post(&hook)
+            .header("content-type", "application/json")
+            .header("x-tern-signature", tern_sig(&secret, now(), body))
+            .body(body)
+            .send()
+            .await;
+        let Ok(res) = sent else {
+            assert!(Instant::now() < end, "the freed slot never opened");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            continue;
+        };
+        let status = res.status();
         if status == StatusCode::ACCEPTED {
             break;
         }
