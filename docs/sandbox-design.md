@@ -75,7 +75,15 @@ about `shell` asks exactly as before.
   the path as found, every directory and symlink hop between it and the canonical target, and the target itself must
   all be outside every place the sandbox can write (the workspace, temp dirs, `write_paths`): a `<workspace>/.venv`
   or a writable launcher directory is refused. What runs is the canonical interpreter path, never the path it was
-  found at. All of this is checked again when the call runs.
+  found at. The canonical file must be named `python*` (mise is one native launcher behind a `python3` symlink that
+  reads the workspace). Python also reads `pyvenv.cfg` next to its binary or one level up, and loads the standard
+  library, site-packages and `.pth` files from its prefix (`-I` still imports `site`), so the binary's directories
+  (as found and canonical), their `pyvenv.cfg` paths, and everything the interpreter itself reports (`sys.prefix`,
+  `sys.path`, `site.getsitepackages()`) must be outside the writable roots. The report comes from running the
+  interpreter once per file (cached by path and mtime) outside the sandbox with a fixed `-I -S -c` program, from `/`
+  with an empty environment, after the directory checks pass (`-S`: no `site`, no `.pth`). A writable stdlib
+  directory would still execute in that one probe, so such a configuration should not list the interpreter's own
+  directories in `write_paths`. All of this is checked again when the call runs.
 
 A python command that doesn't qualify says why on its card ("Not auto-approved: inline script. Saved as a .py file
 in the workspace and run as `python3 file.py`, it could be approved once for the whole run.").
@@ -104,8 +112,12 @@ the resolved interpreter and script, the hash, and the key. `call` uses up exact
 script and the interpreter, and refuses (running nothing, with a message saying the file changed since it was
 approved) if the hash, the canonical path or the interpreter differ. It then runs the planned interpreter and the
 canonical script path, not the text that was typed. Plans are dropped when a call won't run (denied, refused,
-cancelled) and when the run ends. A restart between the journaled approval and the tool step doesn't run on the old
-answer: the replayed approval of a call that never ran is refused ("approved before tern restarted ... make the
+cancelled) and when the run ends. A call that a grant decided (nobody was asked) must run exactly its plan: the tool
+is told (`Tool::grant_applied`), and `Shell::call` refuses, running nothing, if it has no plan, the plan's key
+isn't the approved one (a re-plan over changed bytes), or the typed command differs. It never falls through to
+`sh -c <typed command>`. A human's answer keeps today's meaning: the typed command runs. A restart between the
+journaled approval and the tool step doesn't run on the old answer: the replayed approval of a call that never ran
+(whether or not a key can be planned now, e.g. while the probe is still landing) is refused ("approved before tern restarted ... make the
 call again") and asks again, since the script may have changed meanwhile. A call with no plan never has a key, so it can't be auto-approved; it asks like
 any command. The read-then-spawn window is milliseconds; a background process started by an earlier approved
 command could still rewrite the file inside it, but such a process already runs arbitrary code in the same sandbox.
@@ -134,7 +146,8 @@ loopback listener on the tern side as the oracle:
 
 The result is cached per (policy, workspace) for 10 minutes (30 seconds after a failure). The agent loop never
 probes: `verify` only reads the cache and, when nothing is fresh, starts the probe on its own thread and answers "not
-verified: still checking the sandbox; ask again shortly" (not cached) until it lands; the daemon warms it at start,
+verified: still checking the sandbox; ask again shortly" (not cached) until it lands; the daemon warms it at start (every agent shares the one configured workspace, so one entry; a second workspace or
+policy would get one in-flight probe per key, never one per call),
 and the cache lock is never held across a probe. `tern doctor`, `tern security audit` and `/v1/info` use the
 blocking `verify_now`; a config change is a different policy and probes again. It shows in `tern doctor`, `tern security
 audit`, and `/v1/info` (`sandbox.verified`, `sandbox.detail`). Verified means the profile bites on this machine now;

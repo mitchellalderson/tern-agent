@@ -272,6 +272,10 @@ pub trait Tool: Send + Sync {
     fn grant_unavailable(&self, _args: &Value) -> Option<String> {
         None
     }
+    /// The host is running call `call_id` of `run_id` because a scoped grant
+    /// covered it (nobody was asked this time). A tool that plans per call
+    /// must then run exactly its plan and refuse if it has none.
+    fn grant_applied(&self, _run_id: &str, _call_id: &str) {}
 }
 
 /// The precise thing a scoped grant covers ([`Tool::grant_key`]).
@@ -394,6 +398,13 @@ impl ToolRegistry {
     pub fn grant_unavailable(&self, run_id: &str, call: &ToolCall) -> Option<String> {
         self.get(&call.name)
             .and_then(|t| planning(run_id, &call.id, || t.grant_unavailable(&call.input)))
+    }
+
+    /// A scoped grant decided `call` ([`Tool::grant_applied`]).
+    pub fn grant_applied(&self, run_id: &str, call: &ToolCall) {
+        if let Some(t) = self.get(&call.name) {
+            t.grant_applied(run_id, &call.id);
+        }
     }
 
     /// A call won't run (refused, denied, cancelled) or its run ended: tools

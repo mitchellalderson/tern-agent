@@ -72,6 +72,11 @@ enum Slot {
 /// to read or write an entry, never across a probe.
 static CACHE: Mutex<Option<HashMap<String, Slot>>> = Mutex::new(None);
 
+/// How many background probes each key has started (tests).
+#[cfg(test)]
+static PROBES: Mutex<std::collections::BTreeMap<String, usize>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
 /// A probe that has run this long is taken to have died.
 const PROBING_STALE: Duration = Duration::from_secs(60);
 
@@ -127,6 +132,11 @@ impl HostBackend {
         let spawned = std::thread::Builder::new()
             .name("tern-sandbox-canary".into())
             .spawn(move || {
+                #[cfg(test)]
+                {
+                    let mut p = PROBES.lock().unwrap_or_else(|e| e.into_inner());
+                    *p.entry(key.clone()).or_default() += 1;
+                }
                 let v = HostBackend::new(policy).run_canary(&workspace);
                 let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
                 guard
@@ -467,6 +477,29 @@ mod tests {
         assert_eq!(landed, b.verify_now(ws.path()));
         // And it left nothing behind.
         assert_eq!(std::fs::read_dir(ws.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn many_callers_share_one_background_probe() {
+        let ws = tempfile::tempdir().unwrap();
+        let path = ws.path().to_path_buf();
+        let key = HostBackend::default().cache_key(&path);
+        let callers: Vec<_> = (0..16)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || HostBackend::default().verify(&path))
+            })
+            .collect();
+        for c in callers {
+            c.join().unwrap();
+        }
+        let end = Instant::now() + Duration::from_secs(60);
+        while HostBackend::default().verify(&path).reason() == Some(CHECKING) {
+            assert!(Instant::now() < end, "the probe never landed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let started = PROBES.lock().unwrap().get(&key).copied();
+        assert_eq!(started, Some(1), "one probe for one key, however many callers");
     }
 
     #[test]

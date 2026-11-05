@@ -353,6 +353,8 @@ async fn an_unforbidden_untainted_grant_is_released_through_check_not_around_it(
 /// ask, with a grant key that carries a note and an audit record.
 struct ScriptLike {
     calls: AtomicU32,
+    /// How many times the host said a grant decided a call.
+    applied: AtomicU32,
     /// `Some` when no grant may be offered, and why.
     unavailable: Option<&'static str>,
 }
@@ -384,6 +386,9 @@ impl Tool for ScriptLike {
     fn grant_unavailable(&self, _: &Value) -> Option<String> {
         self.unavailable.map(Into::into)
     }
+    fn grant_applied(&self, _: &str, _: &str) {
+        self.applied.fetch_add(1, Ordering::SeqCst);
+    }
     async fn call(&self, _: &ToolCtx, _: Value) -> ToolResult {
         self.calls.fetch_add(1, Ordering::SeqCst);
         ToolResult::ok("done")
@@ -393,6 +398,7 @@ impl Tool for ScriptLike {
 fn script_like(unavailable: Option<&'static str>) -> Arc<ScriptLike> {
     Arc::new(ScriptLike {
         calls: AtomicU32::new(0),
+        applied: AtomicU32::new(0),
         unavailable,
     })
 }
@@ -590,4 +596,47 @@ async fn a_replayed_approval_for_a_tool_without_plans_still_runs() {
     );
     agent2.drive(&run, CancellationToken::new()).await.unwrap();
     assert_eq!(tool.calls.load(Ordering::SeqCst), 2, "ran on the replayed approval");
+}
+
+#[tokio::test]
+async fn the_tool_is_told_when_a_grant_decided_its_call_and_not_otherwise() {
+    let h = Harness::new();
+    let tool = script_like(None);
+    let asks = Answer::new(Decision::AllowRun);
+    let script = Arc::new(Script::new(vec![
+        run_script("a.py"),
+        run_script("a.py"),
+        Reply::Text("ok"),
+    ]));
+    let agent = h.agent(script, vec![tool.clone()], asks.clone());
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(asks.asked().len(), 1);
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 2);
+    // Only the second call was decided by the grant; the first was a human answer.
+    assert_eq!(tool.applied.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_replayed_approval_is_refused_even_when_no_key_can_be_planned_now() {
+    // After a restart the sandbox probe hasn't landed, so the call has no key
+    // now (only a reason): the replayed approval still must not run it.
+    let h = Harness::new();
+    let tool = script_like(Some("Not auto-approved: the sandbox isn't confirmed active (still checking)."));
+    let asks = Answer::new(Decision::AllowOnce);
+    let script = Arc::new(Script::new(vec![run_script("a.py"), Reply::Text("one")]));
+    let agent = h.agent(script, vec![tool.clone()], asks.clone());
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    h.store.truncate_steps(&run, 2).unwrap();
+    let agent2 = h.agent(
+        Arc::new(Script::new(vec![Reply::Text("after")])),
+        vec![tool.clone()],
+        asks.clone(),
+    );
+    agent2.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1, "not run on the old answer");
+    let steps = h.store.steps(&run).unwrap();
+    assert!(steps[2].output_json.as_deref().unwrap().contains("approved before tern restarted"));
 }

@@ -41,6 +41,12 @@ struct Entry {
     key: Option<GrantKey>,
     /// Why a python command isn't auto-approvable, for the card.
     notice: Option<String>,
+    /// A scoped grant decided this call (nobody was asked): it must run
+    /// exactly its plan or not at all, never the typed command.
+    granted: bool,
+    /// The grant key that decided it (`granted`), which a re-plan must still
+    /// produce for the call to run.
+    approved_key: Option<String>,
 }
 
 fn plan_key(run: &str, call: &str) -> String {
@@ -88,6 +94,8 @@ impl Shell {
             plan: None,
             key: None,
             notice,
+            granted: false,
+            approved_key: None,
         };
         let parsed = match shell_script::parse(&command) {
             Ok(p) => p,
@@ -123,6 +131,8 @@ impl Shell {
             plan: Some(resolved),
             key,
             notice: why_not,
+            granted: false,
+            approved_key: None,
         }
     }
 }
@@ -225,10 +235,16 @@ impl Tool for Shell {
     fn policy(&self, ctx: &ToolCtx, args: &Value) -> ToolPolicy {
         // The call's own plan (by run and call id): the script, its hash and
         // whether a grant may be offered, decided once, here.
-        let entry = self.judge(ctx, args);
+        let mut entry = self.judge(ctx, args);
         if let Ok(mut plans) = self.plans.lock() {
             let id = Self::planning_id();
-            if entry.plan.is_some() || entry.notice.is_some() {
+            // A re-plan (an effect probe) must not forget that a grant
+            // already decided this call.
+            if let Some(old) = plans.get(&id).filter(|e| e.granted) {
+                entry.granted = true;
+                entry.approved_key = old.approved_key.clone();
+            }
+            if entry.plan.is_some() || entry.notice.is_some() || entry.granted {
                 plans.insert(id, entry);
             } else {
                 plans.remove(&id);
@@ -256,6 +272,23 @@ impl Tool for Shell {
         (entry.command == command)
             .then(|| entry.notice.clone())
             .flatten()
+    }
+
+    fn grant_applied(&self, run_id: &str, call_id: &str) {
+        if let Ok(mut m) = self.plans.lock() {
+            let e = m
+                .entry(plan_key(run_id, call_id))
+                .or_insert_with(|| Entry {
+                    command: String::new(),
+                    plan: None,
+                    key: None,
+                    notice: None,
+                    granted: false,
+                    approved_key: None,
+                });
+            e.granted = true;
+            e.approved_key = e.key.as_ref().map(|k| k.key.clone());
+        }
     }
 
     fn forget_plans(&self, run_id: &str, call_id: Option<&str>) {
@@ -287,7 +320,22 @@ impl Tool for Shell {
         // A planned script run: the file must still be what was approved, and
         // what runs is the interpreter and file that were hashed.
         let mut command = a.command.clone();
-        if let Some(entry) = self.take_entry(ctx)
+        let entry = self.take_entry(ctx);
+        // Fail closed: a grant covers one planned script, so a call it
+        // decided that has no plan (or whose typed command isn't the planned
+        // one) runs nothing, rather than falling through to `sh -c <typed>`.
+        if let Some(e) = &entry
+            && e.granted
+            && (e.plan.is_none()
+                || e.command != a.command.trim()
+                || e.approved_key.is_none()
+                || e.approved_key != e.key.as_ref().map(|k| k.key.clone()))
+        {
+            return ToolResult::error(
+                "this call was covered by a grant, but what it would run can no longer be confirmed (the script or interpreter changed, or no longer qualifies); nothing was run. Make the call again and it will ask",
+            );
+        }
+        if let Some(entry) = entry
             && let Some(plan) = entry.plan
         {
             if entry.command != a.command.trim() {
@@ -608,7 +656,13 @@ mod script_grant_tests {
     /// A different native "python3" (a copy of the shell: a program, not a
     /// shim script), for keys that must differ by interpreter.
     fn fake_python(dir: &Path) {
-        std::fs::copy("/bin/sh", dir.join("python3")).unwrap();
+        // Found at another path than the real one, so its key differs.
+        let real = std::process::Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .unwrap_or_default();
+        std::os::unix::fs::symlink(real, dir.join("python3")).unwrap();
     }
 
     #[test]
@@ -886,6 +940,71 @@ mod script_grant_tests {
         assert_eq!(shell.plans_held(), 2);
         reg.forget_plans("run", None);
         assert_eq!(shell.plans_held(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_call_decided_by_a_grant_runs_its_plan_or_nothing() {
+        if !have_python() {
+            return;
+        }
+        let e = env();
+        let out = tempfile::tempdir().unwrap();
+        let marker = out.path().join("ran");
+        std::fs::write(
+            out.path().join("o.py"),
+            format!("open({:?}, 'w').write('x')", marker.display().to_string()),
+        )
+        .unwrap();
+        std::fs::write(e.ws.join("a.py"), "print('fine')").unwrap();
+        let (reg, shell) = registry(Claim::new(verified(), roots(&e)));
+
+        // (b) approved by a grant, then the script became a link out of the
+        // workspace: the typed command must not run through `sh`.
+        let c = call("1", "python3 a.py");
+        key(&e, &reg, &c).unwrap();
+        reg.grant_applied("run", &c);
+        std::fs::remove_file(e.ws.join("a.py")).unwrap();
+        std::os::unix::fs::symlink(out.path().join("o.py"), e.ws.join("a.py")).unwrap();
+        // The call is planned again (a probe, a replay): the plan no longer
+        // resolves, but the grant decision stays with the call.
+        reg.policy(&e.ctx, &c);
+        assert_eq!(reg.grant_key("run", &c), None);
+        let r = with_call("1", reg.call(&e.ctx, &c)).await.0;
+        assert!(r.is_error && r.content.contains("covered by a grant"), "{}", r.content);
+        assert!(r.content.contains("nothing was run"));
+        assert!(!marker.exists(), "the typed command ran");
+        assert_eq!(shell.plans_held(), 0);
+
+        // A re-plan over changed bytes (a different key) isn't what the grant covered.
+        std::fs::remove_file(e.ws.join("a.py")).unwrap();
+        std::fs::write(e.ws.join("a.py"), "print('v1')").unwrap();
+        let c = call("2", "python3 a.py");
+        key(&e, &reg, &c).unwrap();
+        reg.grant_applied("run", &c);
+        std::fs::write(e.ws.join("a.py"), "open('pwned','w').write('x')").unwrap();
+        reg.policy(&e.ctx, &c);
+        let r = with_call("2", reg.call(&e.ctx, &c)).await.0;
+        assert!(r.is_error && r.content.contains("covered by a grant"), "{}", r.content);
+        assert!(!e.ws.join("pwned").exists());
+
+        // A grant decided call with no plan at all is refused too.
+        let c = call("3", "python3 missing.py");
+        reg.policy(&e.ctx, &c);
+        reg.grant_applied("run", &c);
+        let r = with_call("3", reg.call(&e.ctx, &c)).await.0;
+        assert!(r.is_error && r.content.contains("nothing was run"), "{}", r.content);
+
+        // A human's answer is different: the typed command runs, as today
+        // (here python reports the missing file, which is what was approved).
+        let c = call("4", "python3 missing.py");
+        reg.policy(&e.ctx, &c);
+        let r = with_call("4", reg.call(&e.ctx, &c)).await.0;
+        assert!(r.content.contains("missing.py"), "{}", r.content);
+        assert!(!r.content.contains("covered by a grant"), "{}", r.content);
+        let c = call("5", "echo typed");
+        reg.policy(&e.ctx, &c);
+        let r = with_call("5", reg.call(&e.ctx, &c)).await.0;
+        assert!(r.content.contains("typed") && !r.is_error, "{}", r.content);
     }
 
     #[tokio::test]

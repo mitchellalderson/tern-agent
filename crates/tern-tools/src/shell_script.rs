@@ -235,9 +235,127 @@ fn find_interpreter(
                 canonical.display()
             ));
         }
+        // mise (and others) are one native launcher behind a `python3`
+        // symlink that picks the interpreter from files in the workspace.
+        if !canonical
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("python"))
+        {
+            return Err(format!(
+                "{name} is {}, a launcher rather than a python interpreter",
+                canonical.display()
+            ));
+        }
+        interpreter_is_sealed(&candidate, &canonical, writable)?;
         return Ok((candidate, canonical));
     }
     Err(format!("{name} wasn't found on PATH"))
+}
+
+/// Python reads `pyvenv.cfg` next to its binary or one level up, and the
+/// standard library, site-packages and `.pth` files from its prefix: none of
+/// that may be somewhere the command can write. Checked on the binary's
+/// directories (as found and canonical), and on what the interpreter itself
+/// reports ([`interpreter_paths`]).
+fn interpreter_is_sealed(
+    candidate: &Path,
+    canonical: &Path,
+    writable: &[PathBuf],
+) -> Result<(), String> {
+    let under = |p: &Path| {
+        writable.iter().any(|w| p.starts_with(w))
+            || std::fs::canonicalize(p).is_ok_and(|c| writable.iter().any(|w| c.starts_with(w)))
+    };
+    for bin in [candidate, canonical] {
+        for dir in bin.ancestors().skip(1).take(2) {
+            if under(dir) || under(&dir.join("pyvenv.cfg")) {
+                return Err(format!(
+                    "the interpreter at {} has {} where commands can write (a venv's pyvenv.cfg or its prefix could be replaced)",
+                    bin.display(),
+                    dir.display()
+                ));
+            }
+        }
+    }
+    for p in interpreter_paths(canonical)? {
+        if under(&p) {
+            return Err(format!(
+                "the interpreter at {} loads code from {}, a place commands can write",
+                canonical.display(),
+                p.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+type PathsCache = std::collections::HashMap<
+    (PathBuf, Option<std::time::SystemTime>),
+    Result<Vec<PathBuf>, String>,
+>;
+
+/// What the interpreter says it loads code from: prefixes, `sys.path`
+/// (standard library) and site-packages. Asked once per interpreter file
+/// (cached by path and mtime) by running it outside the sandbox with a fixed
+/// program, `-I -S` (so no `site`, no `.pth`, no user site: nothing the
+/// workspace can influence runs), from `/` with an empty environment.
+pub fn interpreter_paths(canonical: &Path) -> Result<Vec<PathBuf>, String> {
+    static CACHE: std::sync::Mutex<Option<PathsCache>> = std::sync::Mutex::new(None);
+    let mtime = std::fs::metadata(canonical).and_then(|m| m.modified()).ok();
+    let key = (canonical.to_path_buf(), mtime);
+    if let Some(hit) = CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|c| c.get(&key))
+    {
+        return hit.clone();
+    }
+    let result = probe_interpreter(canonical);
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(key, result.clone());
+    result
+}
+
+fn probe_interpreter(canonical: &Path) -> Result<Vec<PathBuf>, String> {
+    const CODE: &str = "import sys, site\nfor p in (sys.prefix, sys.base_prefix, sys.exec_prefix, *sys.path, *site.getsitepackages()):\n    print(p)\n";
+    let mut child = std::process::Command::new(canonical)
+        .args(["-I", "-S", "-c", CODE])
+        .current_dir("/")
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("couldn't inspect {}: {e}", canonical.display()))?;
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if start.elapsed() > std::time::Duration::from_secs(10) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("inspecting {} timed out", canonical.display()));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            Err(e) => return Err(format!("inspecting {}: {e}", canonical.display())),
+        }
+    };
+    let mut out = String::new();
+    if let Some(mut o) = child.stdout.take() {
+        let _ = o.read_to_string(&mut out);
+    }
+    if !status.success() {
+        return Err(format!("couldn't inspect {} (it didn't run as python)", canonical.display()));
+    }
+    Ok(out
+        .lines()
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .collect())
 }
 
 /// The first place on the way from `candidate` to its target (the path
@@ -565,6 +683,67 @@ mod tests {
         let e = resolve(&ok("python3 a.py"), &w, std::slice::from_ref(&w), Some(safe.into()))
             .unwrap_err();
         assert!(e.contains("version-manager shim"), "{e}");
+    }
+
+    #[test]
+    fn a_writable_site_packages_stdlib_or_prefix_is_refused() {
+        let Some(real) = real_python() else {
+            return;
+        };
+        let (_d, w) = ws();
+        std::fs::write(w.join("a.py"), "x").unwrap();
+        let (_s, safe) = ws();
+        std::os::unix::fs::symlink(&real, safe.join("python3")).unwrap();
+        let path = || Some(OsString::from(safe.clone()));
+        // Sealed as it is.
+        let ok = resolve(&ok("python3 a.py"), &w, std::slice::from_ref(&w), path());
+        assert!(ok.is_ok(), "{ok:?}");
+        // What the interpreter reports it loads from, each made writable in turn
+        // (as `write_paths = [site-packages]` would).
+        let reported = interpreter_paths(&real).unwrap();
+        assert!(reported.len() >= 3, "{reported:?}");
+        for dir in reported.iter().filter(|p| p.is_dir()) {
+            let roots = [w.clone(), dir.clone()];
+            let e = resolve(&ok_cmd(), &w, &roots, path()).unwrap_err();
+            assert!(e.contains("a place commands can write"), "{dir:?}: {e}");
+        }
+    }
+
+    fn ok_cmd() -> Parsed {
+        ok("python3 a.py")
+    }
+
+    #[test]
+    fn a_pyvenv_cfg_a_command_could_write_beside_or_above_the_binary_is_refused() {
+        let (_d, w) = ws();
+        std::fs::write(w.join("a.py"), "x").unwrap();
+        // <other>/bin/python3 is a program; only the cfg path is writable
+        // (a write_paths entry naming it): python would read it.
+        let (_o, other) = ws();
+        std::fs::create_dir(other.join("bin")).unwrap();
+        std::fs::copy("/bin/sh", other.join("bin/python3")).unwrap();
+        let cfg = other.join("pyvenv.cfg");
+        let roots = [w.clone(), cfg];
+        let e = resolve(&ok_cmd(), &w, &roots, Some(other.join("bin").into())).unwrap_err();
+        assert!(e.contains("pyvenv.cfg"), "{e}");
+        // A writable prefix (the grandparent) holding it, reached by a link.
+        let (_l, links) = ws();
+        std::os::unix::fs::symlink(other.join("bin/python3"), links.join("python3")).unwrap();
+        let roots = [w.clone(), other.clone()];
+        let e = resolve(&ok_cmd(), &w, &roots, Some(links.into())).unwrap_err();
+        assert!(e.contains("a place commands can write") || e.contains("pyvenv.cfg"), "{e}");
+    }
+
+    #[test]
+    fn a_launcher_behind_a_python_name_is_refused() {
+        let (_d, w) = ws();
+        std::fs::write(w.join("a.py"), "x").unwrap();
+        let (_s, safe) = ws();
+        // mise: one native binary, a `python3` symlink to it.
+        std::fs::copy("/bin/sh", safe.join("mise")).unwrap();
+        std::os::unix::fs::symlink(safe.join("mise"), safe.join("python3")).unwrap();
+        let e = resolve(&ok_cmd(), &w, std::slice::from_ref(&w), Some(safe.into())).unwrap_err();
+        assert!(e.contains("a launcher rather than a python interpreter"), "{e}");
     }
 
     #[test]

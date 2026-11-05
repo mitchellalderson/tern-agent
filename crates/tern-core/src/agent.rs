@@ -707,7 +707,8 @@ impl Agent {
                             stale = replayed
                                 && runs
                                 && self.journal.peek(&run.id, idx)?.is_none()
-                                && self.tools.grant_key(&run.id, &call).is_some();
+                                && (self.tools.grant_key(&run.id, &call).is_some()
+                                    || self.tools.grant_unavailable(&run.id, &call).is_some());
                         }
                         Ok((ApprovalOutcome::ApprovedForRun, _)) => taint.allow_all_egress(),
                         Ok(_) => {
@@ -1035,6 +1036,7 @@ impl Agent {
                     && !gate.tainted
                     && let Some(k) = &grant_key
                 {
+                    self.tools.grant_applied(&run.id, call);
                     self.ledger_grant_use(run, call, k, gate.tainted)?;
                 }
                 return Ok((ApprovalOutcome::Approved, String::new()));
