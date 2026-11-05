@@ -126,10 +126,12 @@ impl ModelCache {
         };
         entries.insert(provider.to_owned(), entry);
         let body = serde_json::to_string(&*entries).unwrap_or_default();
-        drop(entries);
+        // Write while still holding the lock: a reader never sees a list that
+        // isn't on disk yet, and concurrent puts can't land out of order.
         if let Err(e) = write_atomic(&self.path, &body) {
             tracing::warn!(error = %e, path = %self.path.display(), "writing model cache");
         }
+        drop(entries);
         let _ = self.changes.send(Change::ModelsChanged {
             provider: provider.to_owned(),
         });
