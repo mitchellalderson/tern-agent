@@ -1,0 +1,252 @@
+name: desktop-release
+
+# The desktop app for macOS (signed and notarized when the secrets exist) and
+# Linux (.tar.gz and .deb, x86_64 and aarch64), attached to a DRAFT GitHub
+# release. Nothing is published: you review the draft and click Publish.
+#
+#   push a tag like desktop-v0.1.0     build everything, attach to a draft release
+#   Run workflow, with a tag           same, for a tag that already exists
+#   Run workflow, tag left empty       build only; the files are workflow artifacts
+#
+# It never creates a tag. The tag must match Cargo.toml and
+# apps/desktop/pubspec.yaml. Secrets, one-time setup and what's untested:
+# docs/desktop-release.md. This is separate from release.yml (tags `v*`: the
+# CLI tarballs, and an ad-hoc or signed desktop dmg). The two use different tag
+# families so they never race to create the same release.
+on:
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to attach a draft release to (empty: build only, no release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: tag matches the versions
+    if: ${{ startsWith(github.ref, 'refs/tags/desktop-v') || inputs.tag != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compare the tag with Cargo.toml and pubspec.yaml
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          tag="${TAG#desktop-v}"
+          cargo=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          pubspec=$(sed -n 's/^version: \([^+]*\).*/\1/p' apps/desktop/pubspec.yaml)
+          echo "tag=$tag Cargo.toml=$cargo pubspec.yaml=$pubspec"
+          [ "$tag" = "$cargo" ] && [ "$tag" = "$pubspec" ] || { echo "::error::tag $TAG doesn't match Cargo.toml ($cargo) and apps/desktop/pubspec.yaml ($pubspec)"; exit 1; }
+
+  check-scripts:
+    name: lint the packaging scripts and workflow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: shellcheck scripts/*.sh apps/desktop/linux/packaging/*.sh
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint .github/workflows/desktop-release.yml
+
+  tern:
+    name: tern ${{ matrix.target }}
+    needs: check-scripts
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, zig: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, zig: true }
+          - { target: aarch64-apple-darwin, os: macos-latest, zig: false }
+          - { target: x86_64-apple-darwin, os: macos-latest, zig: false }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          key: desktop-release-${{ matrix.target }}
+      - if: matrix.zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+      - if: matrix.zig
+        run: cargo install cargo-zigbuild --locked
+      - name: Build
+        run: |
+          if [ "${{ matrix.zig }}" = "true" ]; then
+            cargo zigbuild --profile dist --locked -p tern --target ${{ matrix.target }}
+          else
+            cargo build --profile dist --locked -p tern --target ${{ matrix.target }}
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tern-bin-${{ matrix.target }}
+          path: target/${{ matrix.target }}/dist/tern
+          if-no-files-found: error
+
+  macos:
+    name: desktop app (macOS, universal)
+    needs: tern
+    runs-on: macos-latest
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      # Notary credentials: the API key (preferred) or an Apple ID.
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      # A release (tag) with a signing identity must come out notarized, not
+      # quietly signed-only.
+      REQUIRE_NOTARIZE: ${{ startsWith(github.ref, 'refs/tags/') && secrets.MACOS_SIGN_IDENTITY != '' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.47.x
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tern-bin-*-apple-darwin
+          path: in
+      - name: Universal tern binary
+        run: |
+          lipo -create -output in/tern \
+            in/tern-bin-aarch64-apple-darwin/tern in/tern-bin-x86_64-apple-darwin/tern
+          chmod +x in/tern
+          lipo -archs in/tern
+      - name: Import the signing certificate
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          pass="$(openssl rand -hex 16)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pass" "$keychain"
+          # shellcheck disable=SC2046 # one keychain path per word
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+      - name: Write the notary API key
+        if: env.APPLE_API_KEY_P8 != ''
+        run: |
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+      - name: Build, sign, notarize and package
+        run: scripts/release-macos.sh in/tern out
+      - name: Remove the signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/AuthKey.p8"
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos
+          path: out/*
+          if-no-files-found: error
+
+  linux:
+    name: desktop app (Linux ${{ matrix.arch }})
+    needs: tern
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, os: ubuntu-24.04, target: x86_64-unknown-linux-musl }
+          - { arch: aarch64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+    steps:
+      - uses: actions/checkout@v5
+      - name: System packages
+        # Flutter's Linux toolchain, GTK, dpkg-deb, and a virtual display for
+        # the smoke test. The app needs no libsecret: tokens live in a 0600
+        # file on Linux (apps/desktop/lib/state/connection.dart).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+            dpkg-dev desktop-file-utils xvfb libgl1-mesa-dri libegl1
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.47.x
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: tern-bin-${{ matrix.target }}
+          path: in
+      - name: Build and package
+        run: |
+          chmod +x in/tern
+          scripts/package-linux-app.sh --arch ${{ matrix.arch }} in/tern out
+      - name: The .deb installs, with its dependencies, and tern runs
+        run: |
+          sudo apt-get install -y ./out/tern-desktop-linux-${{ matrix.arch }}.deb
+          tern --version
+          test -x /usr/bin/tern_desktop
+          if ldd /usr/lib/tern-desktop/tern_desktop | grep 'not found'; then exit 1; fi
+          desktop-file-validate /usr/share/applications/dev.tern.tern_desktop.desktop
+      - name: Smoke test, the window opens (informational)
+        # A virtual display with software GL: flaky on some runners, so it
+        # reports but doesn't fail the build. Success is still running after 15 s.
+        continue-on-error: true
+        run: |
+          set +e
+          TERN_HOME="$RUNNER_TEMP/tern-home" timeout 15 xvfb-run -a /usr/lib/tern-desktop/tern_desktop
+          code=$?
+          echo "exit code $code (124 = still running when stopped, which is a pass)"
+          [ "$code" = 124 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: attach to a draft release
+    # Only for a tag: a pushed desktop-v* tag, or a manual run that names one.
+    if: ${{ startsWith(github.ref, 'refs/tags/desktop-v') || inputs.tag != '' }}
+    needs: [version, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: out
+          merge-multiple: true
+      - name: Create or update the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          ls -l out
+          # --verify-tag: the tag has to exist already; this never creates one.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --verify-tag --title "tern desktop $TAG" \
+              --notes "Desktop app builds for macOS (dmg, zip) and Linux (tar.gz, deb). Review, then publish."
+          fi
+          gh release upload "$TAG" out/* --clobber

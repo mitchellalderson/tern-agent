@@ -7,8 +7,8 @@ import 'connection.dart';
 
 /// Finding and starting `tern daemon` when it isn't running.
 ///
-/// The release build of the macOS app carries its own `tern`, matched to the
-/// app's client, inside the menu-bar helper
+/// The release builds carry their own `tern`, matched to the app's client:
+/// on Linux beside the app's executable, on macOS inside the menu-bar helper
 /// (`tern.app/Contents/Library/LoginItems/tern Tray.app`), so it comes right
 /// after `$TERN_BIN`. Apps started from Finder get a minimal PATH, so common
 /// install locations are checked too.
@@ -31,15 +31,22 @@ String? findTern([Map<String, String>? env, String? executable]) {
   return null;
 }
 
-/// Where a bundled `tern` would be for the app at [executable]
-/// (`<app>.app/Contents/MacOS/<name>`), or null outside an app bundle. It's
-/// the tray helper's executable: run with arguments it's the ordinary CLI,
-/// and `service install` from there registers login items with
-/// `SMAppService`.
+/// Where a bundled `tern` would be for the app at [executable], or null
+/// when there's nothing to look for.
+///
+/// macOS (`<app>.app/Contents/MacOS/<name>`): the tray helper's executable.
+/// Run with arguments it's the ordinary CLI, and `service install` from
+/// there registers login items with `SMAppService`.
+///
+/// Linux (`scripts/package-linux-app.sh`): a `tern` beside the app's own
+/// executable, which is also where the tray's "Open tern" looks for
+/// `tern_desktop`. [findTern] checks that it exists.
 String? bundledTern(String executable) {
-  final macos = File(executable).parent;
-  if (macos.path.split('/').last != 'MacOS') return null;
-  return '${macos.parent.path}/Library/LoginItems/tern Tray.app/Contents/MacOS/tern-tray';
+  final dir = File(executable).parent;
+  if (dir.path.split('/').last != 'MacOS') {
+    return Platform.isLinux ? '${dir.path}/tern' : null;
+  }
+  return '${dir.parent.path}/Library/LoginItems/tern Tray.app/Contents/MacOS/tern-tray';
 }
 
 /// Start tern with `tern start`: through the login service when it's

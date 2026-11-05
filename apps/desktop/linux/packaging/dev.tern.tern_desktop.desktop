@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=tern
+GenericName=AI agent
+Comment=Your personal AI agent: conversations, approvals and routines
+Exec=tern_desktop
+Icon=tern
+Terminal=false
+Categories=Utility;
+Keywords=AI;agent;assistant;chat;
+StartupNotify=true
+StartupWMClass=dev.tern.tern_desktop

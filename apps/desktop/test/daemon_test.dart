@@ -9,7 +9,10 @@ void main() {
       bundledTern('/Applications/tern.app/Contents/MacOS/tern'),
       '/Applications/tern.app/Contents/Library/LoginItems/tern Tray.app/Contents/MacOS/tern-tray',
     );
-    expect(bundledTern('/usr/local/bin/tern_desktop'), isNull);
+    expect(
+      bundledTern('/usr/lib/tern-desktop/tern_desktop'),
+      Platform.isLinux ? '/usr/lib/tern-desktop/tern' : isNull,
+    );
   });
 
   test('findTern prefers TERN_BIN, then the bundled binary, then PATH', () {
