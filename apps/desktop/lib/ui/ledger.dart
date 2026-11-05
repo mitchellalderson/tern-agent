@@ -3,6 +3,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'underline_tabs.dart';
 import 'widgets.dart';
 
 /// The header every Library page shares: a title, optional actions, and
@@ -168,16 +169,13 @@ class _LedgerViewState extends State<LedgerView> {
             children: [
               if (_check case final check?) ChainBanner(check: check),
               const SizedBox(height: 12),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
+              UnderlineTabs(
+                tabs: [
                   for (final (label, kind) in ledgerFilters)
-                    ChoiceChip(
-                      label: Text(label),
+                    UnderlineTab(
+                      label: label,
                       selected: _kind == kind,
-                      onSelected: (_) => _filter(kind),
-                      visualDensity: VisualDensity.compact,
+                      onTap: () => _filter(kind),
                     ),
                 ],
               ),
@@ -230,47 +228,41 @@ class ChainBanner extends StatelessWidget {
     final c = context.colors;
     final ok = check.ok;
     final color = ok ? c.ok : c.error;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Icon(
             ok ? Icons.verified_outlined : Icons.gpp_bad_outlined,
-            size: 18,
+            size: 16,
             color: color,
           ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  ok
-                      ? 'Intact · ${check.entries} '
-                            '${check.entries == 1 ? 'entry' : 'entries'}'
-                      : 'Changed outside tern at entry #${check.brokenAt}',
-                  style: TextStyle(fontWeight: FontWeight.w600, color: color),
-                ),
-                const SizedBox(height: 2),
-                SelectableText(
-                  ok
-                      ? 'Each entry is chained to the one before by its '
-                            'hash. Head ${_short(check.head)}'
-                      : '${check.reason ?? ''}. Entries before it are '
-                            'intact.',
-                  style: TextStyle(fontSize: 12, color: c.muted),
-                ),
-              ],
-            ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                ok
+                    ? 'Intact · ${check.entries} '
+                          '${check.entries == 1 ? 'entry' : 'entries'}'
+                    : 'Changed outside tern at entry #${check.brokenAt}',
+                style: TextStyle(fontWeight: FontWeight.w600, color: color),
+              ),
+              SelectableText(
+                ok
+                    ? 'Each entry is chained to the one before by its '
+                          'hash. Head ${_short(check.head)}'
+                    : '${check.reason ?? ''}. Entries before it are '
+                          'intact.',
+                style: TextStyle(fontSize: 12, color: c.muted),
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
