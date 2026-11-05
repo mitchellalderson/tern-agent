@@ -1480,3 +1480,28 @@ system or file write.
   sub-agents). The API gained `PATCH` and `DELETE` on `/v1/memories`, in the `chat` scope with the rest of memories.
 - **Not done.** No automatic expiry of old or unverified notes, no per-note "verify" action beyond rewriting, no
   separate cap for unverified notes, and the starters' prompts were not changed to mention memory.
+
+## Proactive delegation across agents (2026-11-05)
+
+Most of the machinery existed (`agent_spawn {agent}`, a delegates list in the prompt, ceilings copied to children).
+What was missing: the model had no cap on the roster, no ceiling in it, a soft policy, and starter agents (explicit
+`builtins` lists, no `delegates`) could not delegate at all, so a persona hint to hand off would have been inert.
+
+- **Roster.** `agent_frame` ranks the other active agents by word overlap between the new run's input and each
+  agent's name and "Your job" line (then most recently edited), caps both the "Agents" list and the delegation
+  list at `ROSTER_CAP` = 12 with an `...and N more` line, and adds `at most <ceiling>` to each delegate line. It is
+  recomputed at every run start (prompts are frozen per run, so a created, archived or deleted agent shows up on
+  the next run with no cache to invalidate). Framed in the prompt as data the user wrote.
+- **Policy.** One short "Handing work to your agents" section replaces the old paragraph: check the list before
+  substantial work, delegate what is clearly in a lane, say so in one line first (a visible step, not silent), brief
+  fully, summarise and credit, don't delegate trivia or loop, never delegate to get around a limit. The "ask the user
+  to message the other agent" fallback now applies only when the agent can't hand over itself.
+- **Plumbing.** An agent with a non-empty delegation list gets the `agent_*` tools in its frozen scope even if its
+  scope lists only some built-ins; this adds no reach because the child runs under the delegate's own scope and the
+  lower of its ceiling and the caller's autonomy (already true; now covered by a test where a read-only agent
+  delegates to a supervised one). Seeded starters get `delegates` = the other seeded starters at seed time (editable;
+  user-created agents still start with none). Starter personas gained a one-line hand-off rule where a natural peer
+  exists; the rule is inert for peers the user doesn't have.
+- **Not done.** Ranking is lexical, not semantic; the persona rule names starter slugs that may not exist in a
+  user's home; the "Let agents decide" router is unchanged. The TUI labels a hand-off from the agent id suffix
+  (`tern:seo` -> `@seo`), which equals the slug unless the agent was renamed after creation.
