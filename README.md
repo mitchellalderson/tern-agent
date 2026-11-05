@@ -156,7 +156,7 @@ If the daemon dies mid-run, the next start finds the run still `running` and res
 
 ### Sub-agents
 
-A run can delegate. `agent_spawn` starts a **child run** in a session of its own with a fresh context: its brief is its first message. The child is an ordinary run (journaled, resumable, cancellable) driven concurrently with its parent. Parent and child talk through **mail** that the daemon stores: the parent picks it up at its next model call (an `inbox` step in its journal) or by blocking in `agent_wait`.
+A run can delegate, and your agents are proactive about it: each one that may hand work on sees a short roster of its peers (what each is for and its autonomy ceiling) and hands a request that is clearly in a specialist's lane (an SEO audit to `seo`, a review to `code-reviewer`) to that agent, saying so as it does, instead of doing it badly itself; the delegate keeps its own tools and ceiling. `agent_spawn` starts a **child run** in a session of its own with a fresh context: its brief is its first message. The child is an ordinary run (journaled, resumable, cancellable) driven concurrently with its parent. Parent and child talk through **mail** that the daemon stores: the parent picks it up at its next model call (an `inbox` step in its journal) or by blocking in `agent_wait`.
 
 ```mermaid
 sequenceDiagram

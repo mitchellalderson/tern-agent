@@ -287,7 +287,7 @@ impl Runtime {
                     .agent(agent)
                     .ok()
                     .flatten()
-                    .map(|a| agent_frame(&h, &st, &a));
+                    .map(|a| agent_frame(&h, &st, &a, None));
                 let (prompt, scope) = match &frame {
                     Some((prompt, scope)) => (prompt.as_ref(), scope.as_ref()),
                     None => (None, None),
@@ -358,17 +358,34 @@ impl Runtime {
         if has_others || had_deleted {
             return;
         }
+        let mut made = Vec::new();
         for id in tern_core::agents::SEEDED_STARTERS {
             let Some(t) = tern_core::agents::template(id) else {
                 continue;
             };
-            let made = self.create_agent(NewAgent {
+            let row = self.create_agent(NewAgent {
                 name: t.name.clone(),
                 template: Some((*id).to_owned()),
                 ..NewAgent::default()
             });
-            if let Err(e) = made {
-                tracing::warn!(starter = id, error = %e, "seeding a starter agent failed");
+            match row {
+                Ok(row) => made.push(row.id),
+                Err(e) => {
+                    tracing::warn!(starter = id, error = %e, "seeding a starter agent failed");
+                }
+            }
+        }
+        // The starters hand work to each other out of the box (each one's
+        // persona says to whom); the user can edit the list. Each keeps its
+        // own tools and autonomy ceiling, which apply to a hand-off.
+        for me in &made {
+            let peers: Vec<&String> = made.iter().filter(|p| *p != me).collect();
+            let change = tern_store::AgentChange {
+                delegates: Some(serde_json::to_string(&peers).ok()),
+                ..tern_store::AgentChange::default()
+            };
+            if let Err(e) = self.store.update_agent(me, &change) {
+                tracing::warn!(agent = %me, error = %e, "setting a starter's delegates failed");
             }
         }
     }
@@ -478,7 +495,7 @@ impl Runtime {
     /// What tern adds under `agent`'s persona in a run's prompt: everything
     /// after the persona, for the editor's read-only preview.
     pub fn system_sections(&self, agent: &tern_store::AgentRow) -> String {
-        let (prompt, scope) = agent_frame(&self.home, &self.store, agent);
+        let (prompt, scope) = agent_frame(&self.home, &self.store, agent, None);
         let full = self
             .prompts
             .build(AgentRole::Main, 0, prompt.as_ref(), scope.as_ref());
@@ -773,15 +790,34 @@ impl Runtime {
         } else {
             AgentRole::Main
         };
-        let (prompt, scope) = agent_frame(&self.home, &self.store, &agent);
+        let (prompt, scope) = agent_frame(&self.home, &self.store, &agent, Some(text));
         let mut system = self.prompts.build(role, 0, prompt.as_ref(), scope.as_ref());
         // Always, so the agent knows where it is and that its reply is
         // delivered there; frozen with the prompt, so replay sees the same.
         if let Some(section) = self.where_section(&session, &agent.id, trigger == "cron")? {
             system.push_str(&section);
         }
+        let builtins = self.agent.tools().builtin_names();
         let tool_scope = scope
-            .map(|s| s.freeze(&self.agent.tools().builtin_names()))
+            .map(|s| {
+                let mut names = s.freeze(&builtins);
+                // An agent that may hand work to others gets the tools to do
+                // it, whatever its scope lists: a hand-off adds no reach (the
+                // delegate's own scope, ceiling and the lower autonomy apply).
+                if self.subagents.is_some()
+                    && prompt.as_ref().is_some_and(|p| !p.delegates.is_empty())
+                {
+                    names.extend(
+                        tern_core::subagent::AGENT_TOOLS
+                            .iter()
+                            .filter(|t| builtins.iter().any(|b| b == *t))
+                            .map(|t| (*t).to_owned()),
+                    );
+                    names.sort();
+                    names.dedup();
+                }
+                names
+            })
             .map(|names| serde_json::to_string(&names))
             .transpose()?;
         let run = self.agent.start_run_as(
@@ -848,6 +884,7 @@ pub(crate) fn agent_frame(
     home: &TernHome,
     store: &Store,
     agent: &tern_store::AgentRow,
+    task: Option<&str>,
 ) -> (
     Option<tern_core::prompt::AgentPrompt>,
     Option<tern_core::agents::ToolScope>,
@@ -868,25 +905,57 @@ pub(crate) fn agent_frame(
                 }
             }
         });
-    let others = other_agents(home, store, &agent.id);
-    if agent.is_default() && others.is_empty() {
+    let active = store.agents(false).unwrap_or_default();
+    // Everyone else, best match for `task` first (then the most recently
+    // edited), capped: the roster is bounded however many agents exist.
+    let mut ranked: Vec<&tern_store::AgentRow> =
+        active.iter().filter(|a| a.id != agent.id).collect();
+    if ranked.is_empty() && agent.is_default() {
         return (None, scope);
     }
-    let delegates = store
-        .agents(false)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|a| agent.may_delegate_to(a))
+    let jobs: std::collections::HashMap<&str, String> = ranked
+        .iter()
+        .map(|a| (a.id.as_str(), use_for(home, a)))
+        .collect();
+    let words = task.map(words_of).unwrap_or_default();
+    let score = |a: &tern_store::AgentRow| {
+        let hay = words_of(&format!("{} {} {}", a.slug, a.name, jobs[a.id.as_str()]));
+        words.intersection(&hay).count()
+    };
+    ranked.sort_by_key(|a| (std::cmp::Reverse(score(a)), std::cmp::Reverse(a.updated_at)));
+    let cap = tern_core::prompt::ROSTER_CAP;
+    let others: Vec<String> = ranked
+        .iter()
+        .take(cap)
+        .map(|a| format!("@{} · {} · {}", a.slug, a.name, persona_line(home, &a.id)))
+        .collect();
+    let others_more = ranked.len().saturating_sub(cap);
+    let can: Vec<&&tern_store::AgentRow> =
+        ranked.iter().filter(|a| agent.may_delegate_to(a)).collect();
+    let delegates = can
+        .iter()
+        .take(cap)
         .map(|a| {
-            let job = use_for(home, &a);
-            format!("`{}` · {} · use for: {job}", a.slug, a.name)
+            let ceiling = a.autonomy.as_deref().map_or_else(
+                || "no ceiling of its own".to_owned(),
+                |c| format!("at most {c}"),
+            );
+            format!(
+                "`{}` · {} · use for: {} · {ceiling}",
+                a.slug,
+                a.name,
+                jobs[a.id.as_str()]
+            )
         })
         .collect();
+    let delegates_more = can.len().saturating_sub(cap);
     let prompt = tern_core::prompt::AgentPrompt {
         persona_path: tern_core::agents::persona_path(home, &agent.id),
         memory_path: tern_core::agents::memory_path(home, &agent.id, agent.private_memory()),
         others,
+        others_more,
         delegates,
+        delegates_more,
     };
     (Some(prompt), scope)
 }
@@ -914,14 +983,12 @@ fn use_for(home: &TernHome, a: &tern_store::AgentRow) -> String {
     line.chars().take(160).collect()
 }
 
-/// One line per other active agent: `@slug · Name · first line of its persona`.
-fn other_agents(home: &TernHome, store: &Store, me: &str) -> Vec<String> {
-    store
-        .agents(false)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|a| a.id != me)
-        .map(|a| format!("@{} · {} · {}", a.slug, a.name, persona_line(home, &a.id)))
+/// Lowercase words of `text` longer than three letters, for matching a
+/// request against what an agent is for.
+fn words_of(text: &str) -> std::collections::HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() > 3)
+        .map(str::to_lowercase)
         .collect()
 }
 

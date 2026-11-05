@@ -1199,6 +1199,20 @@ fn agent_lines(app: &App) -> Vec<AgentLine> {
 }
 
 #[test]
+fn a_hand_off_to_another_agent_names_it_on_the_line() {
+    let (mut app, _) = new_app();
+    submit(&mut app, "audit my site");
+    let mut ev = spawned("r1", "c1", "audit");
+    if let AgentEvent::SubagentSpawned { agent, .. } = &mut ev {
+        *agent = Some("tern:seo".into());
+    }
+    app.on_agent_event(ev);
+    app.on_agent_event(spawned("r1", "c2", "plain"));
+    let labels: Vec<String> = agent_lines(&app).into_iter().map(|a| a.label).collect();
+    assert_eq!(labels, ["@seo audit", "plain"]);
+}
+
+#[test]
 fn sub_agent_events_update_their_line_and_never_the_transcript() {
     let (mut app, _) = new_app();
     submit(&mut app, "fan out");
