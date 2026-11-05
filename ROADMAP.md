@@ -101,7 +101,7 @@ Being built on other branches right now; not done until merged.
 container image and server guides (D2), Postgres (D3), a mobile app with push (D4), a hosted tier with export and
 leave (D5), and a relay so a home core gets phone reach without port forwarding (D6).
 
-**Desktop app** ([gui-spec.md](docs/gui-spec.md) §10): packaging, notarization and a Linux build (G6).
+**Desktop app** ([gui-spec.md](docs/gui-spec.md) §10): packaging, notarization and a Linux build (G6). Built: `scripts/release-macos.sh` (sign, notarize, staple, dmg and zip) and `scripts/package-linux-app.sh` (`.tar.gz`, `.deb`), run by `desktop-release.yml`; left: your Apple credentials for the first notarized run, and a real Linux build ([docs/desktop-release.md](docs/desktop-release.md)).
 
 ## Won't do
 
