@@ -336,15 +336,12 @@ class _DefaultModelSectionState extends State<_DefaultModelSection> {
     super.initState();
     _loadedFor = _store.info?.defaultModel;
     _load();
-    if (_store.modelLists == null && !_store.loadingModels) {
-      unawaited(_store.loadModels());
-    }
-  }
-
-  @override
-  void didUpdateWidget(_DefaultModelSection old) {
-    super.didUpdateWidget(old);
-    _load();
+    // Loading notifies, so not during this build.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _store.modelLists == null && !_store.loadingModels) {
+        unawaited(_store.loadModels());
+      }
+    });
   }
 
   Future<void> _load() async {

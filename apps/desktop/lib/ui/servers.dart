@@ -149,6 +149,13 @@ Future<void> showServerMenu(
     context: context,
     position: position,
     constraints: const BoxConstraints(minWidth: 250, maxWidth: 320),
+    color: context.colors.card,
+    surfaceTintColor: Colors.transparent,
+    elevation: 6,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(10),
+      side: BorderSide(color: context.colors.hairline),
+    ),
     items: [
       for (final p in profiles)
         PopupMenuItem<String>(

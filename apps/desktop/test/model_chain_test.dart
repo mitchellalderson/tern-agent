@@ -27,8 +27,8 @@ const _lists = [
   ),
 ];
 
-class _FakeClient extends TernClient {
-  _FakeClient({this.chain = const ['anthropic:claude-sonnet-5-5']})
+class FakeChainClient extends TernClient {
+  FakeChainClient({this.chain = const ['anthropic:claude-sonnet-5-5']})
     : super(const Endpoint.unix('/nonexistent'));
 
   /// What `default_model` holds.
@@ -94,7 +94,10 @@ class _FakeClient extends TernClient {
   Future<List<Channel>> channels({bool archived = false}) async => const [];
 }
 
-Future<TernStore> _store(_FakeClient client, {bool owner = true}) async {
+Future<TernStore> chainStore(
+  FakeChainClient client, {
+  bool owner = true,
+}) async {
   final store = TernStore(client)
     ..link = Link.online
     ..health = Health(
@@ -149,9 +152,9 @@ void main() {
   Future<TernStore> editor(
     WidgetTester tester,
     List<String> chain, {
-    _FakeClient? client,
+    FakeChainClient? client,
   }) async {
-    final store = await _store(client ?? _FakeClient(chain: chain));
+    final store = await chainStore(client ?? FakeChainClient(chain: chain));
     latest = chain;
     await tester.pumpWidget(
       _app(_Holder(store: store, initial: chain, onChange: (v) => latest = v)),
@@ -325,7 +328,7 @@ void main() {
   });
 
   group('Models dialog', () {
-    Future<_FakeClient> open(
+    Future<FakeChainClient> open(
       WidgetTester tester, {
       List<String> chain = const ['anthropic:claude-sonnet-5-5'],
       bool owner = true,
@@ -333,8 +336,8 @@ void main() {
       tester.view.physicalSize = const Size(1200, 1400);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
-      final client = _FakeClient(chain: chain);
-      final store = await _store(client, owner: owner);
+      final client = FakeChainClient(chain: chain);
+      final store = await chainStore(client, owner: owner);
       await tester.pumpWidget(_app(ProvidersDialog(store: store)));
       await tester.pumpAndSettle();
       return client;
