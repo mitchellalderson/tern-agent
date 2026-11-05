@@ -84,6 +84,14 @@ script grants.
   be chained, and a read from a site you already allowed can carry data out in a URL. Taint is tracked from the
   sources tern knows about: an MCP server or connector that returns third-party text without being marked untrusted
   isn't caught. See [docs/reference.md](docs/reference.md) (Taint, Outbox).
+  *Tainted reads.* In a tainted run, the read-only file tools (`read_file`, `list_dir`, `search_files`) do not ask for
+  paths inside the workspace (one ledger row per run, reason `tainted-read-in-workspace`), so a run with sub-agents is
+  not a click per file. A read outside the workspace still asks, and the card offers "Allow for this run": read-only
+  file tools under that folder (the enclosing git repository, else the folder), for that run and its sub-agents, never
+  "this conversation" or "always". Protected files (secrets, the database) stay refused whatever is answered, symlinks
+  and `..` are resolved before anything is compared, and every write, shell, network and connector call still asks.
+  Residual risk: a tainted run can read (not change or send) anything in the workspace and in a folder you allowed for
+  the run; that is bounded because egress is gated separately (new sites ask) and the run's writes ask.
 - **Persistent injection through memory.** A page can tell an agent to "remember" an instruction, and a later run
   would read it back. Agent memory is a class of its own: no approval, so even a read-only agent has it, and bounded
   instead. Notes go only to the agent's own namespace (a read-only or tainted run never writes the shared pool, and a

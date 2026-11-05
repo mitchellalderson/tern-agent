@@ -679,6 +679,89 @@ fn approvals_are_answered_inline() {
     assert!(app.approval.is_none());
 }
 
+/// A tainted run's read-only request, with a run-only read scope on `dir`.
+fn tainted_read(id: &str, tool: &str, dir: &str) -> (PendingApproval, oneshot::Receiver<Decision>) {
+    let (tx, rx) = oneshot::channel();
+    let p = PendingApproval {
+        request: ApprovalRequest {
+            id: id.into(),
+            run_id: format!("r_{id}"),
+            session_id: "s1".into(),
+            call: ToolCall {
+                id: id.into(),
+                name: tool.into(),
+                input: json!({"path": format!("{dir}/{id}")}),
+            },
+            summary: format!("{tool} {dir}/{id}"),
+            effect: tern_core::tool::Effect::Read,
+            pattern: None,
+            parent_run_id: Some("root".into()),
+            agent_label: Some("research".into()),
+            taint: Some("spawned by a tainted run".into()),
+            local_only: false,
+            egress_host: None,
+            script: None,
+            grant: Some(tern_core::approval::GrantOffer {
+                key: format!("readscope:{dir}"),
+                label: format!("read tools in {dir}"),
+                run_only: true,
+            }),
+            notice: None,
+        },
+        reply: tx,
+    };
+    (p, rx)
+}
+
+#[test]
+fn waiting_tainted_reads_are_answered_together_and_offer_only_this_run() {
+    let go = |keys: &[char]| {
+        let (mut app, _) = new_app();
+        submit(&mut app, "go");
+        let mut rxs = vec![];
+        for (i, (tool, dir)) in [("read_file", "/p"), ("list_dir", "/p"), ("list_dir", "/q")]
+            .into_iter()
+            .enumerate()
+        {
+            let (p, rx) = tainted_read(&format!("a{i}"), tool, dir);
+            app.on_approval(p);
+            rxs.push(rx);
+        }
+        let s = screen(&mut app, 140, 14);
+        assert!(s.contains("[r] this run"), "{s}");
+        assert!(
+            !s.contains("[c] this conversation") && !s.contains("[a] always"),
+            "{s}"
+        );
+        assert!(s.contains("[g] allow all 3 (read_file, list_dir)"), "{s}");
+        assert!(s.contains("[x] deny all 3"), "{s}");
+        for k in keys {
+            app.on_key(key(KeyCode::Char(*k)), Instant::now());
+        }
+        (app, rxs)
+    };
+    // c and a do nothing for a run-only read scope.
+    let (app, mut rxs) = go(&['c', 'a']);
+    assert!(rxs[0].try_recv().is_err() && app.approval.is_some());
+    // g: everything once.
+    let (app, mut rxs) = go(&['g']);
+    assert!(app.approval.is_none());
+    for rx in &mut rxs {
+        assert_eq!(rx.try_recv().unwrap(), Decision::AllowOnce);
+    }
+    // x: everything denied.
+    let (_, mut rxs) = go(&['x']);
+    for rx in &mut rxs {
+        assert_eq!(rx.try_recv().unwrap(), Decision::Deny);
+    }
+    // r: this run, for the requests in the same folder; the other one waits.
+    let (app, mut rxs) = go(&['r']);
+    assert_eq!(rxs[0].try_recv().unwrap(), Decision::AllowRun);
+    assert_eq!(rxs[1].try_recv().unwrap(), Decision::AllowRun);
+    assert!(rxs[2].try_recv().is_err());
+    assert_eq!(app.approval.as_ref().unwrap().request.id, "a2");
+}
+
 #[test]
 fn a_scoped_grant_prompt_offers_run_conversation_and_always() {
     for (k, want) in [
@@ -712,6 +795,7 @@ fn a_scoped_grant_prompt_offers_run_conversation_and_always() {
                 grant: Some(tern_core::approval::GrantOffer {
                     key: "draft net.a#1".into(),
                     label: "draft net.a".into(),
+                    run_only: false,
                 }),
                 notice: None,
             },

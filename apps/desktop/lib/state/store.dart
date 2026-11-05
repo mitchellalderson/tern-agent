@@ -2191,6 +2191,38 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Answer every card of a [PendingApprovalGroupItem] at once.
+  ///
+  /// [Decision.once] and [Decision.deny] go to each card. [Decision.run]
+  /// ("Allow all for this run") goes to one card per distinct read scope,
+  /// and the daemon releases the others of that scope (its run's other read
+  /// tools and sub-agents); cards without a scope are allowed once.
+  Future<void> answerGroup(PendingApprovalGroupItem group, Decision d) async {
+    final members = [
+      for (final m in group.members)
+        if (m.outcome == null) m,
+    ];
+    if (d != Decision.run) {
+      for (final m in members) {
+        await answer(m, d);
+      }
+      return;
+    }
+    final reps = group.grantRepresentatives;
+    for (final m in members) {
+      final key = m.approval.grant?.key;
+      if (key == null) {
+        await answer(m, Decision.once);
+      } else if (reps.contains(m)) {
+        await answer(m, Decision.run);
+      } else {
+        // Same scope as a card answered above: released by that answer.
+        m.outcome = 'allowed for this run';
+      }
+    }
+    notifyListeners();
+  }
+
   /// Pending outbox items for the open stream: the ones its runs queued
   /// (Home's own, or an agent's in its DM). Items from elsewhere wait
   /// there, with a pointer in Home. A core without channels: all of them.

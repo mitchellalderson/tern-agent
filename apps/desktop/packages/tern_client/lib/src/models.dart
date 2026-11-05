@@ -566,10 +566,22 @@ class Approval {
 
 /// What a scoped grant would cover.
 class GrantOffer {
-  const GrantOffer({required this.key, required this.label});
+  const GrantOffer({
+    required this.key,
+    required this.label,
+    this.runOnly = false,
+  });
 
-  factory GrantOffer.fromJson(Json j) =>
-      GrantOffer(key: j['key'] as String, label: j['label'] as String);
+  factory GrantOffer.fromJson(Json j) => GrantOffer(
+    key: j['key'] as String,
+    label: j['label'] as String,
+    runOnly: j['run_only'] as bool? ?? false,
+  );
+
+  /// Only "for this run" may be offered: a tainted run's read scope (the
+  /// read-only file tools under a folder, for the run and its sub-agents).
+  /// "This conversation" and "always" are never available for it.
+  final bool runOnly;
 
   final String key;
 

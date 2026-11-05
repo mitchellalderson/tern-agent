@@ -187,6 +187,12 @@ pub struct Agent {
 struct ScopedGrants {
     runs: std::collections::HashSet<(String, String, String)>,
     sessions: std::collections::HashSet<(String, String, String)>,
+    /// A tainted run's "allow reads under this folder for this run", keyed on
+    /// the root run (its sub-agents share it) and the folder. Read-only file
+    /// tools only ([`approval::READ_FS_TOOLS`]), never any other tool.
+    read_runs: std::collections::HashSet<(String, std::path::PathBuf)>,
+    /// Runs whose unasked workspace reads are already in the ledger.
+    noted_reads: std::collections::HashSet<String>,
 }
 
 /// What an approved call's grant answer covers.
@@ -247,6 +253,49 @@ impl Agent {
                 .store
                 .allowlist(tool)?
                 .contains(&approval::key_pattern(&key.key)))
+    }
+
+    /// The run at the top of `run`'s sub-agent tree.
+    fn root_run_id(&self, run: &RunRow) -> Result<String, StepError> {
+        let mut id = run.id.clone();
+        let mut parent = run.parent_run_id.clone();
+        for _ in 0..32 {
+            let Some(p) = parent else { break };
+            let Some(row) = self.store.run(&p)? else {
+                break;
+            };
+            id = row.id;
+            parent = row.parent_run_id;
+        }
+        Ok(id)
+    }
+
+    /// Whether the user allowed reads under a folder holding `target` for
+    /// this run's tree.
+    fn read_scope_granted(
+        &self,
+        run: &RunRow,
+        target: &std::path::Path,
+    ) -> Result<bool, StepError> {
+        let root = self.root_run_id(run)?;
+        Ok(self.scoped.lock().is_ok_and(|g| {
+            g.read_runs
+                .iter()
+                .any(|(r, d)| *r == root && target.starts_with(d))
+        }))
+    }
+
+    /// The ledger says once per run that its workspace reads go through
+    /// unasked ([`approval::TAINTED_READ_REASON`]), instead of one row each.
+    fn note_tainted_reads(&self, run: &RunRow, call: &ToolCall) -> Result<(), StepError> {
+        let first = self
+            .scoped
+            .lock()
+            .is_ok_and(|mut g| g.noted_reads.insert(run.id.clone()));
+        if first {
+            self.ledger_tainted_read(run, call)?;
+        }
+        Ok(())
     }
 
     fn grant_scoped(&self, run: &RunRow, tool: &str, key: &str, scope: GrantScope) {
@@ -718,6 +767,15 @@ impl Agent {
                         Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
                         Err(e) => return Err(e.into()),
                     }
+                } else if gate.tainted
+                    && gate.autonomy != Autonomy::Yolo
+                    && in_scope
+                    && policy.effect == crate::tool::Effect::Read
+                    && approval::READ_FS_TOOLS.contains(&call.name.as_str())
+                {
+                    // A tainted run's read of the workspace: no prompt, one
+                    // ledger row per run.
+                    self.note_tainted_reads(run, &call)?;
                 }
 
                 self.emit(AgentEvent::ToolStarted {
@@ -1025,6 +1083,9 @@ impl Agent {
         let granted = policy.forbidden.is_none()
             && (key_granted
                 || always_ok && approval::allowed_by(&self.store.allowlist(&call.name)?, call));
+        let tainted_read = gate.tainted
+            && policy.effect == crate::tool::Effect::Read
+            && approval::READ_FS_TOOLS.contains(&call.name.as_str());
         let (effect, always, offer_grant) = match approval::check(&call.name, policy, granted, gate)
         {
             approval::Check::Allow => {
@@ -1073,6 +1134,23 @@ impl Agent {
         {
             return Ok((ApprovalOutcome::Approved, String::new()));
         }
+        // A tainted run's read outside the workspace: the user may allow reads
+        // under that folder for this run (and its sub-agents), nothing more.
+        let mut read_grant = None;
+        if tainted_read
+            && effect == crate::tool::Effect::Read
+            && let Some((target, dir)) = approval::read_scope(&self.cfg.workspace, call)
+        {
+            if self.read_scope_granted(run, &target)? {
+                self.ledger_tainted_read_grant(run, call, &dir)?;
+                return Ok((ApprovalOutcome::Approved, String::new()));
+            }
+            read_grant = Some(approval::GrantOffer {
+                key: approval::read_scope_key(&dir),
+                label: format!("read_file, list_dir, search_files in {}", dir.display()),
+                run_only: true,
+            });
+        }
         let req = ApprovalRequest {
             id: new_id(),
             run_id: run.id.clone(),
@@ -1094,13 +1172,24 @@ impl Agent {
             } else {
                 None
             }
-            .or_else(|| no_grant.filter(|_| !gate.tainted)),
-            grant: grant_key
-                .filter(|_| offer_grant)
-                .map(|k| approval::GrantOffer {
-                    key: k.key,
-                    label: k.label,
-                }),
+            .or_else(|| no_grant.filter(|_| !gate.tainted))
+            .or_else(|| {
+                read_grant.as_ref().map(|_| {
+                    "Allowing for this run covers only the read-only file tools under this \
+                     folder, for this run and its sub-agents: no writes, no network. \
+                     \"Always\" isn't offered because this run read untrusted content."
+                        .to_owned()
+                })
+            }),
+            grant: read_grant.or_else(|| {
+                grant_key
+                    .filter(|_| offer_grant)
+                    .map(|k| approval::GrantOffer {
+                        key: k.key,
+                        label: k.label,
+                        run_only: false,
+                    })
+            }),
         };
         // A write may wait in the outbox instead (tooling spec §5.2).
         let deferrable = effect != crate::tool::Effect::Read && self.approvals.can_defer();
@@ -1136,12 +1225,20 @@ impl Agent {
             // Scoped answers: only with a grant offered, else "once".
             Ok(Decision::AllowRun) => {
                 if let Some(g) = &req.grant {
-                    self.grant_scoped(run, &call.name, &g.key, GrantScope::Run);
+                    match approval::read_scope_dir(&g.key) {
+                        Some(dir) if g.run_only => {
+                            let root = self.root_run_id(run)?;
+                            if let Ok(mut s) = self.scoped.lock() {
+                                s.read_runs.insert((root, dir));
+                            }
+                        }
+                        _ => self.grant_scoped(run, &call.name, &g.key, GrantScope::Run),
+                    }
                 }
                 (ApprovalOutcome::Approved, String::new())
             }
             Ok(Decision::AllowSession) => {
-                if let Some(g) = &req.grant {
+                if let Some(g) = req.grant.as_ref().filter(|g| !g.run_only) {
                     self.grant_scoped(run, &call.name, &g.key, GrantScope::Session);
                 }
                 (ApprovalOutcome::Approved, String::new())
@@ -1150,10 +1247,10 @@ impl Agent {
                 // A grant offered means "always" is for exactly that key (the
                 // prompt says so); else the command pattern; with neither it
                 // can only mean "this once".
-                if let Some(g) = &req.grant {
+                if let Some(g) = req.grant.as_ref().filter(|g| !g.run_only) {
                     self.store
                         .add_allowlist(&call.name, &approval::key_pattern(&g.key))?;
-                } else if let Some(p) = &req.pattern {
+                } else if let Some(p) = req.pattern.as_ref().filter(|_| req.grant.is_none()) {
                     self.store.add_allowlist(&call.name, p)?;
                 }
                 (ApprovalOutcome::Approved, String::new())

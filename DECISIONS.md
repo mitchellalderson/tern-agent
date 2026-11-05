@@ -1505,3 +1505,28 @@ What was missing: the model had no cap on the roster, no ceiling in it, a soft p
 - **Not done.** Ranking is lexical, not semantic; the persona rule names starter slugs that may not exist in a
   user's home; the "Let agents decide" router is unchanged. The TUI labels a hand-off from the agent id suffix
   (`tern:seo` -> `@seo`), which equals the slug unless the agent was renamed after creation.
+
+## Tainted runs: read-only file tools and the click storm (2026-11-05)
+
+A run with sub-agents that had read untrusted content asked once per `read_file` / `list_dir`, with only "Allow once"
+and "Deny". Taint exists so an injected run cannot cause effects or exfiltrate; reading is neither.
+
+- **Rule.** `approval::READ_FS_TOOLS` (`read_file`, `list_dir`, `search_files`) in a tainted run: a path inside the
+  workspace never asks (this was already so through `ToolPolicy`; now stated, tested, and ledgered once per run as
+  `tainted-read-in-workspace`). A path outside the workspace asks, with one added answer: "Allow for this run".
+- **What that grant is.** A `GrantOffer { run_only: true }` keyed `readscope:<folder>`, where the folder is the
+  canonical enclosing git repository of the target (never `/` or the home directory), else the target's own folder;
+  a path with `..` gets no scope. It lives in memory keyed on the root run, so sub-agents of the run share it and
+  another run tree never inherits it. It covers only the three read-only file tools and only paths under the folder
+  after symlink resolution; the tools' own `Guard` still refuses protected files at call time. "This conversation" and
+  "always" answers to it mean "once", and nothing is written to the allowlist (no standing grants under taint).
+- **Bulk answers.** The daemon releases other waiting cards of the same read scope (any read-only file tool, same
+  root session) when one is answered "for this run". The desktop groups waiting tainted read cards of one run tree
+  into one card ("N pending: ... (spawned by tainted run)", Allow all N / Allow all for this run / Deny all, with a
+  list and per-call Show input); the TUI offers `[g]` allow all, `[x]` deny all, and `[r]` for the scope.
+- **Unchanged.** Every effectful tool, any network egress (the host limit), connector and MCP writes, and recall of
+  unverified memory ask under taint exactly as before; yolo and readonly autonomy are untouched.
+- **Residual risk.** A tainted run can read workspace files and any folder the user allowed for the run. Exfiltration
+  needs egress, which asks per site, and protected paths stay refused. Not done: the screenshot's reads came from a
+  folder outside the run's workspace, so the workspace work in flight (W0/W1) should make a project folder the
+  workspace to take them out of the prompt path altogether.
