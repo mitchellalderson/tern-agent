@@ -72,8 +72,8 @@ impl Tool for McpList {
     }
 
     /// Server stderr and tool descriptions come from outside.
-    fn untrusted(&self) -> bool {
-        true
+    fn ingestion(&self) -> tern_core::tool::Ingestion {
+        tern_core::tool::Ingestion::Internal
     }
 
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {

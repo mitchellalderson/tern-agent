@@ -731,7 +731,7 @@ fn convert(result: CallToolResult) -> ToolResult {
     ToolResult {
         content: parts.join("\n"),
         is_error: result.is_error.unwrap_or(false),
-        untrusted: false,
+        trust: tern_core::tool::Trust::Trusted,
     }
 }
 
@@ -812,8 +812,12 @@ impl Tool for McpTool {
         effect_for(&self.server.cfg, &self.tool.remote, self.tool.hinted)
     }
 
-    fn untrusted(&self) -> bool {
-        self.server.cfg.untrusted
+    fn ingestion(&self) -> tern_core::tool::Ingestion {
+        if self.server.cfg.untrusted {
+            tern_core::tool::Ingestion::Mcp
+        } else {
+            tern_core::tool::Ingestion::None
+        }
     }
 
     fn policy(&self, _: &ToolCtx, args: &Value) -> ToolPolicy {
@@ -1223,8 +1227,8 @@ mod tests {
                 idle: DEFAULT_IDLE,
             }),
         };
-        assert!(tool(true).untrusted());
-        assert!(!tool(false).untrusted());
+        assert!(tool(true).ingestion() != tern_core::tool::Ingestion::None);
+        assert!(tool(false).ingestion() == tern_core::tool::Ingestion::None);
         let cfg: McpServerConfig = serde_json::from_value(serde_json::json!({
             "transport": "stdio", "command": "npx", "untrusted": true
         }))

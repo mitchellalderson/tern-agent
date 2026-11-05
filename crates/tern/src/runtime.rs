@@ -163,6 +163,25 @@ impl Runtime {
             &changes,
             &connections,
         )?;
+        // Every web read goes through the quarantined fetcher (docs/quarantined-fetch-design.md);
+        // its settings are read from the live config on each call.
+        let fetch_live = live.clone();
+        let fetch_gateway = Arc::new(
+            tern_core::fetch::FetchGateway::new(
+                Arc::new(move || {
+                    fetch_live
+                        .read()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .fetch
+                        .clone()
+                }),
+                Some(store.clone()),
+            )
+            .audit_dir(home.root().join("fetch")),
+        );
+        tools.register(Arc::new(tern_tools::http::HttpFetch::with_gateway(
+            fetch_gateway.clone(),
+        )));
         // Channels (docs/channels-design.md §3): a post an agent writes is
         // announced like the daemon's own.
         let post_changes = changes.clone();
@@ -265,6 +284,12 @@ impl Runtime {
         )
         .with_subagents(slot.clone());
         let agent = Arc::new(agent);
+        fetch_gateway.set_models(Arc::new(crate::fetcher::RuntimeFetcherModels {
+            live: live.clone(),
+            agent: Arc::downgrade(&agent),
+            models: models.clone(),
+            mock,
+        }));
         let prompts = Arc::new(PromptMaker::new(home, &config, &tools));
         let subagents = config.subagents.enabled.then(|| {
             let host = Arc::new(Subagents::new(

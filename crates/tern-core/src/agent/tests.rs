@@ -1991,8 +1991,8 @@ impl Tool for Inbox {
     fn effect(&self) -> Effect {
         Effect::Read
     }
-    fn untrusted(&self) -> bool {
-        true
+    fn ingestion(&self) -> crate::tool::Ingestion {
+        crate::tool::Ingestion::Web
     }
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
         ToolPolicy::new(Effect::Read, true)
@@ -2071,7 +2071,7 @@ async fn an_untrusted_result_taints_the_run_and_reaches_the_model_wrapped() {
     // The journal records the result as untrusted.
     let step = &h.store.steps(&run).unwrap()[3];
     let out: ToolResult = serde_json::from_str(step.output_json.as_deref().unwrap()).unwrap();
-    assert!(out.untrusted);
+    assert!(out.untrusted());
 }
 
 #[tokio::test]
@@ -2910,8 +2910,8 @@ impl Tool for Fetch {
     fn effect(&self) -> Effect {
         Effect::Read
     }
-    fn untrusted(&self) -> bool {
-        true
+    fn ingestion(&self) -> crate::tool::Ingestion {
+        crate::tool::Ingestion::Web
     }
     fn egress_host(&self, args: &Value) -> Option<String> {
         args["host"].as_str().map(Into::into)

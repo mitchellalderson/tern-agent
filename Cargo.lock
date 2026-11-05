@@ -4943,6 +4943,7 @@ dependencies = [
  "tracing",
  "uuid",
  "webpki-root-certs",
+ "wiremock",
 ]
 
 [[package]]

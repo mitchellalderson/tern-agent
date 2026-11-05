@@ -146,7 +146,9 @@ impl Agent {
                 let mut r = with_call(&call.id, self.tools.call_in(scope, ctx, &call))
                     .await
                     .0;
-                r.untrusted |= runs && self.tools.untrusted(&call.name);
+                if runs {
+                    r = r.with_trust(self.tools.trust_floor(&call.name));
+                }
                 let note = note(&summary, &call.name, &r);
                 Ok(StepOutput::new(McpCallOutput {
                     approval: asked,
@@ -181,7 +183,7 @@ impl Agent {
                 replayed: step.replayed,
             });
         }
-        if result.untrusted {
+        if result.untrusted() {
             taint.mark(&self.store, &run.id, &taint::tool_reason(&call.name))?;
         }
         tracing::info!(run = %run.id, tool = %call.name, approval = ?approval, is_error = result.is_error, "MCP call finished");
@@ -195,11 +197,7 @@ impl Agent {
 /// transcript (and a later conversation there knows what happened). Plain
 /// text: there is no `tool_use` to pair a tool result with.
 fn note(summary: &str, tool: &str, r: &ToolResult) -> Message {
-    let content = if r.untrusted {
-        taint::wrap(tool, &r.content)
-    } else {
-        r.content.clone()
-    };
+    let content = taint::frame(tool, None, r);
     let head = if r.is_error {
         format!("[MCP call {summary}: failed or not run]")
     } else {

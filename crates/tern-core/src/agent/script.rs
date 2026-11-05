@@ -26,7 +26,7 @@ use crate::approval::{self, ApprovalOutcome, Autonomy, Check, Gate};
 use crate::events::AgentEvent;
 use crate::journal::{InFlight, Outcome, StepError, StepKind, StepOutput, input_hash};
 use crate::script::{self, HostReply, HostRequest, ScriptEnv, ScriptHost, ScriptLimits};
-use crate::tool::{Effect, ToolCtx, ToolResult, with_call};
+use crate::tool::{Effect, ToolCtx, ToolResult, Trust, with_call};
 use crate::types::ToolCall;
 use crate::types::ToolSpec;
 
@@ -93,7 +93,7 @@ struct Prepared {
     step: u32,
     input: Value,
     in_flight: InFlight<ToolResult>,
-    untrusted: bool,
+    floor: Trust,
     host: Option<String>,
     effect: Effect,
 }
@@ -501,13 +501,13 @@ impl Agent {
         } else {
             InFlight::Substitute(StepOutput::new(ToolResult::error(INTERRUPTED_TOOL_MESSAGE)))
         };
-        let untrusted = self.tools.untrusted(&name);
+        let floor = self.tools.trust_floor(&name);
         Ok(Planned::Run(Box::new(Prepared {
             call,
             step,
             input,
             in_flight,
-            untrusted,
+            floor,
             host,
             effect: policy.effect,
         })))
@@ -526,7 +526,7 @@ impl Agent {
             step,
             input,
             in_flight,
-            untrusted,
+            floor,
             host,
             effect,
         } = p;
@@ -542,7 +542,7 @@ impl Agent {
                     // As a call of its own: tools find the plan made for this call id.
                     let (mut r, _) =
                         with_call(&call.id, self.tools.call_in(scope, ctx, &call)).await;
-                    r.untrusted |= untrusted;
+                    r = r.with_trust(floor);
                     Ok(StepOutput::new(r))
                 },
             )
@@ -564,7 +564,7 @@ impl Agent {
             effect,
             result,
         } = e;
-        if result.value.untrusted {
+        if result.value.untrusted() {
             s.tainted = true;
             s.taint_reason
                 .get_or_insert_with(|| format!("python called {}", call.name));

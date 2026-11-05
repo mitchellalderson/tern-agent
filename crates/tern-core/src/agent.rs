@@ -23,7 +23,9 @@ use crate::events::AgentEvent;
 use crate::journal::{InFlight, Journal, StepError, StepKind, StepOutput};
 use crate::memory;
 use crate::subagent::{HostSlot, InboxEntry, InboxOutput};
-use crate::tool::{ProgressSink, ToolCtx, ToolRegistry, ToolResult, with_call, with_progress};
+use crate::tool::{
+    ProgressSink, ToolCtx, ToolRegistry, ToolResult, Trust, with_call, with_progress,
+};
 use crate::types::{
     AssistantTurn, ChatRequest, ContentBlock, Message, Provider, ProviderError, Role, StopReason,
     StreamEvent, ToolCall, Usage,
@@ -726,7 +728,11 @@ impl Agent {
                     name: call.name.clone(),
                     summary: self.tools.summarize(&call),
                 });
-                let untrusted = in_scope && !truncated && self.tools.untrusted(&call.name);
+                let floor = if in_scope && !truncated {
+                    self.tools.trust_floor(&call.name)
+                } else {
+                    Trust::Trusted
+                };
                 let in_flight = if policy.idempotent {
                     InFlight::Retry
                 } else {
@@ -781,7 +787,7 @@ impl Agent {
                             .await?;
                         // A tool may mark its own result (channel_read of
                         // tainted posts).
-                        r.untrusted |= untrusted;
+                        r = r.with_trust(floor);
                         let msg = tool_result(&call, &r);
                         Ok(StepOutput::new(r)
                             .with_messages(vec![msg])
@@ -816,7 +822,7 @@ impl Agent {
                     }
                     idx += 1;
                 }
-                if result.value.untrusted {
+                if result.value.untrusted() {
                     taint.mark(&self.store, &run.id, &taint::tool_reason(&call.name))?;
                 }
                 if result.value.is_error {
@@ -1652,11 +1658,7 @@ pub fn backoff(base: Duration, attempt: u32) -> Duration {
 /// The tool result message; an untrusted one is wrapped
 /// ([`taint::wrap`]).
 fn tool_result(call: &ToolCall, r: &ToolResult) -> Message {
-    let content = if r.untrusted {
-        taint::wrap(&call.name, &r.content)
-    } else {
-        r.content.clone()
-    };
+    let content = taint::frame(&call.name, Some(&call.input), r);
     Message {
         role: Role::User,
         content: vec![ContentBlock::ToolResult {

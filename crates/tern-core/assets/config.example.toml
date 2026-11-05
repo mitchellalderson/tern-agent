@@ -145,6 +145,30 @@ docker_pids = 512          # 0 for no limit
 # [taint]
 # egress = "ask"               # "allow" for runs meant to browse; an agent can set its own
 
+# Web pages are never read by the agent that asked for them. http_fetch hands the
+# URL to a separate low-privilege reader (two tools, no approvals, no memory or
+# files, hard limits) and returns a short checked result. With only a URL it
+# reads the page without any model; with a question it uses a cheap model from
+# your own providers. See docs/quarantined-fetch-design.md.
+# [fetch]
+# taint = "strict"             # "strict": only free text (answer, text) taints the caller; "legacy": every fetch does
+# model = "anthropic:claude-haiku"  # reads pages when a question is asked; unset = the cheapest model you configured
+# ask_when_tainted = false     # true: a run that already read untrusted text may still ask a free-text question
+# max_bytes = 2097152          # most bytes read from one page
+# max_pages = 3                # most pages one fetch may read
+# max_redirects = 5            # most redirects followed per page
+# timeout_secs = 30            # seconds per page request
+# max_iterations = 3           # most model turns the reader takes per fetch
+# budget_tokens = 30000        # most tokens the reader may use per fetch
+# spend_cap_usd = 0.02         # most dollars the reader may spend per fetch (when the price is known)
+# result_max_bytes = 8192      # largest result handed to the agent
+# extract_text_bytes = 6144    # most page text an extract result carries
+# cache_secs = 900             # reuse a result for the same page and question this long
+# max_calls_per_run = 40       # most fetches one run may make
+# max_concurrent = 4           # most fetches in flight at once
+# allow_domains = []           # only these sites (and subdomains); empty = any public site
+# deny_domains = []            # never these sites; wins over allow_domains
+
 # Luau connectors (~/.tern/connectors). A connector can declare its own rate
 # (capabilities.rate = "60/min"); this is the limit for those that don't.
 # [connectors]

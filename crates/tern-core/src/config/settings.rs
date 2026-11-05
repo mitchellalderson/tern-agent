@@ -214,6 +214,43 @@ fn meta(key: &str) -> Meta {
             risky: |v| v == "allow",
             ..m
         },
+        "fetch.taint" => Meta {
+            choices: &["strict", "legacy"],
+            live: true,
+            security: Some(
+                "Strict: a fetch that returns only checked data fields (title, quoted facts, links) 
+                 leaves the run clean, so later writes don't ask; free text (answer, text) still taints 
+                 it. Legacy: every fetch taints the run, so every later change asks.",
+            ),
+            ..m
+        },
+        "fetch.model" => Meta {
+            kind: Some(Kind::Model),
+            live: true,
+            ..m
+        },
+        "fetch.ask_when_tainted" => Meta {
+            live: true,
+            security: Some(
+                "On: a run that already read untrusted text may send a free-text question to the 
+                 page reader, which is then shaped by text an attacker could have planted.",
+            ),
+            risky: |v| v == &Value::Bool(true),
+            ..m
+        },
+        "fetch.allow_domains" | "fetch.deny_domains" => Meta { live: true, ..m },
+        "fetch.max_bytes" | "fetch.max_pages" | "fetch.max_iterations" | "fetch.timeout_secs"
+        | "fetch.result_max_bytes" | "fetch.extract_text_bytes" | "fetch.max_concurrent" => {
+            Meta { live: true, ..at_least(1.0) }
+        }
+        "fetch.max_redirects" | "fetch.budget_tokens" | "fetch.cache_secs" | "fetch.max_calls_per_run" => {
+            Meta { live: true, ..at_least(0.0) }
+        }
+        "fetch.spend_cap_usd" => Meta {
+            kind: Some(Kind::Float),
+            live: true,
+            ..at_least(0.0)
+        },
         "sandbox.shell_timeout_secs" => at_least(1.0),
         "connectors.openapi_tools" | "connectors.openapi_max_tools" => at_least(1.0),
         "sandbox.docker_cpus" | "sandbox.docker_pids" => at_least(0.0),
@@ -401,9 +438,13 @@ fn placement(key: &str) -> (&'static str, bool) {
             ("general", true)
         }
         "default_model" | "subagents.default_model" => ("models", false),
+        "fetch.model" => ("models", true),
         "context_window" | "schedules.gate_model" => ("models", true),
         "autonomy"
         | "taint.egress"
+        | "fetch.taint"
+        | "fetch.allow_domains"
+        | "fetch.deny_domains"
         | "sandbox.backend"
         | "sandbox.network"
         | "sandbox.confine"
@@ -427,6 +468,7 @@ fn placement(key: &str) -> (&'static str, bool) {
         | "sandbox.shell_timeout_secs" => ("limits", false),
         k if k.starts_with("subagents.")
             || k.starts_with("python.")
+            || k.starts_with("fetch.")
             || k.starts_with("sandbox.docker_")
             || k.starts_with("webhooks.max_")
             || k == "webhooks.per_minute"
@@ -892,6 +934,7 @@ mod tests {
                 "skills",
                 "outbox",
                 "taint",
+                "fetch",
                 "connectors",
                 "auth",
                 "bundles",
