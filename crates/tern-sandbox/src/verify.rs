@@ -85,7 +85,11 @@ pub const CHECKING: &str = "still checking the sandbox; ask again shortly";
 
 impl HostBackend {
     fn cache_key(&self, workspace: &Path) -> String {
-        format!("{:?}|{}", self.policy, policy::canonical(workspace).display())
+        format!(
+            "{:?}|{}",
+            self.policy,
+            policy::canonical(workspace).display()
+        )
     }
 
     fn fresh(slot: &Slot) -> Option<Verification> {
@@ -160,7 +164,11 @@ impl HostBackend {
         let key = self.cache_key(workspace);
         {
             let guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(v) = guard.as_ref().and_then(|c| c.get(&key)).and_then(Self::fresh) {
+            if let Some(v) = guard
+                .as_ref()
+                .and_then(|c| c.get(&key))
+                .and_then(Self::fresh)
+            {
                 return v;
             }
         }
@@ -199,7 +207,9 @@ impl HostBackend {
         };
         let inside = workspace.join(format!(
             ".tern-canary-inside-{}",
-            outside.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+            outside
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
         ));
         let result = self.fs_probe(&workspace, &inside, &outside);
         // If the sandbox failed to block, this is the file it let through.
@@ -210,9 +220,7 @@ impl HostBackend {
         match result {
             Err(why) => return Verification::not_verified(why),
             Ok(()) if leaked => {
-                return Verification::not_verified(
-                    "a write outside the workspace was not blocked",
-                );
+                return Verification::not_verified("a write outside the workspace was not blocked");
             }
             Ok(()) => {}
         }
@@ -312,7 +320,8 @@ impl HostBackend {
                 ],
             ),
         ];
-        let mut last = "neither perl nor python3 is available to probe the network block".to_owned();
+        let mut last =
+            "neither perl nor python3 is available to probe the network block".to_owned();
         for (tool, args) in tools {
             let mut argv: Vec<OsString> = vec![tool.into()];
             argv.extend(args.iter().map(OsString::from));
@@ -338,7 +347,8 @@ impl HostBackend {
                 Some(42) => return Ok(()),
                 Some(0) => return Err("an outbound connection was not blocked".into()),
                 other => {
-                    last = format!("the network probe ({tool}) didn't run to completion ({other:?})");
+                    last =
+                        format!("the network probe ({tool}) didn't run to completion ({other:?})");
                 }
             }
         }
@@ -364,7 +374,10 @@ impl HostBackend {
         if code == Some(0) {
             Ok(out)
         } else {
-            Err(format!("it didn't run inside the sandbox (exit {code:?}){}", first_line(&err)))
+            Err(format!(
+                "it didn't run inside the sandbox (exit {code:?}){}",
+                first_line(&err)
+            ))
         }
     }
 
@@ -383,7 +396,9 @@ impl HostBackend {
         } else {
             self.policy.clone()
         };
-        let argv = self.wrap(&policy, program, cwd).map_err(|e| e.to_string())?;
+        let argv = self
+            .wrap(&policy, program, cwd)
+            .map_err(|e| e.to_string())?;
         let (prog, args) = argv.split_first().ok_or("empty probe command")?;
         let mut child = std::process::Command::new(prog)
             .args(args)
@@ -525,7 +540,11 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let started = PROBES.lock().unwrap().get(&key).copied();
-        assert_eq!(started, Some(1), "one probe for one key, however many callers");
+        assert_eq!(
+            started,
+            Some(1),
+            "one probe for one key, however many callers"
+        );
     }
 
     #[test]

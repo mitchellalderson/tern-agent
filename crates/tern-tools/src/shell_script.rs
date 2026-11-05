@@ -171,7 +171,9 @@ pub fn read_script(workspace: &Path, script: &Path) -> Result<(PathBuf, String),
     let mut file = options
         .open(&canonical)
         .map_err(|e| format!("can't read the script: {e}"))?;
-    let meta = file.metadata().map_err(|e| format!("can't read the script: {e}"))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("can't read the script: {e}"))?;
     if !meta.is_file() {
         return Err("the script isn't a regular file".into());
     }
@@ -367,10 +369,8 @@ fn parse_probe(out: &str) -> InterpreterPaths {
     found
 }
 
-type PathsCache = std::collections::HashMap<
-    (String, PathBuf, Option<std::time::SystemTime>),
-    InterpreterPaths,
->;
+type PathsCache =
+    std::collections::HashMap<(String, PathBuf, Option<std::time::SystemTime>), InterpreterPaths>;
 
 /// What the interpreter says it loads code from, asked once per interpreter
 /// file (cached by path and mtime; failures aren't cached) through `prober`.
@@ -395,7 +395,10 @@ pub fn interpreter_paths(
         .map_err(|e| format!("couldn't inspect {}: {e}", canonical.display()))?;
     let found = parse_probe(&out);
     if found.loaded_from.is_empty() {
-        return Err(format!("couldn't inspect {} (it didn't answer as python)", canonical.display()));
+        return Err(format!(
+            "couldn't inspect {} (it didn't answer as python)",
+            canonical.display()
+        ));
     }
     CACHE
         .lock()
@@ -605,10 +608,21 @@ mod tests {
     #[test]
     fn accepts_plain_script_runs() {
         let p = ok("python3 a.py x");
-        assert_eq!((p.script.as_str(), p.args.as_slice()), ("a.py", &["x".to_owned()][..]));
-        assert_eq!(ok("  python tools/q.py  --year=2024   data/in.csv ").args.len(), 2);
+        assert_eq!(
+            (p.script.as_str(), p.args.as_slice()),
+            ("a.py", &["x".to_owned()][..])
+        );
+        assert_eq!(
+            ok("  python tools/q.py  --year=2024   data/in.csv ")
+                .args
+                .len(),
+            2
+        );
         assert_eq!(ok("python3 sub/dir/s.py").args.len(), 0);
-        assert_eq!(ok("python3 s.py -n 5 --out=out.txt").args, ["-n", "5", "--out=out.txt"]);
+        assert_eq!(
+            ok("python3 s.py -n 5 --out=out.txt").args,
+            ["-n", "5", "--out=out.txt"]
+        );
     }
 
     #[test]
@@ -666,7 +680,11 @@ mod tests {
             "python3.11 a.py",
             "python3 a//b.py",
         ] {
-            assert!(matches!(parse(cmd), Err(Reject::Other(_))), "{cmd:?}: {:?}", parse(cmd));
+            assert!(
+                matches!(parse(cmd), Err(Reject::Other(_))),
+                "{cmd:?}: {:?}",
+                parse(cmd)
+            );
         }
         assert!(Reject::Inline.notice().unwrap().contains("inline script"));
         assert!(Reject::NotPython.notice().is_none());
@@ -697,7 +715,10 @@ mod tests {
         assert_eq!(r.hash.len(), 64);
         assert!(r.interpreter.is_absolute() && r.interpreter_canonical.is_absolute());
         let cmd = command_line(&r);
-        assert!(cmd.ends_with(" x y") && cmd.contains(&r.script_canonical.to_string_lossy().to_string()));
+        assert!(
+            cmd.ends_with(" x y")
+                && cmd.contains(&r.script_canonical.to_string_lossy().to_string())
+        );
     }
 
     #[test]
@@ -717,12 +738,18 @@ mod tests {
         // A symlink to a file inside is fine, and resolves to the target.
         std::fs::write(w.join("real.py"), "x").unwrap();
         std::os::unix::fs::symlink(w.join("real.py"), w.join("ok.py")).unwrap();
-        assert_eq!(py(&w, "python3 ok.py").unwrap().script_canonical, w.join("real.py"));
+        assert_eq!(
+            py(&w, "python3 ok.py").unwrap().script_canonical,
+            w.join("real.py")
+        );
         // A directory named like a script, and a fifo.
         std::fs::create_dir(w.join("d.py")).unwrap();
         assert!(py(&w, "python3 d.py").unwrap_err().contains("regular file"));
         let fifo = w.join("f.py");
-        let ok = std::process::Command::new("mkfifo").arg(&fifo).status().is_ok_and(|s| s.success());
+        let ok = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success());
         if ok {
             assert!(py(&w, "python3 f.py").is_err());
         }
@@ -755,7 +782,11 @@ mod tests {
         let path = std::env::var_os("PATH")?;
         std::env::split_paths(&path)
             .map(|d| d.join("python3"))
-            .find_map(|c| std::fs::canonicalize(c).ok().filter(|c| is_native_binary(c)))
+            .find_map(|c| {
+                std::fs::canonicalize(c)
+                    .ok()
+                    .filter(|c| is_native_binary(c))
+            })
     }
 
     #[test]
@@ -772,8 +803,13 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         std::os::unix::fs::symlink(&real, bin.join("python3")).unwrap();
         std::fs::write(w.join(".venv/pyvenv.cfg"), "home = /usr/bin\n").unwrap();
-        let e = resolve(&ok("python3 a.py"), &w, std::slice::from_ref(&w), Some(bin.into()))
-            .unwrap_err();
+        let e = resolve(
+            &ok("python3 a.py"),
+            &w,
+            std::slice::from_ref(&w),
+            Some(bin.into()),
+        )
+        .unwrap_err();
         assert!(e.contains("a place commands can write"), "{e}");
         // A launcher dir outside the workspace but writable (write_paths, tmp).
         let (_o, other) = ws();
@@ -785,10 +821,19 @@ mod tests {
         assert!(e.contains("a place commands can write"), "{e}");
         // The same launcher in a place that is not writable is fine, and
         // what runs is the canonical interpreter, never the launcher path.
-        let r = resolve(&ok("python3 a.py"), &w, std::slice::from_ref(&w), Some(bin2.into())).unwrap();
+        let r = resolve(
+            &ok("python3 a.py"),
+            &w,
+            std::slice::from_ref(&w),
+            Some(bin2.into()),
+        )
+        .unwrap();
         assert_eq!(r.interpreter_canonical, real);
         let cmd = command_line(&r);
-        assert!(cmd.starts_with(&format!("'{}' -I '", real.display())), "{cmd}");
+        assert!(
+            cmd.starts_with(&format!("'{}' -I '", real.display())),
+            "{cmd}"
+        );
         assert!(!cmd.contains("bin/python3 "), "{cmd}");
     }
 
@@ -822,8 +867,13 @@ mod tests {
         let shim = safe.join("python3");
         std::fs::write(&shim, "#!/bin/sh\nexec \"$(asdf which python3)\" \"$@\"\n").unwrap();
         std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let e = resolve(&ok("python3 a.py"), &w, std::slice::from_ref(&w), Some(safe.into()))
-            .unwrap_err();
+        let e = resolve(
+            &ok("python3 a.py"),
+            &w,
+            std::slice::from_ref(&w),
+            Some(safe.into()),
+        )
+        .unwrap_err();
         assert!(e.contains("version-manager shim"), "{e}");
     }
 
@@ -842,7 +892,9 @@ mod tests {
         assert!(ok.is_ok(), "{ok:?}");
         // What the interpreter reports it loads from, each made writable in turn
         // (as `write_paths = [site-packages]` would).
-        let reported = interpreter_paths(&Direct, &real, Path::new("/")).unwrap().loaded_from;
+        let reported = interpreter_paths(&Direct, &real, Path::new("/"))
+            .unwrap()
+            .loaded_from;
         assert!(reported.len() >= 3, "{reported:?}");
         for dir in reported.iter().filter(|p| p.is_dir()) {
             let roots = [w.clone(), dir.clone()];
@@ -873,7 +925,10 @@ mod tests {
         std::os::unix::fs::symlink(other.join("bin/python3"), links.join("python3")).unwrap();
         let roots = [w.clone(), other.clone()];
         let e = resolve(&ok_cmd(), &w, &roots, Some(links.into())).unwrap_err();
-        assert!(e.contains("a place commands can write") || e.contains("pyvenv.cfg"), "{e}");
+        assert!(
+            e.contains("a place commands can write") || e.contains("pyvenv.cfg"),
+            "{e}"
+        );
     }
 
     #[test]
@@ -885,7 +940,10 @@ mod tests {
         std::fs::copy("/bin/sh", safe.join("mise")).unwrap();
         std::os::unix::fs::symlink(safe.join("mise"), safe.join("python3")).unwrap();
         let e = resolve(&ok_cmd(), &w, std::slice::from_ref(&w), Some(safe.into())).unwrap_err();
-        assert!(e.contains("a launcher rather than a python interpreter"), "{e}");
+        assert!(
+            e.contains("a launcher rather than a python interpreter"),
+            "{e}"
+        );
     }
 
     #[test]
@@ -910,11 +968,19 @@ mod tests {
             )
             .unwrap_err();
             assert!(e.contains("inside the prefix"), "{lib:?}: {e}");
-            assert_eq!(fixed.1.load(Ordering::SeqCst), 0, "the interpreter was asked to run");
+            assert_eq!(
+                fixed.1.load(Ordering::SeqCst),
+                0,
+                "the interpreter was asked to run"
+            );
         }
     }
 
-    fn with_site(site: &Path, pth: &[(&str, &str)], writable: &[PathBuf]) -> Result<Resolved, String> {
+    fn with_site(
+        site: &Path,
+        pth: &[(&str, &str)],
+        writable: &[PathBuf],
+    ) -> Result<Resolved, String> {
         let Some(real) = real_python() else {
             return Ok(unreachable_resolved());
         };
@@ -923,7 +989,10 @@ mod tests {
         for (name, text) in pth {
             std::fs::write(site.join(name), text).unwrap();
         }
-        let fixed = Fixed(format!("path /nowhere\nsite {}\n", site.display()), AtomicUsize::new(0));
+        let fixed = Fixed(
+            format!("path /nowhere\nsite {}\n", site.display()),
+            AtomicUsize::new(0),
+        );
         let (_d, w) = ws();
         std::fs::write(w.join("a.py"), "x").unwrap();
         let mut roots = vec![w.clone()];
@@ -974,20 +1043,21 @@ mod tests {
         let sd = std::fs::canonicalize(s.path()).unwrap();
         let e = with_site(
             &sd,
-            &[("__editable__.proj.pth", &format!("{}\n", wsdir.join("proj/src").display()))],
+            &[(
+                "__editable__.proj.pth",
+                &format!("{}\n", wsdir.join("proj/src").display()),
+            )],
             std::slice::from_ref(&wsdir),
         )
         .unwrap_err();
-        assert!(e.contains("adds") && e.contains("a place commands can write"), "{e}");
+        assert!(
+            e.contains("adds") && e.contains("a place commands can write"),
+            "{e}"
+        );
         // A relative line that lands in a writable place counts too.
         let s = site();
         let sd = std::fs::canonicalize(s.path()).unwrap();
-        let e = with_site(
-            &sd,
-            &[("rel.pth", "sub\n")],
-            std::slice::from_ref(&sd),
-        )
-        .unwrap_err();
+        let e = with_site(&sd, &[("rel.pth", "sub\n")], std::slice::from_ref(&sd)).unwrap_err();
         assert!(e.contains("a place commands can write"), "{e}");
         // An executable line that isn't a known-benign one.
         let s = site();
@@ -996,12 +1066,7 @@ mod tests {
         assert!(e.contains("runs code at startup"), "{e}");
         let s = site();
         let sd = std::fs::canonicalize(s.path()).unwrap();
-        let e = with_site(
-            &sd,
-            &[("evil2.pth", "import os; os.system('id')\n")],
-            &[],
-        )
-        .unwrap_err();
+        let e = with_site(&sd, &[("evil2.pth", "import os; os.system('id')\n")], &[]).unwrap_err();
         assert!(e.contains("runs code at startup"), "{e}");
     }
 

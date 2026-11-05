@@ -465,7 +465,10 @@ async fn a_shell_script_grant_is_ignored_when_tainted_or_read_only() {
     agent.drive(&run, CancellationToken::new()).await.unwrap();
     let asked = asks.asked();
     assert_eq!(asked.len(), 1, "{asked:?}");
-    assert!(asked[0].grant.is_none() && asked[0].notice.is_none(), "{asked:?}");
+    assert!(
+        asked[0].grant.is_none() && asked[0].notice.is_none(),
+        "{asked:?}"
+    );
 
     // Read-only: refused without asking, whatever grants exist.
     let h = Harness::new();
@@ -574,7 +577,11 @@ async fn an_approval_replayed_for_a_call_that_never_ran_asks_again() {
         "{:?}",
         steps[2].output_json
     );
-    assert_eq!(asks.asked().len(), 1, "the replayed approval isn't asked again");
+    assert_eq!(
+        asks.asked().len(),
+        1,
+        "the replayed approval isn't asked again"
+    );
 }
 
 #[tokio::test]
@@ -583,7 +590,10 @@ async fn a_replayed_approval_for_a_tool_without_plans_still_runs() {
     let h = Harness::new();
     let tool = Keyed::new("keyed", Effect::Read);
     let asks = Answer::new(Decision::AllowOnce);
-    let script = Arc::new(Script::new(vec![Reply::Tool("keyed", json!({})), Reply::Text("one")]));
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("keyed", json!({})),
+        Reply::Text("one"),
+    ]));
     let agent = h.agent(script, vec![tool.clone()], asks.clone());
     let run = h.start(&agent, "go");
     agent.drive(&run, CancellationToken::new()).await.unwrap();
@@ -595,7 +605,11 @@ async fn a_replayed_approval_for_a_tool_without_plans_still_runs() {
         asks.clone(),
     );
     agent2.drive(&run, CancellationToken::new()).await.unwrap();
-    assert_eq!(tool.calls.load(Ordering::SeqCst), 2, "ran on the replayed approval");
+    assert_eq!(
+        tool.calls.load(Ordering::SeqCst),
+        2,
+        "ran on the replayed approval"
+    );
 }
 
 #[tokio::test]
@@ -622,7 +636,9 @@ async fn a_replayed_approval_is_refused_even_when_no_key_can_be_planned_now() {
     // After a restart the sandbox probe hasn't landed, so the call has no key
     // now (only a reason): the replayed approval still must not run it.
     let h = Harness::new();
-    let tool = script_like(Some("Not auto-approved: the sandbox isn't confirmed active (still checking)."));
+    let tool = script_like(Some(
+        "Not auto-approved: the sandbox isn't confirmed active (still checking).",
+    ));
     let asks = Answer::new(Decision::AllowOnce);
     let script = Arc::new(Script::new(vec![run_script("a.py"), Reply::Text("one")]));
     let agent = h.agent(script, vec![tool.clone()], asks.clone());
@@ -636,7 +652,17 @@ async fn a_replayed_approval_is_refused_even_when_no_key_can_be_planned_now() {
         asks.clone(),
     );
     agent2.drive(&run, CancellationToken::new()).await.unwrap();
-    assert_eq!(tool.calls.load(Ordering::SeqCst), 1, "not run on the old answer");
+    assert_eq!(
+        tool.calls.load(Ordering::SeqCst),
+        1,
+        "not run on the old answer"
+    );
     let steps = h.store.steps(&run).unwrap();
-    assert!(steps[2].output_json.as_deref().unwrap().contains("approved before tern restarted"));
+    assert!(
+        steps[2]
+            .output_json
+            .as_deref()
+            .unwrap()
+            .contains("approved before tern restarted")
+    );
 }

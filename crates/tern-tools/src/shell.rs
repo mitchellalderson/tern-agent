@@ -106,7 +106,11 @@ impl Shell {
     /// offered for it? Never fails the call: anything unusual is just "not
     /// covered" and the command asks as before.
     fn judge(&self, ctx: &ToolCtx, args: &Value) -> Entry {
-        let command = args["command"].as_str().unwrap_or_default().trim().to_owned();
+        let command = args["command"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
         let none = |notice: Option<String>| Entry {
             command: command.clone(),
             plan: None,
@@ -137,7 +141,9 @@ impl Shell {
             Err(why) => {
                 // Without a confirmed sandbox that is the reason to give.
                 return none(Some(match verification.reason() {
-                    Some(v) => format!("Not auto-approved: the sandbox isn't confirmed active ({v})."),
+                    Some(v) => {
+                        format!("Not auto-approved: the sandbox isn't confirmed active ({v}).")
+                    }
                     None => format!("Not auto-approved: {why}."),
                 }));
             }
@@ -154,7 +160,9 @@ impl Shell {
         } else {
             None
         };
-        let key = why_not.is_none().then(|| grant_key(&resolved, &verification));
+        let key = why_not
+            .is_none()
+            .then(|| grant_key(&resolved, &verification));
         Entry {
             command,
             plan: Some(resolved),
@@ -291,7 +299,9 @@ impl Tool for Shell {
         let command = args["command"].as_str()?.trim();
         let plans = self.plans.lock().ok()?;
         let entry = plans.get(&Self::planning_id())?;
-        (entry.command == command).then(|| entry.key.clone()).flatten()
+        (entry.command == command)
+            .then(|| entry.key.clone())
+            .flatten()
     }
 
     fn grant_unavailable(&self, args: &Value) -> Option<String> {
@@ -305,16 +315,14 @@ impl Tool for Shell {
 
     fn grant_applied(&self, run_id: &str, call_id: &str) {
         if let Ok(mut m) = self.plans.lock() {
-            let e = m
-                .entry(plan_key(run_id, call_id))
-                .or_insert_with(|| Entry {
-                    command: String::new(),
-                    plan: None,
-                    key: None,
-                    notice: None,
-                    granted: false,
-                    approved_key: None,
-                });
+            let e = m.entry(plan_key(run_id, call_id)).or_insert_with(|| Entry {
+                command: String::new(),
+                plan: None,
+                key: None,
+                notice: None,
+                granted: false,
+                approved_key: None,
+            });
             e.granted = true;
             e.approved_key = e.key.as_ref().map(|k| k.key.clone());
         }
@@ -383,10 +391,10 @@ impl Tool for Shell {
                 }
             }
             let writable = self.backend.writable_roots(&ctx.workspace);
-            let interpreter = plan
-                .interpreter
-                .file_name()
-                .map_or_else(|| "python3".to_owned(), |n| n.to_string_lossy().into_owned());
+            let interpreter = plan.interpreter.file_name().map_or_else(
+                || "python3".to_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
             let again = shell_script::resolve(
                 &shell_script::Parsed {
                     interpreter,
@@ -419,11 +427,7 @@ impl Tool for Shell {
             on_output: progress_sink().map(|sink| OutputSink(Arc::new(move |s| sink(s)))),
             network,
         };
-        let out = match self
-            .backend
-            .exec(&command, opts, ctx.cancel.clone())
-            .await
-        {
+        let out = match self.backend.exec(&command, opts, ctx.cancel.clone()).await {
             Ok(o) => o,
             Err(e) => return ToolResult::error(e.to_string()),
         };
@@ -733,11 +737,19 @@ mod script_grant_tests {
         assert_eq!(k("  python3   a.py   x ").unwrap(), base, "spacing");
         assert_ne!(k("python3 a.py y").unwrap().key, base.key, "args");
         assert_ne!(k("python3 a.py x y").unwrap().key, base.key, "more args");
-        assert_ne!(k("python3 b.py x").unwrap().key, base.key, "path, same bytes");
+        assert_ne!(
+            k("python3 b.py x").unwrap().key,
+            base.key,
+            "path, same bytes"
+        );
         std::fs::write(e.ws.join("a.py"), "print(2)").unwrap();
         assert_ne!(k("python3 a.py x").unwrap().key, base.key, "bytes");
         std::fs::write(e.ws.join("a.py"), "print(1)").unwrap();
-        assert_eq!(k("python3 a.py x").unwrap().key, base.key, "same bytes again");
+        assert_eq!(
+            k("python3 a.py x").unwrap().key,
+            base.key,
+            "same bytes again"
+        );
         // Another interpreter file on PATH; another workspace.
         let bins = tempfile::tempdir().unwrap();
         fake_python(bins.path());
@@ -785,7 +797,10 @@ mod script_grant_tests {
         let c = call("1", "python3 -c 'x'");
         reg.policy(&e.ctx, &c);
         let why = reg.grant_unavailable("run", &c).unwrap();
-        assert!(why.contains("inline script") && why.contains(".py file"), "{why}");
+        assert!(
+            why.contains("inline script") && why.contains(".py file"),
+            "{why}"
+        );
         let c = call("1", "python3 a.py | head -5");
         reg.policy(&e.ctx, &c);
         let why = reg.grant_unavailable("run", &c).unwrap();
@@ -794,7 +809,11 @@ mod script_grant_tests {
         let mut net = call("2", "python3 a.py");
         net.input["network"] = true.into();
         assert_eq!(key(&e, &reg, &net), None);
-        assert!(reg.grant_unavailable("run", &net).unwrap().contains("network"));
+        assert!(
+            reg.grant_unavailable("run", &net)
+                .unwrap()
+                .contains("network")
+        );
         // A script that is a symlink to a file outside the workspace.
         let out = tempfile::tempdir().unwrap();
         std::fs::write(out.path().join("o.py"), "x").unwrap();
@@ -831,7 +850,11 @@ mod script_grant_tests {
         online.network = true;
         let (reg, _) = registry(Arc::new(online));
         assert_eq!(key(&e, &reg, &c), None);
-        assert!(reg.grant_unavailable("run", &c).unwrap().contains("network access"));
+        assert!(
+            reg.grant_unavailable("run", &c)
+                .unwrap()
+                .contains("network access")
+        );
         // A backend that can't be probed (docker) never verifies.
         let (reg, _) = registry(Arc::new(NoProbe));
         assert_eq!(key(&e, &reg, &c), None);
@@ -908,7 +931,11 @@ mod script_grant_tests {
         .unwrap();
         let r = with_call("1", reg.call(&e.ctx, &c)).await.0;
         assert!(r.is_error, "{}", r.content);
-        assert!(r.content.contains("changed since it was approved"), "{}", r.content);
+        assert!(
+            r.content.contains("changed since it was approved"),
+            "{}",
+            r.content
+        );
         assert!(r.content.contains("nothing was run"));
         assert!(!e.ws.join("pwned").exists());
         assert_eq!(shell.plans_held(), 0);
@@ -918,7 +945,11 @@ mod script_grant_tests {
         // A deleted script is refused too.
         std::fs::remove_file(e.ws.join("a.py")).unwrap();
         let r = with_call("1", reg.call(&e.ctx, &c)).await.0;
-        assert!(r.is_error && r.content.contains("nothing was run"), "{}", r.content);
+        assert!(
+            r.is_error && r.content.contains("nothing was run"),
+            "{}",
+            r.content
+        );
         assert!(!e.ws.join("pwned").exists());
     }
 
@@ -965,7 +996,11 @@ mod script_grant_tests {
         let r = with_call("1", reg.call(&e.ctx, &c)).await.0;
         assert!(!r.is_error, "{}", r.content);
         assert!(!r.content.contains("PLANTED"), "{}", r.content);
-        assert!(!r.content.contains(&e.ws.display().to_string()), "csv came from the workspace: {}", r.content);
+        assert!(
+            !r.content.contains(&e.ws.display().to_string()),
+            "csv came from the workspace: {}",
+            r.content
+        );
         assert!(r.content.contains("isolated 1"), "{}", r.content);
         assert!(r.content.contains("argv ['-n', '2', 'y']"), "{}", r.content);
         // Helper modules next to the script are not importable under a grant.
@@ -974,7 +1009,11 @@ mod script_grant_tests {
         let c = call("2", "python3 b.py");
         key(&e, &reg, &c).unwrap();
         let r = with_call("2", reg.call(&e.ctx, &c)).await.0;
-        assert!(r.is_error && r.content.contains("ModuleNotFoundError"), "{}", r.content);
+        assert!(
+            r.is_error && r.content.contains("ModuleNotFoundError"),
+            "{}",
+            r.content
+        );
     }
 
     #[tokio::test]
@@ -1054,7 +1093,11 @@ mod script_grant_tests {
         reg.policy(&e.ctx, &c);
         assert_eq!(reg.grant_key("run", &c), None);
         let r = with_call("1", reg.call(&e.ctx, &c)).await.0;
-        assert!(r.is_error && r.content.contains("covered by a grant"), "{}", r.content);
+        assert!(
+            r.is_error && r.content.contains("covered by a grant"),
+            "{}",
+            r.content
+        );
         assert!(r.content.contains("nothing was run"));
         assert!(!marker.exists(), "the typed command ran");
         assert_eq!(shell.plans_held(), 0);
@@ -1068,7 +1111,11 @@ mod script_grant_tests {
         std::fs::write(e.ws.join("a.py"), "open('pwned','w').write('x')").unwrap();
         reg.policy(&e.ctx, &c);
         let r = with_call("2", reg.call(&e.ctx, &c)).await.0;
-        assert!(r.is_error && r.content.contains("covered by a grant"), "{}", r.content);
+        assert!(
+            r.is_error && r.content.contains("covered by a grant"),
+            "{}",
+            r.content
+        );
         assert!(!e.ws.join("pwned").exists());
 
         // A grant decided call with no plan at all is refused too.
@@ -1076,7 +1123,11 @@ mod script_grant_tests {
         reg.policy(&e.ctx, &c);
         reg.grant_applied("run", &c);
         let r = with_call("3", reg.call(&e.ctx, &c)).await.0;
-        assert!(r.is_error && r.content.contains("nothing was run"), "{}", r.content);
+        assert!(
+            r.is_error && r.content.contains("nothing was run"),
+            "{}",
+            r.content
+        );
 
         // A human's answer is different: the typed command runs, as today
         // (here python reports the missing file, which is what was approved).

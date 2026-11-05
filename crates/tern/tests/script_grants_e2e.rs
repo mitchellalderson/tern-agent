@@ -67,7 +67,10 @@ async fn an_identical_script_runs_on_the_run_grant_and_an_edited_one_asks_again(
     // What the desktop shows: is the sandbox confirmed active here?
     let (_, info) = get(&sock, "/v1/info").await;
     let verified = info["sandbox"]["verified"].as_bool().expect("sandbox info");
-    assert!(info["sandbox"]["detail"].as_str().unwrap().len() > 8, "{info}");
+    assert!(
+        info["sandbox"]["detail"].as_str().unwrap().len() > 8,
+        "{info}"
+    );
     eprintln!("sandbox: {}", info["sandbox"]);
 
     let mut events = Events::open(&sock).await;
@@ -80,7 +83,10 @@ async fn an_identical_script_runs_on_the_run_grant_and_an_edited_one_asks_again(
         // Fail closed: no grant offered, the card says why, and every call asks.
         assert!(first.get("grant").is_none_or(Value::is_null), "{first}");
         let notice = first["notice"].as_str().unwrap();
-        assert!(notice.starts_with("Not auto-approved: the sandbox isn't confirmed active"), "{notice}");
+        assert!(
+            notice.starts_with("Not auto-approved: the sandbox isn't confirmed active"),
+            "{notice}"
+        );
         for n in 0..3 {
             let card = next_approval(&mut events, n).await;
             answer(&sock, &card, "once").await;
@@ -94,8 +100,16 @@ async fn an_identical_script_runs_on_the_run_grant_and_an_edited_one_asks_again(
     // The offer names the script, its version and arguments, and says what
     // it does not cover.
     let label = first["grant"]["label"].as_str().unwrap();
-    assert!(label.contains("a.py") && label.contains("version") && label.contains("arguments x"), "{label}");
-    assert!(first["notice"].as_str().unwrap().contains("modules next to it won't import"));
+    assert!(
+        label.contains("a.py") && label.contains("version") && label.contains("arguments x"),
+        "{label}"
+    );
+    assert!(
+        first["notice"]
+            .as_str()
+            .unwrap()
+            .contains("modules next to it won't import")
+    );
     answer(&sock, &first, "run").await;
 
     // The second identical call ran without a card; the write_file didn't ask;
@@ -107,7 +121,10 @@ async fn an_identical_script_runs_on_the_run_grant_and_an_edited_one_asks_again(
     // A pipe is not the covered shape: it asks, and says why.
     let piped = next_approval(&mut events, 2).await;
     assert!(piped.get("grant").is_none_or(Value::is_null), "{piped}");
-    assert!(piped["notice"].as_str().unwrap().contains("pipe, redirect"), "{piped}");
+    assert!(
+        piped["notice"].as_str().unwrap().contains("pipe, redirect"),
+        "{piped}"
+    );
     answer(&sock, &piped, "deny").await;
 
     let evs = events
@@ -127,9 +144,19 @@ async fn an_identical_script_runs_on_the_run_grant_and_an_edited_one_asks_again(
     );
     let d: Value = serde_json::from_str(&detail).unwrap();
     assert_eq!(d["decision"], "approved_by_grant");
-    assert!(d["grant"]["key"].as_str().unwrap().starts_with("python script a.py#"));
+    assert!(
+        d["grant"]["key"]
+            .as_str()
+            .unwrap()
+            .starts_with("python script a.py#")
+    );
     assert_eq!(d["audit"]["sha256"].as_str().unwrap().len(), 64);
-    assert!(d["audit"]["sandbox"].as_str().unwrap().starts_with("verified"));
+    assert!(
+        d["audit"]["sandbox"]
+            .as_str()
+            .unwrap()
+            .starts_with("verified")
+    );
     assert_eq!(d["audit"]["script"], "a.py");
 
     // The agent saw v1 on the first two runs and the edit on the third.
@@ -138,7 +165,10 @@ async fn an_identical_script_runs_on_the_run_grant_and_an_edited_one_asks_again(
         .filter(|e| e["type"] == "tool_finished" && e["name"] == "shell")
         .filter_map(|e| e["output"].as_str().map(str::to_owned))
         .collect();
-    assert!(outputs.iter().filter(|o| o.contains("v1 ['x']")).count() == 2, "{outputs:?}");
+    assert!(
+        outputs.iter().filter(|o| o.contains("v1 ['x']")).count() == 2,
+        "{outputs:?}"
+    );
     assert!(outputs.iter().any(|o| o.contains("edited")), "{outputs:?}");
 }
 
@@ -171,9 +201,19 @@ async fn an_always_grant_is_stored_readably_and_revoked_with_tern_grants() {
 
     let list = env.cmd(&["grants"]).output().unwrap();
     let text = String::from_utf8_lossy(&list.stdout);
-    assert!(text.contains("python script a.py#") && text.contains("this exact python script"), "{text}");
-    let rm = env.cmd(&["grants", "remove", "shell", &format!("key:{key}")]).output().unwrap();
-    assert!(rm.status.success(), "{}", String::from_utf8_lossy(&rm.stderr));
+    assert!(
+        text.contains("python script a.py#") && text.contains("this exact python script"),
+        "{text}"
+    );
+    let rm = env
+        .cmd(&["grants", "remove", "shell", &format!("key:{key}")])
+        .output()
+        .unwrap();
+    assert!(
+        rm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rm.stderr)
+    );
     let left: i64 = env.query("SELECT COUNT(*) FROM approval_allowlist");
     assert_eq!(left, 0);
 }
