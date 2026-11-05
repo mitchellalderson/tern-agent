@@ -429,6 +429,8 @@ class Approval {
     this.agentId,
     this.egressHost,
     this.script,
+    this.grant,
+    this.count = 1,
   });
 
   factory Approval.fromJson(Json j) => Approval(
@@ -448,6 +450,11 @@ class Approval {
     agentId: j['agent_id'] as String?,
     egressHost: j['egress_host'] as String?,
     script: j['script'] as String?,
+    grant: switch (j['grant']) {
+      final Map<String, dynamic> g => GrantOffer.fromJson(g),
+      _ => null,
+    },
+    count: (j['count'] as num?)?.toInt() ?? 1,
   );
 
   /// The channel of the conversation the user started (agent profiles):
@@ -505,14 +512,43 @@ class Approval {
   /// reached yet: that site. Then [Decision.run] and [Decision.host] can
   /// answer it too.
   final String? egressHost;
+
+  /// Set when scoped grants may be offered: what they would cover.
+  /// [Decision.run] (this run), [Decision.session] (this conversation) and
+  /// [Decision.always] then apply to exactly this, never to a different
+  /// tool, draft or set of hosts. Null in tainted runs and for destructive
+  /// calls.
+  final GrantOffer? grant;
+
+  /// How many identical simultaneous requests this one card answers. A
+  /// card whose count grows arrives again with the same [id].
+  final int count;
+}
+
+/// What a scoped grant would cover.
+class GrantOffer {
+  const GrantOffer({required this.key, required this.label});
+
+  factory GrantOffer.fromJson(Json j) =>
+      GrantOffer(key: j['key'] as String, label: j['label'] as String);
+
+  final String key;
+
+  /// `draft maricopa_assessor.city_stats`.
+  final String label;
 }
 
 enum Decision {
   once,
   always,
 
-  /// The tainted host limit: no more site prompts in this run.
+  /// The tainted host limit: no more site prompts in this run. With an
+  /// [Approval.grant]: don't ask again about exactly that in this run.
   run,
+
+  /// With an [Approval.grant]: don't ask again about exactly that in this
+  /// conversation.
+  session,
 
   /// The tainted host limit: always allow reads from this site.
   host,

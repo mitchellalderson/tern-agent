@@ -70,6 +70,31 @@ void main() {
     expect(Decision.host.wire, 'host');
   });
 
+  test(
+    'decodes a scoped grant offer, a shared card count and the new answer',
+    () {
+      final e = ev(
+        '{"approval_requested":{"id":"a","run_id":"r",'
+        '"session_id":"s","tool":"connector_test","input":{},'
+        '"summary":"connector_test draft x.y (http hosts: h)","effect":"read",'
+        '"pattern":null,"count":3,'
+        '"grant":{"key":"draft x.y#ab","label":"draft x.y"}}}',
+      );
+      final a = (e as ApprovalRequested).approval;
+      expect(a.grant?.key, 'draft x.y#ab');
+      expect(a.grant?.label, 'draft x.y');
+      expect(a.count, 3);
+      expect(Decision.session.wire, 'session');
+      // Older daemons send neither.
+      final old = ev(
+        '{"approval_requested":{"id":"a","run_id":"r",'
+        '"session_id":"s","tool":"t","input":{},"summary":"t","pattern":null}}',
+      );
+      expect((old as ApprovalRequested).approval.grant, isNull);
+      expect(old.approval.count, 1);
+    },
+  );
+
   test('decodes a script-originated approval and shows where it came from', () {
     final e = ev(
       '{"approval_requested":{"id":"a","run_id":"r",'

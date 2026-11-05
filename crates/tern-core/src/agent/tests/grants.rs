@@ -151,7 +151,10 @@ async fn always_allow_stores_a_key_grant_that_covers_nothing_else() {
             .unwrap()
             .contains(&"key:target a#abc".to_owned())
     );
-    assert_eq!(tool.calls.load(Ordering::SeqCst) + other_tool.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(
+        tool.calls.load(Ordering::SeqCst) + other_tool.calls.load(Ordering::SeqCst),
+        4
+    );
 }
 
 #[tokio::test]

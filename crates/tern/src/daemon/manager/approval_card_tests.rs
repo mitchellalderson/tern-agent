@@ -36,10 +36,7 @@ async fn settle() {
     tokio::time::sleep(Duration::from_millis(30)).await;
 }
 
-fn ask(
-    api: &Arc<ApiApprovals>,
-    r: ApprovalRequest,
-) -> tokio::task::JoinHandle<Decision> {
+fn ask(api: &Arc<ApiApprovals>, r: ApprovalRequest) -> tokio::task::JoinHandle<Decision> {
     let api = api.clone();
     tokio::spawn(async move { api.ask(&r, None, (None, None)).await })
 }

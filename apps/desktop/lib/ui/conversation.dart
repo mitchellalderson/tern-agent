@@ -45,7 +45,7 @@ class _ConversationViewState extends State<ConversationView> {
   Widget build(BuildContext context) {
     final store = widget.store;
     final t = store.current;
-    final items = t?.items ?? const <Item>[];
+    final items = groupApprovals(t?.items ?? const <Item>[]);
     final phase = t?.phase;
     // The activity line sits below the newest item (index 0, reversed).
     final extra = phase == null ? 0 : 1;

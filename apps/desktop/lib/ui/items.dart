@@ -55,6 +55,12 @@ class ItemView extends StatelessWidget {
     final AgentsItem a => AgentsCard(agents: a, store: store),
     final PillItem p => _Pill(p),
     final ApprovalItem a => ApprovalCard(item: a, store: store),
+    final ApprovalGroupItem g => ApprovalGroupRow(
+      key: ObjectKey(g.members.first),
+      group: g,
+      store: store,
+      session: session,
+    ),
     final SecretRequestItem r => SecretRequestCard(item: r, store: store),
     final RoutineItem r => RoutineCard(item: r, store: store),
     final RunEndItem r => _RunEnd(r, store: store),
@@ -393,6 +399,84 @@ class _Pill extends StatelessWidget {
   }
 }
 
+/// Several identical approved requests (and their finished tool cards) as
+/// one line, `connector_test · draft x.y ×8 approved`, that opens to the
+/// individual items.
+class ApprovalGroupRow extends StatefulWidget {
+  const ApprovalGroupRow({
+    super.key,
+    required this.group,
+    required this.store,
+    this.session,
+  });
+
+  final ApprovalGroupItem group;
+  final TernStore store;
+  final String? session;
+
+  @override
+  State<ApprovalGroupRow> createState() => _ApprovalGroupRowState();
+}
+
+class _ApprovalGroupRowState extends State<ApprovalGroupRow> {
+  var _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final g = widget.group;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _open = !_open),
+          borderRadius: BorderRadius.circular(6),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: [
+                Icon(Icons.check_circle_outline, size: 15, color: c.ok),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${g.label} ×${g.count} approved',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12.5, color: c.muted),
+                  ),
+                ),
+                Icon(
+                  _open ? Icons.expand_less : Icons.expand_more,
+                  size: 16,
+                  color: c.muted,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_open)
+          Padding(
+            padding: const EdgeInsets.only(left: 22, top: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final m in g.members)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: ItemView(
+                      item: m,
+                      store: widget.store,
+                      session: widget.session,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class ApprovalCard extends StatefulWidget {
   const ApprovalCard({super.key, required this.item, required this.store});
 
@@ -419,13 +503,7 @@ class _ApprovalCardState extends State<ApprovalCard> {
     final a = widget.item.approval;
     final outcome = widget.item.outcome;
     if (outcome != null) {
-      final ok = const {
-        'approved',
-        'always allowed',
-        'approved_for_run',
-        'allowed all sites for this run',
-        'site always allowed',
-      }.contains(outcome);
+      final ok = approvedOutcomes.contains(outcome);
       return Row(
         children: [
           Icon(
@@ -470,7 +548,8 @@ class _ApprovalCardState extends State<ApprovalCard> {
                 Icon(Icons.front_hand_outlined, size: 16, color: c.warn),
                 const SizedBox(width: 8),
                 Text(
-                  '${widget.store.askerName(a)} wants to run ${a.tool}',
+                  '${widget.store.askerName(a)} wants to run ${a.tool}'
+                  '${a.count > 1 ? ' ×${a.count}' : ''}',
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
@@ -557,6 +636,40 @@ class _ApprovalCardState extends State<ApprovalCard> {
                 ),
               ],
             ),
+            // Scoped grants: stop asking about exactly this (this tool, this
+            // draft, these hosts and secrets), not about the tool in general.
+            if (a.grant case final grant?) ...[
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                children: [
+                  Tooltip(
+                    message: 'Stops asking about ${grant.label} in this run',
+                    child: TextButton(
+                      onPressed: _busy ? null : () => _answer(Decision.run),
+                      child: const Text('Allow for this run'),
+                    ),
+                  ),
+                  Tooltip(
+                    message:
+                        'Stops asking about ${grant.label} in this conversation',
+                    child: TextButton(
+                      onPressed: _busy ? null : () => _answer(Decision.session),
+                      child: const Text('Allow for this conversation'),
+                    ),
+                  ),
+                  Tooltip(
+                    message:
+                        'Only ${grant.label} as shown (a change to it asks again); '
+                        'remove it with `tern grants`',
+                    child: TextButton(
+                      onPressed: _busy ? null : () => _answer(Decision.always),
+                      child: const Text('Always allow this'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
             // The tainted host limit: say yes once for many sites.
             if (a.egressHost case final host?) ...[
               const SizedBox(height: 6),

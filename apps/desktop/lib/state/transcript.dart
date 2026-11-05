@@ -152,11 +152,141 @@ class PillItem extends Item {
 
 class ApprovalItem extends Item {
   ApprovalItem(this.approval);
-  final Approval approval;
+
+  /// Replaced when the daemon sends the same card again with a higher
+  /// [Approval.count] (identical simultaneous requests share a card).
+  Approval approval;
 
   /// Null while waiting. `approved`, `denied`, `timeout`, or the decision
   /// this app sent.
   String? outcome;
+}
+
+/// Outcomes of an [ApprovalItem] that let the call run.
+const approvedOutcomes = {
+  'approved',
+  'always allowed',
+  'approved_for_run',
+  'allowed for this run',
+  'allowed for this conversation',
+  'allowed all sites for this run',
+  'site always allowed',
+};
+
+/// Several answered approvals of the same thing in a row, each possibly
+/// followed by its finished tool card, shown as one line that expands:
+/// `connector_test · draft maricopa_assessor.city_stats ×8 approved`.
+class ApprovalGroupItem extends Item {
+  ApprovalGroupItem({
+    required this.label,
+    required this.count,
+    required this.members,
+  });
+
+  final String label;
+
+  /// How many calls were approved (a shared card counts for each).
+  final int count;
+
+  /// The individual items, in order, for the expanded view.
+  final List<Item> members;
+}
+
+/// `connector_test · draft x.y` from a tool and its approval summary
+/// (`connector_test draft x.y (http hosts: …)`): the capabilities in
+/// parentheses stay out of the group's line.
+String approvalLabel(String tool, String summary) {
+  final open = summary.indexOf(' (');
+  var head = (open < 0 ? summary : summary.substring(0, open)).trim();
+  if (head.startsWith(tool)) head = head.substring(tool.length).trim();
+  return head.isEmpty ? tool : '$tool · $head';
+}
+
+/// What an item is, if it's an answered, approved request: the thing that
+/// was approved (tool and summary, compared exactly) and how many calls it
+/// covered.
+({String key, String label, String tool, int count})? _approved(Item i) {
+  switch (i) {
+    case ApprovalItem(:final approval, :final outcome)
+        when approvedOutcomes.contains(outcome):
+      return (
+        key: '${approval.tool}\u0000${approval.summary}',
+        label: approvalLabel(approval.tool, approval.summary),
+        tool: approval.tool,
+        count: approval.count,
+      );
+    case PostItem(:final post)
+        when post.approvalId != null &&
+            post.kind == 'needs_you' &&
+            post.resolvedAt != null &&
+            post.text.startsWith('Approved'):
+      // "Approved for this run: connector_test draft x.y (…)".
+      final colon = post.text.indexOf(': ');
+      if (colon < 0) return null;
+      final what = post.text.substring(colon + 2);
+      final tool = what.split(' ').first;
+      return (
+        key: '$tool\u0000$what',
+        label: approvalLabel(tool, what),
+        tool: tool,
+        count: 1,
+      );
+    default:
+      return null;
+  }
+}
+
+/// A finished card of exactly one call of [tool]: the "Worked for 1s" that
+/// follows its approval.
+bool _finishedCallOf(Item i, String tool) =>
+    i is WorkItem &&
+    !i.running &&
+    i.steps.length == 1 &&
+    i.steps.single.name == tool;
+
+/// Collapse consecutive identical approved requests (each with its finished
+/// tool card) into [ApprovalGroupItem]s. Denials, an unfinished call, and
+/// anything different stay as they are; a lone approval is not grouped.
+List<Item> groupApprovals(List<Item> items) {
+  final out = <Item>[];
+  var i = 0;
+  while (i < items.length) {
+    final first = _approved(items[i]);
+    if (first == null) {
+      out.add(items[i++]);
+      continue;
+    }
+    final members = <Item>[];
+    var calls = 0;
+    var lines = 0;
+    var j = i;
+    while (j < items.length) {
+      final a = _approved(items[j]);
+      if (a == null || a.key != first.key) break;
+      var end = j + 1;
+      if (end < items.length && _finishedCallOf(items[end], first.tool)) {
+        end++;
+      } else if (end < items.length &&
+          items[end] is WorkItem &&
+          (items[end] as WorkItem).running) {
+        // Still working on this one: leave it out, it is the live card.
+        break;
+      }
+      members.addAll(items.sublist(j, end));
+      calls += a.count;
+      lines++;
+      j = end;
+    }
+    if (lines < 2) {
+      out.add(items[i++]);
+      continue;
+    }
+    out.add(
+      ApprovalGroupItem(label: first.label, count: calls, members: members),
+    );
+    i = j;
+  }
+  return out;
 }
 
 /// The agent asking for secrets. The values never come here: the card
@@ -434,10 +564,17 @@ class Transcript {
         if (!isError) _pillFor(name, step.summary, output);
         closeSecretRequests(e.runId, id, output);
       case ApprovalRequested(:final approval):
-        if (items.any(
-          (i) => i is ApprovalItem && i.approval.id == approval.id,
-        )) {
-          return false;
+        final shown = items
+            .whereType<ApprovalItem>()
+            .where((i) => i.approval.id == approval.id)
+            .firstOrNull;
+        if (shown != null) {
+          // The same card again: more identical requests joined it.
+          if (shown.outcome != null || approval.count == shown.approval.count) {
+            return false;
+          }
+          shown.approval = approval;
+          return true;
         }
         items.add(ApprovalItem(approval));
       case SecretRequested(:final request):

@@ -270,9 +270,9 @@ class _AgentDetailState extends State<_AgentDetail> {
         ? null
         : widget.store.transcripts[k.sessionId];
     // The brief is the first message; don't show it twice.
-    final items = [
+    final items = groupApprovals([
       ...?t?.items.skipWhile((i) => i is UserItem && i.text == k.task),
-    ];
+    ]);
     final phase = t?.phase;
     return Container(
       margin: const EdgeInsets.fromLTRB(24, 2, 0, 8),

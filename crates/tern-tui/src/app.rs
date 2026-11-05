@@ -387,10 +387,9 @@ impl App {
             let decision = match key.code {
                 KeyCode::Char('y' | 'Y') => Decision::AllowOnce,
                 KeyCode::Char('a' | 'A')
-                    if self
-                        .approval
-                        .as_ref()
-                        .is_some_and(|p| p.request.pattern.is_some() || p.request.grant.is_some()) =>
+                    if self.approval.as_ref().is_some_and(|p| {
+                        p.request.pattern.is_some() || p.request.grant.is_some()
+                    }) =>
                 {
                     Decision::AlwaysAllow
                 }

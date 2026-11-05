@@ -248,7 +248,9 @@ impl Agent {
     fn grant_scoped(&self, run: &RunRow, tool: &str, key: &str, scope: GrantScope) {
         if let Ok(mut g) = self.scoped.lock() {
             match scope {
-                GrantScope::Run => g.runs.insert((run.id.clone(), tool.to_owned(), key.to_owned())),
+                GrantScope::Run => g
+                    .runs
+                    .insert((run.id.clone(), tool.to_owned(), key.to_owned())),
                 GrantScope::Session => {
                     g.sessions
                         .insert((run.session_id.clone(), tool.to_owned(), key.to_owned()))
@@ -988,7 +990,8 @@ impl Agent {
         let granted = policy.forbidden.is_none()
             && (key_granted
                 || always_ok && approval::allowed_by(&self.store.allowlist(&call.name)?, call));
-        let (effect, always, offer_grant) = match approval::check(&call.name, policy, granted, gate) {
+        let (effect, always, offer_grant) = match approval::check(&call.name, policy, granted, gate)
+        {
             approval::Check::Allow => return Ok((ApprovalOutcome::Approved, String::new())),
             approval::Check::Forbid(flag) => {
                 tracing::warn!(run = %run.id, tool = %call.name, flag, "refused a forbidden tool");
@@ -1034,10 +1037,12 @@ impl Agent {
             local_only: policy.local_approval,
             egress_host: egress.map(Into::into),
             script,
-            grant: grant_key.filter(|_| offer_grant).map(|k| approval::GrantOffer {
-                key: k.key,
-                label: k.label,
-            }),
+            grant: grant_key
+                .filter(|_| offer_grant)
+                .map(|k| approval::GrantOffer {
+                    key: k.key,
+                    label: k.label,
+                }),
         };
         // A write may wait in the outbox instead (tooling spec §5.2).
         let deferrable = effect != crate::tool::Effect::Read && self.approvals.can_defer();

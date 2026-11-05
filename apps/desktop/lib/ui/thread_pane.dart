@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../state/store.dart';
+import '../state/transcript.dart';
 import '../theme.dart';
 import 'channel_view.dart';
 import 'items.dart';
@@ -20,7 +21,7 @@ class ThreadPane extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.colors;
     final session = store.thread;
-    final items = store.threadTranscript?.items ?? const [];
+    final items = groupApprovals(store.threadTranscript?.items ?? const []);
     final title =
         store.sessions.where((s) => s.id == session).firstOrNull?.title ??
         'Conversation';

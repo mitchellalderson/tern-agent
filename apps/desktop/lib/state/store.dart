@@ -1990,7 +1990,9 @@ class TernStore extends ChangeNotifier {
       item.outcome = switch (d) {
         Decision.once => 'approved',
         Decision.always => 'always allowed',
+        Decision.run when item.approval.grant != null => 'allowed for this run',
         Decision.run => 'allowed all sites for this run',
+        Decision.session => 'allowed for this conversation',
         Decision.host => 'site always allowed',
         Decision.deny => 'denied',
       };

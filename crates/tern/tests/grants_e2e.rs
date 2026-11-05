@@ -33,9 +33,7 @@ fn approvals(evs: &[Value]) -> Vec<Value> {
 }
 
 async fn next_approval(events: &mut Events, already: usize) -> Value {
-    let evs = events
-        .until(30, |evs| approvals(evs).len() > already)
-        .await;
+    let evs = events.until(30, |evs| approvals(evs).len() > already).await;
     approvals(&evs)[already].clone()
 }
 
