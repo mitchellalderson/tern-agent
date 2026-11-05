@@ -49,10 +49,13 @@ impl std::fmt::Debug for OutputSink {
 pub struct ExecOpts {
     pub cwd: PathBuf,
     pub timeout: Duration,
-    /// Per-stream cap on captured bytes.
+    /// Per-stream cap on captured bytes. Past it the middle is dropped: the
+    /// first quarter and the last three quarters are kept, with a marker
+    /// (the end of a log is where the failure summary is).
     pub max_output: usize,
-    /// Live output, coalesced to a few calls per second. Everything it
-    /// receives is also in the final `ExecOutput` (up to `max_output`).
+    /// Live output, coalesced to a few calls per second. It receives the
+    /// stream's first `max_output` bytes; the final `ExecOutput` has the
+    /// head and tail.
     pub on_output: Option<OutputSink>,
     /// IP networking for this command even when the backend's default is
     /// off (an approved `shell` call with `network: true`).
@@ -566,8 +569,58 @@ fn take_text(bytes: &mut Vec<u8>) -> String {
     }
 }
 
-/// Read everything, keeping at most `max` bytes (and streaming the kept
-/// part to `live`). Returns (text, truncated).
+/// Keeps the first quarter and the last three quarters of a stream's
+/// bytes, counting what falls between.
+struct HeadTail {
+    head: Vec<u8>,
+    head_cap: usize,
+    tail: std::collections::VecDeque<u8>,
+    tail_cap: usize,
+    omitted: usize,
+}
+
+impl HeadTail {
+    fn new(max: usize) -> Self {
+        let head_cap = max / 4;
+        Self {
+            head: Vec::new(),
+            head_cap,
+            tail: std::collections::VecDeque::new(),
+            tail_cap: max - head_cap,
+            omitted: 0,
+        }
+    }
+
+    fn push(&mut self, mut data: &[u8]) {
+        let room = self.head_cap.saturating_sub(self.head.len());
+        let n = room.min(data.len());
+        self.head.extend_from_slice(&data[..n]);
+        data = &data[n..];
+        if data.len() >= self.tail_cap {
+            self.omitted += self.tail.len() + data.len() - self.tail_cap;
+            self.tail.clear();
+            data = &data[data.len() - self.tail_cap..];
+        } else {
+            let over = (self.tail.len() + data.len()).saturating_sub(self.tail_cap);
+            self.tail.drain(..over);
+            self.omitted += over;
+        }
+        self.tail.extend(data.iter().copied());
+    }
+
+    fn finish(self) -> (String, bool) {
+        let mut out = String::from_utf8_lossy(&self.head).into_owned();
+        if self.omitted > 0 {
+            out.push_str(&format!("\n[... {} bytes omitted ...]\n", self.omitted));
+        }
+        let tail: Vec<u8> = self.tail.into_iter().collect();
+        out.push_str(&String::from_utf8_lossy(&tail));
+        (out, self.omitted > 0)
+    }
+}
+
+/// Read everything, keeping the head and tail within `max` bytes (and
+/// streaming the first `max` bytes to `live`). Returns (text, truncated).
 async fn read_capped<R: AsyncRead + Unpin>(
     reader: Option<R>,
     max: usize,
@@ -576,25 +629,24 @@ async fn read_capped<R: AsyncRead + Unpin>(
     let Some(mut reader) = reader else {
         return (String::new(), false);
     };
-    let mut kept = Vec::new();
+    let mut kept = HeadTail::new(max);
+    let mut seen = 0usize;
     let mut pending = Vec::new();
-    let mut truncated = false;
     let mut buf = [0u8; 8192];
     loop {
         match reader.read(&mut buf).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                let room = max.saturating_sub(kept.len());
-                let take = n.min(room);
-                kept.extend_from_slice(&buf[..take]);
-                truncated |= n > room;
+                kept.push(&buf[..n]);
                 if let Some(tx) = &live {
+                    let take = n.min(max.saturating_sub(seen));
                     pending.extend_from_slice(&buf[..take]);
                     let text = take_text(&mut pending);
                     if !text.is_empty() {
                         let _ = tx.send(text);
                     }
                 }
+                seen += n;
             }
         }
     }
@@ -603,7 +655,7 @@ async fn read_capped<R: AsyncRead + Unpin>(
     {
         let _ = tx.send(String::from_utf8_lossy(&pending).into_owned());
     }
-    (String::from_utf8_lossy(&kept).into_owned(), truncated)
+    kept.finish()
 }
 
 #[cfg(all(test, unix))]
@@ -768,7 +820,55 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(out.stdout.len(), 1024);
+        assert!(out.stdout.len() < 1024 + 64);
         assert!(out.truncated);
+        assert!(out.stdout.contains("bytes omitted"));
+    }
+
+    #[tokio::test]
+    async fn keeps_the_tail_of_long_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        for stream in ["", ">&2"] {
+            let out = HostBackend::default()
+                .exec(
+                    &format!("seq 1 5000 {stream}; echo FINAL SUMMARY {stream}"),
+                    opts(tmp.path()),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            let text = if stream.is_empty() {
+                &out.stdout
+            } else {
+                &out.stderr
+            };
+            assert!(out.truncated);
+            assert!(text.starts_with("1\n2\n"), "{text}");
+            assert!(text.contains("bytes omitted"), "{text}");
+            assert!(text.trim_end().ends_with("FINAL SUMMARY"), "{text}");
+            assert!(text.len() < 1024 + 64);
+        }
+    }
+
+    #[test]
+    fn head_tail_accounts_for_every_byte() {
+        let mut h = HeadTail::new(100);
+        for chunk in (0..1000u32).map(|i| vec![b'a' + (i % 26) as u8; 7]) {
+            h.push(&chunk);
+        }
+        let (text, trunc) = h.finish();
+        assert!(trunc);
+        let marker = text.find("\n[... ").unwrap();
+        assert_eq!(marker, 25);
+        let n: usize = text[marker + 6..]
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(n, 7000 - 100);
+        let mut small = HeadTail::new(100);
+        small.push(b"hello");
+        assert_eq!(small.finish(), ("hello".to_owned(), false));
     }
 }
