@@ -1,6 +1,6 @@
 // Cost of a long Home history: store load, first build, a live rebuild, and
 // how many item widgets exist. `flutter test test/history_perf_test.dart`
-// prints the numbers (docs/history-windowing.md has before and after).
+// prints the numbers.
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -8,93 +8,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tern_client/tern_client.dart';
 import 'package:tern_desktop/state/store.dart';
+import 'package:tern_desktop/state/transcript.dart';
 import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/home.dart';
 import 'package:tern_desktop/ui/items.dart';
 
-final _t0 = DateTime(2026, 11, 3, 9);
-
-/// [n] messages, newest first: per turn a user line, a long assistant
-/// answer with a code block, a tool call and its result.
-List<StreamItem> longHistory(int n) {
-  StreamMessage msg(int id, String role, List<ContentBlock> content) =>
-      StreamMessage(
-        sessionId: 's1',
-        messageId: id,
-        message: SessionMessage(
-          role: role,
-          runId: 'r1',
-          content: content,
-          summary: false,
-        ),
-        createdAt: _t0.add(Duration(seconds: id)),
-      );
-  final out = <StreamItem>[];
-  for (var id = 1; id <= n; id++) {
-    out.add(switch (id % 4) {
-      1 => msg(id, 'user', [TextBlock('Question number $id about invoices')]),
-      2 => msg(id, 'assistant', [
-        TextBlock(
-          'Answer $id.\n\n${'The invoice total is **310 EUR**. ' * 20}\n\n'
-          '```\nline one\nline two\n```\n\n- first\n- second',
-        ),
-      ]),
-      3 => msg(id, 'assistant', [
-        ToolUseBlock(id: 'c$id', name: 'list_dir', input: {'path': '.'}),
-      ]),
-      _ => msg(id, 'user', [
-        ToolResultBlock(
-          toolUseId: 'c${id - 1}',
-          content: List.generate(80, (i) => 'file_$i.txt').join('\n'),
-          isError: false,
-        ),
-      ]),
-    });
-  }
-  return out.reversed.toList();
-}
-
-class PerfClient extends TernClient {
-  PerfClient(this.items) : super(const Endpoint.unix('/nonexistent'));
-
-  /// Newest first, as the daemon sends them.
-  final List<StreamItem> items;
-  var streamCalls = 0;
-  var lastLimit = 0;
-
-  @override
-  Future<List<Channel>> channels({bool archived = false}) async => [
-    Channel(
-      id: 'home',
-      slug: 'home',
-      title: 'Home',
-      kind: 'main',
-      mainSessionId: 's1',
-      updatedAt: _t0,
-    ),
-  ];
-
-  @override
-  Future<StreamPage> stream(
-    String channel, {
-    String? before,
-    int limit = 200,
-  }) async {
-    streamCalls++;
-    lastLimit = limit;
-    final start = before == null ? 0 : int.parse(before);
-    final page = items.skip(start).take(limit).toList();
-    final end = start + page.length;
-    return StreamPage(items: page, next: end < items.length ? '$end' : null);
-  }
-
-  @override
-  Future<Usage> usage(String session) async => const Usage();
-
-  @override
-  Future<List<SessionItem>> sessions({int limit = 50, String? channel}) async =>
-      [];
-}
+import 'support/history_fixture.dart';
 
 void main() {
   for (final n in [5000, 20000]) {
@@ -137,12 +56,34 @@ void main() {
       sw
         ..reset()
         ..start();
-      for (var i = 0; i < 20; i++) {
+      final times = <double>[];
+      for (var i = 0; i < 40; i++) {
+        sw
+          ..reset()
+          ..start();
         // ignore: invalid_use_of_protected_member
         store.notifyListeners();
         await tester.pump();
+        times.add(sw.elapsedMicroseconds / 1000);
       }
-      final perRebuild = sw.elapsedMicroseconds / 20 / 1000;
+      times.sort();
+      final perRebuild = times[times.length ~/ 2];
+      // What every rebuild used to do first: group the whole history.
+      final all = store.current!.items;
+      sw
+        ..reset()
+        ..start();
+      for (var i = 0; i < 10; i++) {
+        groupApprovals(all);
+      }
+      final groupAll = sw.elapsedMicroseconds / 10 / 1000;
+      sw
+        ..reset()
+        ..start();
+      for (var i = 0; i < 10; i++) {
+        groupApprovals(all.length > 100 ? all.sublist(all.length - 100) : all);
+      }
+      final groupWindow = sw.elapsedMicroseconds / 10 / 1000;
       // A resync (reconnect, new segment) re-reads what is loaded.
       sw
         ..reset()
@@ -155,7 +96,9 @@ void main() {
       print(
         'PERF n=$n items=${store.current?.items.length} '
         'openHome=${load}ms pageAll=${loadAll}ms firstBuild=${first}ms '
-        'ItemViews=$built rebuild=${perRebuild.toStringAsFixed(1)}ms '
+        'ItemViews=$built rebuild(median)=${perRebuild.toStringAsFixed(1)}ms '
+        'groupAll=${groupAll.toStringAsFixed(2)}ms '
+        'groupWindow=${groupWindow.toStringAsFixed(2)}ms '
         'resync=${resync}ms (limit ${client.lastLimit}) '
         'rss+${((rss1 - rss0) / 1048576).round()}MB',
       );
