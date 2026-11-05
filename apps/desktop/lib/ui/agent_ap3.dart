@@ -11,11 +11,21 @@ class AutonomyPicker extends StatelessWidget {
     super.key,
     required this.value,
     required this.onChanged,
+    this.codeAuto = false,
+    this.codeEnabled = true,
   });
 
-  /// `readonly`, `supervised`, `autonomous`, `yolo`; null = no ceiling.
+  /// False for a read-only agent: it can't opt in to code auto mode.
+  final bool codeEnabled;
+
+  /// `readonly`, `supervised`, `code`, `autonomous`, `yolo`; null = no
+  /// ceiling. `code` is code auto mode: choosing it is the per-agent opt-in
+  /// (the sheet asks to confirm on save), and it is not a plain cap.
   final String? value;
   final ValueChanged<String?> onChanged;
+
+  /// Whether code auto mode is (or will be) on for this agent.
+  final bool codeAuto;
 
   static const _none = 'none';
 
@@ -29,7 +39,9 @@ class AutonomyPicker extends StatelessWidget {
           'A cap, not a permission. Its runs get the lower of this and your '
           'configured autonomy, so a ceiling can only hold it back; it never '
           'lets the agent do more than you allowed. Sub-agents it starts get '
-          'the lower of its level and their own.',
+          'the lower of its level and their own. Code is the exception: it is '
+          'a per-agent opt-in that lets this agent edit files and run build '
+          'and test commands in its folder without asking.',
           key: const Key('autonomy-explainer'),
           style: small,
         ),
@@ -54,13 +66,31 @@ class AutonomyPicker extends StatelessWidget {
                 RadioListTile<String>(
                   key: Key('autonomy-${l.wire}'),
                   value: l.wire,
+                  enabled: l != AutonomyLevel.code || codeEnabled,
                   dense: true,
                   contentPadding: EdgeInsets.zero,
                   title: Text(
                     'At most ${l.label.toLowerCase()}',
                     style: const TextStyle(fontSize: 13),
                   ),
-                  subtitle: Text(l.line, style: small),
+                  subtitle: l == AutonomyLevel.code && !codeEnabled
+                      ? Text(
+                          'A read-only agent can\'t use code auto mode.',
+                          key: const Key('autonomy-code-disabled'),
+                          style: small,
+                        )
+                      : l == AutonomyLevel.code
+                      ? Text(
+                          '${l.line} Not fully sandboxed: it can change or '
+                          'delete anything in its folder, and the code it '
+                          'runs runs on your computer. You confirm before it '
+                          'turns on; a snapshot is saved before each run\'s '
+                          'first change.'
+                          '${codeAuto && value == 'code' ? ' Turned on when you save.' : ''}',
+                          key: const Key('autonomy-code-copy'),
+                          style: small,
+                        )
+                      : Text(l.line, style: small),
                 ),
             ],
           ),

@@ -63,6 +63,10 @@ class ToolStep {
   String output = '';
   DateTime? started;
   DateTime? finished;
+
+  /// Ran without asking because the run was in code auto mode (the row
+  /// carries a small `auto` badge).
+  bool auto = false;
 }
 
 /// Consecutive tool calls, shown as one card.
@@ -118,7 +122,15 @@ class AgentsItem extends Item {
   final children = <AgentChild>[];
 }
 
-enum PillKind { routine, connector, memory, compacted, retrying, posts }
+enum PillKind {
+  routine,
+  connector,
+  memory,
+  compacted,
+  retrying,
+  posts,
+  checkpoint,
+}
 
 /// A routine an agent created or changed here: a card that opens it.
 class RoutineItem extends Item {
@@ -643,7 +655,9 @@ class Transcript {
         work.started ??= now;
         work.finished = null;
         work.steps.add(
-          ToolStep(id: id, name: name, summary: summary)..started = now,
+          ToolStep(id: id, name: name, summary: summary)
+            ..started = now
+            ..auto = _autoCalls.remove(id),
         );
       case ToolOutput(:final id, :final chunk):
         final step = _step(id);
@@ -691,6 +705,20 @@ class Transcript {
           return false;
         }
         items.add(SecretRequestItem(request));
+      case ApprovalAnswered(:final id, :final outcome)
+          when outcome == 'approved_by_mode':
+        // Nobody was asked: it never answers a pending card.
+        _autoCalls.add(id);
+        return false;
+      case CheckpointSaved(:final commit, :final skipped):
+        items.add(
+          PillItem(
+            PillKind.checkpoint,
+            commit != null
+                ? 'Snapshot saved before this run\'s changes'
+                : (skipped ?? 'No snapshot'),
+          ),
+        );
       case ApprovalAnswered(:final outcome, :final runId):
         final pending = items.whereType<ApprovalItem>().where(
           (a) => a.approval.runId == runId && a.outcome == null,
@@ -781,6 +809,10 @@ class Transcript {
 
   /// Sub-agent tool calls in flight, id → name.
   final _agentCalls = <String, String>{};
+
+  /// Calls code auto mode let through (`approved_by_mode`): the event comes
+  /// just before the call starts, so it waits here for its step.
+  final _autoCalls = <String>{};
 
   /// Every sub-agent this conversation has started.
   Iterable<AgentChild> get children =>

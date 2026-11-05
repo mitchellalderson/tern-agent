@@ -4,9 +4,11 @@
 //! |---|---|---|
 //! | GET | `/v1/sessions/{id}/runs[?include=subagents]` | the session's runs, oldest first (each followed by its sub-agent runs, with the flag) |
 //! | GET | `/v1/runs/{id}/steps` | the run's journal steps |
+//! | GET | `/v1/runs/{id}/changes` | `{changes: [{path, kind: added\|modified\|deleted}], skipped?}`: what a code auto mode run changed since its pre-run snapshot |
+//! | POST | `/v1/runs/{id}/undo` | `{confirm: true}`: put the folder back as the snapshot had it (the user's `.git` is untouched) → the `changes` it reverted |
 
 use axum::extract::{Path as UrlPath, Query, State};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,6 +19,8 @@ pub fn routes() -> Router<Shared> {
     Router::new()
         .route("/v1/sessions/{id}/runs", get(session_runs))
         .route("/v1/runs/{id}/steps", get(steps))
+        .route("/v1/runs/{id}/changes", get(changes))
+        .route("/v1/runs/{id}/undo", post(undo))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -79,6 +83,82 @@ async fn session_runs(
         }
     }
     Ok(Json(out))
+}
+
+/// What a code auto mode run changed since its pre-run snapshot.
+#[derive(Serialize, Deserialize)]
+pub struct RunChanges {
+    pub changes: Vec<tern_core::checkpoint::Change>,
+    /// Why there is no snapshot to compare with, when there isn't one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UndoBody {
+    #[serde(default)]
+    confirm: bool,
+}
+
+fn checkpoint_target(
+    m: &Shared,
+    id: &str,
+) -> Result<(String, std::path::PathBuf, std::path::PathBuf), super::api::ApiError> {
+    let run =
+        m.rt.store
+            .run(id)
+            .map_err(internal)?
+            .ok_or_else(|| not_found("run"))?;
+    let root = run
+        .workspace_root
+        .ok_or_else(|| not_found("workspace folder for this run"))?;
+    Ok((
+        run.workspace_id.unwrap_or_else(|| "default".into()),
+        std::path::PathBuf::from(root),
+        m.rt.home.checkpoints_dir(),
+    ))
+}
+
+async fn changes(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<RunChanges> {
+    let (ws, root, base) = checkpoint_target(&m, &id)?;
+    let list =
+        tokio::task::spawn_blocking(move || tern_core::checkpoint::changes(&base, &ws, &root, &id))
+            .await
+            .map_err(internal)?;
+    Ok(Json(match list {
+        Ok(changes) => RunChanges {
+            changes,
+            skipped: None,
+        },
+        Err(why) => RunChanges {
+            changes: vec![],
+            skipped: Some(why.describe()),
+        },
+    }))
+}
+
+/// Put the folder back as the run's snapshot had it. `confirm: true` is
+/// required (the app lists `changes` first); the user's `.git` is untouched.
+async fn undo(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+    Json(b): Json<UndoBody>,
+) -> ApiResult<RunChanges> {
+    if !b.confirm {
+        return Err(super::api::bad(
+            "undo needs confirm: true; list the changes first (GET /v1/runs/{id}/changes)",
+        ));
+    }
+    let (ws, root, base) = checkpoint_target(&m, &id)?;
+    let done =
+        tokio::task::spawn_blocking(move || tern_core::checkpoint::restore(&base, &ws, &root, &id))
+            .await
+            .map_err(internal)?
+            .map_err(|e| internal(e.describe()))?;
+    Ok(Json(RunChanges {
+        changes: done,
+        skipped: None,
+    }))
 }
 
 #[derive(Serialize, Deserialize)]

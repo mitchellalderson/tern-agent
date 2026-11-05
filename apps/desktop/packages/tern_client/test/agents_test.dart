@@ -193,6 +193,7 @@ void main() {
     expect(AutonomyLevel.values.map((l) => l.wire), [
       'readonly',
       'supervised',
+      'code',
       'autonomous',
       'yolo',
     ]);
@@ -201,8 +202,10 @@ void main() {
   test('a topic channel says whether agents decide', () {
     expect(ChannelAgents.fromJson({'members': []}).letAgentsDecide, isFalse);
     expect(
-      ChannelAgents.fromJson({'members': [], 'let_agents_decide': true})
-          .letAgentsDecide,
+      ChannelAgents.fromJson({
+        'members': [],
+        'let_agents_decide': true,
+      }).letAgentsDecide,
       isTrue,
     );
   });

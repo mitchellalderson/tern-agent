@@ -617,15 +617,14 @@ fn classify_simple(words: &[String], depth: usize) -> Verdict {
                 return ask(format!("`{prog}` fetches dependencies"));
             }
         }
-        "flutter" | "dart" => {
+        "flutter" | "dart"
             if matches!(operands.first().copied(), Some("pub"))
                 && matches!(
                     operands.get(1).copied(),
                     Some("get" | "add" | "upgrade" | "publish")
-                )
-            {
-                return ask("`pub` downloads packages");
-            }
+                ) =>
+        {
+            return ask("`pub` downloads packages");
         }
         _ => {}
     }

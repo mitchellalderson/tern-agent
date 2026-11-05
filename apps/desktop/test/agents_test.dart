@@ -10,6 +10,7 @@ import 'package:tern_desktop/state/store.dart';
 import 'package:tern_desktop/state/transcript.dart';
 import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/agent_sheet.dart';
+import 'package:tern_desktop/ui/code_auto.dart';
 import 'package:tern_desktop/ui/home.dart';
 import 'package:tern_desktop/ui/underline_tabs.dart';
 import 'package:tern_desktop/ui/widgets.dart';
@@ -1376,6 +1377,12 @@ void main() {
       mainChannelId: 'dm:research',
       autonomy: 'supervised',
     );
+    const uncapped = Agent(
+      id: 'tern:research',
+      slug: 'research',
+      name: 'Research',
+      mainChannelId: 'dm:research',
+    );
     const ops = Agent(
       id: 'tern:ops',
       slug: 'ops',
@@ -1522,6 +1529,178 @@ void main() {
       expect(client.updated.single.$2, containsPair('autonomy', 'readonly'));
     });
 
+    group('code auto mode', () {
+      Future<void> pickCode(WidgetTester tester) async {
+        await show(tester, find.byKey(const Key('autonomy-code')));
+        await tester.tap(find.byKey(const Key('autonomy-code')));
+        await tester.pump();
+      }
+
+      ap3Test('Code carries its disclaimer copy in the selector', (
+        tester,
+      ) async {
+        await editing(tester, capped);
+        await show(tester, find.byKey(const Key('autonomy-code-copy')));
+        final copy = tester
+            .widget<Text>(find.byKey(const Key('autonomy-code-copy')))
+            .data!;
+        expect(copy, contains('Not fully sandboxed'));
+        expect(copy, contains('change or delete anything in its folder'));
+        expect(copy, contains('You confirm before it turns on'));
+        expect(find.text('At most code'), findsOneWidget);
+      });
+
+      ap3Test('saving the opt-in shows the dialog, and nothing is sent '
+          'until it is confirmed', (tester) async {
+        final (_, client) = await editing(tester, capped);
+        await pickCode(tester);
+        await save(tester);
+        // The dialog: what limits it, what it does not protect.
+        expect(find.byKey(const Key('code-auto-dialog')), findsOneWidget);
+        expect(
+          find.text('Code auto mode: not fully sandboxed'),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('without asking you each time'),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('including uncommitted work'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('not a virtual machine'), findsOneWidget);
+        // A supervised starter's ceiling is raised, and it says so.
+        expect(
+          tester.widget<Text>(find.byKey(const Key('code-auto-raises'))).data,
+          contains('from supervised to code'),
+        );
+        // Cannot be confirmed without the checkbox.
+        FilledButton turnOn() => tester.widget<FilledButton>(
+          find.byKey(const Key('code-auto-confirm')),
+        );
+        expect(turnOn().onPressed, isNull);
+        expect(client.updated, isEmpty);
+        await tester.tap(find.byKey(const Key('code-auto-understand')));
+        await tester.pump();
+        expect(turnOn().onPressed, isNotNull);
+        await tester.tap(find.byKey(const Key('code-auto-confirm')));
+        await tester.pumpAndSettle();
+        // The raise and the opt-in travel in one request.
+        expect(
+          client.updated.single.$2,
+          allOf(
+            containsPair('autonomy', 'code'),
+            containsPair('code_auto', true),
+          ),
+        );
+      });
+
+      ap3Test('Cancel sends nothing and the sheet stays open', (tester) async {
+        final (_, client) = await editing(tester, capped);
+        await pickCode(tester);
+        await save(tester);
+        await tester.tap(find.byKey(const Key('code-auto-cancel')));
+        await tester.pumpAndSettle();
+        expect(client.updated, isEmpty);
+        expect(find.byType(AgentSheet), findsOneWidget);
+      });
+
+      ap3Test('no ceiling to raise: the dialog has no raise line', (
+        tester,
+      ) async {
+        await editing(tester, uncapped);
+        await pickCode(tester);
+        await save(tester);
+        expect(find.byKey(const Key('code-auto-dialog')), findsOneWidget);
+        expect(find.byKey(const Key('code-auto-raises')), findsNothing);
+      });
+
+      ap3Test('a read-only agent cannot pick Code', (tester) async {
+        const readOnly = Agent(
+          id: 'tern:research',
+          slug: 'research',
+          name: 'Research',
+          mainChannelId: 'dm:research',
+          autonomy: 'readonly',
+        );
+        final (_, client) = await editing(tester, readOnly);
+        await show(tester, find.byKey(const Key('autonomy-code-disabled')));
+        await tester.tap(find.byKey(const Key('autonomy-code')));
+        await tester.pump();
+        await save(tester);
+        expect(find.byKey(const Key('code-auto-dialog')), findsNothing);
+        expect(client.updated.single.$2.containsKey('code_auto'), isFalse);
+      });
+
+      ap3Test('choosing a lower level turns an opted-in agent off', (
+        tester,
+      ) async {
+        const on = Agent(
+          id: 'tern:research',
+          slug: 'research',
+          name: 'Research',
+          mainChannelId: 'dm:research',
+          autonomy: 'code',
+          codeAuto: true,
+        );
+        final (_, client) = await editing(tester, on);
+        await show(tester, find.byKey(const Key('autonomy-supervised')));
+        await tester.tap(find.byKey(const Key('autonomy-supervised')));
+        await tester.pump();
+        await save(tester);
+        // Turning it off never needs a confirmation.
+        expect(find.byKey(const Key('code-auto-dialog')), findsNothing);
+        expect(
+          client.updated.single.$2,
+          allOf(
+            containsPair('autonomy', 'supervised'),
+            containsPair('code_auto', false),
+          ),
+        );
+      });
+
+      testWidgets('the header chip shows the two states', (tester) async {
+        for (final (state, key) in [
+          (CodeAutoChipState.on, 'code-auto-chip'),
+          (CodeAutoChipState.editsOnly, 'code-auto-chip-edits-only'),
+        ]) {
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: ternTheme(TernColors.light, Brightness.light),
+              home: Scaffold(body: CodeAutoChip(state: state)),
+            ),
+          );
+          expect(find.byKey(Key(key)), findsOneWidget);
+        }
+        expect(find.text('Code auto · edits only'), findsOneWidget);
+        expect(CodeAutoChip.stateFor(true), CodeAutoChipState.on);
+        expect(CodeAutoChip.stateFor(false), CodeAutoChipState.editsOnly);
+        expect(CodeAutoChip.stateFor(null), CodeAutoChipState.editsOnly);
+        // Only an opted-in agent whose ceiling allows it shows the chip.
+        const base = Agent(id: 'x', slug: 'x', name: 'X');
+        expect(CodeAutoChip.applies(base), isFalse);
+        expect(
+          CodeAutoChip.applies(
+            const Agent(id: 'x', slug: 'x', name: 'X', codeAuto: true),
+          ),
+          isTrue,
+        );
+        expect(
+          CodeAutoChip.applies(
+            const Agent(
+              id: 'x',
+              slug: 'x',
+              name: 'X',
+              codeAuto: true,
+              autonomy: 'supervised',
+            ),
+          ),
+          isFalse,
+        );
+      });
+    });
+
     ap3Test('a new agent can start with a ceiling', (tester) async {
       final (store, client) = await _store();
       await _pump(tester, store);
@@ -1587,6 +1766,79 @@ void main() {
       await store.openAgent(_research);
       await tester.pump();
       expect(find.byKey(const Key('autonomy-chip')), findsNothing);
+    });
+
+    ap3Test('the header shows the code auto chip only while it applies', (
+      tester,
+    ) async {
+      const on = Agent(
+        id: 'tern:research',
+        slug: 'research',
+        name: 'Research',
+        mainChannelId: 'dm:research',
+        autonomy: 'code',
+        codeAuto: true,
+      );
+      final (store, client) = await _store();
+      client.agentList = [_tern, on];
+      store.agents = client.agentList;
+      await store.openAgent(on);
+      await _pump(tester, store);
+      // No confirmed sandbox in the fake core: the grey, honest state.
+      expect(
+        find.byKey(const Key('code-auto-chip-edits-only')),
+        findsOneWidget,
+      );
+      // Opted out (or a ceiling below code): no chip at all.
+      client.agentList = [_tern, _research];
+      store.agents = client.agentList;
+      await store.openAgent(_research);
+      await tester.pump();
+      expect(find.byKey(const Key('code-auto-chip-edits-only')), findsNothing);
+      expect(find.byKey(const Key('code-auto-chip')), findsNothing);
+    });
+
+    test('a call code auto mode let through carries an auto badge flag', () {
+      // The mode's event comes just before the call starts; it must not
+      // answer a card that is waiting for a person.
+      final t = Transcript();
+      for (final e in <TernEvent>[
+        const RunStarted(runId: 'r', sessionId: 's1'),
+        ApprovalRequested(_approval('a1', 'dm:research', 'tern:research')),
+        const ApprovalAnswered(
+          runId: 'r',
+          id: 'c1',
+          name: 'shell',
+          outcome: 'approved_by_mode',
+        ),
+        const ToolStarted(
+          runId: 'r',
+          id: 'c1',
+          name: 'shell',
+          summary: 'shell cargo test',
+        ),
+        const ToolStarted(
+          runId: 'r',
+          id: 'c2',
+          name: 'shell',
+          summary: 'shell git push',
+        ),
+        const CheckpointSaved(runId: 'r', commit: 'abc'),
+      ]) {
+        t.apply(e);
+      }
+      final steps = t.items.whereType<WorkItem>().expand((w) => w.steps);
+      expect(steps.firstWhere((s) => s.id == 'c1').auto, isTrue);
+      expect(steps.firstWhere((s) => s.id == 'c2').auto, isFalse);
+      expect(
+        t.items.whereType<ApprovalItem>().single.outcome,
+        isNull,
+        reason: 'a pending card is not answered by the mode',
+      );
+      expect(
+        t.items.whereType<PillItem>().single.text,
+        contains('Snapshot saved'),
+      );
     });
 
     ap3Test('the bot field lists secrets by name and says why not', (

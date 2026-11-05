@@ -23,9 +23,11 @@ class Agent {
     this.delegates,
     this.autonomy,
     this.telegramSecret,
+    this.codeAuto = false,
   });
 
   factory Agent.fromJson(Json j) => Agent(
+    codeAuto: j['code_auto'] as bool? ?? false,
     id: j['id'] as String,
     slug: j['slug'] as String,
     name: j['name'] as String,
@@ -106,7 +108,7 @@ class Agent {
   /// agent for the default agent, none for others.
   final List<String>? delegates;
 
-  /// Its autonomy ceiling (`readonly`, `supervised`, `autonomous`, `yolo`;
+  /// Its autonomy ceiling (`readonly`, `supervised`, `code`, `autonomous`, `yolo`;
   /// see [AutonomyLevel]): its runs get the lower of this and the
   /// configured autonomy. A ceiling, never a grant. Null: no ceiling.
   final String? autonomy;
@@ -115,6 +117,12 @@ class Agent {
   /// token). Null: no bot of its own. A change applies when the daemon
   /// restarts.
   final String? telegramSecret;
+
+  /// The user opted this agent in to code auto mode (not fully sandboxed):
+  /// it edits files and runs build and test commands in its workspace
+  /// without asking. Needs a ceiling of `code` or above (or none); only an
+  /// explicit, confirmed PATCH sets it, never a starter or a bundle.
+  final bool codeAuto;
 
   /// The ceiling as a level, when it is one this client knows.
   AutonomyLevel? get autonomyLevel => AutonomyLevel.parse(autonomy);
@@ -143,6 +151,12 @@ enum AutonomyLevel {
     'Asks before it changes '
         'something: tern\'s usual defaults.',
   ),
+  code(
+    'code',
+    'Code',
+    'Edits files and runs build and test commands in its '
+        'workspace without asking. Not fully sandboxed; opt-in per agent.',
+  ),
   autonomous(
     'autonomous',
     'Autonomous',
@@ -168,6 +182,7 @@ enum AutonomyLevel {
   static AutonomyLevel? parse(String? s) => switch (s) {
     'readonly' || 'read_only' => readonly,
     'supervised' => supervised,
+    'code' => code,
     'autonomous' => autonomous,
     'yolo' => yolo,
     _ => null,

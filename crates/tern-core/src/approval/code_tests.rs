@@ -155,12 +155,20 @@ fn nothing_else_changes_at_code() {
         p.forbidden = Some("money_movement");
         p
     };
-    for p in [connector] {
-        assert_eq!(
-            check("lua__x__send", &p, false, gate(Autonomy::Code, false)),
-            check("lua__x__send", &p, false, gate(Autonomy::Supervised, false)),
-        );
-    }
+    assert_eq!(
+        check(
+            "lua__x__send",
+            &connector,
+            false,
+            gate(Autonomy::Code, false)
+        ),
+        check(
+            "lua__x__send",
+            &connector,
+            false,
+            gate(Autonomy::Supervised, false)
+        ),
+    );
     for l in LEVELS {
         assert_eq!(
             check("pay", &money, false, gate(l, false)),

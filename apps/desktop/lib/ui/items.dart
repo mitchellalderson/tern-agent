@@ -378,6 +378,26 @@ class _WorkCardState extends State<WorkCard> {
                           style: TextStyle(color: c.muted),
                         ),
                       ),
+                      if (s.auto)
+                        Tooltip(
+                          message: 'Ran without asking: code auto mode',
+                          child: Container(
+                            key: Key('auto-badge-${s.id}'),
+                            margin: const EdgeInsets.only(left: 6),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 5,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              border: Border.all(color: c.muted),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              'auto',
+                              style: TextStyle(fontSize: 10.5, color: c.muted),
+                            ),
+                          ),
+                        ),
                       if (s.output.isNotEmpty)
                         Icon(
                           _open.contains(s.id)
@@ -498,6 +518,7 @@ class _Pill extends StatelessWidget {
       PillKind.compacted => Icons.compress,
       PillKind.retrying => Icons.refresh,
       PillKind.posts => Icons.dynamic_feed,
+      PillKind.checkpoint => Icons.history,
     };
     return Center(
       child: Row(
