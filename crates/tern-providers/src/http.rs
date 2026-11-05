@@ -40,7 +40,8 @@ pub async fn check(resp: reqwest::Response) -> Result<reqwest::Response, Provide
         .filter(|s| s.is_finite() && *s >= 0.0)
         .map(Duration::from_secs_f64);
     let mut body = resp.text().await.unwrap_or_default();
-    body.truncate(2000);
+    // A server's error body is untrusted: cut on a char boundary.
+    tern_core::text::truncate_string(&mut body, 2000);
     Err(ProviderError::Http {
         status: status.as_u16(),
         body,

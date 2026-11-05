@@ -971,6 +971,9 @@ impl Agent {
                         // A tool may mark its own result (channel_read of
                         // tainted posts).
                         r = r.with_trust(floor);
+                        if crate::tool::is_panic_result(&r) {
+                            self.ledger_tool_panic(run, &call, &r.content)?;
+                        }
                         let msg = tool_result(&call, &r);
                         Ok(StepOutput::new(r)
                             .with_messages(vec![msg])

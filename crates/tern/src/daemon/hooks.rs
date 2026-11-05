@@ -602,11 +602,10 @@ fn cut(payload: &str) -> String {
     if payload.len() <= max {
         return payload.to_owned();
     }
-    let mut end = max;
-    while !payload.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…[truncated]", &payload[..end])
+    format!(
+        "{}…[truncated]",
+        tern_core::text::prefix_bytes(payload, max)
+    )
 }
 
 #[cfg(test)]

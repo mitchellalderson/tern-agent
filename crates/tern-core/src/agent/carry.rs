@@ -181,9 +181,5 @@ impl Agent {
 
 fn cut(s: &str) -> String {
     let s = s.trim();
-    let mut end = s.len().min(CARRY_EXCHANGES_MAX);
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s[..end].to_owned()
+    crate::text::prefix_bytes(s, CARRY_EXCHANGES_MAX).to_owned()
 }

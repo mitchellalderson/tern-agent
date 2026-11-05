@@ -1,10 +1,12 @@
 //! The `Tool` trait and the registry the agent loop calls through.
 
 use std::collections::BTreeMap;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -649,10 +651,41 @@ impl ToolRegistry {
         let Some(tool) = self.get(&call.name) else {
             return ToolResult::error(format!("unknown tool {:?}", call.name));
         };
-        let mut result = tool.call(ctx, call.input.clone()).await;
+        // A panic inside one tool (a bug on hostile input, say) must not take
+        // down the run or the daemon: it becomes this call's error result.
+        let mut result = match AssertUnwindSafe(tool.call(ctx, call.input.clone()))
+            .catch_unwind()
+            .await
+        {
+            Ok(r) => r,
+            Err(payload) => {
+                let what = panic_message(payload.as_ref());
+                tracing::error!(tool = %call.name, run = %ctx.run_id, panic = %what, "tool panicked");
+                ToolResult::error(format!("{PANIC_PREFIX} {:?} panicked: {what}", call.name))
+            }
+        };
         result.content = truncate_middle(&result.content, MAX_TOOL_OUTPUT);
         result
     }
+}
+
+/// Start of the error text for a tool call that panicked; see
+/// [`is_panic_result`].
+pub const PANIC_PREFIX: &str = "internal error: tool";
+
+/// Whether `r` is the error [`ToolSet::call_in`] makes from a tool panic (the
+/// agent loop writes those to the ledger).
+pub fn is_panic_result(r: &ToolResult) -> bool {
+    r.is_error && r.content.starts_with(PANIC_PREFIX)
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    let m = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "(no message)".into());
+    truncate_middle(&m, 300)
 }
 
 /// Whether `name` is allowed by `scope` (`None` = every tool except the
@@ -675,19 +708,13 @@ pub fn truncate_middle(s: &str, max: usize) -> String {
         return s.to_owned();
     }
     let keep = max.saturating_sub(64) / 2;
-    let mut head = keep;
-    while !s.is_char_boundary(head) {
-        head -= 1;
-    }
-    let mut tail = s.len() - keep;
-    while !s.is_char_boundary(tail) {
-        tail += 1;
-    }
+    let head = crate::text::prefix_bytes(s, keep);
+    let tail = crate::text::suffix_bytes(s, keep);
     format!(
         "{}\n\n[... truncated {} bytes ...]\n\n{}",
-        &s[..head],
-        tail - head,
-        &s[tail..]
+        head,
+        s.len() - head.len() - tail.len(),
+        tail
     )
 }
 
@@ -704,5 +731,16 @@ mod tests {
         assert!(t.ends_with("zzz"));
         assert!(t.contains("truncated"));
         assert_eq!(truncate_middle("short", 200), "short");
+    }
+
+    #[test]
+    fn truncation_is_safe_for_every_max_with_wide_chars() {
+        for unit in ["💫", "日本", "e\u{301}"] {
+            let s = unit.repeat(120);
+            for max in 0..s.len() + 2 {
+                let t = truncate_middle(&s, max);
+                assert!(t.is_char_boundary(t.len()));
+            }
+        }
     }
 }

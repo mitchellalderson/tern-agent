@@ -1115,7 +1115,7 @@ fn fit_ident(s: &str, prefix: &str) -> String {
     if !s.starts_with(|c: char| c.is_ascii_lowercase()) {
         s = format!("{prefix}_{s}");
     }
-    s.truncate(32);
+    tern_core::text::truncate_string(&mut s, 32);
     s.trim_end_matches('_').to_owned()
 }
 
@@ -1139,7 +1139,7 @@ fn unique_key(base: &str, taken: &mut BTreeSet<String>) -> String {
     while taken.contains(&key) || !valid_ident(&key) {
         let suffix = format!("_{n}");
         let mut b = base.clone();
-        b.truncate(32 - suffix.len());
+        tern_core::text::truncate_string(&mut b, 32 - suffix.len());
         key = format!("{}{suffix}", b.trim_end_matches('_'));
         n += 1;
     }

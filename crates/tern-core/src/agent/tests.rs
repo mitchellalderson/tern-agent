@@ -276,6 +276,31 @@ impl Tool for Chatty {
     }
 }
 
+/// Always panics (a tool bug on hostile input).
+struct Boom;
+
+#[async_trait]
+impl Tool for Boom {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "boom".into(),
+            description: "boom".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+    fn effect(&self) -> Effect {
+        Effect::Read
+    }
+    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+        ToolPolicy::new(Effect::Read, false)
+    }
+    async fn call(&self, _: &ToolCtx, _: Value) -> ToolResult {
+        let s = "a💫b";
+        let n = 2;
+        ToolResult::ok(s[..n].to_owned())
+    }
+}
+
 struct Harness {
     store: Store,
     session: String,
@@ -428,6 +453,27 @@ async fn a_call_cut_off_by_the_output_limit_is_not_run_and_the_model_is_told() {
         Some((TRUNCATED_TOOL_MESSAGE.into(), true))
     );
     assert_eq!(second.max_tokens, AgentConfig::default().max_tokens);
+}
+
+#[tokio::test]
+async fn a_panicking_tool_becomes_an_error_result_and_the_run_continues() {
+    let h = Harness::new();
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("boom", json!({})),
+        Reply::Text("recovered"),
+    ]));
+    let agent = h.agent(script, vec![Arc::new(Boom)], Arc::new(AutoApprove));
+    let run = h.start(&agent, "go");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    assert_eq!(
+        h.kinds(&run),
+        ["llm:completed", "tool:completed", "llm:completed"]
+    );
+    assert_eq!(ledger_kinds(&h), ["tool.panic"]);
+    let msgs = h.store.session_messages(&h.session).unwrap();
+    let text = format!("{msgs:?}");
+    assert!(text.contains("panicked"), "{text}");
 }
 
 #[tokio::test]

@@ -448,11 +448,10 @@ pub fn cap(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_owned();
     }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}\n[... cut at {max} bytes]", &s[..end])
+    format!(
+        "{}\n[... cut at {max} bytes]",
+        crate::text::prefix_bytes(s, max)
+    )
 }
 
 #[cfg(test)]

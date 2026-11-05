@@ -194,6 +194,21 @@ impl Agent {
         Ok(())
     }
 
+    /// A tool panicked; the call became an error result and the run went on.
+    pub(super) fn ledger_tool_panic(
+        &self,
+        run: &RunRow,
+        call: &ToolCall,
+        what: &str,
+    ) -> Result<(), StepError> {
+        let e = self
+            .ledger_entry("tool.panic", run, call, what.to_owned())
+            .actor(ACTOR_TERN)
+            .detail(json!({ "error": true }));
+        self.store.ledger_append(&e)?;
+        Ok(())
+    }
+
     /// A command nothing could confine was refused in an unattended run.
     pub(super) fn ledger_unbounded(&self, run: &RunRow, call: &ToolCall) -> Result<(), StepError> {
         let summary = format!(
