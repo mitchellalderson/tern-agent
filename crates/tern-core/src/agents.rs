@@ -717,7 +717,13 @@ mod tests {
         assert!(cron.split_whitespace().count() == 5);
         let tools = t.tools.as_ref().unwrap();
         assert!(matches!(tools.builtins, Pick::ReadOnly));
-        for phrase in ["scorecard", "Changed since last run", "never edit", "llms.txt", "JSON-LD"] {
+        for phrase in [
+            "scorecard",
+            "Changed since last run",
+            "never edit",
+            "llms.txt",
+            "JSON-LD",
+        ] {
             assert!(t.persona.contains(phrase), "persona lacks {phrase:?}");
         }
     }
@@ -795,10 +801,22 @@ persona = "You are X."
             assert!(a <= Autonomy::Supervised, "{}: {a}", t.id);
         }
         let level = |id: &str| template(id).unwrap().autonomy.unwrap();
-        for id in ["research", "deep-research", "fact-checker", "meeting-prep", "seo"] {
+        for id in [
+            "research",
+            "deep-research",
+            "fact-checker",
+            "meeting-prep",
+            "seo",
+        ] {
             assert_eq!(level(id), Autonomy::ReadOnly, "{id}");
         }
-        for id in ["inbox", "bug-fixer", "code-reviewer", "customer-support", "blank"] {
+        for id in [
+            "inbox",
+            "bug-fixer",
+            "code-reviewer",
+            "customer-support",
+            "blank",
+        ] {
             assert_eq!(level(id), Autonomy::Supervised, "{id}");
         }
     }
