@@ -190,6 +190,11 @@ pub struct App {
     /// Everything waiting on the user (Home's needs-you count), for the
     /// status line; refreshed after runs and channel commands.
     pub needs_you: usize,
+    /// Every agent when there are several (for the status line's "2
+    /// working"), and today's routine spend; empty or `None` when there is
+    /// nothing to say.
+    pub fleet: Vec<AgentInfo>,
+    pub spend: Option<String>,
 }
 
 /// "Research: …" (a card: "▲ needs you", a suggestion: how to decide).
@@ -290,6 +295,8 @@ impl App {
             channel: None,
             channel_seen: 0,
             needs_you: 0,
+            fleet: Vec::new(),
+            spend: None,
         }
     }
 
@@ -1387,6 +1394,14 @@ impl App {
     }
 
     fn refresh_needs_you(&mut self) {
+        self.fleet = match self.backend.agents() {
+            Ok(list) if list.len() > 1 => list,
+            _ => Vec::new(),
+        };
+        self.spend = self
+            .backend
+            .spend_today()
+            .map(|(spent, cap)| crate::spend_line(spent, cap));
         if let Ok(list) = self.backend.channels() {
             self.needs_you = list
                 .iter()
@@ -1467,7 +1482,12 @@ impl App {
                 } else {
                     format!("  ({})", extra.join(", "))
                 };
-                format!("{here} @{}  {}{extra}", a.slug, a.name)
+                format!(
+                    "{here} {} @{}  {}{extra}",
+                    a.state().marker(),
+                    a.slug,
+                    a.name
+                )
             })
             .collect();
         self.notice(format!(

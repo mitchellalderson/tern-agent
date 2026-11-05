@@ -814,7 +814,12 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         String::new()
     };
-    let left = format!(" {place}{agent} · {model} · {session}{waiting}");
+    // Several agents: who is working or needs you, at a glance.
+    let fleet = match crate::fleet_summary(&app.fleet, app.needs_you == 0) {
+        f if f.is_empty() => String::new(),
+        f => format!(" · {f}"),
+    };
+    let left = format!(" {place}{agent} · {model} · {session}{waiting}{fleet}");
     let right = if let Some(h) = &app.hint {
         h.clone()
     } else if app.secret_prompt.is_some() {
@@ -845,6 +850,11 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )
     } else {
         "ready".into()
+    };
+    // Routine spend against the daily cap, when there is one.
+    let right = match &app.spend {
+        Some(spend) if app.hint.is_none() => format!("{right} · {spend}"),
+        _ => right,
     };
     let pad =
         (area.width as usize).saturating_sub(left.chars().count() + right.chars().count() + 1);

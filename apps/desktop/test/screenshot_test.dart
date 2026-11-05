@@ -33,7 +33,11 @@ TernStore demoStore() {
   final now = DateTime.now();
   final store = TernStore(TernClient(const Endpoint.unix('/nonexistent')))
     ..link = Link.online
-    ..health = const Health(pid: 1, version: '0.1.0')
+    ..health = const Health(
+      pid: 1,
+      version: '0.1.0',
+      features: {'channels', 'agents'},
+    )
     ..info = const Info(
       defaultModel: 'anthropic:claude-sonnet-5-5',
       tools: [
@@ -115,6 +119,93 @@ TernStore demoStore() {
       enabled: false,
     ),
   ];
+  const demoAgents = [
+    Agent(
+      id: 'tern',
+      slug: 'tern',
+      name: 'tern',
+      memory: 'shared',
+      mainChannelId: 'home',
+      isDefault: true,
+    ),
+    Agent(
+      id: 'tern:research',
+      slug: 'research',
+      name: 'Research',
+      avatar: AvatarSpec(glyph: '★', color: 'teal'),
+      mainChannelId: 'dm:research',
+    ),
+    Agent(
+      id: 'tern:revops',
+      slug: 'revops',
+      name: 'RevOps',
+      avatar: AvatarSpec(glyph: '■', color: 'amber'),
+      mainChannelId: 'dm:revops',
+    ),
+    Agent(
+      id: 'tern:growth',
+      slug: 'growth',
+      name: 'Growth',
+      avatar: AvatarSpec(glyph: '▲', color: 'violet'),
+      mainChannelId: 'dm:growth',
+    ),
+    Agent(
+      id: 'tern:support',
+      slug: 'support',
+      name: 'Support',
+      avatar: AvatarSpec(glyph: '♥', color: 'pink'),
+      mainChannelId: 'dm:support',
+    ),
+  ];
+  store.agents = demoAgents;
+  Channel topic(String slug, String title, int last, List<String> members) =>
+      Channel(
+        id: slug,
+        slug: slug,
+        title: title,
+        kind: 'topic',
+        agentId: 'tern',
+        mainSessionId: 'c-$slug',
+        lastPostId: last,
+        agents: ChannelAgents(
+          members: [
+            for (final (i, m) in members.indexed)
+              ChannelMember(agentId: m, lead: i == 0, addedAt: now),
+          ],
+          agentWakes: true,
+        ),
+        updatedAt: now,
+      );
+  store.channels = [
+    Channel(
+      id: 'home',
+      slug: 'home',
+      title: 'Home',
+      kind: 'main',
+      agentId: 'tern',
+      mainSessionId: 's1',
+      updatedAt: now,
+    ),
+    for (final a in demoAgents.skip(1))
+      Channel(
+        id: a.mainChannelId!,
+        slug: 'dm-${a.slug}',
+        title: a.name,
+        kind: 'main',
+        agentId: a.id,
+        updatedAt: now,
+      ),
+    topic('monday-review', 'Monday review', 4, ['tern:revops', 'tern']),
+    topic('activation', 'Activation', 6, ['tern:growth', 'tern:research']),
+    topic('customers', 'Customers', 3, ['tern:support', 'tern:revops']),
+    topic('launch', 'Launch', 2, ['tern:research', 'tern:growth', 'tern']),
+  ];
+  // Two channels have posts you haven't read, so the dots show.
+  store.lastSeen
+    ..['monday-review'] = 1
+    ..['activation'] = 6
+    ..['customers'] = 3
+    ..['launch'] = 2;
   store.selected = 's1';
   store.draft = false;
   final t0 = now.subtract(const Duration(seconds: 50));

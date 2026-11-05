@@ -69,6 +69,69 @@ pub struct AgentInfo {
     pub is_default: bool,
 }
 
+/// What an agent is doing, as the `/agents` list and the status line show
+/// it. The desktop derives a richer one; the TUI only has these counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentState {
+    NeedsYou,
+    Working,
+    Idle,
+}
+
+impl AgentState {
+    /// A monotone marker: diamond needs you, filled circle working, ring idle.
+    pub fn marker(self) -> char {
+        match self {
+            AgentState::NeedsYou => '◆',
+            AgentState::Working => '●',
+            AgentState::Idle => '○',
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AgentState::NeedsYou => "needs you",
+            AgentState::Working => "working",
+            AgentState::Idle => "idle",
+        }
+    }
+}
+
+impl AgentInfo {
+    /// Needs you wins over working, which wins over idle.
+    pub fn state(&self) -> AgentState {
+        if self.needs_you > 0 {
+            AgentState::NeedsYou
+        } else if self.active_runs > 0 {
+            AgentState::Working
+        } else {
+            AgentState::Idle
+        }
+    }
+}
+
+/// "1 needs you, 2 working"; empty when no agent is either. Without
+/// `with_needs` only the working part, for a line that already counts what
+/// waits on the user.
+pub fn fleet_summary(agents: &[AgentInfo], with_needs: bool) -> String {
+    let count = |s: AgentState| agents.iter().filter(|a| a.state() == s).count();
+    let (needs, working) = (count(AgentState::NeedsYou), count(AgentState::Working));
+    let mut parts = Vec::new();
+    if needs > 0 && with_needs {
+        let verb = if needs == 1 { "needs" } else { "need" };
+        parts.push(format!("{needs} {verb} you"));
+    }
+    if working > 0 {
+        parts.push(format!("{working} working"));
+    }
+    parts.join(", ")
+}
+
+/// Today's routine spend against the daily caps: "$0.31 of $0.50 today".
+pub fn spend_line(spent: f64, cap: f64) -> String {
+    format!("${spent:.2} of ${cap:.2} today")
+}
+
 /// A channel, for `/channels` and `/channel` (channels-design C5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelInfo {
@@ -306,6 +369,11 @@ pub trait Backend: Send + Sync + 'static {
     /// step.
     fn message_run(&self, _run_id: &str, _text: &str) -> BackendResult<()> {
         Err("this backend doesn't support sub-agents".into())
+    }
+    /// Today's routine spend and the daily caps it counts against, summed;
+    /// `None` without a cap or a known price (nothing is shown then).
+    fn spend_today(&self) -> Option<(f64, f64)> {
+        None
     }
     /// Agent profiles, the default first. Empty when the core has none.
     fn agents(&self) -> BackendResult<Vec<AgentInfo>> {

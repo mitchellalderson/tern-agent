@@ -15,6 +15,8 @@
   "runs_per_day": 12,
   "usd_per_day": 0.5,
   "tokens_per_run": 200000,
+  "spent_usd": 0.31,
+  "usd_cap": 0.5,
   "paused": "budget",
   "paused_until": 1762210800000,
   "paused_reason": "runs_per_day",

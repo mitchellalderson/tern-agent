@@ -1022,6 +1022,8 @@ class Schedule {
     this.paused,
     this.pausedUntil,
     this.pausedReason,
+    this.spentUsd,
+    this.usdCap,
     this.channelId = 'home',
     this.agentId = 'tern',
     this.trigger = 'cron',
@@ -1049,6 +1051,8 @@ class Schedule {
     paused: j['paused'] as String?,
     pausedUntil: _maybeTime(j['paused_until']),
     pausedReason: j['paused_reason'] as String?,
+    spentUsd: (j['spent_usd'] as num?)?.toDouble(),
+    usdCap: (j['usd_cap'] as num?)?.toDouble(),
     channelId: j['channel_id'] as String? ?? 'home',
     agentId: j['agent_id'] as String? ?? 'tern',
     trigger: j['trigger'] as String? ?? 'cron',
@@ -1089,6 +1093,11 @@ class Schedule {
 
   /// Which cap paused it: `runs_per_day` or `usd_per_day`.
   final String? pausedReason;
+
+  /// USD spent today and the daily cap it counts against; both null when
+  /// there is no cap or no known price.
+  final double? spentUsd;
+  final double? usdCap;
 
   /// The channel its results are posted to.
   final String channelId;

@@ -367,6 +367,18 @@ fn cap_reached(
     Ok(None)
 }
 
+/// What `s` has spent today against its daily USD cap (its own, else the
+/// `[schedules]` default): `(spent, cap)`. `None` without a cap or a
+/// known price, so a client shows nothing rather than a guess.
+pub fn spend_today(manager: &Manager, s: &ScheduleRow) -> Option<(f64, f64)> {
+    let cap = s.usd_per_day.or(manager.rt.live().schedules.usd_per_day)?;
+    let since = quiet::start_of_day(Local::now())
+        .timestamp_millis()
+        .max(s.budget_since.unwrap_or(0));
+    let spent = spend_since(manager, s, since).ok()??;
+    Some((spent, cap))
+}
+
 /// Models whose missing price has been logged, so it's said once.
 fn noted() -> &'static Mutex<HashSet<String>> {
     static NOTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();

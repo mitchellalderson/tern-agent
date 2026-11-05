@@ -21,6 +21,8 @@ use tokio_util::sync::CancellationToken;
 use super::*;
 use crate::{HistoryMessage, PendingSecret, Started, UserPrompt};
 
+mod fleet;
+
 /// (session, model, text) passed to `start_run`.
 type StartCall = (Option<String>, Option<String>, String);
 
@@ -2161,4 +2163,61 @@ fn channels_and_agents_are_renamed_and_deleted_only_after_confirming() {
     assert!(notices(&app).contains("in progress"));
     submit(&mut app, "/agents delete inbox routines yes");
     assert!(fake.deletes.lock().unwrap()[2].2.delete_routines);
+}
+
+/// Renders the real TUI with demo data and writes the cell buffer as JSON to `$TERN_TUI_SHOT`, for the website and
+/// README screenshots. Run with `TERN_TUI_SHOT=out.json cargo test -p tern-tui demo_screenshot -- --ignored`.
+#[test]
+#[ignore]
+fn demo_screenshot() {
+    let Ok(path) = std::env::var("TERN_TUI_SHOT") else {
+        return;
+    };
+    let (mut app, _) = new_app();
+    app.model = Some("anthropic/claude-sonnet-5-5".into());
+    let tool = |id: &str, summary: &str| Entry::Tool {
+        id: id.into(),
+        summary: summary.into(),
+        state: ToolState::Ok,
+        output: String::new(),
+    };
+    app.entries = vec![
+        Entry::User(
+            "Trial accounts that crossed 100 events this week and aren't in the CRM at a later stage. \
+             Draft a founder note for each."
+                .into(),
+        ),
+        tool("1", "http_get api.acme.dev/v1/accounts?events_gte=100"),
+        tool("2", "crm_search stage != trial"),
+        Entry::Assistant {
+            text: "5 accounts qualify. One, Northwind, is already a paying customer, so I skipped it.\n\n\
+                   The other four have a draft in drafts/founder-notes.md, each citing that account's first-week \
+                   usage. Sending is waiting for your approval."
+                .into(),
+            streaming: false,
+        },
+        tool("3", "write_file drafts/founder-notes.md"),
+    ];
+    let (w, h) = (110u16, 20u16);
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buf = t.backend().buffer().clone();
+    let rows: Vec<Vec<serde_json::Value>> = (0..h)
+        .map(|y| {
+            (0..w)
+                .map(|x| {
+                    let c = &buf[(x, y)];
+                    json!([
+                        c.symbol(),
+                        format!("{:?}", c.fg),
+                        format!("{:?}", c.bg),
+                        c.modifier.bits()
+                    ])
+                })
+                .collect()
+        })
+        .collect();
+    std::fs::write(path, json!({ "w": w, "h": h, "rows": rows }).to_string()).unwrap();
+    // Plain text too, so the layout can be eyeballed.
+    eprintln!("{}", screen(&mut app, w, h));
 }
