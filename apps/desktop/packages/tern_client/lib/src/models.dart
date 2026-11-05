@@ -366,21 +366,38 @@ class SessionDetail {
     this.title,
     this.model,
     required this.messages,
-  });
+    int? total,
+    this.offset = 0,
+  }) : total = total ?? messages.length + offset;
 
-  factory SessionDetail.fromJson(Json j) => SessionDetail(
-    id: j['id'] as String,
-    title: j['title'] as String?,
-    model: j['model'] as String?,
-    messages: [
+  factory SessionDetail.fromJson(Json j) {
+    final messages = [
       for (final m in j['messages'] as List) SessionMessage.fromJson(m as Json),
-    ],
-  );
+    ];
+    final offset = (j['offset'] as num?)?.toInt() ?? 0;
+    return SessionDetail(
+      id: j['id'] as String,
+      title: j['title'] as String?,
+      model: j['model'] as String?,
+      messages: messages,
+      // An older daemon sends the whole session and no counts.
+      total: (j['total'] as num?)?.toInt() ?? messages.length + offset,
+      offset: offset,
+    );
+  }
 
   final String id;
   final String? title;
   final String? model;
   final List<SessionMessage> messages;
+
+  /// Messages the session has in all, and the index of `messages[0]`
+  /// among them (0 unless this is a page of a long session).
+  final int total;
+  final int offset;
+
+  /// Messages before this page that were not sent.
+  bool get hasEarlier => offset > 0;
 }
 
 class Usage {

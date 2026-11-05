@@ -16,7 +16,7 @@
 //! | GET | `/v1/runs/{id}/children[?recursive=1]` | its sub-agents: `[ChildRun]` (`api_subagents.rs`) |
 //! | POST | `/v1/runs/{id}/message` | `{text}` from the user to a running sub-agent (`api_subagents.rs`) |
 //! | GET | `/v1/sessions[?source=][&channel=]` | recent sessions; sub-agent sessions only with `?source=subagent`; `channel`: that channel's threads |
-//! | GET | `/v1/sessions/{id}` | a session and its messages |
+//! | GET | `/v1/sessions/{id}[?limit=][&before=]` | a session and its messages; `limit` keeps the newest that many (before index `before`, default the end), and `total` and `offset` say where the page sits |
 //! | PUT | `/v1/sessions/{id}/model` | set `{model}` |
 //! | GET | `/v1/sessions/{id}/usage[?include=subagents]` | token usage (with sub-agents': the run trees) and how full the context is |
 //! | GET | `/v1/sessions/{id}/subagents` | every sub-agent under the session's runs (`api_subagents.rs`) |
@@ -588,34 +588,56 @@ pub struct SessionDetail {
     pub title: Option<String>,
     pub model: Option<String>,
     pub messages: Vec<SessionMessage>,
+    /// How many messages the session has in all; an older daemon's reply
+    /// has none.
+    #[serde(default)]
+    pub total: usize,
+    /// The index of `messages[0]` among them; 0 for the whole session.
+    #[serde(default)]
+    pub offset: usize,
+}
+
+#[derive(Deserialize)]
+struct SessionPage {
+    /// At most this many messages (the newest before `before`). Absent:
+    /// all of them.
+    limit: Option<usize>,
+    /// Page back from this message index (exclusive); absent: from the end.
+    before: Option<usize>,
 }
 
 async fn session(
     State(m): State<Shared>,
     UrlPath(id): UrlPath<String>,
+    Query(page): Query<SessionPage>,
 ) -> ApiResult<SessionDetail> {
     let s =
         m.rt.store
             .session(&id)
             .map_err(internal)?
             .ok_or_else(|| not_found("session"))?;
-    let messages =
-        m.rt.store
-            .session_messages(&id)
-            .map_err(internal)?
-            .into_iter()
-            .map(|row| SessionMessage {
-                role: row.role,
-                run_id: row.run_id,
-                content: serde_json::from_str(&row.content_json).unwrap_or_default(),
-                summary: row.summary_of.is_some(),
-            })
-            .collect();
+    let messages = m.rt.store.session_messages(&id).map_err(internal)?;
+    let total = messages.len();
+    let end = page.before.map_or(total, |b| b.min(total));
+    let offset = page.limit.map_or(0, |l| end.saturating_sub(l.max(1)));
+    let messages = messages
+        .into_iter()
+        .skip(offset)
+        .take(end - offset)
+        .map(|row| SessionMessage {
+            role: row.role,
+            run_id: row.run_id,
+            content: serde_json::from_str(&row.content_json).unwrap_or_default(),
+            summary: row.summary_of.is_some(),
+        })
+        .collect();
     Ok(Json(SessionDetail {
         id: s.id,
         title: s.title,
         model: s.model,
         messages,
+        total,
+        offset,
     }))
 }
 
