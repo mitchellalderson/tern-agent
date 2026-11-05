@@ -340,12 +340,12 @@ pub const STARTER_TOOLS: &[&str] = &[
     "skill_read",
 ];
 
-/// Built-in tools only coding and data starters may have: they run commands.
+/// Built-in tools only coding starters may have: they run commands.
 /// (File edits are allowed to any starter whose job is making files, such as
 /// a writer's drafts; none of them gets `shell`.)
 const POWER_TOOLS: &[&str] = &["shell"];
 /// Categories whose starters may have [`POWER_TOOLS`].
-const POWER_CATEGORIES: &[&str] = &["Coding", "Data & Finance"];
+const POWER_CATEGORIES: &[&str] = &["Coding"];
 /// Built-in tools that change something: a `readonly` ceiling on a starter
 /// that has any of them would be pointless (every call would be refused).
 const WRITE_TOOLS: &[&str] = &[
@@ -687,11 +687,27 @@ mod tests {
             if ["code-reviewer", "security-reviewer", "pr-summarizer"].contains(&t.id.as_str()) {
                 assert!(!has("write_file") && !has("edit_file"), "{}", t.id);
             }
-            // Only coding and data starters run commands.
+            // Only coding starters run commands.
             if has("shell") {
                 assert!(POWER_CATEGORIES.contains(&t.category.as_str()), "{}", t.id);
             }
             assert!(matches!(tools.mcp, Pick::Names(_)), "{}", t.id);
+        }
+    }
+
+    #[test]
+    fn the_seo_starter_is_a_read_only_scheduled_auditor() {
+        use crate::approval::Autonomy;
+        let t = template("seo").unwrap();
+        assert!(t.validate().is_ok());
+        assert_eq!(t.autonomy, Some(Autonomy::ReadOnly));
+        assert_eq!(t.category, template("marketing").unwrap().category);
+        let (cron, _) = t.routine.as_ref().expect("a suggested schedule");
+        assert!(cron.split_whitespace().count() == 5);
+        let tools = t.tools.as_ref().unwrap();
+        assert!(matches!(tools.builtins, Pick::ReadOnly));
+        for phrase in ["scorecard", "Changed since last run", "never edit", "llms.txt", "JSON-LD"] {
+            assert!(t.persona.contains(phrase), "persona lacks {phrase:?}");
         }
     }
 
@@ -768,10 +784,10 @@ persona = "You are X."
             assert!(a <= Autonomy::Supervised, "{}: {a}", t.id);
         }
         let level = |id: &str| template(id).unwrap().autonomy.unwrap();
-        for id in ["research", "deep-research", "fact-checker", "meeting-prep"] {
+        for id in ["research", "deep-research", "fact-checker", "meeting-prep", "seo"] {
             assert_eq!(level(id), Autonomy::ReadOnly, "{id}");
         }
-        for id in ["inbox", "bug-fixer", "code-reviewer", "bookkeeper", "blank"] {
+        for id in ["inbox", "bug-fixer", "code-reviewer", "customer-support", "blank"] {
             assert_eq!(level(id), Autonomy::Supervised, "{id}");
         }
     }

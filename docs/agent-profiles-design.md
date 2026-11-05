@@ -381,8 +381,8 @@ Sidebar, top to bottom (today: the lone `AgentAvatar('tern')` row, then ⌂ Home
   the read-only system sections below it, model (chain) picker, tool scope (grouped checkboxes: built-in tools,
   connectors, MCP servers, skills, each showing status and missing secrets), memory (Private / Shared, with one line
   saying what each means), delegates (AP3), and Archive. **Templates** (starters): a catalog of
-  about 25 in `crates/tern-core/assets/starters.toml`, grouped by category (Everyday, Coding, Writing & Content, Research &
-  Learning, Business, Data & Finance, General), each with a persona, a tool scope no wider than its job and sometimes a
+  about 23 in `crates/tern-core/assets/starters.toml`, grouped by category (Everyday, Coding, Writing & Content, Research &
+  Learning, Business, General), each with a persona, a tool scope no wider than its job and sometimes a
   routine. A template just fills the sheet.
 - **Topic channel header** gains the member avatars (lead first, marked "lead"), + Agent, and
   the wake settings in the channel dialog. The composer autocompletes `@` from members (and all agents, marked "will

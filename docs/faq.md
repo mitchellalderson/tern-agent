@@ -6,7 +6,7 @@ wins; please open an issue.
 ## What is tern, in one paragraph?
 
 A personal agent you run yourself. One static binary for macOS or Linux holds the whole engine: chat in the terminal,
-a daemon with a scheduler, Telegram, MCP, sandboxed Luau connectors, several agents of your own (from 25 starters),
+a daemon with a scheduler, Telegram, MCP, sandboxed Luau connectors, several agents of your own (from 23 starters),
 sub-agents, and a SQLite journal that records every model call and tool result. Kill it mid-task and it resumes where
 it stopped without repeating side effects. You bring a model key (Anthropic or any OpenAI-compatible endpoint, local
 ones included). There is also a macOS desktop app, a download that carries its own `tern`; you can also build it from

@@ -1,6 +1,6 @@
 # tern
 
-A personal AI agent you run yourself, shipped as **one static binary**: no Python, no Node, no Docker required. It chats in your terminal, on Telegram, and in a macOS desktop app. You can keep several **agents**, each with its own persona, model, tools and memory, starting from a catalog of 25 starters (research, inbox, code review, bug fixing, writing, bookkeeping and more). They run scheduled routines, delegate to each other and to sub-agents, write their own sandboxed connectors for APIs nobody built one for, and ask before they run commands or change anything. It survives crashes: every model call and tool result is journaled, so a killed run resumes where it stopped without repeating completed work.
+A personal AI agent you run yourself, shipped as **one static binary**: no Python, no Node, no Docker required. It chats in your terminal, on Telegram, and in a macOS desktop app. You can keep several **agents**, each with its own persona, model, tools and memory, starting from a catalog of 23 starters (research, inbox, code review, bug fixing, writing, SEO audits and more). They run scheduled routines, delegate to each other and to sub-agents, write their own sandboxed connectors for APIs nobody built one for, and ask before they run commands or change anything. It survives crashes: every model call and tool result is journaled, so a killed run resumes where it stopped without repeating completed work.
 
 <!-- TODO(launch): replace this screenshot with docs/assets/demo.gif, the 90-second demo in docs/launch-plan.md §4.1
      (routine, Telegram approval, kill -9 and resume, agent-written connector). The screenshot is the desktop app
@@ -27,7 +27,7 @@ The installer picks the right build for your machine, verifies its checksum, and
 Then make an agent from a starter, and use the rest as you need it:
 
 ```sh
-tern agents templates                              # the 25 starters, by category, with each one's autonomy ceiling
+tern agents templates                              # the 23 starters, by category, with each one's autonomy ceiling
 tern agents new reviewer --template code-reviewer  # an agent with its own persona, tools, memory and DM
 tern run "summarize ~/notes/today.md"   # one prompt, answer on stdout (--yes auto-approves tools)
 tern start                              # run tern in the background: schedules, Telegram, the desktop app
@@ -41,7 +41,7 @@ tern doctor                             # check everything and say what's missin
 
 ## What it does
 
-- **Agents of your own.** Each agent has a name (`@name`), persona, model list, tool scope, private or shared memory, routines and a DM. Start from one of 25 starters across Everyday, Coding, Writing & Content, Research & Learning, Business and Data & Finance, or from Blank. Every starter carries a conservative **autonomy ceiling** (read-only for look-only roles, otherwise supervised), and you can set a ceiling on any agent: a cap on what it may do on its own, never a grant. Agents can be renamed, edited, archived or deleted, in the desktop app, the TUI and `tern agents`.
+- **Agents of your own.** Each agent has a name (`@name`), persona, model list, tool scope, private or shared memory, routines and a DM. Start from one of 23 starters across Everyday, Coding, Writing & Content, Research & Learning and Business, or from Blank. Every starter carries a conservative **autonomy ceiling** (read-only for look-only roles, otherwise supervised), and you can set a ceiling on any agent: a cap on what it may do on its own, never a grant. Agents can be renamed, edited, archived or deleted, in the desktop app, the TUI and `tern agents`.
 - **Agents working together.** An agent can hand work to another (`@name`), agents share topic channels and wake on `@mention`, and a channel can switch on **Let agents decide**, where tern routes a post to the agent that fits. Each agent can have a Telegram bot of its own. Agents, with routines and skills, can be packaged as signed **bundles**; installing one shows everything it can do first.
 - **Approvals that don't nag.** Risky steps wait for you as cards in the conversation, on Telegram or in the terminal. In the desktop app and terminal you can approve **once, for this run, for this conversation, or always** for that exact thing (a different tool, draft, host or account asks again); repeated identical approvals collapse into one line. Writes from unattended runs wait in an **outbox** instead of blocking.
 - **Routines and skills.** Schedules, cron and one-off triggers, webhooks, and watches that remember where they left off. After a long, clean run tern offers to save it as a **skill**: it writes a draft, and nothing is published until you review it.
