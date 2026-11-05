@@ -1,6 +1,6 @@
 # tern
 
-A personal AI agent you run yourself, shipped as **one static binary**: no Python, no Node, no Docker required. It chats in your terminal, on Telegram, and in a macOS desktop app. It also runs scheduled routines, delegates to sub-agents, writes its own sandboxed connectors for APIs nobody built one for, and asks before it runs commands. It survives crashes: every model call and tool result is journaled, so a killed run resumes where it stopped without repeating completed work.
+A personal AI agent you run yourself, shipped as **one static binary**: no Python, no Node, no Docker required. It chats in your terminal, on Telegram, and in a macOS desktop app. You can keep several **agents**, each with its own persona, model, tools and memory, starting from a catalog of 25 starters (research, inbox, code review, bug fixing, writing, bookkeeping and more). They run scheduled routines, delegate to each other and to sub-agents, write their own sandboxed connectors for APIs nobody built one for, and ask before they run commands or change anything. It survives crashes: every model call and tool result is journaled, so a killed run resumes where it stopped without repeating completed work.
 
 <!-- TODO(launch): replace this screenshot with docs/assets/demo.gif, the 90-second demo in docs/launch-plan.md §4.1
      (routine, Telegram approval, kill -9 and resume, agent-written connector). The screenshot is the desktop app
@@ -10,7 +10,7 @@ A personal AI agent you run yourself, shipped as **one static binary**: no Pytho
   <img alt="The tern desktop app: a conversation that delegated to three sub-agents, an approval card for a shell command, and routines in the side panel" src="docs/assets/desktop-light.png">
 </picture>
 
-macOS and Linux. Anthropic or any OpenAI-compatible model, including local ones. No telemetry.
+macOS and Linux (the desktop app is macOS for now). Anthropic or any OpenAI-compatible model, including OpenRouter, Gemini, Groq, Together, and local servers such as Ollama and LM Studio. No telemetry.
 
 **Docs:** [Reference](docs/reference.md) (every command and setting) · [FAQ](docs/faq.md) · [Security](SECURITY.md) · [Roadmap](ROADMAP.md) · [Design decisions](DECISIONS.md)
 
@@ -18,24 +18,39 @@ macOS and Linux. Anthropic or any OpenAI-compatible model, including local ones.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mitchellalderson/tern-agent/main/install.sh | sh
-tern setup     # choose Anthropic or an OpenAI-compatible server, paste a key, pick a model
+tern setup     # choose a provider (Anthropic, OpenAI, OpenRouter, Gemini, Groq, Together, Ollama, LM Studio, or another), paste a key, pick a model
 tern           # chat in the terminal
 ```
 
-The installer picks the right build for your machine, verifies its checksum, and installs to `~/.local/bin`. `tern setup` checks the key with the provider before saving it to `~/.tern/secrets.toml` (mode 0600).
+The installer picks the right build for your machine, verifies its checksum, and installs to `~/.local/bin`. `tern setup` checks the key with the provider before saving it to `~/.tern/secrets.toml` (mode 0600). For scripts, `tern providers add openrouter` (or `anthropic`, `openai`, `gemini`, `groq`, `together`, `ollama`, `lmstudio`, or `openai-compat --url ...`) does the same without the questions; it reads the key from stdin or asks for it hidden.
 
-Then, as you need them:
+Then make an agent from a starter, and use the rest as you need it:
 
 ```sh
+tern agents templates                              # the 25 starters, by category, with each one's autonomy ceiling
+tern agents new reviewer --template code-reviewer  # an agent with its own persona, tools, memory and DM
 tern run "summarize ~/notes/today.md"   # one prompt, answer on stdout (--yes auto-approves tools)
 tern start                              # run tern in the background: schedules, Telegram, the desktop app
 tern service install                    # ...and start it at login
 tern doctor                             # check everything and say what's missing
 ```
 
-**Desktop app** (macOS 11+): download [tern-desktop-macos.dmg](https://github.com/mitchellalderson/tern-agent/releases/latest/download/tern-desktop-macos.dmg) and drag tern to Applications. It carries its own `tern`, so you don't need the CLI. On first launch it asks where tern should run (this Mac, with an option to start at login and a menu-bar icon, or a tern server you pair with); then add a model.
+**Desktop app** (macOS 12+): download [tern-desktop-macos.dmg](https://github.com/mitchellalderson/tern-agent/releases/latest/download/tern-desktop-macos.dmg) and drag tern to Applications. It carries its own `tern`, so you don't need the CLI. On first launch it asks where tern should run (this Mac, with an option to start at login and a menu-bar icon, or a tern server you pair with). Then open **Models** and pick a provider from the presets (Anthropic, OpenAI, OpenRouter, Gemini, Groq, Together, Ollama, LM Studio, or another OpenAI-compatible address), paste a key, and choose a model. Under AGENTS in the sidebar, **+** opens the agent sheet: pick a starter from the searchable list, adjust it if you like, and Create. If a run fails because of a key, address or quota, the conversation says so in plain words, with the raw error under "Show details".
 
 **Telegram**, remote devices, schedules, MCP servers, connectors, sandboxing and every other option are covered in the [reference](docs/reference.md).
+
+## What it does
+
+- **Agents of your own.** Each agent has a name (`@name`), persona, model list, tool scope, private or shared memory, routines and a DM. Start from one of 25 starters across Everyday, Coding, Writing & Content, Research & Learning, Business and Data & Finance, or from Blank. Every starter carries a conservative **autonomy ceiling** (read-only for look-only roles, otherwise supervised), and you can set a ceiling on any agent: a cap on what it may do on its own, never a grant. Agents can be renamed, edited, archived or deleted, in the desktop app, the TUI and `tern agents`.
+- **Agents working together.** An agent can hand work to another (`@name`), agents share topic channels and wake on `@mention`, and a channel can switch on **Let agents decide**, where tern routes a post to the agent that fits. Each agent can have a Telegram bot of its own. Agents, with routines and skills, can be packaged as signed **bundles**; installing one shows everything it can do first.
+- **Approvals that don't nag.** Risky steps wait for you as cards in the conversation, on Telegram or in the terminal. In the desktop app and terminal you can approve **once, for this run, for this conversation, or always** for that exact thing (a different tool, draft, host or account asks again); repeated identical approvals collapse into one line. Writes from unattended runs wait in an **outbox** instead of blocking.
+- **Routines and skills.** Schedules, cron and one-off triggers, webhooks, and watches that remember where they left off. After a long, clean run tern offers to save it as a **skill**: it writes a draft, and nothing is published until you review it.
+- **Compute without `shell`.** The `python` tool runs scripts in a sandboxed Python subset (Monty) that call tern's tools as functions. Every call is checked and journaled, a call that needs approval pauses the script and asks you, `gather` runs calls in parallel, and writes from scripts are off unless you turn them on.
+- **Connectors and MCP.** The agent writes Luau connectors that run sandboxed with credentials injected by the host, can build one from an OpenAPI document, and signs in with OAuth where a service offers it. MCP servers are managed from chat, the CLI, the TUI and the desktop app, and `tern mcp serve` offers tern's tools to other agents.
+- **Keeping watch.** A hash-chained activity ledger, a Tasks view of everything running or waiting on you (`tern tasks`), and `tern security audit`.
+- **Stays out of the way.** `tern start` and `tern service install` run it in the background, with a menu-bar icon on macOS and a tray icon on Linux.
+
+What it doesn't do (no built-in browser, no Windows build, no hosted version, no desktop app on Linux yet) is spelled out in the [FAQ](docs/faq.md) and the [roadmap](ROADMAP.md).
 
 ## Architecture
 
@@ -68,6 +83,7 @@ flowchart LR
         sandbox["Sandboxed shell<br/>Seatbelt, Landlock or Docker"]
         mcp["MCP servers"]
         lua["Luau connectors"]
+        py["Monty helper process<br/>python tool"]
     end
 
     app -- "Unix socket" --> api
@@ -86,6 +102,7 @@ flowchart LR
     tools --> sandbox
     tools --> mcp
     tools --> lua
+    tools --> py
 ```
 
 `tern run` always runs its prompt in-process, and `tern` does too when no daemon is running, so the CLI works on its own. Both use the same `~/.tern` data the daemon does.
@@ -167,13 +184,13 @@ sequenceDiagram
 
 The full design is in [docs/subagents-design.md](docs/subagents-design.md).
 
-### Where this is heading: channels
+### Agents and channels
 
-Today delegation is a **tree**: one parent, its children, and mail that flows only along the edges. The direction we're exploring is **channels**, shared chat streams that people and agents both post to and read from, where agents join, hand off, and report in the open rather than through private mailboxes. This is a sketch, not a design: nothing below is built, and the open questions are in [docs/gui-spec.md](docs/gui-spec.md) §11.
+Delegation inside a run is a **tree**: one parent, its children, and mail that flows only along the edges. On top of that, tern has **channels**: shared chat streams that you and your agents both post to and read, so agents can hand off and report in the open rather than through private mailboxes. Home is one stream, each agent has a DM, and topic channels (in the desktop app, the TUI, and on Telegram as topics or `#slug` prefixes) hold work on one subject. Agents in a channel read each other's posts and wake on `@mention`; with **Let agents decide** on, tern routes a post to the agent whose job fits. Agents can suggest a channel for a piece of work, and you accept or decline. Conversations are flat: no reply threads or side chats.
 
 ```mermaid
 flowchart LR
-    subgraph now["Today: a tree of runs"]
+    subgraph tree["Inside a run: a tree"]
         direction TB
         p["Parent run"] -- "spawn, send" --> c1["Child"]
         p -- "spawn, send" --> c2["Child"]
@@ -181,19 +198,19 @@ flowchart LR
         c2 -. "mail" .-> p
     end
 
-    subgraph next["Later: channels (sketch)"]
+    subgraph chans["Between agents: channels"]
         direction TB
         ch(["#vendor-research"])
         you["You"] <--> ch
-        lead["Lead agent"] <--> ch
-        a1["Research agent"] <--> ch
-        a2["Pricing agent"] <--> ch
+        lead["@lead"] <--> ch
+        a1["@research"] <--> ch
+        a2["@pricing"] <--> ch
     end
 
-    now ==> next
+    tree ~~~ chans
 ```
 
-The pieces that should carry over are the ones that make runs dependable now: every agent turn is still a journaled run, messages are stored before anyone acts on them, and approvals still come to you.
+What makes runs dependable carries over: every agent turn is a journaled run, messages are stored before anyone acts on them, and approvals still come to you. Each agent's power is bounded by its tool scope and autonomy ceiling, and a sub-agent takes the lower of its caller's and its own. The designs are in [docs/channels-design.md](docs/channels-design.md) and [docs/agent-profiles-design.md](docs/agent-profiles-design.md).
 
 ## Development
 
@@ -205,6 +222,7 @@ flowchart TB
     tui["tern-tui<br/>terminal chat"]
     gateway["tern-gateway<br/>Telegram"]
     tools["tern-tools<br/>built-in tools, agent_* tools"]
+    python["tern-python<br/>Monty, the python tool"]
     mcp["tern-mcp<br/>MCP client"]
     lua["tern-lua<br/>Luau connectors"]
     providers["tern-providers<br/>Anthropic, OpenAI-compatible, mock"]
@@ -212,8 +230,8 @@ flowchart TB
     core["tern-core<br/>agent loop, journal, config, secrets"]
     store["tern-store<br/>SQLite, migrations"]
 
-    tern --> tui & gateway & tools & mcp & lua & providers
-    tui & gateway & tools & mcp & lua & providers --> core
+    tern --> tui & gateway & tools & mcp & lua & providers & python
+    tui & gateway & tools & mcp & lua & providers & python --> core
     tools --> sandbox
     core --> store
 
