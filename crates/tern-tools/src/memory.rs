@@ -572,13 +572,17 @@ impl Tool for MemorySearch {
         match self.store.search_agent_memories(&a.query, limit, own) {
             Ok(hits) if hits.is_empty() => ToolResult::ok("no matching memories"),
             Ok(hits) => {
-                let mut r = ToolResult::ok(frame_recall(&hits));
+                let r = ToolResult::ok(frame_recall(&hits));
                 // Reading what an untrusted run wrote is reading untrusted
                 // content: the run is tainted from here (tooling spec §5.3).
-                r.untrusted = hits
+                if hits
                     .iter()
-                    .any(|m| m.source == tern_store::SOURCE_UNVERIFIED);
-                r
+                    .any(|m| m.source == tern_store::SOURCE_UNVERIFIED)
+                {
+                    tern_core::fetch::ingest(tern_core::tool::Ingestion::Internal, r)
+                } else {
+                    r
+                }
             }
             Err(e) => ToolResult::error(format!("searching memory: {e}")),
         }
@@ -1016,7 +1020,7 @@ mod tests {
         );
         let hit = search.call(&seo, json!({"query": "widgets"})).await;
         assert!(hit.content.contains("(agent, "), "{}", hit.content);
-        assert!(!hit.untrusted, "a clean memory doesn't taint the reader");
+        assert!(!hit.untrusted(), "a clean memory doesn't taint the reader");
 
         // It lands in seo's own rows, not the shared pool.
         assert_eq!(
@@ -1330,10 +1334,10 @@ mod tests {
         assert_eq!(text.matches("</memory_recall>").count(), 1, "{text}");
         assert_eq!(entries(text), 2, "{text}");
         // Reading it taints the run, like any untrusted content.
-        assert!(hit.untrusted);
+        assert!(hit.untrusted());
         // Only the clean entry: not untrusted.
         let ok = search.call(&later, json!({"query": "blog"})).await;
-        assert!(!ok.untrusted && ok.content.contains("(agent,"));
+        assert!(!ok.untrusted() && ok.content.contains("(agent,"));
 
         // A tainted run can't delete what was saved clean or by the user.
         let clean_id = rows

@@ -1564,3 +1564,46 @@ Built from docs/alpha-workspaces.md, phases W0 and W1, with the owner's answers 
   containers (W3); allowlist entries scoped to a folder (`allowlist.workspace_id`); sandboxing MCP stdio servers; a
   Home card for a paused routine; `/tmp` stays shared. Integration tests allow temp-dir workspaces through a
   daemon-environment variable read only at startup (`TERN_TEST_ALLOW_SCRATCH_WORKSPACES`), never a setting.
+## Quarantined fetch: F0, F1, F2 (2026-11-05)
+
+Design: [docs/quarantined-fetch-design.md](docs/quarantined-fetch-design.md). Owner policy: all web fetching is done by a
+separate low-privilege fetcher, never by the calling agent. The owner had not answered the open questions; these safe
+defaults were applied (and are the shipped behaviour):
+
+1. **`[fetch] taint = "strict"` is the default and means the F2 behaviour**: structured, verified `data` fields (title,
+   headings, tables, selector hits, facts with a verbatim quote, links) do not taint the caller; `answer`, `text` and
+   model `notes` do. `legacy` is the old behaviour (every fetch taints). This differs from the design's wording
+   ("strict" = today, "ask_answer" = new); the owner's words were followed. The design's `none` (never taint) was not built.
+2. **A tainted caller is forced to `extract`** (no free-text question reaches a model); `fetch.ask_when_tainted` exists, default off, flagged risky.
+3. **The fetcher uses the user's own providers only**: `[fetch] model`, else the cheapest configured model with a known price
+   (the gate-model rule), else a configured model; with none usable, `ask` degrades to `extract` with a note.
+4. **Parser isolation deferred to F3.** The hand-written HTML parser runs in the tern process (known residual, in SECURITY.md).
+5. **Shell `network: true` stays**; the `curl` gap is documented in SECURITY.md. MCP and connectors are unchanged (F3).
+
+**Choices where the design was ambiguous (safer option taken):**
+
+- **Reader is an in-process isolated loop, not a run row.** It uses the `Provider` trait with its own context, a fixed tool set
+  (`fetch_page`, `extract`; anything else is refused and never approvable), no approvals, memory, files or secrets, and the
+  hard limits (bytes, pages, redirects, time, turns, tokens, dollars). It does not create a sub-agent run row or journal, so
+  no `agent_*` tool or migration is involved and the store schema is unchanged. Ledger rows `fetch.request` and `fetch.result`
+  carry the run and session. The design's "inspector opens the fetcher run" is therefore not built: the raw page (capped 256 KB)
+  is saved to `~/.tern/fetch/` with its hash in the ledger, and the step's output is the checked result.
+- **Cache is in memory** (process lifetime), not a `fetch_cache` table.
+- **Fact offsets**: a stated offset must match exactly or the fact is dropped; models can't count bytes, so the prompt tells
+  the reader to omit it and tern computes it from the verbatim quote. The verbatim check, not the offset, is the security property.
+- **Extraction** is a small tolerant tree builder in Rust (no `scraper` dependency: not vendored, and it would add a large
+  dependency tree). Selectors support `tag`, `.class`, `#id` and descendant chains only; unsupported syntax finds nothing. JSON-LD is not extracted.
+- **`want` defaults**: `extract` (no question) = structured + links + text (old prompts keep working and taint as before);
+  `ask` = facts + answer + links. Free text must be asked for to be returned. Leave out `answer` and `text` for a clean run.
+- **Errors never carry page text**: a non-2xx status returns only `HTTP <code>`; error strings are cleaned and cut.
+- **Trust on the wire**: `ToolResult.trust` (`trusted`/`data`/`untrusted`) replaces the `untrusted` bool; it still serialises
+  `untrusted: true` for untrusted so journals and digests are unchanged, adds `trust: "data"`, and an unknown level replays
+  as untrusted. `Tool::untrusted()` became `Tool::ingestion()` (`None`, `Web`, `Network`, `Mcp`, `Connector`, `Internal`,
+  `Relayed`); the loop raises each result to its kind's floor (`Web`'s floor is `Data`, so a result is never "trusted").
+  Framing is decided in one place (`taint::frame`). Scripts calling `http_fetch` get the nested result's trust.
+- **Existing `http_fetch` tests** were adapted, not just kept: the tool returns JSON now, so assertions parse it.
+- **Starters and personas** were not changed: none names the old output; the tool's own description explains `question`/`want`.
+
+**Not done:** provenance-gated approval of fetched values and hosts (ladder rung 5), the memory `unverified` rule for notes that
+contain a fetched value, a fetcher run view in the inspector (raw page in the app), JSON-LD, DB-backed cache, helper-process
+isolation, and F3/F4 (MCP and connector quarantine, TUI `/settings` rows beyond what the generic settings view shows).

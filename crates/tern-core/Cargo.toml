@@ -37,3 +37,4 @@ webpki-root-certs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+wiremock.workspace = true

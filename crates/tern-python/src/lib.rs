@@ -313,7 +313,7 @@ pub(crate) async fn ask_host(
 pub(crate) fn replies(answers: &[HostReply], untrusted: &mut bool) -> Vec<Reply> {
     for a in answers {
         if let HostReply::Done(r) = a {
-            *untrusted |= r.untrusted;
+            *untrusted |= r.untrusted();
         }
     }
     answers.iter().map(Reply::from).collect()
@@ -372,10 +372,15 @@ impl Outcome {
         if out.is_empty() {
             out.push_str("(no result and nothing printed)");
         }
-        ToolResult {
+        let r = ToolResult {
             content: out,
             is_error,
-            untrusted: self.untrusted,
+            trust: tern_core::tool::Trust::Trusted,
+        };
+        if self.untrusted {
+            tern_core::fetch::ingest(tern_core::tool::Ingestion::Relayed, r)
+        } else {
+            r
         }
     }
 }

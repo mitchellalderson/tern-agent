@@ -88,7 +88,9 @@ async fn with_batches(
                                     .to_string(),
                             )
                         };
-                        r.untrusted = untrusted;
+                        if untrusted {
+                            r = tern_core::fetch::ingest(tern_core::tool::Ingestion::Internal, r);
+                        }
                         answers.push(HostReply::Done(r));
                     }
                     let _ = reply.send(answers);
@@ -147,7 +149,7 @@ values = sorted(r["value"] for r in rows)
     );
     assert_eq!(seen[0], json!({ "address": "1 Elm St" }));
     assert_eq!(seen[3], json!({ "address": "4 Elm St", "year": 2025 }));
-    assert!(!r.untrusted);
+    assert!(!r.untrusted());
 }
 
 #[tokio::test]
@@ -175,7 +177,7 @@ out
 #[tokio::test]
 async fn untrusted_results_make_the_output_untrusted() {
     let (r, _) = with_fake_host(&Python::default(), "lua__county__lookup('1 Elm St')", true).await;
-    assert!(r.untrusted);
+    assert!(r.untrusted());
 }
 
 #[tokio::test]

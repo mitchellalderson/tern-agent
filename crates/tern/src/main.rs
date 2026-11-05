@@ -9,6 +9,7 @@ mod crash;
 mod daemon;
 mod devices_cmd;
 mod doctor;
+mod fetcher;
 mod gateway_cmd;
 mod grants_cmd;
 mod hooks_cmd;

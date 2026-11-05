@@ -95,6 +95,8 @@ pub struct Fetched {
     pub body: Vec<u8>,
     /// The body was longer than the limit and was cut there.
     pub truncated: bool,
+    /// The URL the body came from, after redirects.
+    pub final_url: String,
 }
 
 /// Redirects [`get_public`] follows, each checked like the first request.
@@ -148,6 +150,17 @@ pub async fn get_public(
     allow_loopback: bool,
     timeout: std::time::Duration,
 ) -> Result<Fetched, String> {
+    get_public_with(url, max, allow_loopback, timeout, MAX_REDIRECTS).await
+}
+
+/// [`get_public`] with its own redirect limit.
+pub async fn get_public_with(
+    url: &str,
+    max: usize,
+    allow_loopback: bool,
+    timeout: std::time::Duration,
+    max_redirects: usize,
+) -> Result<Fetched, String> {
     use futures::StreamExt;
     let mut url = match reqwest::Url::parse(url) {
         Ok(u) if matches!(u.scheme(), "http" | "https") => u,
@@ -170,8 +183,8 @@ pub async fn get_public(
         match location {
             Some(loc) if resp.status().is_redirection() => {
                 hops += 1;
-                if hops > MAX_REDIRECTS {
-                    return Err(format!("more than {MAX_REDIRECTS} redirects"));
+                if hops > max_redirects {
+                    return Err(format!("more than {max_redirects} redirects"));
                 }
                 url = url
                     .join(&loc)
@@ -207,6 +220,7 @@ pub async fn get_public(
         content_type,
         body,
         truncated,
+        final_url: url.to_string(),
     })
 }
 

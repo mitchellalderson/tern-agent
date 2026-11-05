@@ -51,9 +51,12 @@ fn host(slot: &HostSlot) -> Result<&std::sync::Arc<dyn SubagentHost>, ToolResult
 fn result(r: Result<Value, String>) -> ToolResult {
     match r {
         Ok(v) => {
-            let mut out = ToolResult::ok(v.to_string());
-            out.untrusted = v.get("tainted").and_then(Value::as_bool) == Some(true);
-            out
+            let out = ToolResult::ok(v.to_string());
+            if v.get("tainted").and_then(Value::as_bool) == Some(true) {
+                tern_core::fetch::ingest(tern_core::tool::Ingestion::Internal, out)
+            } else {
+                out
+            }
         }
         Err(e) => ToolResult::error(e),
     }
@@ -413,9 +416,9 @@ mod tests {
     #[test]
     fn a_tainted_reply_is_untrusted_text_for_the_reader() {
         let clean = result(Ok(json!({ "agents": [] })));
-        assert!(!clean.untrusted && !clean.is_error);
+        assert!(!clean.untrusted() && !clean.is_error);
         let dirty = result(Ok(json!({ "agents": [], "tainted": true })));
-        assert!(dirty.untrusted);
-        assert!(!result(Err("no".into())).untrusted);
+        assert!(dirty.untrusted());
+        assert!(!result(Err("no".into())).untrusted());
     }
 }

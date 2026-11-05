@@ -69,6 +69,7 @@ pub struct Config {
     pub autonomy: crate::approval::Autonomy,
     pub outbox: OutboxConfig,
     pub taint: TaintConfig,
+    pub fetch: FetchConfig,
     pub connectors: ConnectorsConfig,
     pub auth: AuthConfig,
     pub bundles: BundlesConfig,
@@ -94,6 +95,89 @@ pub struct TaintConfig {
     /// hasn't contacted (`ask`), or don't (`allow`). An agent can set its
     /// own.
     pub egress: crate::approval::Egress,
+}
+
+/// Whether a fetch result taints the caller (quarantined-fetch design §3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FetchTaint {
+    /// Today's behaviour: any fetch result taints the run.
+    Legacy,
+    /// Typed, verified `data` fields (title, facts, links, structured page
+    /// parts) don't taint the caller; free text (`answer`, `text`) does.
+    #[default]
+    Strict,
+}
+
+/// Reading web pages (quarantined-fetch design §5): every fetch runs in a
+/// separate low-privilege reader, and the caller gets only a bounded,
+/// validated result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FetchConfig {
+    /// Does a fetch result taint the caller? `strict` (default): only free
+    /// text does. `legacy`: every result does.
+    pub taint: FetchTaint,
+    /// The model that reads pages when a question is asked; unset = the
+    /// cheapest model you already have configured. Never a service of ours.
+    pub model: Option<ModelChain>,
+    /// A tainted caller may ask a free-text `question` (default off: a
+    /// tainted caller can only run `extract`).
+    pub ask_when_tainted: bool,
+    /// Most bytes read from one page.
+    pub max_bytes: usize,
+    /// Most pages one fetch may read (the first plus links followed).
+    pub max_pages: usize,
+    /// Most redirects followed per page.
+    pub max_redirects: usize,
+    /// Seconds per page request.
+    pub timeout_secs: u64,
+    /// Most model turns of the reader per fetch.
+    pub max_iterations: u32,
+    /// Most tokens the reader may use per fetch.
+    pub budget_tokens: u64,
+    /// Most US dollars the reader may spend per fetch (when the model's
+    /// price is known).
+    pub spend_cap_usd: f64,
+    /// Largest result handed to the caller, in bytes.
+    pub result_max_bytes: usize,
+    /// Most bytes of page text an `extract` result carries.
+    pub extract_text_bytes: usize,
+    /// Seconds a result is reused for the same page and question.
+    pub cache_secs: u64,
+    /// Most fetches one run may make.
+    pub max_calls_per_run: u32,
+    /// Most fetches in flight at once.
+    pub max_concurrent: usize,
+    /// Only these sites (and their subdomains) may be fetched; empty = any
+    /// public site.
+    pub allow_domains: Vec<String>,
+    /// These sites are never fetched. Wins over `allow_domains`.
+    pub deny_domains: Vec<String>,
+}
+
+impl Default for FetchConfig {
+    fn default() -> Self {
+        Self {
+            taint: FetchTaint::Strict,
+            model: None,
+            ask_when_tainted: false,
+            max_bytes: 2 * 1024 * 1024,
+            max_pages: 3,
+            max_redirects: 5,
+            timeout_secs: 30,
+            max_iterations: 3,
+            budget_tokens: 30_000,
+            spend_cap_usd: 0.02,
+            result_max_bytes: 8 * 1024,
+            extract_text_bytes: 6 * 1024,
+            cache_secs: 900,
+            max_calls_per_run: 40,
+            max_concurrent: 4,
+            allow_domains: Vec::new(),
+            deny_domains: Vec::new(),
+        }
+    }
 }
 
 /// Luau connectors (tooling spec §6.1).
@@ -274,6 +358,7 @@ impl Default for Config {
             autonomy: crate::approval::Autonomy::default(),
             outbox: OutboxConfig::default(),
             taint: TaintConfig::default(),
+            fetch: FetchConfig::default(),
             connectors: ConnectorsConfig::default(),
             auth: AuthConfig::default(),
             bundles: BundlesConfig::default(),

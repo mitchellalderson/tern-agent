@@ -236,16 +236,125 @@ pub fn consume_mail(ids: &[i64]) {
     });
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// How far a tool result may be believed (quarantined-fetch design §3).
+/// Ordered: a result's level only ever rises.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Trust {
+    /// tern's own data.
+    #[default]
+    Trusted,
+    /// Typed, capped and verified fields from a quarantined reader. Does not
+    /// taint the caller (under `[fetch] taint = "strict"`); framed as data.
+    Data,
+    /// Free text from outside. Taints the run and is framed `<untrusted>`.
+    Untrusted,
+}
+
+impl Trust {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Trust::Trusted => "trusted",
+            Trust::Data => "data",
+            Trust::Untrusted => "untrusted",
+        }
+    }
+}
+
+/// What a tool brings into the run from outside (design §2.6). Every tool
+/// that reaches the network or returns third-party content declares one, so
+/// a new ingestion path can't be added without choosing a trust level.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Ingestion {
+    /// Nothing from outside.
+    #[default]
+    None,
+    /// Web pages, read by the quarantined fetcher: the result carries its
+    /// own trust (`Data` for verified fields, `Untrusted` for free text).
+    Web,
+    /// A shell that can reach the network.
+    Network,
+    /// An MCP server's output.
+    Mcp,
+    /// A connector's third-party content.
+    Connector,
+    /// tern's own view of outside text (MCP server stderr and the like).
+    Internal,
+    /// Results of other tools, relayed by a script: as untrusted as the
+    /// least trusted of them.
+    Relayed,
+}
+
+impl Ingestion {
+    /// The least trust a result of this kind may carry.
+    pub fn floor(self) -> Trust {
+        match self {
+            Ingestion::None => Trust::Trusted,
+            Ingestion::Web => Trust::Data,
+            Ingestion::Network
+            | Ingestion::Mcp
+            | Ingestion::Connector
+            | Ingestion::Internal
+            | Ingestion::Relayed => Trust::Untrusted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
-    /// Third-party text: from an [`Tool::untrusted`] tool (set by the agent
-    /// loop), or marked by the tool itself for this result (`channel_read`
-    /// returning posts from tainted runs). Journaled with the step, so a
-    /// replayed run is tainted at the same step (tooling spec §5.3).
+    /// `Untrusted` is third-party text: from a tool whose [`Ingestion`] says
+    /// so (set by the agent loop), or marked by the tool itself for this
+    /// result (`channel_read` returning posts from tainted runs). Journaled
+    /// with the step, so a replayed run is tainted at the same step
+    /// (tooling spec §5.3).
+    pub trust: Trust,
+}
+
+/// Journal form: `untrusted: true` as before (so old rows and digests are
+/// unchanged), plus `trust: "data"` for the middle level.
+#[derive(Serialize, Deserialize)]
+struct ToolResultWire {
+    content: String,
+    is_error: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub untrusted: bool,
+    untrusted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trust: Option<String>,
+}
+
+impl Serialize for ToolResult {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        ToolResultWire {
+            content: self.content.clone(),
+            is_error: self.is_error,
+            untrusted: self.trust == Trust::Untrusted,
+            trust: (self.trust == Trust::Data).then(|| "data".to_owned()),
+        }
+        .serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolResult {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let w = ToolResultWire::deserialize(d)?;
+        // A row without a `trust` field replays as before; an unknown level
+        // replays as untrusted, so a resumed run never loosens.
+        let trust = if w.untrusted {
+            Trust::Untrusted
+        } else {
+            match w.trust.as_deref() {
+                None | Some("trusted") => Trust::Trusted,
+                Some("data") => Trust::Data,
+                Some(_) => Trust::Untrusted,
+            }
+        };
+        Ok(ToolResult {
+            content: w.content,
+            is_error: w.is_error,
+            trust,
+        })
+    }
 }
 
 impl ToolResult {
@@ -253,15 +362,24 @@ impl ToolResult {
         Self {
             content: content.into(),
             is_error: false,
-            untrusted: false,
+            trust: Trust::Trusted,
         }
     }
     pub fn error(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
             is_error: true,
-            untrusted: false,
+            trust: Trust::Trusted,
         }
+    }
+    /// Raise (never lower) the result's trust level.
+    pub fn with_trust(mut self, trust: Trust) -> Self {
+        self.trust = self.trust.max(trust);
+        self
+    }
+    /// Whether this result taints the run.
+    pub fn untrusted(&self) -> bool {
+        self.trust == Trust::Untrusted
     }
 }
 
@@ -271,11 +389,12 @@ pub trait Tool: Send + Sync {
     /// The declared effect, shown in tool lists. Per-call policy is
     /// [`Tool::policy`]'s `effect`.
     fn effect(&self) -> Effect;
-    /// Returns third-party text (web pages, mail, chat messages) that may
-    /// carry instructions. Its results taint the run and reach the model
-    /// wrapped in `<untrusted>` (tooling spec §5.3).
-    fn untrusted(&self) -> bool {
-        false
+    /// What this tool brings in from outside: web pages, mail, chat
+    /// messages, third-party text that may carry instructions. `Untrusted`
+    /// results taint the run and reach the model wrapped in `<untrusted>`
+    /// (tooling spec §5.3). Set trust through [`crate::fetch::ingest`].
+    fn ingestion(&self) -> Ingestion {
+        Ingestion::None
     }
     /// The host a call reaches, for tools that fetch from the network. In a
     /// tainted run, a call to a host the run hasn't contacted yet asks
@@ -462,11 +581,11 @@ impl ToolRegistry {
         self.get(&call.name).is_none_or(|t| t.allow_always())
     }
 
-    /// Declared effect and untrusted flag of every tool, by name.
+    /// Declared effect and whether the tool brings in outside content, by name.
     pub fn effects(&self) -> BTreeMap<String, (Effect, bool)> {
         self.all()
             .into_iter()
-            .map(|(name, t)| (name, (t.effect(), t.untrusted())))
+            .map(|(name, t)| (name, (t.effect(), t.ingestion() != Ingestion::None)))
             .collect()
     }
 
@@ -476,9 +595,14 @@ impl ToolRegistry {
             .and_then(|t| t.egress_host(&call.input))
     }
 
-    /// Whether `name` returns third-party text ([`Tool::untrusted`]).
-    pub fn untrusted(&self, name: &str) -> bool {
-        self.get(name).is_some_and(|t| t.untrusted())
+    /// What `name` brings in from outside ([`Tool::ingestion`]).
+    pub fn ingestion(&self, name: &str) -> Ingestion {
+        self.get(name).map_or(Ingestion::None, |t| t.ingestion())
+    }
+
+    /// The least trust a result of `name` may carry.
+    pub fn trust_floor(&self, name: &str) -> Trust {
+        self.ingestion(name).floor()
     }
 
     pub fn summarize(&self, call: &ToolCall) -> String {

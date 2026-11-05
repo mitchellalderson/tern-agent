@@ -185,9 +185,11 @@ impl Tool for ChannelRead {
             .collect::<Vec<_>>()
             .join("\n");
         // A post a tainted run wrote is third-party text to the reader.
-        ToolResult {
-            untrusted: rows.iter().any(|p| p.tainted),
-            ..ToolResult::ok(text)
+        let r = ToolResult::ok(text);
+        if rows.iter().any(|p| p.tainted) {
+            tern_core::fetch::ingest(tern_core::tool::Ingestion::Internal, r)
+        } else {
+            r
         }
     }
 }
@@ -648,7 +650,7 @@ mod tests {
         assert_eq!(seen.lock().unwrap().len(), 1);
 
         let read = ChannelRead::new(store.clone()).call(&ctx, json!({})).await;
-        assert!(read.untrusted, "a tainted post is third-party text");
+        assert!(read.untrusted(), "a tainted post is third-party text");
         assert!(
             read.content.contains("from a tainted run"),
             "{}",
@@ -792,7 +794,7 @@ mod tests {
         let read = ChannelRead::new(store.clone())
             .call(&ctx, json!({ "limit": 3 }))
             .await;
-        assert!(!read.untrusted);
+        assert!(!read.untrusted());
         // Post 2 is the first one's pointer in Home.
         assert!(read.content.starts_with("post 9 "), "{}", read.content);
         assert_eq!(

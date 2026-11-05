@@ -75,6 +75,11 @@ same list and a new config field appears in both without UI changes.
 | `skills.capture_min_tool_calls` | int | 8 | config, desktop | yes | no | general | adv |
 | `outbox.wait_secs` / `expire_hours` | int | 120 / 72 | config, desktop | yes | no | permissions | adv |
 | `taint.egress` | choice ask/allow | ask | config, desktop | no | no | permissions | user |
+| `fetch.taint` | choice strict/legacy | strict | config, desktop | no | no | permissions | user |
+| `fetch.allow_domains` / `deny_domains` | list | `[]` / `[]` | config, desktop | no | no | permissions | user |
+| `fetch.model` | model | unset (cheapest configured) | config, desktop | no | no | models | adv |
+| `fetch.ask_when_tainted` | bool | false | config, desktop | no | no | permissions | adv |
+| `fetch.max_bytes` / `max_pages` / `max_redirects` / `timeout_secs` / `max_iterations` / `budget_tokens` / `spend_cap_usd` / `result_max_bytes` / `extract_text_bytes` / `cache_secs` / `max_calls_per_run` / `max_concurrent` | int/float | 2 MiB / 3 / 5 / 30 / 3 / 30000 / 0.02 / 8192 / 6144 / 900 / 40 / 4 | config, desktop | no | no | limits | adv |
 | `connectors.rate` | text | 120/min | config, desktop | yes | no | limits | adv |
 | `connectors.record_tests` / `openapi_tools` / `openapi_max_tools` | bool/int | true / 8 / 40 | config, desktop | yes | no | advanced | adv |
 | `auth.sign_in_timeout_secs` / `max_connections` / `idle_timeout_secs` / `local_issuers` / `client_metadata_url` | int/list/text | 300 / 10 / 600 / `[]` / "" | config, desktop | yes | no | advanced | adv |

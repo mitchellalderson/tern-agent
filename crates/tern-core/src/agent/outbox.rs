@@ -88,7 +88,7 @@ impl Agent {
                         Some(flag) => ToolResult::error(crate::approval::forbidden_message(flag)),
                         None => with_call(&call.id, self.tools.call(ctx, &call)).await.0,
                     };
-                    r.untrusted |= self.tools.untrusted(&call.name);
+                    r = r.with_trust(self.tools.trust_floor(&call.name));
                     let note = exec_message(item.id, &item.summary, &call.name, &r);
                     Ok(StepOutput::new(r).with_messages(vec![note]))
                 },
@@ -141,11 +141,7 @@ impl Agent {
 /// there know the call was made. Plain text: there is no `tool_use` to pair
 /// a tool result with.
 fn exec_message(id: i64, summary: &str, tool: &str, r: &ToolResult) -> Message {
-    let content = if r.untrusted {
-        taint::wrap(tool, &r.content)
-    } else {
-        r.content.clone()
-    };
+    let content = taint::frame(tool, None, r);
     let head = if r.is_error {
         format!("[outbox #{id}: the user approved {summary}, and it failed]")
     } else {

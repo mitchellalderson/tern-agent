@@ -272,7 +272,7 @@ async fn call(State(m): State<Shared>, Json(b): Json<CallBody>) -> ApiResult<Cal
     });
     let journal = m.rt.agent.journal();
     let content = journal.redact_text(&result.content);
-    let content = if result.untrusted {
+    let content = if result.untrusted() {
         tern_core::agent::taint::wrap(&call.name, &content)
     } else {
         content
@@ -282,7 +282,7 @@ async fn call(State(m): State<Shared>, Json(b): Json<CallBody>) -> ApiResult<Cal
         run_id: run.id,
         content,
         is_error: result.is_error,
-        untrusted: result.untrusted,
+        untrusted: result.untrusted(),
     }))
 }
 

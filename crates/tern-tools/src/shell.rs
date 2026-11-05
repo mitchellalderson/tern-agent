@@ -8,8 +8,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tern_core::fetch::ingest;
 use tern_core::tool::{
-    Effect, GrantKey, Reach, Tool, ToolCtx, ToolPolicy, ToolResult, current_call_id,
+    Effect, GrantKey, Ingestion, Reach, Tool, ToolCtx, ToolPolicy, ToolResult, Trust, current_call_id,
     planning_scope, progress_sink,
 };
 use tern_core::types::ToolSpec;
@@ -271,8 +272,12 @@ impl Tool for Shell {
     /// script calling an API), so its output taints the run like
     /// `http_fetch`'s. Without it, it only sees local files. A command that
     /// asked for network (`network: true`) marks its own result.
-    fn untrusted(&self) -> bool {
-        self.backend.network_reachable()
+    fn ingestion(&self) -> Ingestion {
+        if self.backend.network_reachable() {
+            Ingestion::Network
+        } else {
+            Ingestion::None
+        }
     }
 
     fn spec(&self) -> ToolSpec {
@@ -507,11 +512,16 @@ impl Tool for Shell {
         if out.truncated {
             text.push_str("\n[output truncated]");
         }
-        ToolResult {
+        let r = ToolResult {
             content: text,
             is_error: out.exit_code != Some(0),
-            // What a command fetched is third-party text.
-            untrusted: network,
+            trust: Trust::Trusted,
+        };
+        // What a command fetched is third-party text.
+        if network {
+            ingest(Ingestion::Network, r)
+        } else {
+            r
         }
     }
 }
@@ -663,17 +673,17 @@ mod tests {
             shell.summary(&ask).as_deref(),
             Some("with network: echo hi")
         );
-        assert!(shell.call(&ctx, ask).await.untrusted);
+        assert!(shell.call(&ctx, ask).await.untrusted());
         let plain = json!({"command": "echo hi"});
         assert_eq!(shell.summary(&plain), None);
-        assert!(!shell.call(&ctx, plain).await.untrusted);
+        assert!(!shell.call(&ctx, plain).await.untrusted());
 
         // With network on for every command, asking adds nothing: every
-        // command's output is already untrusted (`Tool::untrusted`).
+        // command's output is already untrusted (`Tool::ingestion`).
         let online = Shell::new(Arc::new(HostBackend::default()), Duration::from_secs(10));
         let ask = json!({"command": "echo hi", "network": true});
         assert_eq!(online.summary(&ask), None);
-        assert!(online.untrusted());
+        assert_eq!(online.ingestion(), Ingestion::Network);
     }
 
     #[test]
@@ -686,13 +696,13 @@ mod tests {
             let backend = tern_sandbox::DockerBackend::new("docker", Path::new("/w"), settings);
             Shell::new(Arc::new(backend), Duration::from_secs(1))
         };
-        assert!(shell(true).untrusted());
-        assert!(!shell(false).untrusted());
+        assert!(shell(true).ingestion() == Ingestion::Network);
+        assert!(shell(false).ingestion() == Ingestion::None);
         // No OS sandbox: `network = false` isn't enforced, so it counts as on.
         let mut policy = tern_sandbox::HostPolicy::unconfined();
         policy.network = false;
         let host = Shell::new(Arc::new(HostBackend::new(policy)), Duration::from_secs(1));
-        assert!(host.untrusted());
+        assert_eq!(host.ingestion(), Ingestion::Network);
     }
 }
 

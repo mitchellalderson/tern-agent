@@ -277,8 +277,12 @@ impl Tool for LuaTool {
         self.def.effect()
     }
 
-    fn untrusted(&self) -> bool {
-        self.def.untrusted
+    fn ingestion(&self) -> tern_core::tool::Ingestion {
+        if self.def.untrusted {
+            tern_core::tool::Ingestion::Connector
+        } else {
+            tern_core::tool::Ingestion::None
+        }
     }
 
     fn policy(&self, _: &ToolCtx, args: &Value) -> ToolPolicy {
