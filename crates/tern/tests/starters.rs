@@ -108,3 +108,26 @@ async fn a_chosen_autonomy_beats_the_starters() {
     .await;
     assert_eq!(b["autonomy"], "readonly");
 }
+
+/// The data analyst has the safe `python` tool for simple statistics and is
+/// told the one shell form that can be approved once for a run.
+#[test]
+fn the_data_analyst_is_nudged_toward_one_script_per_question() {
+    let t = agents::templates()
+        .into_iter()
+        .find(|t| t.id == "data-analyst")
+        .unwrap();
+    let Some(Pick::Names(names)) = t.tools.as_ref().map(|t| t.builtins.clone()) else {
+        panic!("the analyst names its tools");
+    };
+    assert!(names.iter().any(|n| n == "python"), "{names:?}");
+    assert!(names.iter().any(|n| n == "shell"), "{names:?}");
+    for phrase in [
+        "one script per question",
+        "python3 file.py args",
+        "no pipes, redirects, quotes",
+        "write_file",
+    ] {
+        assert!(t.persona.contains(phrase), "persona lacks {phrase:?}");
+    }
+}

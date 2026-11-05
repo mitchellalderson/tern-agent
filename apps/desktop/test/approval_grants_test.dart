@@ -22,6 +22,7 @@ Approval _ask(
   int count = 1,
   String summary = _summary,
   String tool = 'connector_test',
+  String? notice,
 }) => Approval(
   id: id,
   runId: 'r',
@@ -32,6 +33,7 @@ Approval _ask(
   effect: 'read',
   pattern: null,
   grant: grant,
+  notice: notice,
   count: count,
 );
 
@@ -241,6 +243,63 @@ void main() {
       expect(find.text('Allow for this run'), findsNothing);
       expect(find.text('Allow for this conversation'), findsNothing);
       expect(find.text('Always allow this'), findsNothing);
+    });
+  });
+
+  group('a shell script card', () {
+    testWidgets('names the script, its version and what it does not cover', (
+      tester,
+    ) async {
+      final item = ApprovalItem(
+        _ask(
+          'a1',
+          tool: 'shell',
+          summary: 'python3 tools/q.py --year 2024',
+          grant: const GrantOffer(
+            key: 'python script tools/q.py#abc',
+            label:
+                'python3 tools/q.py (version 3fa9c1d2, arguments --year 2024)',
+          ),
+          notice: "Covers this file as it is now. Imports from other files aren't covered.",
+        ),
+      );
+      final (_, client) = await _pump(tester, item);
+      expect(find.byKey(const ValueKey('approval-notice')), findsOneWidget);
+      expect(
+        find.textContaining("Imports from other files aren't covered"),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Allowing covers: python3 tools/q.py (version 3fa9c1d2',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Allow for this run'), findsOneWidget);
+      await tester.tap(find.text('Allow for this run'));
+      await tester.pump();
+      expect(client.answers, [('a1', Decision.run)]);
+    });
+
+    testWidgets('says why when no grant is offered', (tester) async {
+      await _pump(
+        tester,
+        ApprovalItem(
+          _ask(
+            'a1',
+            tool: 'shell',
+            summary: 'python3 -c print(1)',
+            grant: null,
+            notice: 'Not auto-approved: inline script. Saved as a .py file in the workspace and run as `python3 file.py`, it could be approved once for the whole run.',
+          ),
+        ),
+      );
+      expect(
+        find.textContaining('Not auto-approved: inline script'),
+        findsOneWidget,
+      );
+      expect(find.text('Allow for this run'), findsNothing);
+      expect(find.text('Allow once'), findsOneWidget);
     });
   });
 

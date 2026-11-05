@@ -36,7 +36,7 @@ checked against Monty 1.4.0 on 2026-11-04 (§11). Related:
   helper, not the daemon. (PY0 ran Monty in-process; that mode remains for tests, §5.2.)
 - **Cost.** Monty is pure Rust and MIT. It adds an estimated 3–8 MB to the binary (PY0 measures this), and it needs
   Rust 1.96 where tern declares 1.89. The language is a subset: no classes with inheritance, no generators, no
-  pandas or numpy. For those, `shell` with `python3` stays, and asks every time.
+  pandas or numpy. For those, `shell` with `python3` stays; it asks, except that a plain `python3 file.py args` can be allowed once for a run (docs/sandbox-design.md, "Script grants").
 
 The small fix for the shell itself lands separately: shell output is tainted when the network is on, a prompt rule
 says to use integration tools rather than calling their APIs from the shell, and `tern doctor` notes

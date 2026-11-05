@@ -331,6 +331,7 @@ pub const STARTER_TOOLS: &[&str] = &[
     "write_file",
     "edit_file",
     "shell",
+    "python",
     "http_fetch",
     "schedule_create",
     "schedule_list",

@@ -58,6 +58,26 @@ void main() {
     expect((old as ApprovalRequested).approval.effect, 'write');
   });
 
+  test('decodes a card notice and the sandbox state of /v1/info', () {
+    final e = ev(
+      '{"approval_requested":{"id":"a","run_id":"r",'
+      '"session_id":"s","tool":"shell","input":{},'
+      '"summary":"python3 a.py","effect":"destructive","pattern":null,'
+      '"notice":"Not auto-approved: the sandbox is not confirmed active (x)."}}',
+    );
+    expect(
+      (e as ApprovalRequested).approval.notice,
+      startsWith('Not auto-approved'),
+    );
+    final info = Info.fromJson({
+      'tools': <Object>[],
+      'sandbox': {'verified': true, 'detail': 'verified: macOS Seatbelt'},
+    });
+    expect(info.sandbox?.verified, isTrue);
+    expect(info.sandbox?.detail, contains('Seatbelt'));
+    expect(Info.fromJson({'tools': <Object>[]}).sandbox, isNull);
+  });
+
   test('decodes the host-limit prompt and its answers', () {
     final e = ev(
       '{"approval_requested":{"id":"a","run_id":"r",'
