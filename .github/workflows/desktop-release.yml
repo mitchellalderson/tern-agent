@@ -45,6 +45,8 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           tag="${TAG#desktop-v}"
+          printf '%s' "$tag" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$' \
+            || { echo "::error::tag $TAG is not desktop-vX.Y.Z or desktop-vX.Y.Z-pre.N"; exit 1; }
           cargo=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
           pubspec=$(sed -n 's/^version: \([^+]*\).*/\1/p' apps/desktop/pubspec.yaml)
           echo "tag=$tag Cargo.toml=$cargo pubspec.yaml=$pubspec"
@@ -245,8 +247,13 @@ jobs:
         run: |
           ls -l out
           # --verify-tag: the tag has to exist already; this never creates one.
+          flags=
+          case "$TAG" in
+            *-*) flags="--prerelease --latest=false" ;;
+          esac
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --draft --verify-tag --title "tern desktop $TAG" \
+            # shellcheck disable=SC2086 # $flags is deliberately split
+            gh release create "$TAG" $flags --draft --verify-tag --title "tern desktop $TAG" \
               --notes "Desktop app builds for macOS (dmg, zip) and Linux (tar.gz, deb). Review, then publish."
           fi
           gh release upload "$TAG" out/* --clobber

@@ -1,11 +1,16 @@
 name: release
 
-# Push a tag like v0.1.0 to check the commit, build every target and publish
-# a GitHub release with:
+# Push a tag like v0.1.0 (or a pre-release like v0.1.0-alpha.1) to check the
+# commit, build every target and publish a GitHub release with:
 #   tern-<target>.tar.gz (+ .sha256)   the CLI/daemon, what install.sh downloads
 #   tern-desktop-macos.dmg (+ .sha256) the desktop app, with tern inside
+#   SHA256SUMS                         every checksum in one file
 # Every asset also gets a build provenance attestation
 # (`gh attestation verify <file> --repo <owner>/<repo>`).
+#
+# A tag with a hyphen (v0.1.0-alpha.1, -beta.N, -rc.N) is published as a GitHub
+# PRE-RELEASE and never as "latest". GitHub's releases/latest skips
+# pre-releases, so install.sh looks the newest release up by API instead.
 #
 # The macOS app is signed and notarized when these repository secrets exist,
 # and ad-hoc signed otherwise: MACOS_CERTIFICATE (base64 .p12),
@@ -30,6 +35,9 @@ jobs:
       - name: Compare the tag with Cargo.toml and pubspec.yaml
         run: |
           tag="${GITHUB_REF_NAME#v}"
+          # semver: X.Y.Z with an optional -pre-release (alpha.1, beta.2, rc.1)
+          printf '%s' "$tag" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$' \
+            || { echo "::error::tag $GITHUB_REF_NAME is not vX.Y.Z or vX.Y.Z-pre.N"; exit 1; }
           cargo=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
           pubspec=$(sed -n 's/^version: \([^+]*\).*/\1/p' apps/desktop/pubspec.yaml)
           echo "tag=$tag Cargo.toml=$cargo pubspec.yaml=$pubspec"
@@ -169,6 +177,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NOTARIZED: ${{ secrets.APPLE_ID != '' && secrets.MACOS_SIGN_IDENTITY != '' }}
         run: |
+          # A hyphen in the tag makes it a pre-release: flagged as such and
+          # never "latest". The checksum files are also gathered into one.
+          flags=
+          case "$GITHUB_REF_NAME" in
+            *-*) flags="--prerelease --latest=false" ;;
+          esac
+          (cd out && cat ./*.sha256 > SHA256SUMS)
           cat > notes.md <<EOF
           ## Install
 
@@ -177,6 +192,8 @@ jobs:
           \`\`\`sh
           curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/install.sh | sh
           \`\`\`
+
+          Pin this exact version: \`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/install.sh | sh -s -- --version ${GITHUB_REF_NAME}\`
 
           Desktop app (macOS 12+, Apple Silicon and Intel): download **tern-desktop-macos.dmg** below and drag tern to
           Applications. It includes the \`tern\` daemon, so **Start tern** works without installing the CLI.
@@ -192,5 +209,6 @@ jobs:
           > `xattr -dr com.apple.quarantine /Applications/tern.app`.
           EOF
           fi
-          gh release create "${GITHUB_REF_NAME}" out/* --verify-tag --title "tern ${GITHUB_REF_NAME}" \
+          # shellcheck disable=SC2086 # $flags is deliberately split
+          gh release create "${GITHUB_REF_NAME}" out/* $flags --verify-tag --title "tern ${GITHUB_REF_NAME}" \
             --notes-file notes.md --generate-notes

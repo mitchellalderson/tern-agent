@@ -7,9 +7,17 @@
 # assets .github/workflows/release.yml publishes), checks the checksum, and
 # installs the binary. Needs curl or wget, and sha256sum or shasum.
 #
+# With no version given it installs the NEWEST release, pre-releases included
+# (GitHub's own "latest" skips pre-releases, so it would 404 while every
+# release is an alpha). Ask for one with --version or TERN_VERSION:
+#
+#   curl -fsSL .../install.sh | sh -s -- --version v0.1.0-alpha.1
+#   curl -fsSL .../install.sh | sh -s -- --stable    # newest non-pre-release
+#
 # Environment:
 #   TERN_REPO         GitHub repo to install from (default: DEFAULT_REPO below)
-#   TERN_VERSION      release tag, e.g. v0.1.0 (default: latest)
+#   TERN_VERSION      release tag, e.g. v0.1.0-alpha.1; "stable" for the newest
+#                     release that is not a pre-release (default: newest, any)
 #   TERN_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
 #   TERN_DOWNLOAD_URL download from this base URL instead of GitHub (a mirror)
 set -eu
@@ -22,6 +30,25 @@ INSTALL_DIR="${TERN_INSTALL_DIR:-$HOME/.local/bin}"
 
 say() { printf 'tern-install: %s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version)
+      [ $# -ge 2 ] || die "--version needs a tag, e.g. --version v0.1.0-alpha.1"
+      VERSION="$2"; shift ;;
+    --version=*) VERSION="${1#--version=}" ;;
+    --stable) VERSION=stable ;;
+    -h | --help) sed -n '2,20p' "$0" >&2; exit 0 ;;
+    *) die "unknown option $1 (try --version <tag> or --stable)" ;;
+  esac
+  shift
+done
+case "$VERSION" in
+  latest | stable) ;;
+  v*) ;;
+  [0-9]*) VERSION="v$VERSION" ;;
+  *) die "version must look like v0.1.0-alpha.1, got '$VERSION'" ;;
+esac
 
 if [ -z "${TERN_DOWNLOAD_URL:-}" ]; then
   case "$REPO" in
@@ -52,13 +79,6 @@ asset="tern-$target.tar.gz"
 # HTTPS only: the checksum comes from the same server as the archive, so a
 # plain-HTTP mirror would let an on-path attacker replace both.
 proto="=https"
-if [ -n "${TERN_DOWNLOAD_URL:-}" ]; then
-  base="${TERN_DOWNLOAD_URL%/}"
-elif [ "$VERSION" = latest ]; then
-  base="https://github.com/$REPO/releases/latest/download"
-else
-  base="https://github.com/$REPO/releases/download/$VERSION"
-fi
 
 if command -v curl >/dev/null 2>&1; then
   fetch() { curl -fsSL --proto "$proto" --tlsv1.2 -o "$2" "$1"; }
@@ -79,11 +99,38 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
+# Resolve "latest" to a tag. The releases list includes pre-releases (and not
+# drafts), newest first; /releases/latest would skip the pre-releases.
+if [ -n "${TERN_DOWNLOAD_URL:-}" ]; then
+  base="${TERN_DOWNLOAD_URL%/}"
+else
+  if [ "$VERSION" = latest ]; then
+    if fetch "https://api.github.com/repos/$REPO/releases?per_page=1" "$tmp/releases.json" 2>/dev/null; then
+      tag="$(grep -m1 '"tag_name"' "$tmp/releases.json" | sed 's/.*"tag_name"[^"]*"\([^"]*\)".*/\1/')"
+      [ -n "$tag" ] || die "no releases found at https://github.com/$REPO/releases (nothing published yet?)"
+      VERSION="$tag"
+    else
+      say "couldn't list releases (offline, or GitHub's API rate limit); trying the newest stable release"
+      VERSION=stable
+    fi
+  fi
+  if [ "$VERSION" = stable ]; then
+    base="https://github.com/$REPO/releases/latest/download"
+  else
+    base="https://github.com/$REPO/releases/download/$VERSION"
+    case "$VERSION" in
+      *-*) say "installing $VERSION, a pre-release; expect rough edges" ;;
+      *) say "installing $VERSION" ;;
+    esac
+  fi
+fi
+
 say "downloading $asset from $base"
 if ! fetch "$base/$asset" "$tmp/$asset"; then
   if [ -z "${TERN_DOWNLOAD_URL:-}" ]; then
     say "error: couldn't download $base/$asset"
-    say "There may be no published release yet (or the repository is private, or TERN_VERSION=$VERSION doesn't exist)."
+    say "There may be no published release yet, the repository may be private, or $VERSION doesn't exist (tags look like v0.1.0-alpha.1)."
+    say "GitHub's 'latest' skips pre-releases, so they are only found by tag: pass --version <tag>."
     say "See https://github.com/$REPO/releases. To build from source instead (Rust 1.89+):"
     say "  git clone https://github.com/$REPO && cd ${REPO##*/} && cargo build --profile dist -p tern"
     say "  install -m 755 target/dist/tern ~/.local/bin/tern"

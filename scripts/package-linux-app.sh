@@ -9,7 +9,7 @@
 # was built elsewhere; it only has to look like one (tern_desktop, lib/,
 # data/), which is how the packaging is tested on a Mac.
 #
-# Output, in <out-dir> (unversioned names, so releases/latest/download/ works):
+# Output, in <out-dir> (unversioned names: releases/download/<tag>/<name>):
 #   tern-desktop-linux-<arch>.tar.gz   unpack anywhere; run ./tern_desktop
 #   tern-desktop-linux-<arch>.deb      Debian, Ubuntu and friends
 #   each with a .sha256
@@ -83,6 +83,8 @@ fi
 
 version="$(sed -n 's/^version: \([^+]*\).*/\1/p' "$desktop/pubspec.yaml")"
 [ -n "$version" ] || { echo "no version in apps/desktop/pubspec.yaml" >&2; exit 1; }
+# Debian orders "0.1.0-alpha.1" after "0.1.0"; "~" sorts a pre-release before its release.
+deb_version="$(printf %s "$version" | sed "s/-/~/")"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
@@ -137,7 +139,7 @@ ln -s ../lib/tern-desktop/tern "$pkg/usr/bin/tern"
 size_kb="$(du -sk "$pkg/usr" | cut -f1)"
 cat > "$pkg/DEBIAN/control" <<CONTROL
 Package: tern-desktop
-Version: $version
+Version: $deb_version
 Architecture: $deb_arch
 Maintainer: Mitchell Alderson <mitchell@inngest.com>
 Installed-Size: $size_kb
