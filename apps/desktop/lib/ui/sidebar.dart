@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:tern_client/tern_client.dart';
 
 import '../state/connection.dart';
+import '../state/fleet.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
 import 'agent_sheet.dart';
 import 'channel_view.dart';
+import 'fleet_status.dart';
 import 'manage.dart';
 import 'providers.dart';
 import 'servers.dart';
@@ -94,6 +96,7 @@ class _SidebarState extends State<Sidebar> {
           if (store.hasChannels) ...[
             const SizedBox(height: 4),
             _HomeRow(store: store),
+            if (store.hasAgents) FleetStrip(store: store),
             if (store.hasAgents) ...agentsSection(context, store),
             ...channelsSection(context, store),
           ],
@@ -134,6 +137,7 @@ class _SidebarState extends State<Sidebar> {
               ),
             ),
           const Hairline(),
+          SpendBar(store: store),
           _StatusFooter(store: store, connections: widget.connections),
         ],
       ),
@@ -169,6 +173,7 @@ class _HomeRow extends StatelessWidget {
     final waiting = store.pendingApprovals + store.pendingSecrets;
     final running = store.transcripts[TernStore.homeKey]?.activeRun != null;
     final tern = store.defaultAgent;
+    final homeStatus = tern == null ? AgentStatus.idle : store.statusOf(tern);
     void edit() => showAgentSheet(context, store, agent: tern);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -243,14 +248,9 @@ class _HomeRow extends StatelessWidget {
                       ),
                     )
                   else if (running)
-                    SizedBox(
-                      width: 10,
-                      height: 10,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.5,
-                        color: c.muted,
-                      ),
-                    ),
+                    const StatusMark(status: AgentStatus.working)
+                  else if (homeStatus != AgentStatus.idle)
+                    StatusMark(status: homeStatus),
                 ],
               ),
             ),
@@ -331,6 +331,7 @@ class _AgentListRow extends StatelessWidget {
         store.channel == a.mainChannelId &&
         store.page == null;
     final waiting = store.waitingFor(a);
+    final status = store.statusOf(a);
     final dm = store.dmOf(a);
     final unread = dm != null && store.unread(dm);
     return Padding(
@@ -372,15 +373,8 @@ class _AgentListRow extends StatelessWidget {
                   ),
                   if (waiting > 0)
                     WaitingBadge(count: waiting)
-                  else if (store.agentBusy(a))
-                    SizedBox(
-                      width: 10,
-                      height: 10,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.5,
-                        color: c.muted,
-                      ),
-                    )
+                  else if (status != AgentStatus.idle)
+                    StatusMark(status: status)
                   else if (unread)
                     Tooltip(
                       message: 'New posts',
