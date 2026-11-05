@@ -3,6 +3,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'widgets.dart';
 
 Future<void> showSecretsDialog(BuildContext context, TernStore store) =>
     showDialog<void>(
@@ -13,9 +14,12 @@ Future<void> showSecretsDialog(BuildContext context, TernStore store) =>
 /// API keys and tokens in `secrets.toml`. Values are write-only: the app
 /// sends them to the daemon and never reads them back.
 class SecretsDialog extends StatefulWidget {
-  const SecretsDialog({super.key, required this.client});
+  const SecretsDialog({super.key, required this.client, this.embedded = false});
 
   final TernClient client;
+
+  /// Shown inside Settings, which supplies the window and the title.
+  final bool embedded;
 
   @override
   State<SecretsDialog> createState() => _SecretsDialogState();
@@ -126,88 +130,92 @@ class _SecretsDialogState extends State<SecretsDialog> {
   Widget build(BuildContext context) {
     final c = context.colors;
     final secrets = _secrets;
+    final embedded = widget.embedded;
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (!embedded) ...[
+          const Text(
+            'Secrets',
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+        ],
+        Text(
+          'API keys and tokens for providers, connectors and MCP '
+          'servers. Saved to ~/.tern/secrets.toml, readable only by '
+          'you, and used from the next request on. Saved values '
+          "can't be shown again.",
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 14),
+        MaybeFlexible(
+          embedded: embedded,
+          child: secrets == null
+              ? Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Center(
+                    child: _error == null
+                        ? const CircularProgressIndicator(strokeWidth: 2)
+                        : Text(_error!, style: TextStyle(color: c.error)),
+                  ),
+                )
+              : ListView(
+                  shrinkWrap: true,
+                  children: [
+                    if (secrets.isEmpty && _editing != '')
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: Text(
+                          'No secrets yet.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    for (final s in secrets) ...[
+                      _SecretRow(
+                        secret: s,
+                        editing: _editing == s.name,
+                        onSet: () => _edit(s.name),
+                        onRemove: s.inFile ? () => _remove(s) : null,
+                      ),
+                      if (_editing == s.name) _editor(context),
+                    ],
+                    if (_editing == '') _editor(context),
+                  ],
+                ),
+        ),
+        if (_error case final e? when secrets != null) ...[
+          const SizedBox(height: 10),
+          Text(e, style: TextStyle(fontSize: 12.5, color: c.error)),
+        ],
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            if (_editing != '')
+              TextButton.icon(
+                onPressed: secrets == null ? null : () => _edit(''),
+                icon: Icon(Icons.add, size: 16, color: c.muted),
+                label: Text('Add secret', style: TextStyle(color: c.muted)),
+              ),
+            const Spacer(),
+            if (!embedded)
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Done'),
+              ),
+          ],
+        ),
+      ],
+    );
+    if (embedded) return content;
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 560, maxHeight: 620),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(22, 20, 22, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'Secrets',
-                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'API keys and tokens for providers, connectors and MCP '
-                'servers. Saved to ~/.tern/secrets.toml, readable only by '
-                'you, and used from the next request on. Saved values '
-                "can't be shown again.",
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 14),
-              Flexible(
-                child: secrets == null
-                    ? Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Center(
-                          child: _error == null
-                              ? const CircularProgressIndicator(strokeWidth: 2)
-                              : Text(_error!, style: TextStyle(color: c.error)),
-                        ),
-                      )
-                    : ListView(
-                        shrinkWrap: true,
-                        children: [
-                          if (secrets.isEmpty && _editing != '')
-                            Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              child: Text(
-                                'No secrets yet.',
-                                style: Theme.of(context).textTheme.bodySmall,
-                              ),
-                            ),
-                          for (final s in secrets) ...[
-                            _SecretRow(
-                              secret: s,
-                              editing: _editing == s.name,
-                              onSet: () => _edit(s.name),
-                              onRemove: s.inFile ? () => _remove(s) : null,
-                            ),
-                            if (_editing == s.name) _editor(context),
-                          ],
-                          if (_editing == '') _editor(context),
-                        ],
-                      ),
-              ),
-              if (_error case final e? when secrets != null) ...[
-                const SizedBox(height: 10),
-                Text(e, style: TextStyle(fontSize: 12.5, color: c.error)),
-              ],
-              const SizedBox(height: 14),
-              Row(
-                children: [
-                  if (_editing != '')
-                    TextButton.icon(
-                      onPressed: secrets == null ? null : () => _edit(''),
-                      icon: Icon(Icons.add, size: 16, color: c.muted),
-                      label: Text(
-                        'Add secret',
-                        style: TextStyle(color: c.muted),
-                      ),
-                    ),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Done'),
-                  ),
-                ],
-              ),
-            ],
-          ),
+          child: content,
         ),
       ),
     );

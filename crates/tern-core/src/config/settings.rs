@@ -74,6 +74,23 @@ pub struct Setting {
     /// The current value is the less safe choice.
     pub risky: bool,
     pub editable: bool,
+    /// Which part of the platform Settings window it belongs in: one of
+    /// `general`, `models`, `permissions`, `limits`, `servers`, `advanced`.
+    /// Providers, Secrets and About have their own endpoints.
+    #[serde(default = "default_group")]
+    pub group: String,
+    /// A tuning knob most people never touch: shown under "Advanced" or
+    /// behind a toggle, not in the first screens.
+    #[serde(default)]
+    pub advanced: bool,
+    /// A change only takes effect when tern restarts (as opposed to from
+    /// the next run or request).
+    #[serde(default)]
+    pub restart_required: bool,
+}
+
+fn default_group() -> String {
+    "advanced".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,6 +109,9 @@ pub struct ConfigView {
     /// The file doesn't load; sections are empty until it's fixed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Some saved setting still needs a restart to apply.
+    #[serde(default)]
+    pub restart_required: bool,
     pub sections: Vec<Section>,
 }
 
@@ -331,6 +351,16 @@ fn meta(key: &str) -> Meta {
             risky: |v| v == &Value::Bool(true),
             ..m
         },
+        "autonomy" => Meta {
+            choices: &["readonly", "supervised", "autonomous", "yolo"],
+            security: Some(
+                "How much tern may do without asking, for every agent that doesn't set its own. \
+                 Autonomous stops asking for ordinary writes; yolo asks for nothing, even in a \
+                 run that read untrusted content.",
+            ),
+            risky: |v| v == "autonomous" || v == "yolo",
+            ..m
+        },
         "api.remote_mcp_stdio" => Meta {
             live: true,
             security: Some(
@@ -341,6 +371,75 @@ fn meta(key: &str) -> Meta {
             ..m
         },
         _ => m,
+    }
+}
+
+/// The platform Settings window's groups, in order.
+pub const GROUPS: &[(&str, &str)] = &[
+    ("general", "General"),
+    ("models", "Models"),
+    ("permissions", "Permissions & sandbox"),
+    ("limits", "Limits & budgets"),
+    ("servers", "Servers & devices"),
+    ("advanced", "Advanced"),
+];
+
+/// Where a setting lives in the platform Settings window, and whether it is
+/// a tuning knob (`true`). Keys not listed are advanced.
+fn placement(key: &str) -> (&'static str, bool) {
+    match key {
+        "workspace"
+        | "home.idle_hours"
+        | "home.day_starts"
+        | "schedules.quiet_hours"
+        | "schedules.initiative"
+        | "schedules.initiative_dial"
+        | "schedules.digest_times"
+        | "memory.flush"
+        | "skills.capture" => ("general", false),
+        "memory.user_md_tokens" | "memory.memory_md_tokens" | "skills.capture_min_tool_calls" => {
+            ("general", true)
+        }
+        "default_model" | "subagents.default_model" => ("models", false),
+        "context_window" | "schedules.gate_model" => ("models", true),
+        "autonomy"
+        | "taint.egress"
+        | "sandbox.backend"
+        | "sandbox.network"
+        | "sandbox.confine"
+        | "sandbox.read_paths"
+        | "sandbox.write_paths"
+        | "python.allow_writes"
+        | "bundles.require_signed" => ("permissions", false),
+        "outbox.wait_secs"
+        | "outbox.expire_hours"
+        | "bundles.allow_private_hosts"
+        | "python.enabled"
+        | "subagents.enabled" => ("permissions", true),
+        "max_iterations"
+        | "schedules.runs_per_day"
+        | "schedules.usd_per_day"
+        | "schedules.tokens_per_run"
+        | "subagents.max_depth"
+        | "subagents.max_concurrent"
+        | "subagents.budget_tokens"
+        | "subagents.max_result_chars"
+        | "sandbox.shell_timeout_secs" => ("limits", false),
+        k if k.starts_with("subagents.")
+            || k.starts_with("python.")
+            || k.starts_with("sandbox.docker_")
+            || k.starts_with("webhooks.max_")
+            || k == "webhooks.per_minute"
+            || k == "connectors.rate"
+            || k == "schedules.max_events_per_poll" =>
+        {
+            ("limits", true)
+        }
+        "api.listen" | "api.public_url" | "webhooks.listen" | "webhooks.public_url" => {
+            ("servers", false)
+        }
+        k if k.starts_with("api.") || k.starts_with("webhooks.") => ("servers", true),
+        _ => ("advanced", true),
     }
 }
 
@@ -556,6 +655,7 @@ pub fn view(file: &ConfigFile, running: &Config) -> ConfigView {
             return ConfigView {
                 path,
                 error: Some(e.to_string()),
+                restart_required: false,
                 sections: Vec::new(),
             };
         }
@@ -584,6 +684,10 @@ pub fn view(file: &ConfigFile, running: &Config) -> ConfigView {
     ConfigView {
         path,
         error: None,
+        restart_required: sections
+            .iter()
+            .flat_map(|s| &s.settings)
+            .any(|s| s.restart_pending),
         sections,
     }
 }
@@ -592,6 +696,7 @@ fn setting(f: &Field, file: &ConfigFile, current: &Value, running: &Value) -> Se
     let m = meta(&f.key);
     let kind = kind_of(&m, &f.default);
     let value = lookup(current, &f.key).cloned().unwrap_or(Value::Null);
+    let (group, advanced) = placement(&f.key);
     let applies = if m.live {
         Applies::Live
     } else {
@@ -612,6 +717,9 @@ fn setting(f: &Field, file: &ConfigFile, current: &Value, running: &Value) -> Se
         security: m.security.map(str::to_owned),
         risky: (m.risky)(&value),
         editable: kind != Kind::Other && !is_secret_key(&f.key),
+        group: group.to_owned(),
+        advanced,
+        restart_required: applies == Applies::Restart,
         value,
         key: f.key.clone(),
     }
@@ -950,5 +1058,66 @@ mod tests {
         let v = view(&ConfigFile::open(&path).unwrap(), &Config::default());
         assert!(v.error.unwrap().contains("max_iterations"));
         assert!(v.sections.is_empty());
+    }
+
+    #[test]
+    fn every_setting_has_a_group_and_user_facing_ones_are_described() {
+        let f = ConfigFile::open(std::path::Path::new("/nonexistent/x.toml")).unwrap();
+        let v = view(&f, &Config::default());
+        let all: Vec<&Setting> = v.sections.iter().flat_map(|s| &s.settings).collect();
+        for s in &all {
+            assert!(
+                GROUPS.iter().any(|(g, _)| *g == s.group),
+                "{} has group {:?}",
+                s.key,
+                s.group
+            );
+            if !s.advanced && s.editable {
+                assert!(!s.description.is_empty(), "{} is user-facing", s.key);
+            }
+        }
+        let by = |k: &str| all.iter().find(|s| s.key == k).unwrap();
+        assert_eq!(by("autonomy").group, "permissions");
+        assert!(!by("autonomy").advanced);
+        assert_eq!(by("subagents.max_result_chars").group, "limits");
+        assert_eq!(by("schedules.usd_per_day").group, "limits");
+        assert_eq!(by("api.listen").group, "servers");
+        assert_eq!(by("python.max_memory_mb").group, "limits");
+        assert!(by("python.max_memory_mb").advanced);
+        // Nothing falls through unplaced except genuinely internal knobs.
+        assert!(by("auth.max_connections").advanced);
+    }
+
+    #[test]
+    fn autonomy_is_a_choice_and_yolo_is_risky() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# mine\nautonomy = \"yolo\"\n").unwrap();
+        let mut file = ConfigFile::open(&path).unwrap();
+        let v = view(&file, &Config::default());
+        let s = find(&v, "autonomy").unwrap();
+        assert_eq!(s.kind, Kind::Choice);
+        assert!(s.risky);
+        assert!(
+            file.set_setting("autonomy", &Value::from("reckless"))
+                .is_err()
+        );
+        file.set_setting("autonomy", &Value::from("supervised"))
+            .unwrap();
+        file.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# mine") && text.contains("supervised"));
+    }
+
+    #[test]
+    fn view_flags_a_pending_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "max_iterations = 7\n").unwrap();
+        let file = ConfigFile::open(&path).unwrap();
+        let v = view(&file, &Config::default());
+        assert!(v.restart_required);
+        assert!(find(&v, "max_iterations").unwrap().restart_required);
+        assert!(!find(&v, "home.idle_hours").unwrap().restart_required);
     }
 }

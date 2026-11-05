@@ -12,17 +12,14 @@ import '../theme.dart';
 import 'auth_card.dart';
 import 'bundles.dart';
 import 'channel_view.dart';
-import 'config_editor.dart';
 import 'connections.dart';
 import 'conversation.dart';
 import 'ledger.dart';
 import 'mcp.dart';
 import 'offline.dart';
-import 'providers.dart';
+import 'preferences.dart';
 import 'quit.dart';
 import 'routines.dart';
-import 'secrets.dart';
-import 'settings.dart';
 import 'side_panel.dart';
 import 'sidebar.dart';
 import 'tasks.dart';
@@ -100,14 +97,16 @@ class _HomeState extends State<Home> {
     await _control.start();
   }
 
-  void _settings() => showSettingsDialog(
-    context,
-    _control,
-    _prefs,
-    store: widget.store,
-    connections: widget.connections,
-    onRestart: _canRestart ? _restartTern : null,
-  );
+  Future<void> _settings([PrefSection section = PrefSection.general]) =>
+      showPreferences(
+        context,
+        control: _control,
+        prefs: _prefs,
+        store: widget.store,
+        connections: widget.connections,
+        onRestart: _canRestart ? _restartTern : null,
+        section: section,
+      );
 
   @override
   void dispose() {
@@ -120,7 +119,7 @@ class _HomeState extends State<Home> {
   @override
   Widget build(BuildContext context) {
     final store = widget.store;
-    final body = Scaffold(
+    final scaffold = Scaffold(
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -233,6 +232,7 @@ class _HomeState extends State<Home> {
         ],
       ),
     );
+    final body = PreferencesScope(open: _settings, child: scaffold);
     // Native menus exist only on macOS; elsewhere the same shortcuts use Ctrl.
     if (!Platform.isMacOS) {
       return CallbackShortcuts(
@@ -245,7 +245,7 @@ class _HomeState extends State<Home> {
             alt: true,
           ): _togglePanel,
           const SingleActivator(LogicalKeyboardKey.comma, control: true): () {
-            if (store.health != null) showProvidersDialog(context, store);
+            if (store.health != null) _settings();
           },
           if (!_remote)
             const SingleActivator(
@@ -272,32 +272,13 @@ class _HomeState extends State<Home> {
             PlatformMenuItemGroup(
               members: [
                 PlatformMenuItem(
-                  label: 'Models…',
+                  label: 'Settings…',
                   shortcut: const SingleActivator(
                     LogicalKeyboardKey.comma,
                     meta: true,
                   ),
-                  onSelected: store.health == null
-                      ? null
-                      : () => showProvidersDialog(context, store),
+                  onSelected: () => _settings(),
                 ),
-                PlatformMenuItem(
-                  label: 'Secrets…',
-                  onSelected: store.health == null
-                      ? null
-                      : () => showSecretsDialog(context, store),
-                ),
-                PlatformMenuItem(
-                  label: 'Configuration…',
-                  onSelected: store.health == null
-                      ? null
-                      : () => showConfigDialog(
-                          context,
-                          store,
-                          onRestart: _canRestart ? _restartTern : null,
-                        ),
-                ),
-                PlatformMenuItem(label: 'Settings…', onSelected: _settings),
               ],
             ),
             const PlatformMenuItemGroup(

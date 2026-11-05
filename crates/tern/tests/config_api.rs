@@ -228,6 +228,64 @@ async fn read_change_and_reset_settings() {
     assert!(text.contains("# my settings"), "{text}");
 }
 
+/// The platform Settings window's view: every setting carries its group
+/// and tier, restart flags show up in the view, and the limits and
+/// approvals defaults it edits go through the same validated write.
+#[tokio::test(flavor = "multi_thread")]
+async fn platform_settings_carry_groups_flags_and_validation() {
+    let env = Env::new();
+    let _daemon = env.daemon();
+    let http = env.local();
+
+    let (_, view) = send(http.get(URL)).await;
+    assert_eq!(view["restart_required"], false);
+    for (key, group, advanced) in [
+        ("autonomy", "permissions", false),
+        ("sandbox.network", "permissions", false),
+        ("subagents.max_result_chars", "limits", false),
+        ("schedules.usd_per_day", "limits", false),
+        ("api.listen", "servers", false),
+        ("python.max_memory_mb", "limits", true),
+    ] {
+        let s = setting(&view, key);
+        assert_eq!(
+            (s["group"].as_str(), s["advanced"].as_bool()),
+            (Some(group), Some(advanced)),
+            "{key}"
+        );
+    }
+    assert_eq!(setting(&view, "autonomy")["kind"], "choice");
+    assert_eq!(setting(&view, "max_iterations")["restart_required"], true);
+    assert_eq!(setting(&view, "home.idle_hours")["restart_required"], false);
+
+    let before = env.config();
+    let (status, s) = send(
+        http.put(format!("{URL}/subagents.max_result_chars"))
+            .json(&json!({ "value": 12000 })),
+    )
+    .await;
+    assert_eq!(status, 200, "{s}");
+    assert!(env.config().contains("# my settings"));
+    let (_, view) = send(http.get(URL)).await;
+    assert_eq!(view["restart_required"], true);
+
+    let kept = env.config();
+    for (key, value) in [
+        ("subagents.max_result_chars", json!(10)),
+        ("autonomy", json!("reckless")),
+        ("schedules.usd_per_day", json!(-1)),
+    ] {
+        let (status, e) = send(
+            http.put(format!("{URL}/{key}"))
+                .json(&json!({ "value": value })),
+        )
+        .await;
+        assert_eq!(status, 400, "{key}: {e}");
+    }
+    assert_eq!(env.config(), kept);
+    assert_ne!(before, kept);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn only_the_owner_sees_or_changes_config() {
     let env = Env::new();

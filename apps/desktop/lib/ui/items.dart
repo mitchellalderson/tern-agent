@@ -14,7 +14,7 @@ import 'channel_items.dart';
 import 'channel_view.dart';
 import 'inspector.dart';
 import 'move_dialog.dart';
-import 'providers.dart';
+import 'preferences.dart';
 import 'routines.dart';
 
 /// One transcript item.
@@ -996,7 +996,11 @@ class _RunEndState extends State<_RunEnd> {
             if (friendly != null && friendly.fixInModels)
               TextButton(
                 key: const ValueKey('fix-in-models'),
-                onPressed: () => showProvidersDialog(context, store),
+                onPressed: () => openPreferences(
+                  context,
+                  store,
+                  section: PrefSection.models,
+                ),
                 child: const Text('Fix in Models'),
               ),
             if (friendly != null)

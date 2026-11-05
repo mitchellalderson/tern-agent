@@ -275,9 +275,16 @@ Future<void> showServersDialog(BuildContext context, Connections connections) =>
 /// switch, add, rename, edit (address, pairing) and remove. This computer is
 /// built in and stays.
 class ServersDialog extends StatefulWidget {
-  const ServersDialog({super.key, required this.connections});
+  const ServersDialog({
+    super.key,
+    required this.connections,
+    this.embedded = false,
+  });
 
   final Connections connections;
+
+  /// Shown inside Settings, which supplies the window and the title.
+  final bool embedded;
 
   @override
   State<ServersDialog> createState() => _ServersDialogState();
@@ -390,96 +397,100 @@ class _ServersDialogState extends State<ServersDialog> {
   Widget build(BuildContext context) {
     final c = context.colors;
     final profiles = <Profile>[const LocalProfile(), ..._c.servers];
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 640),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(22, 20, 22, 14),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
+    final embedded = widget.embedded;
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: embedded
+                  ? const SizedBox.shrink()
+                  : const Text(
                       'Servers',
                       style: TextStyle(
                         fontSize: 17,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                  ),
-                  QuietIconButton(
-                    icon: Icons.refresh,
-                    tooltip: 'Check them again',
-                    onPressed: _busy ? null : _refresh,
+            ),
+            QuietIconButton(
+              icon: Icons.refresh,
+              tooltip: 'Check them again',
+              onPressed: _busy ? null : _refresh,
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Where tern runs. The app shows one at a time; switching '
+          'changes everything you see to that server, and nothing is '
+          'shared between them. Each keeps its own key in the Keychain.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 12),
+        MaybeFlexible(
+          embedded: embedded,
+          child: SingleChildScrollView(
+            child: Column(
+              children: [
+                for (final p in profiles) ...[
+                  const Hairline(),
+                  _ServerRow(
+                    key: Key('server-${p.id}'),
+                    name: _c.nameOf(p.id),
+                    detail: switch (p) {
+                      LocalProfile() =>
+                        'Built in · tern running on this computer',
+                      RemoteProfile r => r.url.toString(),
+                    },
+                    status: _status[p.id] ?? ServerStatus.checking,
+                    active: p.id == _c.activeId,
+                    onSwitch: _busy ? null : () => _switch(p.id),
+                    onEdit: p is RemoteProfile && !_busy
+                        ? () => _edit(p)
+                        : null,
+                    onRemove: p is RemoteProfile && !_busy
+                        ? () => _remove(p)
+                        : null,
                   ),
                 ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Where tern runs. The app shows one at a time; switching '
-                'changes everything you see to that server, and nothing is '
-                'shared between them. Each keeps its own key in the Keychain.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 12),
-              Flexible(
-                child: SingleChildScrollView(
-                  child: Column(
-                    children: [
-                      for (final p in profiles) ...[
-                        const Hairline(),
-                        _ServerRow(
-                          key: Key('server-${p.id}'),
-                          name: _c.nameOf(p.id),
-                          detail: switch (p) {
-                            LocalProfile() =>
-                              'Built in · tern running on this computer',
-                            RemoteProfile r => r.url.toString(),
-                          },
-                          status: _status[p.id] ?? ServerStatus.checking,
-                          active: p.id == _c.activeId,
-                          onSwitch: _busy ? null : () => _switch(p.id),
-                          onEdit: p is RemoteProfile && !_busy
-                              ? () => _edit(p)
-                              : null,
-                          onRemove: p is RemoteProfile && !_busy
-                              ? () => _remove(p)
-                              : null,
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-              if (_error case final e?) ...[
-                const SizedBox(height: 8),
-                Text(e, style: TextStyle(fontSize: 12.5, color: c.error)),
               ],
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  TextButton.icon(
-                    key: const Key('add-server'),
-                    onPressed: _busy ? null : () => _edit(null),
-                    icon: Icon(Icons.add, size: 16, color: c.muted),
-                    label: Text(
-                      'Add a server',
-                      style: TextStyle(color: c.muted),
-                    ),
-                  ),
-                  const Spacer(),
-                  FilledButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Done'),
-                  ),
-                ],
-              ),
-            ],
+            ),
           ),
+        ),
+        if (_error case final e?) ...[
+          const SizedBox(height: 8),
+          Text(e, style: TextStyle(fontSize: 12.5, color: c.error)),
+        ],
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            TextButton.icon(
+              key: const Key('add-server'),
+              onPressed: _busy ? null : () => _edit(null),
+              icon: Icon(Icons.add, size: 16, color: c.muted),
+              label: Text('Add a server', style: TextStyle(color: c.muted)),
+            ),
+            const Spacer(),
+            if (!embedded)
+              FilledButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Done'),
+              ),
+          ],
+        ),
+      ],
+    );
+    if (embedded) return content;
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 640),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 20, 22, 14),
+          child: content,
         ),
       ),
     );

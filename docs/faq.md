@@ -135,11 +135,20 @@ Tools that need more of your home directory (a `~/.cargo` registry, `~/.npm`) ne
 MCP stdio servers run unsandboxed on the host. The full list of what's covered and what isn't is in
 [SECURITY.md](../SECURITY.md).
 
+## Where are the settings?
+
+In one place. The desktop app's **Settings…** (⌘, on macOS) and the terminal's `/settings` have the same sections:
+General, Models & Providers, Secrets, Permissions & Sandbox, Limits & Budgets, Servers, Advanced and About, with a
+search over all of them. They read and write `~/.tern/config.toml` (comments kept, bad values refused), so editing the
+file by hand still works. Agent settings, such as an agent's model, tools, autonomy ceiling and channels, are edited
+on the agent itself (the agent sheet, `/agents`), not in Settings. Every setting and where it lives is in
+[settings-inventory.md](settings-inventory.md).
+
 ## How do provider presets work?
 
 A preset is a shortcut for filling in a provider's details, not a kind of provider. Choosing OpenRouter, Gemini, Groq,
 Together, Ollama or LM Studio (also OpenAI and Anthropic) in `tern setup`, `/setup`, `tern providers add <name>` or the
-desktop app's Models fills in the address and tells you where to get a key; what's saved is an ordinary
+desktop app's Settings › Models & Providers fills in the address and tells you where to get a key; what's saved is an ordinary
 `[providers.<name>]` in `config.toml`. Pasting a full endpoint such as `.../chat/completions` or `.../responses` is
 tidied to the base address, and a wrong address is refused instead of saved. Call errors such as a bad key, a missing
 quota or an unknown address come back as a plain sentence naming the provider, with the raw error alongside. Details:

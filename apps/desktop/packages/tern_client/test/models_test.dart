@@ -316,6 +316,67 @@ void main() {
     );
   });
 
+  test('decodes the Settings window groups and restart flags', () {
+    final v = ConfigView.fromJson({
+      'path': 'p',
+      'restart_required': true,
+      'sections': [
+        {
+          'id': 'subagents',
+          'title': 'Sub-agents',
+          'settings': [
+            {
+              'key': 'subagents.max_result_chars',
+              'kind': 'int',
+              'value': 9000,
+              'default': 8000,
+              'set': true,
+              'applies': 'restart',
+              'restart_pending': true,
+              'group': 'limits',
+              'advanced': false,
+              'restart_required': true,
+            },
+            {
+              'key': 'subagents.max_children',
+              'kind': 'int',
+              'value': 12,
+              'default': 12,
+              'set': false,
+              'applies': 'restart',
+              'group': 'limits',
+              'advanced': true,
+            },
+            // An older daemon sends neither: advanced, restart by `applies`.
+            {
+              'key': 'home.idle_hours',
+              'kind': 'float',
+              'value': 6.0,
+              'default': 6.0,
+              'set': false,
+              'applies': 'live',
+            },
+          ],
+        },
+      ],
+    });
+    final [chars, children, idle] = v.settings.toList();
+    expect((chars.group, chars.advanced, chars.restartRequired), (
+      'limits',
+      false,
+      true,
+    ));
+    expect(children.advanced, isTrue);
+    expect((idle.group, idle.restartRequired), ('advanced', false));
+    expect(v.restartRequired, isTrue);
+    expect(v.inGroup('limits').map((s) => s.key), [
+      'subagents.max_result_chars',
+    ]);
+    expect(v.inGroup('limits', advanced: true).map((s) => s.key), [
+      'subagents.max_children',
+    ]);
+  });
+
   test('decodes status and shutdown replies', () {
     final s = DaemonStatus.fromJson(
       jsonDecode(
