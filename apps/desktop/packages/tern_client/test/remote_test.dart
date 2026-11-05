@@ -135,7 +135,6 @@ void main() {
         'http://localhost:7420',
         'http://127.0.0.1:7420',
         'http://[::1]:7420',
-        'http://tern.localhost',
       ]) {
         expect(remoteUrlProblem(Uri.parse(ok)), isNull, reason: ok);
       }
@@ -143,6 +142,8 @@ void main() {
         remoteUrlProblem(Uri.parse('http://home.example.net')),
         contains('https://'),
       );
+      // `*.localhost` is left to the OS resolver, which may use DNS.
+      expect(remoteUrlProblem(Uri.parse('http://tern.localhost')), isNotNull);
       // A look-alike of localhost is another computer.
       expect(
         remoteUrlProblem(Uri.parse('http://localhost.evil.example')),

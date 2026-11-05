@@ -135,11 +135,11 @@ bool _sameBytes(List<int> a, List<int> b) {
   return diff == 0;
 }
 
-/// Whether [host] is this computer: `localhost`, `*.localhost`, 127.0.0.0/8
+/// Whether [host] is this computer: the literal `localhost`, 127.0.0.0/8
 /// or `::1`.
 bool isLoopbackHost(String host) {
   final h = host.toLowerCase();
-  if (h == 'localhost' || h.endsWith('.localhost')) return true;
+  if (h == 'localhost') return true;
   final ip = InternetAddress.tryParse(h);
   return ip != null && ip.isLoopback;
 }

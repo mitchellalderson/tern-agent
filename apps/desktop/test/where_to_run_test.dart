@@ -179,8 +179,8 @@ void main() {
     test('the Keychain is reached through `security`', () async {
       final calls = <List<String>>[];
       final k = KeychainTokens(
-        run: (args) async {
-          calls.add(args);
+        run: (args, {stdin}) async {
+          calls.add([...args, ?stdin]);
           return ProcessResult(0, 0, 'tern_dev_x\n', '');
         },
       );
@@ -190,15 +190,12 @@ void main() {
       const s = KeychainTokens.service;
       expect(calls, [
         [
-          'add-generic-password',
-          '-U',
-          '-s',
-          s,
-          '-a',
-          'https://h:7420',
-          '-w',
-          'tern_dev_x',
+          '-i',
+          '"add-generic-password" "-U" "-s" "$s" "-a" "https://h:7420" '
+              '"-w" "tern_dev_x"\n',
         ],
+        // The read-back that confirms the write.
+        ['find-generic-password', '-s', s, '-a', 'https://h:7420', '-w'],
         ['find-generic-password', '-s', s, '-a', 'https://h:7420', '-w'],
         ['delete-generic-password', '-s', s, '-a', 'https://h:7420'],
       ]);

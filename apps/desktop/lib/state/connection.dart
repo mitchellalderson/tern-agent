@@ -126,9 +126,10 @@ final class RemoteProfile extends Profile {
     bool clearPin = false,
     String? deviceId,
     String? scope,
+    String? tokenAccount,
   }) => RemoteProfile._(
     id: id,
-    account: account,
+    account: tokenAccount ?? account,
     url: url ?? this.url,
     name: name ?? this.name,
     pin: clearPin ? null : pin ?? this.pin,
@@ -222,11 +223,34 @@ abstract interface class TokenStore {
       : FileTokens(File('${AppPrefs.dir(env)}/tokens'));
 }
 
-/// Runs `security <args>`; replaced in tests.
-typedef RunSecurity = Future<ProcessResult> Function(List<String> args);
+/// Runs `security <args>`, feeding [stdin] to it when given; replaced in
+/// tests.
+typedef RunSecurity = Future<ProcessResult> Function(
+  List<String> args, {
+  String? stdin,
+});
 
-Future<ProcessResult> _security(List<String> args) =>
-    Process.run('/usr/bin/security', args);
+Future<ProcessResult> _security(List<String> args, {String? stdin}) async {
+  if (stdin == null) return Process.run('/usr/bin/security', args);
+  final p = await Process.start('/usr/bin/security', args);
+  p.stdin.write(stdin);
+  final out = p.stdout.transform(const SystemEncoding().decoder).join();
+  final err = p.stderr.transform(const SystemEncoding().decoder).join();
+  await p.stdin.close();
+  final code = await p.exitCode;
+  return ProcessResult(p.pid, code, await out, await err);
+}
+
+/// One word for `security -i`'s command line: double-quoted, with `\` and
+/// `"` escaped. A line break would end the command, so it is refused.
+String securityQuote(String s) {
+  if (s.contains('\n') || s.contains('\r')) {
+    throw const TernCommandException(
+      "Couldn't save the server's token: it has a line break in it.",
+    );
+  }
+  return '"${s.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"';
+}
 
 class KeychainTokens implements TokenStore {
   KeychainTokens({this.run = _security});
@@ -249,9 +273,13 @@ class KeychainTokens implements TokenStore {
     return t.isEmpty ? null : t;
   }
 
+  /// The token goes to `security -i` on its standard input, never on the
+  /// command line, where `ps` shows it to every user of this Mac. It is
+  /// read back afterwards, since the interactive mode's exit status
+  /// doesn't say whether the command worked.
   @override
   Future<void> write(String account, String token) async {
-    final r = await run([
+    final command = [
       'add-generic-password',
       '-U',
       '-s',
@@ -260,8 +288,9 @@ class KeychainTokens implements TokenStore {
       account,
       '-w',
       token,
-    ]);
-    if (r.exitCode != 0) {
+    ].map(securityQuote).join(' ');
+    final r = await run(['-i'], stdin: '$command\n');
+    if (r.exitCode != 0 || await read(account) != token) {
       throw TernCommandException(
         "Couldn't save the server's token in the Keychain: "
         '${'${r.stderr}'.trim()}',
@@ -294,10 +323,15 @@ class FileTokens implements TokenStore {
 
   Future<void> _save(Map<String, String> all) async {
     await file.parent.create(recursive: true);
-    await file.writeAsString(
+    // An empty 0600 temp file first, so tokens are never in a readable
+    // file, then the swap.
+    final tmp = File('${file.path}.tmp');
+    await tmp.create();
+    await Process.run('chmod', ['600', tmp.path]);
+    await tmp.writeAsString(
       all.entries.map((e) => '${e.key}\t${e.value}\n').join(),
     );
-    await Process.run('chmod', ['600', file.path]);
+    await tmp.rename(file.path);
   }
 
   @override
@@ -379,7 +413,17 @@ typedef CheckServer = Future<ServerStatus> Function(Profile profile);
 
 /// Checks [profile] with a request to its own address: this computer's
 /// socket, or the server's `/v1/health` with the token saved for it.
-Future<ServerStatus> checkServer(Profile profile, TokenStore tokens) async {
+///
+/// [current] returns the entry as saved now; if the address, pin or token
+/// account changed while the token was being read (a re-pair), the check
+/// is dropped rather than pairing an old address with a new token.
+/// [clientFor] builds the client (replaced in tests).
+Future<ServerStatus> checkServer(
+  Profile profile,
+  TokenStore tokens, {
+  RemoteProfile? Function(String id)? current,
+  TernClient Function(Endpoint)? clientFor,
+}) async {
   final Endpoint? endpoint;
   switch (profile) {
     case LocalProfile():
@@ -394,9 +438,18 @@ Future<ServerStatus> checkServer(Profile profile, TokenStore tokens) async {
           'This device is signed out of this server. Edit it to pair again.',
         );
       }
+      if (current != null) {
+        final now = current(p.id);
+        if (now == null ||
+            now.url != p.url ||
+            now.pin != p.pin ||
+            now.account != p.account) {
+          return ServerStatus.checking;
+        }
+      }
       endpoint = Endpoint.remote(p.url, token: token, pin: p.pin);
   }
-  final client = TernClient(endpoint);
+  final client = (clientFor ?? TernClient.new)(endpoint);
   try {
     final h = await client.health().timeout(
       const Duration(seconds: 6),
@@ -458,6 +511,7 @@ class Connections {
     this.pair = _pair,
     this.probeUrl = _probeUrl,
     this.check,
+    this.clientFor,
   });
 
   final AppPrefs prefs;
@@ -466,6 +520,7 @@ class Connections {
   final Pair pair;
   final ProbeUrl probeUrl;
   final CheckServer? check;
+  final TernClient Function(Endpoint)? clientFor;
 
   /// Runs one change at a time, so two quick clicks can't leave the saved
   /// choice and the connection on different servers.
@@ -504,7 +559,10 @@ class Connections {
 
   /// How [profile] looks right now (a request to its own address).
   Future<ServerStatus> status(Profile profile) =>
-      (check ?? (p) => checkServer(p, tokens))(profile);
+      (check ??
+      (p) => checkServer(p, tokens, current: server, clientFor: clientFor))(
+        profile,
+      );
 
   /// Why [name] can't be a server's name, or null. [except] is the server
   /// being renamed.
@@ -656,8 +714,12 @@ class Connections {
       clearPin: link.fingerprint == null,
       deviceId: paired.deviceId,
       scope: paired.scope,
+      // A fresh account: a check still reading the old one can only ever
+      // get the old token (for the old address), never this new one.
+      tokenAccount: 'server:${newServerId()}',
     );
     await tokens.write(profile.account, paired.endpoint.token);
+    if (old.account != profile.account) await tokens.delete(old.account);
     _put(profile);
     final wasActive = current?.id == id;
     if (wasActive) prefs.connection = profile;

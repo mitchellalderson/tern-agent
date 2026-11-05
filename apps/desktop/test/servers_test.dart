@@ -29,6 +29,27 @@ class MemTokens implements TokenStore {
 
 /// Codes `CODE-<host>` pair with the token `tok-<host>`; anything else is a
 /// wrong code. A host listed in [down] is unreachable.
+/// Reads wait for [gate]; writes and deletes go straight through.
+class _SlowTokens implements TokenStore {
+  _SlowTokens(this.inner, this.gate);
+
+  final TokenStore inner;
+  final Future<void> gate;
+
+  @override
+  Future<String?> read(String account) async {
+    await gate;
+    return inner.read(account);
+  }
+
+  @override
+  Future<void> write(String account, String token) =>
+      inner.write(account, token);
+
+  @override
+  Future<void> delete(String account) => inner.delete(account);
+}
+
 class ServerWorld {
   final down = <String>{};
   final paired = <String>[];
@@ -390,8 +411,10 @@ void main() {
         );
         expect(moved.id, a.id);
         expect(moved.url.host, 'new.example.net');
-        // The old key is replaced, never carried to the new address.
-        expect(env.tokens.tokens, {a.account: 'tok-new.example.net'});
+        // The new key has its own account; the old one is gone, and the
+        // old key never goes to the new address.
+        expect(moved.account, isNot(a.account));
+        expect(env.tokens.tokens, {moved.account: 'tok-new.example.net'});
         // It was in use, so the app now talks to the new address.
         final e = env.applied.single as RemoteEndpoint;
         expect(
@@ -463,6 +486,138 @@ void main() {
       expect(env.connections.activeId, a.id);
       expect(AppPrefs.fromFile(env.file).connection!.id, a.id);
     });
+  });
+
+  group('a status check racing a re-pair', () {
+    /// A token store whose reads wait until released.
+    Future<(List<(String, String)>, ServerStatus)> race(
+      WidgetTester? _,
+      Env env,
+      RemoteProfile a,
+      Future<void> Function() during,
+    ) async {
+      final gate = Completer<void>();
+      final slow = _SlowTokens(env.tokens, gate.future);
+      final seen = <(String, String)>[];
+      // A check as the app runs it, reading through the slow store.
+      env.connections = Connections(
+        prefs: env.prefs,
+        tokens: slow,
+        apply: env.applied.add,
+        pair: env.world.pair,
+        clientFor: (e) {
+          e as RemoteEndpoint;
+          seen.add((e.base.host, e.token));
+          return TernClient(const Endpoint.unix('/nonexistent'));
+        },
+      );
+      final pending = env.connections.status(a);
+      await Future<void>.delayed(Duration.zero);
+      await during();
+      gate.complete();
+      return (seen, await pending);
+    }
+
+    test('never sends the new server\'s token to the old address', () async {
+      final env = Env();
+      addTearDown(env.dispose);
+      final a = await env.connections.connect(linkFor('a.example.net'));
+      final (seen, _) = await race(null, env, a, () async {
+        await env.connections.repair(
+          a.id,
+          PairingLink(
+            url: Uri.parse('https://b.example.net'),
+            code: 'CODE-B.EXAMPLE.NET',
+          ),
+        );
+      });
+      // Either dropped, or the old pairing of the old address: never
+      // (a, b's token).
+      expect(
+        seen.where(
+          (s) => s.$1 == 'a.example.net' && s.$2 != 'tok-a.example.net',
+        ),
+        isEmpty,
+      );
+      expect(seen.where((s) => s.$2 == 'tok-b.example.net'), isEmpty);
+    });
+
+    test('a check that finds the entry changed is dropped', () async {
+      final env = Env();
+      addTearDown(env.dispose);
+      final a = await env.connections.connect(linkFor('a.example.net'));
+      // Same account, other address (as an older save could have left it).
+      final moved = a.copyWith(url: Uri.parse('https://b.example.net'));
+      final tokens = MemTokens()..tokens[a.account] = 'tok-b.example.net';
+      var built = false;
+      final s = await checkServer(
+        a,
+        tokens,
+        current: (_) => moved,
+        clientFor: (e) {
+          built = true;
+          return TernClient(e);
+        },
+      );
+      expect(built, isFalse);
+      expect(s.reach, Reach.checking);
+    });
+  });
+
+  group('the token stores', () {
+    test('the Keychain gets the token on stdin, never in argv', () async {
+      final argv = <List<String>>[];
+      final stdins = <String?>[];
+      final k = KeychainTokens(
+        run: (args, {stdin}) async {
+          argv.add(args);
+          stdins.add(stdin);
+          return ProcessResult(0, 0, 'tern_dev_"x"\\y\n', '');
+        },
+      );
+      await k.write('https://h:7420', 'tern_dev_"x"\\y');
+      expect(argv.first, ['-i']);
+      expect(argv.expand((a) => a).join(' '), isNot(contains('tern_dev')));
+      expect(
+        stdins.first,
+        '"add-generic-password" "-U" "-s" "${KeychainTokens.service}" '
+        '"-a" "https://h:7420" "-w" "tern_dev_\\"x\\"\\\\y"\n',
+      );
+      // A token with a line break can't smuggle a second command.
+      await expectLater(
+        k.write('a', 'x\nadd-generic-password'),
+        throwsA(isA<TernCommandException>()),
+      );
+    });
+
+    test('a write that did not stick is an error', () async {
+      final k = KeychainTokens(
+        run: (args, {stdin}) async => ProcessResult(0, 0, 'other\n', ''),
+      );
+      await expectLater(
+        k.write('a', 'tok'),
+        throwsA(isA<TernCommandException>()),
+      );
+    });
+
+    test(
+      'the token file is 0600 from the start and replaced by rename',
+      () async {
+        final dir = Directory.systemTemp.createTempSync('tern_tokens');
+        addTearDown(() => dir.deleteSync(recursive: true));
+        final f = File('${dir.path}/tokens');
+        final store = FileTokens(f);
+        await store.write('a', 'tok-a');
+        await store.write('b', 'tok-b');
+        expect(await store.read('a'), 'tok-a');
+        expect(f.statSync().mode & 0x1ff, 0x180); // 0600
+        expect(File('${f.path}.tmp').existsSync(), isFalse);
+        await store.delete('a');
+        expect(await store.read('a'), isNull);
+        expect(await store.read('b'), 'tok-b');
+      },
+      skip: Platform.isWindows,
+    );
   });
 
   group('addresses', () {
