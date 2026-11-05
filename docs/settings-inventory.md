@@ -106,7 +106,7 @@ same list and a new config field appears in both without UI changes.
 
 | Setting | Where stored | Where today | Restart | Secret | Surface |
 |---|---|---|---|---|---|
-| Secrets (API keys, tokens) | `~/.tern/secrets.toml` (0600) or env | `/secrets`, `tern secrets`, desktop Secrets dialog | no | yes: names listed, values write-only, never returned | Secrets |
+| Secrets (API keys, tokens) | `~/.tern/secrets.toml` (0600) or env | `/secrets`, `tern providers add` (keys), desktop Secrets dialog | no | yes: names listed, values write-only, never returned | Secrets |
 | Launch at login | OS login item via `tern service` | desktop Settings, `tern service install` | no | no | General (desktop) |
 | Close window keeps tern running / quits | desktop `desktop.json` (`on_close`) | desktop Settings | no | no | General (desktop) |
 | Tray icon | `tern tray` (macOS menu bar, follows login item) | `tern tray` | no | no | General (desktop, explained) |
