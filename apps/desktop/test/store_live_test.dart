@@ -139,14 +139,33 @@ void main() {
     await until(() => notes.shown.isNotEmpty, 'notification');
     expect(notes.shown.first.title, 'a wants to run shell');
 
-    final card = store.current!.items.whereType<AgentsItem>().single;
+    // The card fills in as the spawn events arrive: the approval can land
+    // before sub-agent b's, so wait for the whole card, not its first draw.
+    AgentsItem? cardNow() =>
+        store.current!.items.whereType<AgentsItem>().singleOrNull;
+    await until(() {
+      final c = cardNow();
+      return c != null &&
+          c.children.length == 2 &&
+          c.children.every((k) => k.sessionId != null);
+    }, 'both sub-agents on the card');
+    final card = cardNow()!;
     expect(card.children.map((c) => c.label), ['a', 'b']);
-    expect(card.children.every((c) => c.sessionId != null), isTrue);
     // No tool lines for the agent_* calls.
     expect(store.current!.items.whereType<WorkItem>(), isEmpty);
 
     await store.answer(ask, Decision.once);
-    await until(() => store.current!.activeRun == null, 'run to finish');
+    // The run's end and the card's final state arrive as separate events.
+    await until(
+      () =>
+          store.current!.activeRun == null &&
+          card.children.every(
+            (c) => c.status == 'completed' && c.result != null,
+          ) &&
+          store.current!.items.last is AssistantItem &&
+          ask.outcome != null,
+      'run to finish with the card settled',
+    );
     expect(card.children.map((c) => c.status), ['completed', 'completed']);
     expect(card.children.map((c) => c.result), [
       'report from a',
