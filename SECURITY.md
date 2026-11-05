@@ -25,7 +25,9 @@ and tern assumes the model may follow them. The safety layers are in the host pr
 `docker`, interpreters) or for activating connectors. The file tools work freely inside the workspace
 (`~/tern-workspace` by default) and ask before reading or writing anywhere else. They refuse paths that escape the
 workspace through `..`, symlinks or dangling symlinks, can never write inside `~/.tern`, and can never read
-`secrets.toml` or the database. `http_fetch` (GET only) refuses loopback, private, link-local, CGNAT and
+`secrets.toml` or the database. That guard compares file identity (device and inode), not spelling, so a differently
+cased or Unicode-normalized name on macOS, a symlink chain, or a hardlink in the workspace to a protected file is
+refused the same way. `http_fetch` (GET only) refuses loopback, private, link-local, CGNAT and
 cloud-metadata addresses, resolves DNS itself, pins the connection to the checked address, and checks every redirect
 hop. Secrets live in the environment or in `~/.tern/secrets.toml`, which tern refuses to load unless it is mode 0600.
 They are not passed to `shell` (it gets a scrubbed environment), stdio MCP servers get only the secrets they declare,
