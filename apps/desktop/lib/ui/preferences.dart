@@ -667,6 +667,26 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
             style: TextStyle(fontSize: 12, color: c.muted),
           ),
         ),
+      if (_local) ...[
+        heading('Back up and uninstall'),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Text(
+            'Everything tern keeps is in the data folder above, API keys '
+            'included. To back it up, stop tern, then copy the folder. '
+            'Dragging this app to the Trash does not stop tern or remove '
+            'its login items: run `tern uninstall` first (it keeps your '
+            'data; add --purge to delete it), or use tern › Quit tern '
+            'completely.',
+            key: const Key('about-uninstall'),
+            style: TextStyle(fontSize: 12.5, color: c.muted),
+          ),
+        ),
+        SelectableText(
+          'tern stop\ncp -R "${dir ?? '~/.tern'}" ~/tern-backup\ntern uninstall',
+          style: mono.copyWith(fontSize: 12),
+        ),
+      ],
       heading('Privacy and updates'),
       Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),

@@ -435,6 +435,29 @@ tern reset [--keep-config] [-y]
 
 Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, skills, connectors, logs, config and secrets. `--keep-config` keeps `config.toml` and `secrets.toml` (your providers and keys). It asks first unless `-y`.
 
+### Back up, update and uninstall
+
+**Where your data is.** Everything lives in one folder, `~/.tern` unless `TERN_HOME` says otherwise: `config.toml`, `secrets.toml` (your API keys, not encrypted), the SQLite database and `logs/`. The desktop app shows the path in **Settings › About** with a **Reveal** button. The app's own few settings are in `~/Library/Application Support/tern/desktop.json` on macOS (`~/.config/tern/desktop.json` on Linux).
+
+**Back up.** Stop tern first so the database is not copied mid-write, then copy the folder:
+
+```sh
+tern stop
+cp -R ~/.tern ~/tern-backup     # includes secrets.toml: keep the copy private
+tern start
+```
+
+**Update.** Install the new version (re-run the installer, or replace the app), then restart the daemon, which keeps running the old version until you do: `tern stop && tern start`. `tern start` and `tern doctor` tell you when the running daemon is a different version from the `tern` you are using, and the desktop app shows a banner with a **Restart tern** button.
+
+**Uninstall.**
+
+```sh
+tern uninstall            # stop tern, remove the login service and menu-bar icon; keeps your data
+tern uninstall --purge    # the same, then delete your data like `tern reset` (asks first)
+```
+
+It prints what is left for you to remove by hand: the `tern` binary, `~/.tern` (unless purged), the desktop app's settings folder, and on macOS `tern.app` and any "tern" entries in Keychain Access. **Dragging `tern.app` to the Trash does not stop a running daemon** and leaves its login items pointing at nothing, so run `tern stop` (or **tern › Quit tern completely** in the app) and `tern uninstall` first. If `tern` is not on your PATH, use the copy inside the app, before you trash it: `"/Applications/tern.app/Contents/Library/LoginItems/tern Tray.app/Contents/MacOS/tern-tray" uninstall`. If the app is already gone and tern is still running, `pkill -x tern` (or `pkill -f 'tern daemon'`) stops it, and its login item can be removed in System Settings › General › Login Items. Nothing is deleted without `--purge`.
+
 ## Configuration
 
 `~/.tern/config.toml` (written by `tern config init`):
