@@ -12,7 +12,7 @@ class UnderlineTab extends StatefulWidget {
     required this.selected,
     required this.onTap,
     this.leading,
-    this.fontSize = 13.5,
+    this.fontSize = 13,
     this.exclusive = true,
   });
 
@@ -61,47 +61,44 @@ class _UnderlineTabState extends State<UnderlineTab> {
         hoverColor: Colors.transparent,
         focusColor: Colors.transparent,
         borderRadius: BorderRadius.circular(4),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 44, minWidth: 44),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            foregroundDecoration: _focus
-                ? BoxDecoration(
-                    border: Border.all(color: c.accent, width: 2),
-                    borderRadius: BorderRadius.circular(4),
-                  )
-                : null,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const SizedBox(height: 10),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (widget.leading != null) ...[
-                      widget.leading!,
-                      const SizedBox(width: 6),
-                    ],
-                    Text(
-                      widget.label,
-                      style: TextStyle(
-                        fontSize: widget.fontSize,
-                        color: color,
-                        fontWeight: on ? FontWeight.w600 : FontWeight.w400,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                AnimatedContainer(
-                  duration: still
-                      ? Duration.zero
-                      : const Duration(milliseconds: 150),
-                  height: 2,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 2),
+          foregroundDecoration: _focus
+              ? BoxDecoration(
+                  border: Border.all(color: c.accent, width: 2),
+                  borderRadius: BorderRadius.circular(4),
+                )
+              : null,
+          // The underline is the label's own bottom border, so the tab is as
+          // wide as its label (a childless coloured box stretched to the full
+          // available width and stacked the tabs vertically).
+          child: AnimatedContainer(
+            duration: still ? Duration.zero : const Duration(milliseconds: 150),
+            padding: const EdgeInsets.only(top: 6, bottom: 4),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(
+                  width: 2,
                   color: on
                       ? c.accent
                       : (_hover ? c.hairline : Colors.transparent),
+                ),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (widget.leading != null) ...[
+                  widget.leading!,
+                  const SizedBox(width: 6),
+                ],
+                Text(
+                  widget.label,
+                  style: TextStyle(
+                    fontSize: widget.fontSize,
+                    color: color,
+                    fontWeight: on ? FontWeight.w600 : FontWeight.w400,
+                  ),
                 ),
               ],
             ),
@@ -115,7 +112,7 @@ class _UnderlineTabState extends State<UnderlineTab> {
 /// A flat row of [UnderlineTab]s that wraps when narrow. The one control for
 /// filters and view switches.
 class UnderlineTabs extends StatelessWidget {
-  const UnderlineTabs({super.key, required this.tabs, this.spacing = 16});
+  const UnderlineTabs({super.key, required this.tabs, this.spacing = 14});
 
   final List<UnderlineTab> tabs;
   final double spacing;
