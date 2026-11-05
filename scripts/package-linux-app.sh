@@ -76,7 +76,10 @@ if [ -z "$bundle" ]; then
   bundle="$desktop/build/linux/$flutter_arch/release/bundle"
 fi
 [ -x "$bundle/tern_desktop" ] || { echo "no tern_desktop in $bundle" >&2; exit 1; }
-[ -d "$bundle/lib" ] && [ -d "$bundle/data" ] || { echo "$bundle has no lib/ and data/ (not a Flutter bundle)" >&2; exit 1; }
+if ! { [ -d "$bundle/lib" ] && [ -d "$bundle/data" ]; }; then
+  echo "$bundle has no lib/ and data/ (not a Flutter bundle)" >&2
+  exit 1
+fi
 
 version="$(sed -n 's/^version: \([^+]*\).*/\1/p' "$desktop/pubspec.yaml")"
 [ -n "$version" ] || { echo "no version in apps/desktop/pubspec.yaml" >&2; exit 1; }
