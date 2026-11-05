@@ -68,21 +68,6 @@ jobs:
           channel: stable
           flutter-version: 3.47.x
           cache: true
-      - name: DIAG sandbox (temporary)
-        if: runner.os == 'Linux'
-        continue-on-error: true
-        run: |
-          sudo apt-get install -y strace >/dev/null 2>&1 || true
-          cargo build -p tern 2>&1 | tail -2
-          T=$PWD/target/debug/tern
-          uname -r; ulimit -a
-          $T __sandbox-exec --probe; echo "probe rc=$?"
-          mkdir -p /tmp/w
-          A="--no-network --read /usr --read /bin --read /lib --read /lib64 --read /etc --write /tmp/w"
-          $T __sandbox-exec $A -- sh -c 'echo hi; ls /tmp/w'; echo "sh rc=$?"
-          $T __sandbox-exec --write /tmp/w --read /usr --read /bin --read /lib --read /lib64 --read /etc -- sh -c 'echo hi'; echo "net-on rc=$?"
-          strace -f -o /tmp/st.txt $T __sandbox-exec $A -- sh -c 'echo hi'; echo "strace rc=$?"
-          tail -40 /tmp/st.txt
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Analyze the desktop app
