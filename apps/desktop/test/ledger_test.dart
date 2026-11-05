@@ -5,6 +5,7 @@ import 'package:tern_client/tern_client.dart';
 import 'package:tern_desktop/state/store.dart';
 import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/ledger.dart';
+import 'package:tern_desktop/ui/underline_tabs.dart';
 
 LedgerEntry entry(
   int seq,
@@ -96,6 +97,9 @@ Future<TernStore> pumpLedger(
   WidgetTester tester,
   FakeLedgerClient client,
 ) async {
+  tester.view.physicalSize = const Size(1000, 900);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
   final store = TernStore(client);
   await tester.pumpWidget(
     MaterialApp(
@@ -133,7 +137,7 @@ void main() {
     expect(find.textContaining('always allow shell git *'), findsOneWidget);
     expect(find.textContaining('by you'), findsWidgets);
 
-    await tester.tap(find.widgetWithText(ChoiceChip, 'Grants'));
+    await tester.tap(find.widgetWithText(UnderlineTab, 'Grants'));
     await tester.pumpAndSettle();
     expect(client.asked.last, 'grant');
     expect(find.textContaining('always allow shell git *'), findsOneWidget);

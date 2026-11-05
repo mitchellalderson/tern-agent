@@ -8,6 +8,7 @@ import '../state/cron_words.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
+import 'underline_tabs.dart';
 import 'widgets.dart';
 
 /// The routines section of the side panel. With agent profiles it shows
@@ -993,15 +994,19 @@ class _RoutineSheetState extends State<RoutineSheet> {
       const SizedBox(height: 6),
       Text('QUIET HOURS', style: labels),
       const SizedBox(height: 6),
-      SegmentedButton<String?>(
-        segments: const [
-          ButtonSegment(value: null, label: Text('Default')),
-          ButtonSegment(value: 'custom', label: Text('Custom')),
-          ButtonSegment(value: 'none', label: Text('Off')),
+      UnderlineTabs(
+        tabs: [
+          for (final (label, mode) in const <(String, String?)>[
+            ('Default', null),
+            ('Custom', 'custom'),
+            ('Off', 'none'),
+          ])
+            UnderlineTab(
+              label: label,
+              selected: _quietMode == mode,
+              onTap: () => setState(() => _quietMode = mode),
+            ),
         ],
-        selected: {_quietMode},
-        showSelectedIcon: false,
-        onSelectionChanged: (v) => setState(() => _quietMode = v.first),
       ),
       if (_quietMode == 'custom') ...[
         const SizedBox(height: 8),
@@ -1091,15 +1096,19 @@ class _RoutineSheetState extends State<RoutineSheet> {
     final small = TextStyle(fontSize: 12, color: c.muted);
     if (widget.editing == null) {
       return [
-        SegmentedButton<String>(
+        UnderlineTabs(
           key: const Key('routine-webhook-auth'),
-          segments: const [
-            ButtonSegment(value: 'hmac', label: Text('Signed (HMAC)')),
-            ButtonSegment(value: 'bearer', label: Text('Secret in header')),
+          tabs: [
+            for (final (label, auth) in const [
+              ('Signed (HMAC)', 'hmac'),
+              ('Secret in header', 'bearer'),
+            ])
+              UnderlineTab(
+                label: label,
+                selected: _auth == auth,
+                onTap: () => setState(() => _auth = auth),
+              ),
           ],
-          selected: {_auth},
-          showSelectedIcon: false,
-          onSelectionChanged: (v) => setState(() => _auth = v.first),
         ),
         const SizedBox(height: 6),
         Text(
@@ -1200,27 +1209,21 @@ class _RoutineSheetState extends State<RoutineSheet> {
               // A webhook routine keeps its trigger (its secret goes with
               // it); others can't become one, since that needs a secret.
               if (widget.editing?.trigger != 'webhook')
-                SegmentedButton<String>(
+                UnderlineTabs(
                   key: const Key('routine-trigger'),
-                  segments: [
-                    const ButtonSegment(
-                      value: 'cron',
-                      label: Text('Repeating'),
-                    ),
-                    const ButtonSegment(value: 'once', label: Text('Once')),
-                    const ButtonSegment(
-                      value: 'watch',
-                      label: Text('On events'),
-                    ),
-                    if (widget.editing == null)
-                      const ButtonSegment(
-                        value: 'webhook',
-                        label: Text('Webhook'),
+                  tabs: [
+                    for (final (label, trigger) in [
+                      ('Repeating', 'cron'),
+                      ('Once', 'once'),
+                      ('On events', 'watch'),
+                      if (widget.editing == null) ('Webhook', 'webhook'),
+                    ])
+                      UnderlineTab(
+                        label: label,
+                        selected: _trigger == trigger,
+                        onTap: () => setState(() => _trigger = trigger),
                       ),
                   ],
-                  selected: {_trigger},
-                  showSelectedIcon: false,
-                  onSelectionChanged: (v) => setState(() => _trigger = v.first),
                 ),
               const SizedBox(height: 8),
               if (_trigger == 'webhook') ..._webhookSection(context),
@@ -1269,17 +1272,13 @@ class _RoutineSheetState extends State<RoutineSheet> {
                 ),
               ],
               if (_trigger == 'cron') ...[
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
+                UnderlineTabs(
+                  tabs: [
                     for (final p in _presets)
-                      ChoiceChip(
-                        label: Text(p.label),
+                      UnderlineTab(
+                        label: p.label,
                         selected: cron == p.cron,
-                        onSelected: (_) => _cron.text = p.cron,
-                        showCheckmark: false,
-                        visualDensity: VisualDensity.compact,
+                        onTap: () => _cron.text = p.cron,
                       ),
                   ],
                 ),
@@ -1352,24 +1351,21 @@ class _RoutineSheetState extends State<RoutineSheet> {
                 ),
                 const SizedBox(height: 8),
               ],
-              SegmentedButton<bool>(
-                segments: [
-                  const ButtonSegment(
-                    value: false,
-                    label: Text('Keep in tern'),
+              UnderlineTabs(
+                tabs: [
+                  UnderlineTab(
+                    label: 'Keep in tern',
+                    selected: !_push,
+                    onTap: () => setState(() => _push = false),
                   ),
-                  ButtonSegment(
-                    value: true,
-                    label: Text(
-                      _gateways.length == 1
-                          ? 'Also send to ${_title(_gateways.first.kind)}'
-                          : 'Also send to…',
-                    ),
+                  UnderlineTab(
+                    label: _gateways.length == 1
+                        ? 'Also send to ${_title(_gateways.first.kind)}'
+                        : 'Also send to…',
+                    selected: _push,
+                    onTap: () => setState(() => _push = true),
                   ),
                 ],
-                selected: {_push},
-                showSelectedIcon: false,
-                onSelectionChanged: (v) => setState(() => _push = v.first),
               ),
               if (_push) ...[
                 const SizedBox(height: 8),

@@ -3,6 +3,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'underline_tabs.dart';
 
 /// MEMORY in the side panel (agent profiles §1.3, gui-spec §4.3): what the
 /// open agent remembers. Scope chips pick its own memories or the shared
@@ -194,19 +195,15 @@ class _MemorySectionState extends State<MemorySection> {
         ),
         const SizedBox(height: 6),
         if (chips.length > 1)
-          Wrap(
-            spacing: 4,
-            runSpacing: 4,
-            children: [
+          UnderlineTabs(
+            spacing: 12,
+            tabs: [
               for (final chip in chips)
-                ChoiceChip(
-                  label: Text(
-                    chip.label,
-                    style: const TextStyle(fontSize: 11.5),
-                  ),
+                UnderlineTab(
+                  label: chip.label,
+                  fontSize: 12.5,
                   selected: chip.id == scope,
-                  visualDensity: VisualDensity.compact,
-                  onSelected: (_) => setState(() => _scope = chip.id),
+                  onTap: () => setState(() => _scope = chip.id),
                 ),
             ],
           ),
