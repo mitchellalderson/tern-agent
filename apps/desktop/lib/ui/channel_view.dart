@@ -8,6 +8,7 @@ import '../theme.dart';
 import 'agent_face.dart';
 import 'channel_items.dart' show SuggestionActions;
 import 'conversation.dart';
+import 'feed.dart';
 import 'fleet_status.dart';
 import 'routines.dart';
 import 'items.dart';
@@ -16,7 +17,7 @@ import 'widgets.dart';
 
 /// A topic channel's timeline (docs/channels-design.md §5.2): its posts,
 /// who is working, and a composer that posts to the channel.
-class ChannelView extends StatelessWidget {
+class ChannelView extends StatefulWidget {
   const ChannelView({
     super.key,
     required this.store,
@@ -38,14 +39,66 @@ class ChannelView extends StatelessWidget {
   }
 
   @override
+  State<ChannelView> createState() => _ChannelViewState();
+}
+
+class _ChannelViewState extends State<ChannelView> {
+  final _window = FeedWindow();
+  String? _open;
+  var _loadingEarlier = false;
+
+  TernStore get store => widget.store;
+  bool get panelOpen => widget.panelOpen;
+  VoidCallback get onTogglePanel => widget.onTogglePanel;
+
+  @override
+  void initState() {
+    super.initState();
+    _window.addListener(_changed);
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _window
+      ..removeListener(_changed)
+      ..dispose();
+    super.dispose();
+  }
+
+  /// Widen the window; at its end, fetch the posts before what is loaded.
+  Future<void> _showEarlier(int hidden, String channel) async {
+    if (hidden > 0) {
+      _window.showEarlier();
+      return;
+    }
+    setState(() => _loadingEarlier = true);
+    await store.loadOlderPosts(channel);
+    if (!mounted) return;
+    _loadingEarlier = false;
+    _window.showEarlier();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final c = context.colors;
     final ch = store.openChannel;
     if (ch == null) return const SizedBox.shrink();
-    // One flat timeline: every post, in order.
-    final shown = store.posts[ch.id] ?? const <Post>[];
+    if (ch.id != _open) {
+      if (_open != null) _window.reset();
+      _open = ch.id;
+    }
+    // One flat timeline: every post, in order; only the window is built.
+    final everything = store.posts[ch.id] ?? const <Post>[];
+    final hiddenEarlier = _window.hiddenEarlier(everything.length);
+    final shown = _window.slice(everything);
     // One live line per member at work here (channels-design §5.2).
-    final lines = store.liveIn(ch.id);
+    final lines = _window.held
+        ? const <({String runId, String author, String doing})>[]
+        : store.liveIn(ch.id);
     // Approvals and secret requests wait here, as cards in place of their
     // posts; one whose post hasn't arrived yet goes at the bottom.
     final placed = {
@@ -53,7 +106,7 @@ class ChannelView extends StatelessWidget {
       for (final p in shown) ?p.secretRequestId,
     };
     final loose = [
-      for (final i in store.waitingCards(ch.id))
+      for (final i in _window.held ? const <Item>[] : store.waitingCards(ch.id))
         if (!placed.contains(switch (i) {
           ApprovalItem(:final approval) => approval.id,
           SecretRequestItem(:final request) => request.id,
@@ -79,10 +132,22 @@ class ChannelView extends StatelessWidget {
         Expanded(
           child: shown.isEmpty && extra == 0
               ? _EmptyChannel(channel: ch)
-              : ListView.builder(
-                  reverse: true,
-                  padding: const EdgeInsets.symmetric(vertical: 20),
-                  itemCount: shown.length + extra,
+              : FeedList(
+                  window: _window,
+                  count: shown.length + extra,
+                  total: everything.length,
+                  noun: 'posts',
+                  hiddenEarlier: hiddenEarlier,
+                  moreEarlier: store.postsMore[ch.id] ?? false,
+                  loadingEarlier: _loadingEarlier,
+                  onShowEarlier: () => _showEarlier(hiddenEarlier, ch.id),
+                  keyFor: (i) => i < lines.length
+                      ? ValueKey('line:${lines[lines.length - 1 - i].runId}')
+                      : i < extra
+                      ? itemKey(loose[extra - 1 - i])
+                      : ValueKey(
+                          'post:${shown[shown.length - 1 - (i - extra)].id}',
+                        ),
                   itemBuilder: (context, i) => Center(
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 760),
@@ -98,7 +163,7 @@ class ChannelView extends StatelessWidget {
                               )
                             : i < extra
                             ? ItemView(item: loose[extra - 1 - i], store: store)
-                            : _timelinePost(
+                            : widget._timelinePost(
                                 shown,
                                 shown.length - 1 - (i - extra),
                               ),

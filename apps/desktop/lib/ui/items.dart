@@ -13,6 +13,7 @@ import '../theme.dart';
 import 'agents.dart';
 import 'channel_items.dart';
 import 'channel_view.dart';
+import 'collapse.dart';
 import 'inspector.dart';
 import 'move_dialog.dart';
 import 'preferences.dart';
@@ -113,7 +114,7 @@ class _UserMessage extends StatelessWidget {
         color: context.colors.userBubble,
         borderRadius: BorderRadius.circular(16),
       ),
-      child: SelectableText(text),
+      child: Collapsible(text: text, builder: SelectableText.new),
     );
     if (failed) {
       final c = context.colors;
@@ -185,11 +186,19 @@ class _AssistantMessage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return Collapsible(
+      text: text,
+      collapsible: !streaming,
+      builder: (shown) => _markdown(context, shown),
+    );
+  }
+
+  Widget _markdown(BuildContext context, String shown) {
     final c = context.colors;
     final theme = Theme.of(context);
     final body = theme.textTheme.bodyMedium!;
     return MarkdownBody(
-      data: streaming ? '$text ▍' : text,
+      data: streaming ? '$shown ▍' : shown,
       selectable: true,
       onTapLink: (_, href, _) => openTernLink(context, store, href),
       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
@@ -233,6 +242,24 @@ class WorkCard extends StatefulWidget {
 class _WorkCardState extends State<WorkCard> {
   final _open = <String>{};
 
+  /// A finished card of more than this many calls is one line until opened.
+  static const _foldAbove = 6;
+  var _all = false;
+
+  /// "list_dir ×40, read_file ×3": what a long run of calls did.
+  static String _tally(List<ToolStep> steps) {
+    final counts = <String, int>{};
+    for (final s in steps) {
+      counts.update(s.name, (n) => n + 1, ifAbsent: () => 1);
+    }
+    final top = counts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return [
+      for (final e in top.take(4)) e.value > 1 ? '${e.key} ×${e.value}' : e.key,
+      if (top.length > 4) '+${top.length - 4} more',
+    ].join(', ');
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
@@ -245,6 +272,8 @@ class _WorkCardState extends State<WorkCard> {
         : w.steps.length == 1
         ? 'Used 1 tool'
         : 'Used ${w.steps.length} tools';
+    final many = !w.running && w.steps.length > _foldAbove;
+    final folded = many && !_all;
     return Container(
       decoration: BoxDecoration(
         color: c.card,
@@ -263,6 +292,28 @@ class _WorkCardState extends State<WorkCard> {
                   style: TextStyle(fontSize: 12.5, color: c.muted),
                 ),
               ),
+              if (many)
+                Semantics(
+                  button: true,
+                  label: folded
+                      ? 'Show all ${w.steps.length} tool calls'
+                      : 'Hide the tool calls',
+                  excludeSemantics: true,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(6),
+                    onTap: () => setState(() => _all = !_all),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 2,
+                      ),
+                      child: Text(
+                        folded ? 'Show all ${w.steps.length}' : 'Hide',
+                        style: TextStyle(fontSize: 12, color: c.muted),
+                      ),
+                    ),
+                  ),
+                ),
               if (widget.onInspect case final inspect?)
                 InkWell(
                   borderRadius: BorderRadius.circular(6),
@@ -281,56 +332,64 @@ class _WorkCardState extends State<WorkCard> {
             ],
           ),
           const SizedBox(height: 6),
-          for (final s in w.steps) ...[
-            InkWell(
-              borderRadius: BorderRadius.circular(6),
-              onTap: s.output.isEmpty
-                  ? null
-                  : () => setState(
-                      () => _open.contains(s.id)
-                          ? _open.remove(s.id)
-                          : _open.add(s.id),
-                    ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 3),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    SizedBox(width: 18, child: _StepIcon(s.status)),
-                    const SizedBox(width: 6),
-                    Text(
-                      s.name,
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      child: Text('→', style: TextStyle(color: c.muted)),
-                    ),
-                    Expanded(
-                      child: Text(
-                        _detail(s),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: c.muted),
+          if (folded)
+            Text(
+              _tally(w.steps),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: c.muted),
+            )
+          else
+            for (final s in w.steps) ...[
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: s.output.isEmpty
+                    ? null
+                    : () => setState(
+                        () => _open.contains(s.id)
+                            ? _open.remove(s.id)
+                            : _open.add(s.id),
                       ),
-                    ),
-                    if (s.output.isNotEmpty)
-                      Icon(
-                        _open.contains(s.id)
-                            ? Icons.expand_less
-                            : Icons.expand_more,
-                        size: 16,
-                        color: c.muted,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(width: 18, child: _StepIcon(s.status)),
+                      const SizedBox(width: 6),
+                      Text(
+                        s.name,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
-                  ],
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: Text('→', style: TextStyle(color: c.muted)),
+                      ),
+                      Expanded(
+                        child: Text(
+                          _detail(s),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: c.muted),
+                        ),
+                      ),
+                      if (s.output.isNotEmpty)
+                        Icon(
+                          _open.contains(s.id)
+                              ? Icons.expand_less
+                              : Icons.expand_more,
+                          size: 16,
+                          color: c.muted,
+                        ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            if (_open.contains(s.id))
-              _Output(s.output)
-            else if (s.status == StepStatus.running && s.output.isNotEmpty)
-              _Tail(s.output),
-          ],
+              if (_open.contains(s.id))
+                _Output(s.output)
+              else if (s.status == StepStatus.running && s.output.isNotEmpty)
+                _Tail(s.output),
+            ],
         ],
       ),
     );

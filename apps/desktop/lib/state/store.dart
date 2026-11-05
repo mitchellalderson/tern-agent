@@ -114,6 +114,15 @@ class TernStore extends ChangeNotifier {
   List<StreamItem> _streamItems = [];
   String? homeNext;
 
+  /// A page of history: what one request loads, in posts or stream items.
+  static const postsPage = 100;
+
+  /// The most a resync re-reads, however far back the reader has paged.
+  static const historyCap = 600;
+
+  /// Topic channels with posts older than what is loaded.
+  final postsMore = <String, bool>{};
+
   /// The stream has changed underneath (a carry-over to show, a post that
   /// came in mid-run): rebuild it when its run finishes.
   var _streamDirty = false;
@@ -732,7 +741,7 @@ class TernStore extends ChangeNotifier {
     if (selected case final id? when !streamOpen) {
       await _load(id);
     }
-    if (thread case final id?) await _load(id);
+    if (thread case final id?) await _load(id, limit: threadPage);
     if (topicOpen) await _loadChannel(channel!);
     _activeIn.clear();
     _activeAgents.clear();
@@ -785,12 +794,54 @@ class TernStore extends ChangeNotifier {
     }
   }
 
-  Future<void> _load(String id) async {
-    final detail = await client.session(id);
+  /// The messages of each session read so far, oldest first, and the index
+  /// of the first one among the session's: a long conversation opened in
+  /// the thread pane loads a page at a time.
+  final _sessionMessages = <String, List<SessionMessage>>{};
+  final _sessionOffset = <String, int>{};
+
+  /// Messages one request loads for a conversation read in the thread pane.
+  static const threadPage = 200;
+
+  /// Whether the open thread has messages before what is loaded.
+  bool get threadHasEarlier => (_sessionOffset[thread] ?? 0) > 0;
+
+  /// How many messages precede what is loaded of the open thread.
+  int get threadEarlierCount => _sessionOffset[thread] ?? 0;
+
+  /// Load a session: all of it, or with `limit` the newest page (widened to
+  /// what was already read, up to the cap), or with `older` the page
+  /// before what is loaded.
+  Future<void> _load(String id, {int? limit, bool older = false}) async {
+    final read = _sessionMessages[id];
+    final SessionDetail detail;
+    final List<SessionMessage> messages;
+    if (limit == null) {
+      detail = await client.session(id);
+      messages = detail.messages;
+    } else if (older) {
+      detail = await client.session(
+        id,
+        limit: limit,
+        before: _sessionOffset[id] ?? 0,
+      );
+      messages = [...detail.messages, ...?read];
+    } else {
+      detail = await client.session(
+        id,
+        limit: min(max(limit, (read?.length ?? 0) + 20), historyCap),
+      );
+      messages = detail.messages;
+    }
+    _sessionMessages[id] = messages;
+    _sessionOffset[id] = detail.offset;
     final previous = transcripts[id];
-    final t = Transcript.fromSession(detail)
-      ..activeRun = previous?.activeRun
-      ..runSince = previous?.runSince;
+    final t =
+        Transcript.fromSession(
+            SessionDetail(id: id, messages: messages, offset: detail.offset),
+          )
+          ..activeRun = previous?.activeRun
+          ..runSince = previous?.runSince;
     // Keep approval cards: the stored history doesn't contain them.
     for (final a
         in previous?.items.whereType<ApprovalItem>() ?? <ApprovalItem>[]) {
@@ -868,7 +919,7 @@ class TernStore extends ChangeNotifier {
     final page = await client.stream(
       id,
       before: older ? homeNext : null,
-      limit: older ? 200 : max(200, _streamItems.length + 20),
+      limit: older ? 200 : min(max(200, _streamItems.length + 20), historyCap),
     );
     if (id != streamChannel) return;
     final fresh = page.items.reversed.toList();
@@ -952,6 +1003,24 @@ class TernStore extends ChangeNotifier {
       if (channels.isEmpty) channels = await client.channels();
       if (stream?.lastPostId case final p?) _markRead(id, p);
       await _loadHome();
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  /// Load the page of a topic channel's posts before what's loaded.
+  Future<void> loadOlderPosts(String id) async {
+    final loaded = posts[id];
+    if (loaded == null || loaded.isEmpty || postsMore[id] != true) return;
+    try {
+      final page = await client.posts(
+        id,
+        before: loaded.first.id,
+        limit: postsPage,
+      );
+      posts[id] = [...page.reversed, ...loaded];
+      postsMore[id] = page.length >= postsPage;
     } on TernException catch (e) {
       error = e.message;
     }
@@ -1075,8 +1144,13 @@ class TernStore extends ChangeNotifier {
   }
 
   Future<void> _loadChannel(String id) async {
-    final page = await client.posts(id, limit: 100);
+    // The newest page, widened to what the reader has paged in (up to a
+    // cap, so a resync stays cheap however far back they have read).
+    final have = posts[id]?.length ?? 0;
+    final limit = min(max(postsPage, have + 20), historyCap);
+    final page = await client.posts(id, limit: limit);
     posts[id] = page.reversed.toList();
+    postsMore[id] = page.length >= limit;
     if (page.isNotEmpty) _markRead(id, page.first.id);
     final main = channels.where((c) => c.id == id).firstOrNull?.mainSessionId;
     if (main != null && channel == id) {
@@ -1380,7 +1454,19 @@ class TernStore extends ChangeNotifier {
     thread = session;
     notifyListeners();
     try {
-      await _load(session);
+      await _load(session, limit: threadPage);
+    } on TernException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  /// Load the page of the open thread before what is shown.
+  Future<void> loadOlderThread() async {
+    final id = thread;
+    if (id == null || !threadHasEarlier) return;
+    try {
+      await _load(id, limit: threadPage, older: true);
     } on TernException catch (e) {
       error = e.message;
     }
@@ -1836,7 +1922,7 @@ class TernStore extends ChangeNotifier {
       try {
         if (streamOpen) await _loadHome();
         if (selected case final id? when !streamOpen) await _load(id);
-        if (thread case final id?) await _load(id);
+        if (thread case final id?) await _load(id, limit: threadPage);
       } on TernException {
         // The next resync or reconnect tries again.
       }

@@ -656,8 +656,18 @@ class TernClient {
     ),
   );
 
-  Future<SessionDetail> session(String id) async =>
-      SessionDetail.fromJson(await _json('GET', '/v1/sessions/$id'));
+  /// A session and its messages. With `limit`, the newest that many (those
+  /// before message index `before` when given), so a long history loads in
+  /// pages; a daemon that predates paging sends the whole session.
+  Future<SessionDetail> session(String id, {int? limit, int? before}) async {
+    final query = [
+      if (limit != null) 'limit=$limit',
+      if (before != null) 'before=$before',
+    ].join('&');
+    return SessionDetail.fromJson(
+      await _json('GET', '/v1/sessions/$id${query.isEmpty ? '' : '?$query'}'),
+    );
+  }
 
   Future<void> setModel(String session, String model) =>
       _json('PUT', '/v1/sessions/$session/model', {'model': model});
