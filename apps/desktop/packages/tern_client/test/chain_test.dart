@@ -89,6 +89,39 @@ void main() {
     });
   });
 
+  group('chainSaveMessage', () {
+    test('says what to do for each kind of failure', () {
+      expect(
+        chainSaveMessage(const TernException('forbidden', status: 403)),
+        contains("isn't allowed to change models"),
+      );
+      expect(
+        chainSaveMessage(const TernException("can't reach tern")),
+        contains('Nothing was changed'),
+      );
+      expect(
+        chainSaveMessage(
+          const TernException('expected provider:model', status: 400),
+        ),
+        contains('anthropic:claude-sonnet-4-5'),
+      );
+      expect(
+        chainSaveMessage(
+          const TernException(
+            'a model list needs at least one entry',
+            status: 400,
+          ),
+        ),
+        'A list needs at least one model.',
+      );
+      // The daemon's own sentence is kept when it has one.
+      expect(
+        chainSaveMessage(const TernException('no provider "x"', status: 400)),
+        'no provider "x"',
+      );
+    });
+  });
+
   group('default_model chain over the config API', () {
     late HttpServer server;
     final bodies = <Map<String, dynamic>>[];

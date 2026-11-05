@@ -7,6 +7,7 @@
 /// checks it before the daemon does.
 library;
 
+import 'client.dart';
 import 'providers.dart';
 
 /// `provider:id` split at the first colon, or null when it isn't one.
@@ -16,6 +17,28 @@ import 'providers.dart';
   final colon = text.indexOf(':');
   if (colon <= 0 || colon == text.length - 1) return null;
   return (provider: text.substring(0, colon), id: text.substring(colon + 1));
+}
+
+/// Why saving a chain failed, in a sentence a person can act on. [e] is
+/// what `PUT /v1/config/settings/default_model` (or an agent update) threw.
+String chainSaveMessage(TernException e) {
+  if (e.status == 403) {
+    return "This device isn't allowed to change models. Ask the owner of "
+        'this tern, or change it on the server.';
+  }
+  if (e.unreachable) {
+    return "Couldn't reach tern to save that. Nothing was changed; try again "
+        'in a moment.';
+  }
+  final m = e.message;
+  if (m.contains('expected provider:model')) {
+    return 'Each model must look like provider:model, for example '
+        'anthropic:claude-sonnet-4-5.';
+  }
+  if (m.contains('at least one entry')) {
+    return 'A list needs at least one model.';
+  }
+  return m;
 }
 
 /// A chain as the API takes it: null (none), one model, or a list.

@@ -15,6 +15,17 @@ import 'package:tern_desktop/ui/widgets.dart';
 
 final _t0 = DateTime(2026, 11, 4, 9);
 
+/// The default agent with a model chain (its `default_model`).
+Agent _ternWith(List<String> model) => Agent(
+  id: 'tern',
+  slug: 'tern',
+  name: 'tern',
+  memory: 'shared',
+  mainChannelId: 'home',
+  isDefault: true,
+  model: model,
+);
+
 const _tern = Agent(
   id: 'tern',
   slug: 'tern',
@@ -216,6 +227,18 @@ class _FakeClient extends TernClient {
       models: [ModelInfo(id: 'kimi-k3')],
     ),
   ];
+
+  /// `default_model` chains written through the config (T6a).
+  final defaultChains = <List<String>>[];
+
+  @override
+  Future<ConfigSetting> setDefaultModelChain(List<String> chain) async {
+    if (chainError case final e?) throw e;
+    defaultChains.add(chain);
+    return ConfigSetting(key: 'default_model', kind: SettingKind.model);
+  }
+
+  TernException? chainError;
 
   @override
   Future<Agent> updateAgent(String id, Map<String, Object?> fields) async {
@@ -983,6 +1006,123 @@ void main() {
         'openrouter:kimi-k3',
       ]);
       expect(withPrimary(['a:1', 'b:2', 'c:3'], 'b:2'), ['b:2', 'c:3']);
+    });
+
+    testWidgets('the visual editor reorders, adds and removes fallbacks', (
+      tester,
+    ) async {
+      const chained = Agent(
+        id: 'tern:research',
+        slug: 'research',
+        name: 'Research',
+        model: ['anthropic:claude-sonnet-5-5', 'openrouter:kimi-k3'],
+        mainChannelId: 'dm:research',
+      );
+      final (_, client) = await sheet(tester, chained);
+      final toggle = find.byKey(const Key('toggle-fallbacks'));
+      await tester.ensureVisible(toggle);
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      expect(find.text('PRIMARY'), findsOneWidget);
+      expect(find.text('THEN TRY'), findsOneWidget);
+
+      // Add one, then move it above the first fallback with the keyboard
+      // buttons.
+      await tester.tap(find.byKey(const Key('add-fallback')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('claude-haiku-5-5', findRichText: true));
+      await tester.pumpAndSettle();
+      expect(find.text('THEN TRY'), findsNWidgets(2));
+      await tester.tap(find.byKey(const Key('chain-up-2')));
+      await tester.pumpAndSettle();
+      final fields = await save(tester, client);
+      expect(fields['model'], [
+        'anthropic:claude-sonnet-5-5',
+        'anthropic:claude-haiku-5-5',
+        'openrouter:kimi-k3',
+      ]);
+    });
+
+    testWidgets('a fallback from a provider that is not there blocks saving', (
+      tester,
+    ) async {
+      const chained = Agent(
+        id: 'tern:research',
+        slug: 'research',
+        name: 'Research',
+        model: ['anthropic:claude-sonnet-5-5', 'openrouter:kimi-k3'],
+        mainChannelId: 'dm:research',
+      );
+      final (_, client) = await sheet(tester, chained);
+      final toggle = find.byKey(const Key('toggle-fallbacks'));
+      await tester.ensureVisible(toggle);
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('add-fallback')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('model-filter')),
+        'gemini:flash',
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.textContaining('Use "gemini:flash"', findRichText: true),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('No connected provider is called "gemini"'),
+        findsOneWidget,
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('needs fixing first'), findsOneWidget);
+      expect(client.updated, isEmpty);
+    });
+
+    testWidgets('the default agent\'s fallbacks are written to default_model', (
+      tester,
+    ) async {
+      final defaultWithChain = _ternWith([
+        'anthropic:claude-sonnet-5-5',
+        'anthropic:claude-haiku-5-5',
+      ]);
+      final (_, client) = await sheet(tester, defaultWithChain);
+      final toggle = find.byKey(const Key('toggle-fallbacks'));
+      await tester.ensureVisible(toggle);
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('chain-remove-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+      expect(client.defaultChains, [
+        ['anthropic:claude-sonnet-5-5'],
+      ]);
+      // Not as an agent field: the agent update takes only a primary.
+      expect(client.updated.where((u) => u.$2.containsKey('model')), isEmpty);
+    });
+
+    testWidgets('a refused chain write is explained and keeps the sheet', (
+      tester,
+    ) async {
+      final defaultWithChain = _ternWith(['anthropic:claude-sonnet-5-5']);
+      final (_, client) = await sheet(tester, defaultWithChain);
+      client.chainError = const TernException('forbidden', status: 403);
+      final toggle = find.byKey(const Key('toggle-fallbacks'));
+      await tester.ensureVisible(toggle);
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('add-fallback')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('claude-haiku-5-5', findRichText: true));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining("isn't allowed to change models"),
+        findsOneWidget,
+      );
+      expect(find.byType(AgentSheet), findsOneWidget);
     });
 
     testWidgets('a saved model the providers don\'t list is kept, flagged', (

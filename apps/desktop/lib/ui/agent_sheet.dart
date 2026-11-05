@@ -9,6 +9,7 @@ import 'agent_ap3.dart';
 import 'agent_starters.dart';
 import 'channel_view.dart' show slugFor;
 import 'manage.dart';
+import 'model_chain_editor.dart';
 import 'model_picker.dart' show ModelList;
 import 'secrets.dart' show showSecretsDialog;
 import 'widgets.dart';
@@ -221,24 +222,41 @@ class _AgentSheetState extends State<AgentSheet> {
   };
 
   Future<void> _save() async {
+    final store = widget.store;
+    if (chainBlocked(store, _model, saved: [...?widget.editing?.model]) ||
+        chainBlocked(
+          store,
+          _subagentModel,
+          saved: [...?widget.editing?.subagentModel],
+        )) {
+      setState(
+        () => _error =
+            'A model in a fallback list needs fixing first (see the red '
+            'rows under Model).',
+      );
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
     });
-    final store = widget.store;
     final avatar = AvatarSpec(glyph: _glyph, color: _color);
     final String? err;
     var botChanged = false;
     if (widget.editing case final a?) {
       final model = _model;
+      // The default agent's fallbacks changed: written to `default_model`.
+      final defaultChain =
+          _isDefault && model.skip(1).join(',') != a.model.skip(1).join(',');
       final fields = <String, Object?>{
         if (_name.text.trim() != a.name) 'name': _name.text.trim(),
         if (!_isDefault && _slugCtl.text.trim() != a.slug)
           'slug': _slugCtl.text.trim().replaceFirst('@', ''),
         'avatar': avatar.toJson(),
-        // The default agent's model is `default_model`: send the model,
-        // and the daemon keeps that setting's fallbacks.
-        if (model.join(',') != a.model.join(','))
+        // The default agent's model is `default_model`: a new primary is
+        // sent as one model (the daemon keeps that setting's fallbacks);
+        // edited fallbacks go to `default_model` itself, below.
+        if (model.join(',') != a.model.join(',') && !defaultChain)
           'model': _isDefault ? model.firstOrNull : _wire(model),
         if (_subagentModel.join(',') != a.subagentModel.join(','))
           'subagent_model': _wire(_subagentModel),
@@ -259,6 +277,7 @@ class _AgentSheetState extends State<AgentSheet> {
         persona: _persona.text.trim() == _personaBefore?.trim()
             ? null
             : _persona.text,
+        defaultChain: defaultChain ? model : null,
       );
     } else {
       err = await store.createAgent(
@@ -1243,17 +1262,81 @@ class AgentModelField extends StatelessWidget {
                 style: TextStyle(fontSize: 12, color: c.warn),
               ),
             ),
-          if (chain.length > 1)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                'Then, if it fails: ${chain.skip(1).join(' → ')}. These '
-                'fallbacks stay when you pick another model.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ),
+          if (chain.isNotEmpty)
+            _FallbackSection(store: store, chain: chain, onChanged: onChanged),
         ],
       ),
+    );
+  }
+}
+
+/// Under a model field: the fallbacks in a line, and the visual editor
+/// (reorder, add, remove) behind "Edit fallbacks".
+class _FallbackSection extends StatefulWidget {
+  const _FallbackSection({
+    required this.store,
+    required this.chain,
+    required this.onChanged,
+  });
+
+  final TernStore store;
+  final List<String> chain;
+  final ValueChanged<List<String>> onChanged;
+
+  @override
+  State<_FallbackSection> createState() => _FallbackSectionState();
+}
+
+class _FallbackSectionState extends State<_FallbackSection> {
+  var _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final chain = widget.chain;
+    final small = Theme.of(context).textTheme.bodySmall;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (!_open)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              chain.length > 1
+                  ? 'Then, if it fails: ${chain.skip(1).join(' → ')}. These '
+                        'fallbacks stay when you pick another model.'
+                  : 'No fallbacks: if this model fails, so does the message.',
+              style: small,
+            ),
+          ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            key: const Key('toggle-fallbacks'),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              visualDensity: VisualDensity.compact,
+            ),
+            onPressed: () => setState(() => _open = !_open),
+            child: Text(
+              _open
+                  ? 'Done with fallbacks'
+                  : chain.length > 1
+                  ? 'Edit fallbacks'
+                  : 'Add fallbacks',
+              style: const TextStyle(fontSize: 12.5),
+            ),
+          ),
+        ),
+        if (_open)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: ModelChainEditor(
+              store: widget.store,
+              chain: chain,
+              onChanged: widget.onChanged,
+            ),
+          ),
+      ],
     );
   }
 }
