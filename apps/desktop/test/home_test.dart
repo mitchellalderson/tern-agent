@@ -85,6 +85,7 @@ class _FakeClient extends TernClient {
   _FakeClient() : super(const Endpoint.unix('/nonexistent'));
 
   final sends = <({String text, bool newTopic})>[];
+  final folders = <String?>[];
   var head = 's2';
 
   @override
@@ -167,6 +168,7 @@ class _FakeClient extends TernClient {
     String? workspace,
   }) async {
     sends.add((text: text, newTopic: newTopic));
+    folders.add(workspace);
     return Sent(
       runId: 'r-new',
       sessionId: newTopic ? 's3' : head,
@@ -279,6 +281,21 @@ void main() {
     expect(store.newTopic, isFalse);
     expect(store.selected, 's3');
   });
+
+  test(
+    'a folder chosen for a new topic rides on its first send only',
+    () async {
+      final (store, client) = await _home();
+      store.toggleNewTopic();
+      store.setPendingFolder('/p/app');
+      client.head = 's3';
+      await store.send('Start here');
+      expect(client.folders.last, '/p/app');
+      expect(store.pendingFolder, isNull);
+      await store.send('and then');
+      expect(client.folders.last, isNull);
+    },
+  );
 
   testWidgets('Home shows the stream, and History opens to read', (
     tester,
