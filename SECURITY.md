@@ -61,11 +61,13 @@ container runs inside your Docker runtime's Linux VM (Docker Desktop or similar)
 backends. Details: [docs/sandbox-design.md](docs/sandbox-design.md).
 
 **What it does not cover.**
-- **Prompt injection, beyond approvals.** There is no taint tracking yet: a run that read a hostile page is treated
-  like any other. Tools that don't ask (reading inside the workspace, `http_fetch`, memory, schedules, and connector
-  and MCP tools unless configured with `requires_approval`) can be chained without you seeing it, so for example
-  workspace contents can leave in an `http_fetch` URL. Effects, taint and an outbox for writes are on the
-  [roadmap](ROADMAP.md) (T0, T3).
+- **Prompt injection, beyond approvals.** Every tool has an effect, and a run that has read untrusted content (a web
+  page, mail, a tool marked untrusted) is marked tainted: its writes ask whatever "always" says, it can reach new sites
+  only after you say so, and unattended writes wait in the outbox. That narrows the damage; it doesn't remove it. Tools
+  that don't ask (reading inside the workspace, memory, and connector and MCP tools whose effect is `read`) can still
+  be chained, and a read from a site you already allowed can carry data out in a URL. Taint is tracked from the
+  sources tern knows about: an MCP server or connector that returns third-party text without being marked untrusted
+  isn't caught. See [docs/reference.md](docs/reference.md) (Taint, Outbox).
 - **What you approve, inside the sandbox.** Once a shell command or an "always" pattern is approved, tern limits it
   only by the sandbox: it can change anything in the workspace, read what the sandbox allows, and use the network
   if it asked for it (or `sandbox.network = true`). Network access is all or nothing (no per-host egress rules). The host backend
@@ -75,8 +77,9 @@ backends. Details: [docs/sandbox-design.md](docs/sandbox-design.md).
 - **MCP servers.** stdio servers run on the host as you, unsandboxed, with a scrubbed environment plus their declared
   secrets. Their tools don't ask unless you set `requires_approval`. Only add servers you trust.
 - **Connectors you install by hand.** Files you copy into `~/.tern/connectors/` load without an approval record. A
-  connector can read the secrets it declares and send them to the hosts it declares; host-side credential injection
-  is roadmap (T4).
+  connector that declares `auth` never sees its credential (tern adds it to requests for the declared hosts), but an
+  older one that reads `ctx.secret` can read the secrets it declares and send them to the hosts it declares; tern
+  flags those.
 - **The model provider and Telegram.** Your conversation, tool results and the system prompt go to the provider you
   configure; with Telegram on, chat passes through Telegram's servers. Redaction applies to what tern stores and logs,
   not to what the model sees during a live run: if a tool returns a secret value, the model receives it.

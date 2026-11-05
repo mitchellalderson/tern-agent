@@ -6,10 +6,11 @@ wins; please open an issue.
 ## What is tern, in one paragraph?
 
 A personal agent you run yourself. One static binary for macOS or Linux holds the whole engine: chat in the terminal,
-a daemon with a scheduler, Telegram, MCP, sandboxed Luau connectors, sub-agents, and a SQLite journal that records
-every model call and tool result. Kill it mid-task and it resumes where it stopped without repeating side effects.
-You bring a model key (Anthropic or any OpenAI-compatible endpoint, local ones included). There is also a desktop app
-you build from source.
+a daemon with a scheduler, Telegram, MCP, sandboxed Luau connectors, several agents of your own (from 25 starters),
+sub-agents, and a SQLite journal that records every model call and tool result. Kill it mid-task and it resumes where
+it stopped without repeating side effects. You bring a model key (Anthropic or any OpenAI-compatible endpoint, local
+ones included). There is also a macOS desktop app, a download that carries its own `tern`; you can also build it from
+source.
 
 ## What doesn't it do?
 
@@ -18,16 +19,22 @@ Said first, because you'll find out anyway:
 - **No browser and no computer use.** It calls APIs. You can add a browser through an MCP server (below).
 - **No connector catalog.** Nothing is pre-built beyond what MCP servers give you; the agent writes a connector when
   you need one.
-- **Telegram is the only chat channel.** No Slack, Discord, WhatsApp or iMessage yet.
+- **Few chat channels.** Telegram, plus ntfy and Slack as built-in gateway connectors. No Discord, WhatsApp or
+  iMessage yet.
 - **No mobile app and no push notifications.** Telegram is the phone interface.
 - **No hosted version.** You run it. A hosted tier is an idea on the [roadmap](../ROADMAP.md), not a product.
-- **Approvals block.** A run waits on its approval, and if there's no attached client or Telegram chat to ask, the
-  answer is deny. An outbox, where the action waits while the rest of the run carries on, is roadmap (T3).
-- **No taint tracking or read/write effects yet.** Prompt-injection defence today is approvals, the workspace
-  boundary and the SSRF filter; see [SECURITY.md](../SECURITY.md) for what that leaves open.
-- **No OAuth sign-in.** Connectors and MCP servers use API keys or tokens you provide.
+- **Approvals in a live run block.** A run waits on its approval, and if there's no attached client or Telegram chat
+  to ask, the answer is deny. Writes from unattended runs (routines, webhooks, a tainted run) don't block: they wait in
+  the **outbox** for you to approve or reject while the rest of the run carries on.
+- **Prompt-injection defence narrows the damage; it doesn't remove it.** Every tool has an effect, a run that reads
+  untrusted content is tainted (its writes ask, new sites ask), and approvals, the workspace boundary and the SSRF
+  filter still apply. See [SECURITY.md](../SECURITY.md) for what that leaves open.
+- **Some services still need a key.** Where a service offers OAuth, the agent proposes signing in and you approve; for
+  the rest, connectors and MCP servers use API keys or tokens you provide.
 - **No Windows build**, and no bundled model: you need an API key or a local model server on day one.
-- **The desktop app is macOS-only** and not notarized yet, so macOS asks you to allow it on first open.
+- **The desktop app is macOS-only** (no Linux build yet). Releases are signed and notarized only when the project's
+  Apple credentials are configured for the build; if yours isn't, macOS asks you to allow it on first open
+  (`docs/reference.md`, Desktop app).
 
 ## Why not OpenClaw?
 
@@ -48,7 +55,8 @@ They're the two Rust claws, and both are good. Honestly:
   SOP engine with resumable runs. tern sandboxes shell commands with Seatbelt, Landlock or Docker, but has none of
   that channel breadth.
 - **IronClaw** has the agent build its own tools too (as WASM), injects credentials at the host boundary so tools never
-  see them, and has routines with webhooks. tern's credential injection and webhooks are still roadmap.
+  see them, and has routines with webhooks. tern does both too: connectors declare their hosts and credentials and the
+  host injects them, and an outside event can start a routine through a webhook trigger.
 
 What tern does differently:
 
@@ -60,6 +68,8 @@ What tern does differently:
   stores the hash and capabilities you approved and refuses to load the file if either changes.
 - **One engine, local or remote.** The same daemon serves the terminal, the desktop app, Telegram and paired remote
   devices. A hosted version of the same engine is planned, not built.
+- **Agents of your own, packaged as bundles.** Each agent has its own persona, tools, memory and autonomy ceiling, and
+  can be shared as a signed bundle that shows everything it can do before you install it. There is no store to browse.
 
 ## Why Luau and not WASM?
 
@@ -83,8 +93,9 @@ Telegram was the cheapest useful first channel: a bot is one token from BotFathe
 approvals one tap. Only accounts paired with a one-time code can talk to the bot.
 
 Slack needs an app created and installed per workspace, and it is workspace-scoped, which fits teams more than one
-person. Slack, Discord, ntfy and WhatsApp are planned as gateway connectors: a Luau file each rather than a Rust crate
-(roadmap T4b, Stage 4). iMessage isn't planned; it needs Apple Business approval and per-user fees.
+person. It is available anyway, with ntfy, as a built-in gateway connector: a Luau file rather than a Rust crate
+(`tern gateway add slack`; see [Gateway connectors](reference.md#gateway-connectors-ntfy-slack)). Discord and
+WhatsApp aren't built. iMessage isn't planned; it needs Apple Business approval and per-user fees.
 
 ## Why no browser?
 
@@ -124,6 +135,33 @@ Tools that need more of your home directory (a `~/.cargo` registry, `~/.npm`) ne
 MCP stdio servers run unsandboxed on the host. The full list of what's covered and what isn't is in
 [SECURITY.md](../SECURITY.md).
 
+## How do provider presets work?
+
+A preset is a shortcut for filling in a provider's details, not a kind of provider. Choosing OpenRouter, Gemini, Groq,
+Together, Ollama or LM Studio (also OpenAI and Anthropic) in `tern setup`, `/setup`, `tern providers add <name>` or the
+desktop app's Models fills in the address and tells you where to get a key; what's saved is an ordinary
+`[providers.<name>]` in `config.toml`. Pasting a full endpoint such as `.../chat/completions` or `.../responses` is
+tidied to the base address, and a wrong address is refused instead of saved. Call errors such as a bad key, a missing
+quota or an unknown address come back as a plain sentence naming the provider, with the raw error alongside. Details:
+[reference](reference.md#tern-providers).
+
+## What does "always allow" on an approval card grant?
+
+Only the exact thing you were shown. Where a tool can name it (for example a connector draft's test, tied to the
+draft's source, its hosts, secrets, effect and account), the card offers **once**, **for this run**, **for this
+conversation** or **always**. A different tool, an edited draft, a new host or another account asks again. Run and
+conversation grants live in memory, so a daemon restart forgets them; "always" is stored and listed by `tern grants`.
+Nothing is offered on a tainted run or for a `destructive` call, which ask every time, and Telegram's buttons are Allow
+once and Deny. Identical requests waiting at once share one card.
+
+## Why doesn't a `python` script remember anything between runs?
+
+Each script runs in a fresh interpreter in its own sandboxed helper process, with no state carried over: a crash or a
+runaway script ends that process, not tern, and a resume can replay the script from the journal. To keep something, have
+the agent save it with its usual tools (memory, a file); scripts themselves can write only if `[python] allow_writes`
+is on. Calls a script makes are checked, approved if need be, and journaled like direct calls; see
+[Compute](reference.md#compute-python).
+
 ## Is my data sent anywhere?
 
 Only where you point it. There is no telemetry, no update check, no account, and no tern server.
@@ -141,8 +179,9 @@ report locally, with secrets redacted, and sends it nowhere.
 
 Duet is Anthropic's hosted agent: a research preview since 2026-10-21, on Pro and Max plans in the US by waitlist, on
 Anthropic's models, running in a cloud VM with a browser. It's well designed, and it has things tern doesn't yet:
-topic channels over one memory, a Tasks view, and approvals that wait while the rest of the job continues. tern's
-roadmap borrows those ideas (T2, T3).
+topic channels over one memory, a Tasks view, and approvals that wait while the rest of the job continues. tern borrows
+those ideas: channels shared by you and your agents, a Tasks view (`tern tasks`) and an outbox for writes from
+unattended runs. Duet's are part of a polished hosted product; tern's are yours to run and inspect.
 
 tern is a different shape: it runs on your machine or server, with any model vendor, keeps a journal you can inspect
 (`tern runs show`), and connects to services by writing a connector you approve rather than driving a browser. It has

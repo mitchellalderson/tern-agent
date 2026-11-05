@@ -25,12 +25,14 @@ The macOS app runs outside the App Sandbox (see `macos/Runner/*.entitlements`). 
 - Conversation: streaming Markdown replies, work cards (one line per tool call, click for output), notes (routine created, memory saved, compaction, retries), approval cards (Allow once / Always / Deny, ⏎ and ⎋), stop, resume after a failure or interruption, and a per-conversation model picker (see Models below).
 - Activity panel: the current run's steps, **routines** (each schedule in words, paused or failed state, and a menu for Run now, Edit, Pause/Resume and Delete; "New routine" opens a sheet with presets, a cron field with a live preview of the next three runs from the daemon, and Telegram delivery), token usage, available tools.
 - Run inspector: a conversation's runs and each run's journal steps (model calls, tools, approvals, compaction) with input, output, tokens and timing. It opens from "Inspect run" on a work card, "Details" on a stopped or failed run, or "All runs…" in the panel.
-- Models (⌘,, or the key button in the sidebar): every provider with its key (masked) and status, the default model, and per provider **Change API key**, **Choose default model**, **Refresh models** and **Remove**. **Add provider** walks through Anthropic or an OpenAI-compatible server (base URL), a key field with **Paste** and **Show** that is checked with the provider as soon as a key is pasted, then a searchable list of that provider's models. Secrets moved under **Secrets (advanced)…** and the tern menu.
+- Models (⌘,, or the key button in the sidebar): every provider with its key (masked) and status, the default model, and per provider **Change API key**, **Choose default model**, **Refresh models** and **Remove**. **Add provider** starts from a preset (Anthropic, OpenAI, OpenRouter, Gemini, Groq, Together, Ollama, LM Studio, or another OpenAI-compatible address), then a key field with **Paste** and **Show** that is checked with the provider as soon as a key is pasted, then a searchable list of that provider's models. Secrets moved under **Secrets (advanced)…** and the tern menu.
 - First run: with no usable model, the conversation area shows the same setup inline ("Connect a model to get started") and the sidebar says **Set up a model…**.
 - Model chip: a searchable picker over every provider's models (fetched by the daemon and cached), with the current model first, a refresh button, **Also make it the default**, and a `Use "<typed>"` row for models the list doesn't have. It works before the first message too: the choice is sent with it.
 - Notifications: when the window doesn't have focus, or you're in another conversation, a finished run and an approval each post a system notification. Approvals have **Allow once** and **Deny** buttons that answer straight from the notification. The dock badge counts pending approvals. On macOS this uses `UserNotifications` through the `tern/window` channel; on Linux, `notify-send` (no buttons).
 
-Not yet: agent profiles, channels, connectors/MCP/skills/memory views, menu bar extra, notarization, a Linux build. Those need the engine APIs in gui-spec §7.1, and the phases are in §10.
+Beyond G0–G2 the app also has: agents (a searchable list of 25 starters, edit, archive and delete, a per-agent autonomy ceiling and Telegram bot), channels (Home, topic channels, "Let agents decide"), the outbox and Tasks views, scoped approval choices (this run, this conversation, always), Connections (OAuth sign-in), MCP servers, bundles, the activity ledger and security audit, a config editor, and a first-launch choice of where tern runs (this Mac, or a paired tern server). The menu-bar icon is `tern tray`, shipped inside the app bundle.
+
+Not yet: a skills view (reviewing skill-capture drafts is `tern skills`), a Telegram pairing screen with a QR code, a quick switcher, several saved servers, a Linux build, and notarized releases without the project's Apple credentials. The phases are in gui-spec §10; what's left is in the [roadmap](../../ROADMAP.md).
 
 ## Release build
 
@@ -43,7 +45,7 @@ scripts/package-macos-app.sh target/release/tern dist    # from the repo root
 
 ## Layout
 
-- `packages/tern_client`: pure Dart client (models, SSE, `Endpoint.unix` / `Endpoint.tcp` with a bearer token). The TCP side is the seed of `TernTransport` in [deployment-spec.md](../../docs/deployment-spec.md) §7.2. The daemon doesn't listen on TCP yet.
+- `packages/tern_client`: pure Dart client (models, SSE, `Endpoint.unix` / `Endpoint.tcp` with a bearer token). The TCP side is the seed of `TernTransport` in [deployment-spec.md](../../docs/deployment-spec.md) §7.2; the daemon can listen on TCP for paired devices (D1).
 - `lib/state/transcript.dart`: session history plus live events reduced to display items. Pure and unit-tested.
 - `lib/state/store.dart`: the `ChangeNotifier` the widgets listen to. Connection, resync and event routing.
 - `lib/ui/`: widgets.

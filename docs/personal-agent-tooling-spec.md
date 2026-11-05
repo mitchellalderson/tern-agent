@@ -1,6 +1,6 @@
 # tern personal-agent tooling: routines, channels, connector platform, safety
 
-Status: draft, 2026-11-03. Not built. This is the next set of tooling after S0–S1, D1 and P0. It was derived from a
+Status: draft, 2026-11-03; most of it is built since (items marked done in §12.1 and the status notes in each section; [ROADMAP.md](../ROADMAP.md) lists what is still open: recipes and goals (T6c), a native browser (T7b), multiplayer). This is the next set of tooling after S0–S1, D1 and P0. It was derived from a
 survey of Claude Duet, Grok Bot, Meta Muse, ChatGPT, Google CC, Poke, OpenClaw and its forks
 ([research/personal-agents-2026.md](research/personal-agents-2026.md)). Phases are T0–T8 by area (§12.2), built in five stages from quick wins to the hardest integrations (§12.1).
 
@@ -1088,7 +1088,7 @@ phase mixes easy and hard parts, it is split across stages (T1a/T1b, T8a/T8b and
 **Sandboxed compute (PY0–PY3), alongside stage 2.** A `python` tool on Monty whose scripts call tern's tools as
 functions, each call journaled and checked like a direct one, so compute that needs many lookups doesn't go through
 `shell` and around a connector's allowlist, taint and journal. Read-only first (PY1), writes through approvals and the
-outbox later (PY2). **PY0 is built** (read-only, in-process). See [python-tool-spec.md](python-tool-spec.md).
+outbox later (PY2). **PY0, PY1, PY1b (mostly) and PY2 are built**; PY3 and a few PY1b items aren't. See [python-tool-spec.md](python-tool-spec.md).
 
 Why this order:
 - **Stage 1** delivers visible quality of life immediately: quiet routines, cost caps, easy stop. It costs almost

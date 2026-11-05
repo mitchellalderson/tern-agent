@@ -271,8 +271,8 @@ Stories to tell in a demo, each under a minute, each exercising a killer feature
 | One static binary, no Python/Node/Docker | **built** | README; `target/dist/tern` is 18 MB on macOS arm64 |
 | Idle daemon about 16 MB RSS | **built** (own measurement) | research doc §3 |
 | Agent writes sandboxed Luau connectors, activates only with your approval of capabilities | **built** (M4) | README "Luau connectors", `connector_write` / `connector_test` / `connector_activate` |
-| OAuth-first discovery, sign-in cards, credentials injected at host boundary | **roadmap** (T4) | tooling spec §6.1, §6.7 |
-| Several accounts per service, writes must name the account | **roadmap** (T4) | tooling spec §6.8 |
+| OAuth-first discovery, sign-in cards, credentials injected at host boundary | **built** (T4a, T4b-i) | tooling spec §6.1, §6.7 |
+| Several accounts per service, writes must name the account | **built** (T4a) | tooling spec §6.8 |
 | Step journal, crash resume, replayed steps, no duplicate side effects | **built** (M1, M5) | README "Durability", `tern resume` |
 | Daemon, cron schedules in natural language, delivered to the asking chat | **built** (M5) | README "Schedules" |
 | Telegram with approval buttons and pairing | **built** (M5) | README "Telegram" |
@@ -281,14 +281,15 @@ Stories to tell in a demo, each under a minute, each exercising a killer feature
 | Sub-agents with delegation on by default | **built** (S0–S5) | DECISIONS.md S0–S5 |
 | Secrets editor, 0600 secrets file, redacted bug reports | **built** | README `/secrets`, `tern report` |
 | Anthropic + any OpenAI-compatible endpoint, switch per task | **built** (P0) | README "Models" |
-| Routines with watches, webhooks, zero-token idle | **roadmap** (T1) | tooling spec §3 |
-| Initiative levels, digests, quiet hours, channels | **roadmap** (T1–T2) | tooling spec §4 |
-| Effects, outbox with deferred approvals, taint, scoped grants | **roadmap** (T3) | tooling spec §5 |
-| Activity ledger, per-routine budgets, `tern security audit` | **roadmap** (T6) | tooling spec §8 |
-| Signed bundles, gateway connectors for Slack/Discord/WhatsApp | **roadmap** (T4) | tooling spec §6.4–6.5 |
-| Menu-bar tray, one-click quit, no terminal needed | **roadmap** (T8) | tooling spec §11 |
+| Routines with watches, webhooks, zero-token idle | **built** (T1b, T1c) | tooling spec §3 |
+| Initiative levels, digests, quiet hours, channels | **built** (T1, T2) | tooling spec §4 |
+| Effects, outbox with deferred approvals, taint, scoped grants | **built** (T0, T3, scoped grants) | tooling spec §5 |
+| Activity ledger, per-routine budgets, `tern security audit` | **built** (T1a, T6b) | tooling spec §8 |
+| Signed bundles; gateway connectors for ntfy and Slack | **built** (T4b-ii, T4b-iii) |
+| Gateway connectors for Discord and WhatsApp | **roadmap** (T4) | tooling spec §6.4–6.5 |
+| Menu-bar tray (Linux tray too), one-click quit, no terminal needed | **built** (T8a–c) | tooling spec §11 |
 | Hosted engine (tern Cloud), push relay, mobile app, export and leave | **roadmap** (D4–D5) | deployment spec §8, §10 |
-| Browser via MCP | **roadmap** (T7, opt-in) | tooling spec §9 |
+| Browser via MCP | **built** as a recipe (T7a); native browser **roadmap** (T7b) | tooling spec §9 |
 
 Rule of thumb for anything in the roadmap rows: say "designed so that" or "coming", never "does".
 
