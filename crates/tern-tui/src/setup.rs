@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tern_core::config::{McpServerConfig, ProviderKind};
 use tern_core::mcp::{McpStatus, McpVerified, McpVerifyError};
-use tern_core::presets::{PRESETS, Preset};
 use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
+use tern_core::presets::{PRESETS, Preset};
 use tern_core::secrets::keys::mask_key;
 
 use crate::models::{ListKey, ModelList};
@@ -126,7 +126,8 @@ impl Form {
 
     /// Whether the key step may be left blank.
     pub fn key_optional(&self) -> bool {
-        self.existing.is_none() && self.preset.is_none_or(|p| !p.needs_key)
+        self.existing.is_none()
+            && self.preset.is_none_or(|p| !p.needs_key)
             && self.kind == ProviderKind::OpenaiCompat
     }
 
@@ -371,12 +372,10 @@ impl SetupPanel {
                     selected = (selected + 1).min(PRESETS.len() - 1);
                     (Step::Kind { selected }, SetupAction::None)
                 }
-                KeyCode::Char(c @ '1'..='9') if (c as usize - '1' as usize) < PRESETS.len() => {
-                    (
-                        preset_step(c as usize - '1' as usize, &self.providers),
-                        SetupAction::None,
-                    )
-                }
+                KeyCode::Char(c @ '1'..='9') if (c as usize - '1' as usize) < PRESETS.len() => (
+                    preset_step(c as usize - '1' as usize, &self.providers),
+                    SetupAction::None,
+                ),
                 KeyCode::Enter => (preset_step(selected, &self.providers), SetupAction::None),
                 _ => (Step::Kind { selected }, SetupAction::None),
             },
@@ -621,6 +620,7 @@ impl SetupPanel {
                     message: v.message.clone(),
                     fetched_at: None,
                     models: v.models,
+                    label: form.label(),
                     suggested: form
                         .preset
                         .map(|p| p.suggested_models.iter().map(|m| (*m).to_owned()).collect())

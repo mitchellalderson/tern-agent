@@ -302,6 +302,7 @@ mod tests {
             message: None,
             fetched_at: Some(0),
             suggested: vec![],
+            label: String::new(),
             models: ids
                 .iter()
                 .map(|id| ModelInfo {

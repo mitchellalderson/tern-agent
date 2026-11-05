@@ -307,6 +307,17 @@ impl Runtime {
                 model: format!("{one}:{text}"),
                 warning: None,
             }),
+            // One provider and an id it doesn't list (typed under "Enter a
+            // model id"): it can only mean that provider.
+            [] if config.providers.len() == 1 && !text.is_empty() => {
+                let only = config.providers.keys().next().map_or("", String::as_str);
+                Ok(Resolved {
+                    model: format!("{only}:{text}"),
+                    warning: Some(format!(
+                        "{text} is not in {only}'s model list; using it anyway"
+                    )),
+                })
+            }
             [] => match text.split_once(':') {
                 Some((p, m)) if !p.is_empty() && !m.is_empty() => {
                     bail!("provider {p:?} is not configured; run /setup to add it")
@@ -438,13 +449,9 @@ impl Runtime {
                 error: entry.error,
                 fetched_at: Some(entry.fetched_at),
                 models: entry.models,
+                label: label_of(name, cfg),
                 suggested: preset_of(cfg)
-                    .map(|p| {
-                        p.suggested_models
-                            .iter()
-                            .map(|m| (*m).to_owned())
-                            .collect()
-                    })
+                    .map(|p| p.suggested_models.iter().map(|m| (*m).to_owned()).collect())
                     .unwrap_or_default(),
             });
         }
@@ -472,7 +479,11 @@ impl Runtime {
             if draft.name.as_deref().is_none_or(|n| n.trim().is_empty()) {
                 draft.name = Some(unused_name(&config, p.name));
             }
-            if draft.base_url.as_deref().is_none_or(|u| u.trim().is_empty()) {
+            if draft
+                .base_url
+                .as_deref()
+                .is_none_or(|u| u.trim().is_empty())
+            {
                 draft.base_url = p.base_url.map(str::to_owned);
             }
         }
@@ -521,7 +532,10 @@ impl Runtime {
             let url = if cfg.kind == ProviderKind::OpenaiCompat {
                 tidy = tern_core::presets::normalize_base_url(url);
                 if tidy != url {
-                    warnings.push(format!("Using {tidy}: that is the address {} expects.", host_of(&tidy)));
+                    warnings.push(format!(
+                        "Using {tidy}: that is the address {} expects.",
+                        host_of(&tidy)
+                    ));
                 }
                 tidy.as_str()
             } else {
@@ -840,7 +854,10 @@ mod tests {
         assert!(text.starts_with("OpenRouter couldn't find that endpoint or model."));
         assert!(text.ends_with(&format!("(details: {raw})")));
         // Unknown text and unknown providers fall back sensibly.
-        assert_eq!(explain_failure(&config, "x:y", "tool failed"), "tool failed");
+        assert_eq!(
+            explain_failure(&config, "x:y", "tool failed"),
+            "tool failed"
+        );
         assert!(explain_failure(&config, "mine:y", "HTTP 401: no").starts_with("mine rejected"));
     }
 

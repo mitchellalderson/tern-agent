@@ -7,6 +7,7 @@ library;
 export 'src/agents.dart';
 export 'src/bundles.dart';
 export 'src/channels.dart';
+export 'src/call_errors.dart';
 export 'src/client.dart';
 export 'src/config.dart';
 export 'src/connections.dart';

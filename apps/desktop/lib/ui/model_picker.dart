@@ -19,12 +19,25 @@ class ModelHeader extends ModelRow {
 }
 
 class ModelChoice extends ModelRow {
-  const ModelChoice(this.full, this.info, {this.current = false});
+  const ModelChoice(
+    this.full,
+    this.info, {
+    this.current = false,
+    this.providerLabel,
+    this.suggested = false,
+  });
 
   /// `provider:id`.
   final String full;
   final ModelInfo? info;
   final bool current;
+
+  /// The provider's display name, shown as a badge.
+  final String? providerLabel;
+
+  /// From a preset's short list, not the provider's own (the list couldn't
+  /// be fetched).
+  final bool suggested;
 
   String get id => full.substring(full.indexOf(':') + 1);
 }
@@ -56,24 +69,61 @@ List<ModelRow> modelRows(
         .firstOrNull;
     rows
       ..add(const ModelHeader('Current'))
-      ..add(ModelChoice(current, info, current: true));
+      ..add(
+        ModelChoice(
+          current,
+          info,
+          current: true,
+          providerLabel: lists
+              .where((l) => l.provider == provider)
+              .firstOrNull
+              ?.label,
+        ),
+      );
   }
   for (final l in lists) {
     final models = [
       for (final m in l.models)
         if (f.isEmpty || _matches(f, l.provider, m)) m,
     ];
-    if (models.isEmpty && f.isNotEmpty) continue;
+    // With no list, a preset's few suggestions stand in, clearly labelled.
+    final suggested = [
+      if (l.models.isEmpty)
+        for (final s in l.suggested)
+          if (f.isEmpty || _subsequence(f, s)) s,
+    ];
+    if (models.isEmpty && suggested.isEmpty && f.isNotEmpty) continue;
     final note = switch ((l.message, l.models.isEmpty)) {
       (final m?, true) => "Couldn't list models: $m",
       (final m?, false) => 'Showing the last list: $m',
+      (null, true) when l.suggested.isNotEmpty =>
+        'No list available. Suggestions below, or enter a model id',
       (null, true) => 'No models listed; type a model id',
       (null, false) => null,
     };
-    rows.add(ModelHeader(l.provider, note));
+    rows.add(ModelHeader(l.label, note));
     for (final m in models) {
       final full = '${l.provider}:${m.id}';
-      rows.add(ModelChoice(full, m, current: full == current));
+      rows.add(
+        ModelChoice(
+          full,
+          m,
+          current: full == current,
+          providerLabel: l.label,
+        ),
+      );
+    }
+    for (final s in suggested) {
+      final full = '${l.provider}:$s';
+      rows.add(
+        ModelChoice(
+          full,
+          null,
+          current: full == current,
+          providerLabel: l.label,
+          suggested: true,
+        ),
+      );
     }
   }
   if (f.isNotEmpty) rows.add(TypedChoice(f));
@@ -134,6 +184,10 @@ class ModelListState extends State<ModelList> {
   final _scroll = ScrollController();
   var _selected = 0;
 
+  /// "Enter a model id": the list is hidden and the box takes an id as is.
+  var _manual = false;
+  String? _manualProvider;
+
   @override
   void dispose() {
     _filter.dispose();
@@ -161,6 +215,26 @@ class ModelListState extends State<ModelList> {
     setState(() => _selected = (_selected + by).clamp(0, n - 1));
   }
 
+  /// The provider a typed id belongs to: the one picked, else the current
+  /// model's, else the first.
+  String? get _provider {
+    final lists = widget.lists ?? const <ProviderModels>[];
+    if (lists.isEmpty) return null;
+    final cur = widget.current;
+    final fromCurrent = cur == null || !cur.contains(':')
+        ? null
+        : cur.substring(0, cur.indexOf(':'));
+    final want = _manualProvider ?? fromCurrent;
+    return lists.any((l) => l.provider == want) ? want : lists.first.provider;
+  }
+
+  void _useTyped() {
+    final id = _filter.text.trim();
+    if (id.isEmpty) return;
+    final p = _provider;
+    widget.onChoose(p == null ? id : '$p:$id');
+  }
+
   KeyEventResult _onKey(FocusNode _, KeyEvent e) {
     if (e is! KeyDownEvent && e is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
@@ -171,7 +245,11 @@ class ModelListState extends State<ModelList> {
       case LogicalKeyboardKey.arrowUp:
         _move(-1);
       case LogicalKeyboardKey.enter || LogicalKeyboardKey.numpadEnter:
-        if (chosen case final c?) widget.onChoose(c);
+        if (_manual) {
+          _useTyped();
+        } else if (chosen case final c?) {
+          widget.onChoose(c);
+        }
       default:
         return KeyEventResult.ignored;
     }
@@ -182,7 +260,6 @@ class ModelListState extends State<ModelList> {
   Widget build(BuildContext context) {
     final c = context.colors;
     final rows = _rows;
-    var choice = -1;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -198,7 +275,9 @@ class ModelListState extends State<ModelList> {
             style: mono.copyWith(fontSize: 13),
             onChanged: (_) => setState(() => _selected = 0),
             decoration: InputDecoration(
-              hintText: 'Search, or type a model id',
+              hintText: _manual
+                  ? 'The model id, e.g. vendor/model-name'
+                  : 'Search models',
               hintStyle: TextStyle(color: c.muted),
               prefixIcon: Icon(Icons.search, size: 17, color: c.muted),
               isDense: true,
@@ -219,6 +298,69 @@ class ModelListState extends State<ModelList> {
           ),
         ),
         const SizedBox(height: 8),
+        if (_manual) ..._manualBody(context) else ..._listBody(context, rows),
+      ],
+    );
+  }
+
+  List<Widget> _manualBody(BuildContext context) {
+    final c = context.colors;
+    final lists = widget.lists ?? const <ProviderModels>[];
+    final id = _filter.text.trim();
+    return [
+      Text(
+        "Type the model's id exactly as the provider names it, for example "
+        'vendor/model-name. tern adds the provider for you.',
+        style: TextStyle(fontSize: 12, color: c.muted),
+      ),
+      if (lists.length > 1) ...[
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Text('Provider', style: TextStyle(fontSize: 12, color: c.muted)),
+            const SizedBox(width: 10),
+            DropdownButton<String>(
+              key: const ValueKey('manual-provider'),
+              value: _provider,
+              isDense: true,
+              underline: const SizedBox.shrink(),
+              style: TextStyle(fontSize: 13, color: c.ink),
+              items: [
+                for (final l in lists)
+                  DropdownMenuItem(value: l.provider, child: Text(l.label)),
+              ],
+              onChanged: (v) => setState(() => _manualProvider = v),
+            ),
+          ],
+        ),
+      ],
+      const SizedBox(height: 8),
+      Row(
+        children: [
+          TextButton(
+            onPressed: () => setState(() => _manual = false),
+            child: const Text('Back to the list'),
+          ),
+          const Spacer(),
+          FilledButton(
+            key: const ValueKey('use-typed-model'),
+            style: FilledButton.styleFrom(
+              backgroundColor: c.accent,
+              foregroundColor: c.onAccent,
+            ),
+            onPressed: id.isEmpty ? null : _useTyped,
+            child: const Text('Use this model'),
+          ),
+        ],
+      ),
+    ];
+  }
+
+  List<Widget> _listBody(BuildContext context, List<ModelRow> rows) {
+    final c = context.colors;
+    var choice = -1;
+    final grouped = (widget.lists?.length ?? 0) > 1;
+    return [
         ConstrainedBox(
           constraints: BoxConstraints(maxHeight: widget.maxHeight),
           child: widget.lists == null && widget.loading
@@ -245,6 +387,11 @@ class ModelListState extends State<ModelList> {
                   children: [
                     for (final r in rows)
                       switch (r) {
+                        // One provider with nothing to say needs no heading:
+                        // each row carries its provider as a badge.
+                        ModelHeader(:final title, :final note)
+                            when !grouped && note == null && title != 'Current' =>
+                          const SizedBox.shrink(),
                         ModelHeader(:final title, :final note) => _Header(
                           title: title,
                           note: note,
@@ -263,8 +410,19 @@ class ModelListState extends State<ModelList> {
                   ],
                 ),
         ),
-      ],
-    );
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            key: const ValueKey('enter-model-id'),
+            onPressed: () => setState(() {
+              _manual = true;
+              _filter.clear();
+              _selected = 0;
+            }),
+            child: const Text('Enter a model id'),
+          ),
+        ),
+    ];
   }
 }
 
@@ -323,9 +481,10 @@ class _Choice extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.colors;
     final (label, note, current) = switch (row) {
-      ModelChoice(:final id, :final info, :final current) => (
+      ModelChoice(:final id, :final info, :final current, :final suggested) => (
         id,
         [
+          if (suggested) 'suggested',
           if (info?.name case final n? when n != id) n,
           if (info?.contextWindow case final w?) '${w ~/ 1000}k context',
         ].join(' · '),
@@ -333,6 +492,10 @@ class _Choice extends StatelessWidget {
       ),
       TypedChoice(:final text) => ('Use "$text"', 'as typed', false),
       ModelHeader() => ('', '', false),
+    };
+    final badge = switch (row) {
+      ModelChoice(:final providerLabel) => providerLabel,
+      _ => null,
     };
     return MouseRegion(
       onEnter: (_) => onHover(),
@@ -370,11 +533,38 @@ class _Choice extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              if (current) Icon(Icons.check, size: 15, color: c.accent),
+              if (badge != null) ...[
+                const SizedBox(width: 8),
+                ProviderBadge(badge),
+              ],
+              if (current) ...[
+                const SizedBox(width: 6),
+                Icon(Icons.check, size: 15, color: c.accent),
+              ],
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+/// A provider's name as a small pill, next to a model.
+class ProviderBadge extends StatelessWidget {
+  const ProviderBadge(this.label, {super.key});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: c.selection,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(label, style: TextStyle(fontSize: 10.5, color: c.muted)),
     );
   }
 }

@@ -255,7 +255,7 @@ class _ProvidersDialogState extends State<ProvidersDialog> {
                             }),
                       icon: Icon(Icons.add, size: 16, color: c.muted),
                       label: Text(
-                        'Add provider',
+                        'Connect a provider',
                         style: TextStyle(color: c.muted),
                       ),
                     ),
@@ -347,7 +347,8 @@ class _ProviderRow extends StatelessWidget {
       _ => ('Ready', c.ok),
     };
     final detail = [
-      p.kind.label,
+      if (p.label != p.name) p.name,
+      if (p.preset == null || p.preset == 'other') p.kind.label,
       if (p.kind == ProviderKind.openaiCompat) ?p.baseUrl,
       if (p.keyHint case final h?) 'key $h',
     ].join(' · ');
@@ -368,7 +369,7 @@ class _ProviderRow extends StatelessWidget {
                 Row(
                   children: [
                     Text(
-                      p.name,
+                      p.label,
                       style: const TextStyle(
                         fontSize: 13.5,
                         fontWeight: FontWeight.w600,
@@ -496,9 +497,41 @@ class _DefaultModelDialog extends StatelessWidget {
 
 enum _Step { kind, endpoint, key, model }
 
-/// Add a provider (kind → server → key → model), or change an existing
-/// one's key. The key is checked with the provider before anything is
-/// saved. Used in the Models dialog and the first-run welcome.
+/// What the list shows when an older daemon can't send its presets: enough
+/// to get connected. The daemon's own list (`/v1/providers/presets`) wins.
+const fallbackPresets = [
+  ProviderPreset(
+    id: 'anthropic',
+    label: 'Anthropic',
+    blurb: 'Claude models',
+    kind: ProviderKind.anthropic,
+    name: 'anthropic',
+    keyUrl: anthropicKeyUrl,
+    keyHint: 'Create a key in the Anthropic Console, then paste it here.',
+    needsKey: true,
+    local: false,
+    suggestedModels: [],
+  ),
+  ProviderPreset(
+    id: 'other',
+    label: 'Other (OpenAI-compatible URL)',
+    blurb: 'Any server that speaks the OpenAI API',
+    kind: ProviderKind.openaiCompat,
+    name: 'custom',
+    keyHint: "Enter the server's base URL. Leave the key blank if it doesn't "
+        'need one.',
+    needsKey: false,
+    local: false,
+    suggestedModels: [],
+  ),
+];
+
+/// Connect a provider (choice → key → model), or change an existing one's
+/// key. Starts from services people recognise (Anthropic, OpenAI,
+/// OpenRouter, ...): picking one fills in the address and says where the
+/// key comes from, so all that is left to ask for is the key. "Test
+/// connection" calls the provider before anything is saved. Used in the
+/// Models dialog and the first-run welcome.
 class ProviderSetup extends StatefulWidget {
   const ProviderSetup({
     super.key,
@@ -519,7 +552,8 @@ class ProviderSetup extends StatefulWidget {
 
 class ProviderSetupState extends State<ProviderSetup> {
   late var _step = widget.existing == null ? _Step.kind : _Step.key;
-  late var _kind = widget.existing?.kind ?? ProviderKind.anthropic;
+  List<ProviderPreset>? _presets;
+  ProviderPreset? _preset;
   final _url = TextEditingController();
   final _name = TextEditingController();
   final _key = TextEditingController();
@@ -534,6 +568,37 @@ class ProviderSetupState extends State<ProviderSetup> {
 
   TernClient get _client => widget.store.client;
 
+  ProviderKind get _kind =>
+      widget.existing?.kind ?? _preset?.kind ?? ProviderKind.anthropic;
+
+  /// Whether the key may be left blank (a local server, or "Other").
+  bool get _keyOptional =>
+      widget.existing == null && !(_preset?.needsKey ?? true);
+
+  /// What to call the provider in text.
+  String get _label =>
+      widget.existing?.label ??
+      (_preset != null && !_preset!.isOther ? _preset!.label : null) ??
+      _verified?.name ??
+      'the server';
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existing == null) _loadPresets();
+  }
+
+  Future<void> _loadPresets() async {
+    List<ProviderPreset> list;
+    try {
+      list = await _client.providerPresets();
+      if (list.isEmpty) list = fallbackPresets;
+    } on Object {
+      list = fallbackPresets;
+    }
+    if (mounted) setState(() => _presets = list);
+  }
+
   @override
   void dispose() {
     _debounce?.cancel();
@@ -546,14 +611,27 @@ class ProviderSetupState extends State<ProviderSetup> {
 
   ProviderDraft get _draft {
     String? opt(String s) => s.trim().isEmpty ? null : s.trim();
+    final preset = widget.existing == null ? _preset : null;
     return ProviderDraft(
       kind: widget.existing == null ? _kind : null,
-      name: _verified?.name ?? opt(_name.text),
-      baseUrl: _verified?.suggestedBaseUrl ?? opt(_url.text),
+      preset: preset?.id,
+      // A preset's name and address come from the daemon, which also picks
+      // a free name when that service is connected twice.
+      name: _verified?.name ?? (preset?.isOther ?? true ? opt(_name.text) : null),
+      baseUrl:
+          _verified?.suggestedBaseUrl ??
+          (preset?.isOther ?? true ? opt(_url.text) : null),
       key: _useEnv ? null : opt(_key.text),
       useEnvKey: _useEnv,
     );
   }
+
+  void _pick(ProviderPreset p) => setState(() {
+    _preset = p;
+    _error = null;
+    _verified = null;
+    _step = p.isOther ? _Step.endpoint : _Step.key;
+  });
 
   void _onKeyChanged(String text) {
     // A jump of several characters at once is a paste: check it shortly.
@@ -586,8 +664,7 @@ class ProviderSetupState extends State<ProviderSetup> {
   Future<void> _verify({bool env = false}) async {
     _debounce?.cancel();
     if (env) _useEnv = true;
-    final needsKey = _kind == ProviderKind.anthropic || widget.existing != null;
-    if (!_useEnv && needsKey && _key.text.trim().isEmpty) {
+    if (!_useEnv && !_keyOptional && _key.text.trim().isEmpty) {
       setState(() => _error = 'Paste your API key first.');
       return;
     }
@@ -605,7 +682,7 @@ class ProviderSetupState extends State<ProviderSetup> {
         setState(() {
           _busy = false;
           _error = [
-            v.message ?? "That key didn't work.",
+            v.message ?? "That didn't work.",
             ...v.warnings,
           ].join(' ');
         });
@@ -682,6 +759,7 @@ class ProviderSetupState extends State<ProviderSetup> {
               Expanded(
                 child: Text(
                   e,
+                  key: const ValueKey('setup-error'),
                   style: TextStyle(fontSize: 12.5, color: c.error),
                 ),
               ),
@@ -723,7 +801,7 @@ class ProviderSetupState extends State<ProviderSetup> {
     _Step.key when widget.existing != null => null,
     _Step.key => () => setState(() {
       _error = null;
-      _step = _kind == ProviderKind.openaiCompat ? _Step.endpoint : _Step.kind;
+      _step = _preset?.isOther ?? false ? _Step.endpoint : _Step.kind;
     }),
     _Step.model => () => setState(() {
       _verified = null;
@@ -755,7 +833,7 @@ class ProviderSetupState extends State<ProviderSetup> {
         FilledButton(
           style: style,
           onPressed: _busy ? null : _verify,
-          child: Text(widget.existing == null ? 'Check key' : 'Save key'),
+          child: Text(widget.existing == null ? 'Test connection' : 'Save key'),
         ),
       ],
       _Step.model => [
@@ -782,36 +860,55 @@ class ProviderSetupState extends State<ProviderSetup> {
     ],
   );
 
-  Widget _kindStep(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _title('Connect a model provider'),
-      for (final (kind, blurb) in [
-        (ProviderKind.anthropic, 'Claude models'),
-        (
-          ProviderKind.openaiCompat,
-          'OpenAI, OpenRouter, Ollama, or any server with the OpenAI API',
+  Widget _kindStep(BuildContext context) {
+    final presets = _presets;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _title(
+          'Connect a provider',
+          "Pick where your models come from. You'll only need an API key next.",
         ),
-      ])
-        _KindCard(
-          kind: kind,
-          blurb: blurb,
-          onTap: () => setState(() {
-            _kind = kind;
-            _error = null;
-            _step = kind == ProviderKind.anthropic ? _Step.key : _Step.endpoint;
-          }),
-        ),
-    ],
-  );
+        if (presets == null)
+          const Padding(
+            padding: EdgeInsets.all(20),
+            child: Center(
+              child: SizedBox.square(
+                dimension: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          )
+        else
+          LayoutBuilder(
+            builder: (context, box) {
+              const gap = 8.0;
+              final two = box.maxWidth >= 440;
+              final width = two ? (box.maxWidth - gap) / 2 : box.maxWidth;
+              return Wrap(
+                spacing: gap,
+                runSpacing: gap,
+                children: [
+                  for (final p in presets)
+                    SizedBox(
+                      width: width,
+                      child: _PresetCard(preset: p, onTap: () => _pick(p)),
+                    ),
+                ],
+              );
+            },
+          ),
+      ],
+    );
+  }
 
   Widget _endpointStep(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       _title(
-        'OpenAI-compatible server',
-        'For example https://api.openai.com/v1, https://openrouter.ai/api/v1, '
-            'or http://localhost:11434/v1 for Ollama.',
+        'Other (OpenAI-compatible URL)',
+        "The address of the server's API. It usually ends in /v1, for "
+            'example http://localhost:8000/v1.',
       ),
       TextField(
         key: const ValueKey('base-url'),
@@ -836,7 +933,7 @@ class ProviderSetupState extends State<ProviderSetup> {
         decoration: _box(
           context,
           label: 'Name (optional)',
-          hint: 'from the URL, e.g. openrouter',
+          hint: 'from the URL, e.g. mylab',
         ),
       ),
     ],
@@ -845,74 +942,96 @@ class ProviderSetupState extends State<ProviderSetup> {
   Widget _keyStep(BuildContext context) {
     final c = context.colors;
     final existing = widget.existing;
-    final (title, sub) = switch ((_kind, existing)) {
-      (_, final p?) => ('New API key for ${p.name}', null),
-      (ProviderKind.anthropic, null) => ('Paste your Anthropic API key', null),
-      (ProviderKind.openaiCompat, null) => (
-        'API key',
-        "For ${_url.text.trim()}. Leave it blank if the server doesn't need one.",
+    final preset = _preset;
+    final hideKey = existing == null && preset != null && preset.local;
+    final (title, sub) = switch ((existing, preset)) {
+      (final p?, _) => ('New API key for ${p.label}', null),
+      (null, final p?) when p.local => (
+        '${p.label} needs no key',
+        p.keyHint,
+      ),
+      (null, final p?) when !p.isOther => (
+        'Paste your ${p.label} API key',
+        p.keyHint,
+      ),
+      _ => (
+        'API key (optional)',
+        "For ${_url.text.trim()}. Leave it blank if the server doesn't need "
+            'one.',
       ),
     };
     final v = _verified;
+    final keyUrl = existing == null ? preset?.keyUrl : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _title(title, sub),
-        TextField(
-          key: const ValueKey('api-key'),
-          controller: _key,
-          autofocus: true,
-          obscureText: !_show,
-          autocorrect: false,
-          enableSuggestions: false,
-          enableIMEPersonalizedLearning: false,
-          style: mono.copyWith(fontSize: 13),
-          onChanged: _onKeyChanged,
-          onSubmitted: (_) => _busy ? null : _verify(),
-          decoration: _box(
-            context,
-            hint: _kind == ProviderKind.anthropic
-                ? 'sk-ant-…'
-                : 'Paste the key',
-            suffix: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  tooltip: _show ? 'Hide' : 'Show',
-                  icon: Icon(
-                    _show ? Icons.visibility_off : Icons.visibility,
-                    size: 17,
-                    color: c.muted,
+        if (!hideKey)
+          TextField(
+            key: const ValueKey('api-key'),
+            controller: _key,
+            autofocus: true,
+            obscureText: !_show,
+            autocorrect: false,
+            enableSuggestions: false,
+            enableIMEPersonalizedLearning: false,
+            style: mono.copyWith(fontSize: 13),
+            onChanged: _onKeyChanged,
+            onSubmitted: (_) => _busy ? null : _verify(),
+            decoration: _box(
+              context,
+              hint: _kind == ProviderKind.anthropic
+                  ? 'sk-ant-…'
+                  : 'Paste the key',
+              suffix: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: _show ? 'Hide' : 'Show',
+                    icon: Icon(
+                      _show ? Icons.visibility_off : Icons.visibility,
+                      size: 17,
+                      color: c.muted,
+                    ),
+                    onPressed: () => setState(() => _show = !_show),
                   ),
-                  onPressed: () => setState(() => _show = !_show),
-                ),
-                TextButton(
-                  onPressed: _busy ? null : _paste,
-                  child: const Text('Paste'),
-                ),
-              ],
+                  TextButton(
+                    onPressed: _busy ? null : _paste,
+                    child: const Text('Paste'),
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: 8),
+        if (existing == null && preset != null && !preset.isOther) ...[
+          const SizedBox(height: 8),
+          Text(
+            'Talks to ${preset.baseUrl ?? 'api.anthropic.com'}',
+            key: const ValueKey('preset-url'),
+            style: mono.copyWith(fontSize: 11.5, color: c.muted),
+          ),
+        ],
+        const SizedBox(height: 6),
         Wrap(
           crossAxisAlignment: WrapCrossAlignment.center,
           spacing: 4,
           children: [
-            if (_kind == ProviderKind.anthropic && existing == null) ...[
-              Text(
-                "Don't have one?",
-                style: TextStyle(fontSize: 12.5, color: c.muted),
-              ),
+            if (keyUrl != null) ...[
+              if (!hideKey)
+                Text(
+                  "Don't have one?",
+                  style: TextStyle(fontSize: 12.5, color: c.muted),
+                ),
               TextButton(
-                onPressed: () => openUrl(anthropicKeyUrl),
-                child: const Text('Get an API key ↗'),
+                onPressed: () => openUrl(keyUrl),
+                child: Text(hideKey ? 'Get it ↗' : 'Get an API key ↗'),
               ),
             ],
-            TextButton(
-              onPressed: _busy ? null : () => _verify(env: true),
-              child: const Text('Use the key from the environment'),
-            ),
+            if (!hideKey)
+              TextButton(
+                onPressed: _busy ? null : () => _verify(env: true),
+                child: const Text('Use the key from the environment'),
+              ),
           ],
         ),
         if (v != null && v.ok)
@@ -934,8 +1053,9 @@ class ProviderSetupState extends State<ProviderSetup> {
       children: [
         _Success(
           v.keyHint == null
-              ? '${v.name} answered — ${v.models.length} models'
-              : 'Key ${v.keyHint} works — ${v.models.length} models',
+              ? 'Connected to $_label — ${v.models.length} models'
+              : 'Connected to $_label (key ${v.keyHint}) — '
+                    '${v.models.length} models',
         ),
         for (final n in notes)
           Padding(
@@ -943,14 +1063,16 @@ class ProviderSetupState extends State<ProviderSetup> {
             child: Text(n, style: TextStyle(fontSize: 12.5, color: c.warn)),
           ),
         const SizedBox(height: 12),
-        _title('Choose a model', 'Click one, or type a model id and press ⏎.'),
+        _title('Choose a model', 'Click one, or search for it.'),
         ModelList(
           lists: [
             ProviderModels(
               provider: v.name,
+              label: _label,
               error: v.error,
               message: v.message,
               models: v.models,
+              suggested: _preset?.suggestedModels ?? const [],
             ),
           ],
           maxHeight: 260,
@@ -998,60 +1120,60 @@ class _Success extends StatelessWidget {
   }
 }
 
-class _KindCard extends StatelessWidget {
-  const _KindCard({
-    required this.kind,
-    required this.blurb,
-    required this.onTap,
-  });
+IconData _presetIcon(ProviderPreset p) => switch (p.id) {
+  'anthropic' => Icons.auto_awesome_outlined,
+  'other' => Icons.dns_outlined,
+  _ when p.local => Icons.computer_outlined,
+  _ => Icons.cloud_outlined,
+};
 
-  final ProviderKind kind;
-  final String blurb;
+class _PresetCard extends StatelessWidget {
+  const _PresetCard({required this.preset, required this.onTap});
+
+  final ProviderPreset preset;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            border: Border.all(color: c.hairline),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                kind == ProviderKind.anthropic
-                    ? Icons.auto_awesome_outlined
-                    : Icons.dns_outlined,
-                size: 20,
-                color: c.accent,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      kind.label,
-                      style: const TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w600,
-                      ),
+    return InkWell(
+      key: ValueKey('preset-${preset.id}'),
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        decoration: BoxDecoration(
+          border: Border.all(color: c.hairline),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          children: [
+            Icon(_presetIcon(preset), size: 19, color: c.accent),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    preset.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
                     ),
-                    const SizedBox(height: 2),
-                    Text(blurb, style: TextStyle(fontSize: 12, color: c.muted)),
-                  ],
-                ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    preset.blurb,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11.5, color: c.muted),
+                  ),
+                ],
               ),
-              Icon(Icons.chevron_right, size: 18, color: c.muted),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );

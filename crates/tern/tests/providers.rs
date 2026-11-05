@@ -238,14 +238,15 @@ async fn add_use_and_remove_a_provider_without_restarting() {
             .unwrap()
             .contains("not in fake's model list")
     );
-    let (status, _) = api
-        .call(
+    // The only provider is assumed for an id nobody lists (with a warning).
+    let v = api
+        .ok(
             Method::POST,
             "/v1/models/check",
             Some(json!({ "model": "nope" })),
         )
         .await;
-    assert_eq!(status, 400);
+    assert_eq!(v["resolved"], "fake:nope");
 
     let providers = api.ok(Method::GET, "/v1/providers", None).await;
     assert_eq!(providers[0]["name"], "fake");
@@ -726,4 +727,15 @@ async fn presets_and_address_mistakes() {
     assert!(cfg.contains("[providers.fake]"), "{cfg}");
     assert!(!cfg.contains("preset"), "{cfg}");
     assert!(cfg.contains("fake:gpt-new"), "{cfg}");
+
+    // With one provider, an unlisted id typed by hand needs no `fake:`.
+    let v = api
+        .ok(
+            Method::POST,
+            "/v1/models/check",
+            Some(json!({ "model": "vendor/brand-new" })),
+        )
+        .await;
+    assert_eq!(v["resolved"], "fake:vendor/brand-new");
+    assert!(v["warning"].as_str().unwrap().contains("not in fake's"));
 }

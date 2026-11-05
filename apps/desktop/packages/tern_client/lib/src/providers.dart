@@ -53,10 +53,12 @@ class ProviderStatus {
     this.secret,
     required this.keySource,
     this.keyHint,
+    this.preset,
+    String? label,
     this.error,
     this.message,
     required this.isDefault,
-  });
+  }) : label = label ?? name;
 
   factory ProviderStatus.fromJson(Json j) => ProviderStatus(
     name: j['name'] as String,
@@ -65,6 +67,10 @@ class ProviderStatus {
     secret: j['secret'] as String?,
     keySource: j['key_source'] as String? ?? 'none',
     keyHint: j['key_hint'] as String?,
+    preset: j['preset'] as String?,
+    label: (j['label'] as String?)?.isNotEmpty == true
+        ? j['label'] as String
+        : null,
     error: ListError.fromJson(j['error']),
     message: j['message'] as String?,
     isDefault: j['is_default'] as bool? ?? false,
@@ -83,6 +89,12 @@ class ProviderStatus {
   /// `sk-ant…a1B2`.
   final String? keyHint;
 
+  /// The friendly preset this matches by URL (`openrouter`), if any.
+  final String? preset;
+
+  /// What to call it in the UI: the preset's label, else [name].
+  final String label;
+
   /// From the last model listing.
   final ListError? error;
 
@@ -98,22 +110,94 @@ class ProviderModels {
     this.error,
     this.message,
     required this.models,
-  });
+    this.suggested = const [],
+    String? label,
+  }) : label = label ?? provider;
 
   factory ProviderModels.fromJson(Json j) => ProviderModels(
     provider: j['provider'] as String,
+    label: (j['label'] as String?)?.isNotEmpty == true
+        ? j['label'] as String
+        : null,
     error: ListError.fromJson(j['error']),
     message: j['message'] as String?,
     models: [
       for (final m in j['models'] as List? ?? const [])
         ModelInfo.fromJson(m as Json),
     ],
+    suggested: [
+      for (final s in j['suggested'] as List? ?? const []) s as String,
+    ],
   );
 
   final String provider;
+
+  /// What to call the provider in the UI: its preset's label, else [provider].
+  final String label;
   final ListError? error;
   final String? message;
   final List<ModelInfo> models;
+
+  /// A few model ids the provider's preset suggests. Show them only when
+  /// [models] is empty (the list couldn't be fetched).
+  final List<String> suggested;
+}
+
+/// A friendly provider choice (`GET /v1/providers/presets`): a prefilled
+/// Anthropic or OpenAI-compatible provider.
+class ProviderPreset {
+  const ProviderPreset({
+    required this.id,
+    required this.label,
+    required this.blurb,
+    required this.kind,
+    this.baseUrl,
+    required this.name,
+    this.keyUrl,
+    required this.keyHint,
+    required this.needsKey,
+    required this.local,
+    required this.suggestedModels,
+  });
+
+  factory ProviderPreset.fromJson(Json j) => ProviderPreset(
+    id: j['id'] as String,
+    label: j['label'] as String,
+    blurb: j['blurb'] as String? ?? '',
+    kind: ProviderKind.fromWire(j['kind'] as String?),
+    baseUrl: j['base_url'] as String?,
+    name: j['name'] as String,
+    keyUrl: j['key_url'] as String?,
+    keyHint: j['key_hint'] as String? ?? '',
+    needsKey: j['needs_key'] as bool? ?? true,
+    local: j['local'] as bool? ?? false,
+    suggestedModels: [
+      for (final s in j['suggested_models'] as List? ?? const []) s as String,
+    ],
+  );
+
+  final String id;
+  final String label;
+  final String blurb;
+  final ProviderKind kind;
+
+  /// Null for "Other": the user types the URL.
+  final String? baseUrl;
+
+  /// The provider name written to config.
+  final String name;
+
+  /// Where the key comes from.
+  final String? keyUrl;
+  final String keyHint;
+  final bool needsKey;
+
+  /// Runs on this computer.
+  final bool local;
+  final List<String> suggestedModels;
+
+  /// "Other (OpenAI-compatible URL)": asks for the address.
+  bool get isOther => id == 'other';
 }
 
 /// What the user filled in to add or change a provider.
@@ -124,7 +208,11 @@ class ProviderDraft {
     this.baseUrl,
     this.key,
     this.useEnvKey = false,
+    this.preset,
   });
+
+  /// A preset id; the daemon fills in what is left out.
+  final String? preset;
 
   final ProviderKind? kind;
   final String? name;
@@ -142,6 +230,7 @@ class ProviderDraft {
     'base_url': ?_blankToNull(baseUrl),
     'key': ?_blankToNull(key),
     'use_env_key': useEnvKey,
+    'preset': ?preset,
   };
 
   static String? _blankToNull(String? s) =>

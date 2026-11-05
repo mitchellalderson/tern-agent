@@ -621,6 +621,21 @@ class TernStore extends ChangeNotifier {
     return s?.model ?? agent?.model.firstOrNull ?? info?.defaultModel;
   }
 
+  /// A provider's display name (`OpenRouter`) from the loaded model lists,
+  /// else its config name.
+  String providerLabel(String name) =>
+      modelLists?.where((l) => l.provider == name).firstOrNull?.label ?? name;
+
+  /// A failed model call in plain words, for the model `model`
+  /// (`provider:id`): `OpenRouter couldn't find that endpoint or model...`.
+  /// Null when [raw] isn't an error we can explain.
+  FriendlyError? explainFailure(String? model, String raw) {
+    final provider = model != null && model.contains(':')
+        ? model.substring(0, model.indexOf(':'))
+        : (model ?? 'the provider');
+    return friendlyCallError(raw, providerLabel(provider));
+  }
+
   /// No usable model yet: show provider setup instead of the composer.
   bool get setupNeeded => info?.setupNeeded ?? false;
 

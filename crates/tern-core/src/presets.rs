@@ -277,7 +277,10 @@ mod tests {
     fn finds_a_preset_by_url() {
         let id = |k, u| for_url(k, u).map(|p| p.id);
         let oc = ProviderKind::OpenaiCompat;
-        assert_eq!(id(oc, Some("https://openrouter.ai/api/v1")), Some("openrouter"));
+        assert_eq!(
+            id(oc, Some("https://openrouter.ai/api/v1")),
+            Some("openrouter")
+        );
         assert_eq!(id(oc, Some("https://openrouter.ai/v1")), Some("openrouter"));
         assert_eq!(id(oc, Some("http://localhost:11434/v1")), Some("ollama"));
         assert_eq!(id(oc, Some("http://localhost:1234/v1")), Some("lmstudio"));
@@ -289,8 +292,14 @@ mod tests {
     #[test]
     fn normalizes_urls() {
         let n = normalize_base_url;
-        assert_eq!(n("https://openrouter.ai/api/v1"), "https://openrouter.ai/api/v1");
-        assert_eq!(n("https://openrouter.ai/api/v1/"), "https://openrouter.ai/api/v1");
+        assert_eq!(
+            n("https://openrouter.ai/api/v1"),
+            "https://openrouter.ai/api/v1"
+        );
+        assert_eq!(
+            n("https://openrouter.ai/api/v1/"),
+            "https://openrouter.ai/api/v1"
+        );
         for bad in [
             "https://openrouter.ai",
             "https://openrouter.ai/",
@@ -302,7 +311,10 @@ mod tests {
         ] {
             assert_eq!(n(bad), "https://openrouter.ai/api/v1", "{bad}");
         }
-        assert_eq!(n("https://api.groq.com/v1"), "https://api.groq.com/openai/v1");
+        assert_eq!(
+            n("https://api.groq.com/v1"),
+            "https://api.groq.com/openai/v1"
+        );
         assert_eq!(n("https://api.openai.com"), "https://api.openai.com/v1");
         assert_eq!(
             n("https://generativelanguage.googleapis.com"),
@@ -311,8 +323,14 @@ mod tests {
         // Not in the list, or deliberately different: left alone, apart
         // from a pasted endpoint path.
         assert_eq!(n("https://example.com"), "https://example.com");
-        assert_eq!(n("https://example.com/v1/chat/completions"), "https://example.com/v1");
+        assert_eq!(
+            n("https://example.com/v1/chat/completions"),
+            "https://example.com/v1"
+        );
         assert_eq!(n("http://localhost:11434/v1"), "http://localhost:11434/v1");
-        assert_eq!(n("https://api.openai.com/v1/proxy"), "https://api.openai.com/v1/proxy");
+        assert_eq!(
+            n("https://api.openai.com/v1/proxy"),
+            "https://api.openai.com/v1/proxy"
+        );
     }
 }

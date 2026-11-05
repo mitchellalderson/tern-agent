@@ -129,6 +129,7 @@ impl Backend for Fake {
             fetched_at: Some(0),
             models: models(),
             suggested: vec![],
+            label: String::new(),
         }])
     }
     async fn verify_provider(
@@ -481,10 +482,9 @@ fn suggestions_fill_in_when_the_list_is_empty() {
         fetched_at: None,
         models: vec![],
         suggested: vec!["openai/gpt-4o-mini".into()],
+        label: String::new(),
     }]);
     let rows = l.rows();
-    assert!(
-        matches!(&rows[0], Row::Header { note: Some(n), .. } if n.contains("suggestions"))
-    );
+    assert!(matches!(&rows[0], Row::Header { note: Some(n), .. } if n.contains("suggestions")));
     assert_eq!(l.chosen().as_deref(), Some("openrouter:openai/gpt-4o-mini"));
 }

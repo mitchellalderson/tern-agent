@@ -192,6 +192,9 @@ pub struct ProviderModels {
     /// when `models` is empty (the list couldn't be fetched).
     #[serde(default)]
     pub suggested: Vec<String>,
+    /// What to call the provider in the UI (its preset's label, else its name).
+    #[serde(default)]
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
