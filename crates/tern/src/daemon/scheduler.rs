@@ -371,9 +371,7 @@ fn cap_reached(
 /// `[schedules]` default): `(spent, cap)`. `None` without a cap or a
 /// known price, so a client shows nothing rather than a guess.
 pub fn spend_today(manager: &Manager, s: &ScheduleRow) -> Option<(f64, f64)> {
-    let cap = s
-        .usd_per_day
-        .or(manager.rt.live().schedules.usd_per_day)?;
+    let cap = s.usd_per_day.or(manager.rt.live().schedules.usd_per_day)?;
     let since = quiet::start_of_day(Local::now())
         .timestamp_millis()
         .max(s.budget_since.unwrap_or(0));

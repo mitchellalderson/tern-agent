@@ -234,6 +234,9 @@ void main() {
     expect(t1a.limits.runsPerDay, 12);
     expect(t1a.limits.usdPerDay, 0.5);
     expect(t1a.limits.tokensPerRun, 200000);
+    expect(t1a.spentUsd, 0.31);
+    expect(t1a.usdCap, 0.5);
+    expect(s.spentUsd, isNull);
     expect(t1a.pausedByBudget, isTrue);
     expect(t1a.pausedReason, 'runs_per_day');
     expect(t1a.pausedUntil, isNotNull);
