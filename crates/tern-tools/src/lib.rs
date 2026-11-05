@@ -93,7 +93,6 @@ mod ingestion_tests {
             &mut registry,
             BuiltinOptions {
                 store: tern_store::Store::open_in_memory().unwrap(),
-                guard: paths::Guard::for_data_dir(dir.path()),
                 skills_dir: dir.path().join("skills"),
                 sandbox: Arc::new(tern_sandbox::HostBackend::default()),
                 shell_timeout: Duration::from_secs(5),
