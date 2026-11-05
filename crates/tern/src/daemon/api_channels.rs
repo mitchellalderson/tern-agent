@@ -200,6 +200,9 @@ struct CreateBody {
     title: Option<String>,
     kind: Option<String>,
     instructions: Option<String>,
+    /// The channel's folder (a workspace id or a folder path), set at
+    /// creation so its first run already uses it.
+    workspace: Option<String>,
 }
 
 async fn create(
@@ -224,6 +227,16 @@ async fn create(
         .map(|t| t.trim().to_owned())
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| slug.clone());
+    // Checked before anything is created: a refused folder makes no channel.
+    let ws = match b.workspace.as_deref() {
+        Some(w) => Some(m.rt.resolve_ws_ref(w).map_err(|e| {
+            match e.downcast_ref::<crate::workspaces::Refused>() {
+                Some(r) => ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{r}")),
+                None => bad(e),
+            }
+        })?),
+        None => None,
+    };
     let row =
         m.rt.store
             .create_channel(&ChannelRow {
@@ -236,6 +249,10 @@ async fn create(
                 ..ChannelRow::default()
             })
             .map_err(internal)?;
+    if let Some(ws) = &ws {
+        m.rt.bind_workspace(tern_store::Bind::Channel(&row.id), Some(ws))
+            .map_err(bad)?;
+    }
     m.channels_changed();
     Ok((StatusCode::CREATED, Json(channel_view(&m, row))))
 }
@@ -590,6 +607,10 @@ struct SendBody {
     #[serde(default)]
     new_topic: bool,
     model: Option<String>,
+    /// The folder for this conversation (a workspace id or a folder path).
+    /// A topic channel is bound to it from this run on; in Home a different
+    /// folder starts a new topic in it, so the first run already uses it.
+    workspace: Option<String>,
 }
 
 async fn send(
@@ -599,9 +620,19 @@ async fn send(
 ) -> ApiResult<Sent> {
     let c = find(&m, &id)?;
     let sent = m
-        .send_to_channel(&c, &b.text, b.reply_to, b.new_topic, b.model.as_deref())
+        .send_to_channel_in(
+            &c,
+            &b.text,
+            b.reply_to,
+            b.new_topic,
+            b.model.as_deref(),
+            b.workspace.as_deref(),
+        )
         .await
-        .map_err(bad)?;
+        .map_err(|e| match e.downcast_ref::<crate::workspaces::Refused>() {
+            Some(r) => ApiError(StatusCode::UNPROCESSABLE_ENTITY, format!("{r}")),
+            None => bad(e),
+        })?;
     Ok(Json(sent))
 }
 

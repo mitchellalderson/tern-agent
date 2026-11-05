@@ -106,13 +106,17 @@ impl Manager {
     /// agents it mentions (`Manager::send_to_topic`); in Home it is a run in the current
     /// segment, or in a new one when §2.6 says to cut (`new_topic` forces
     /// it). Where a run is already working, the text is queued for it.
-    pub async fn send_to_channel(
+    /// The folder the conversation should use is a workspace id or path: a
+    /// topic channel is bound to it first; Home starts a new topic in it when
+    /// it isn't Home's current folder.
+    pub async fn send_to_channel_in(
         self: &Arc<Self>,
         channel: &ChannelRow,
         text: &str,
         reply_to: Option<i64>,
         new_topic: bool,
         model: Option<&str>,
+        workspace: Option<&str>,
     ) -> anyhow::Result<Sent> {
         if text.trim().is_empty() {
             bail!("text is empty");
@@ -120,11 +124,28 @@ impl Manager {
         if channel.archived_at.is_some() {
             bail!("#{} is archived", channel.slug);
         }
+        let ws = match workspace {
+            Some(w) => Some(self.rt.resolve_ws_ref(w)?),
+            None => None,
+        };
         if channel.kind == "main" {
             if let Some(to) = reply_to {
                 return self.reply_in_main(channel, to, text, model).await;
             }
-            return self.send_home(channel, text, new_topic, model).await;
+            return self
+                .send_home(channel, text, new_topic, model, ws.as_ref())
+                .await;
+        }
+        if let Some(ws) = &ws
+            && self
+                .rt
+                .store
+                .bound_workspace(tern_store::Bind::Channel(&channel.id))?
+                .as_deref()
+                != Some(ws.id.as_str())
+        {
+            self.rt
+                .bind_workspace(tern_store::Bind::Channel(&channel.id), Some(ws))?;
         }
         self.send_to_topic(channel, text, reply_to, model, None)
             .await
@@ -153,7 +174,7 @@ impl Manager {
         } else {
             text.to_owned()
         };
-        self.send_home(channel, &input, false, model).await
+        self.send_home(channel, &input, false, model, None).await
     }
 
     /// A send into Home (§2.6, §4).
@@ -163,6 +184,7 @@ impl Manager {
         text: &str,
         new_topic: bool,
         model: Option<&str>,
+        workspace: Option<&tern_store::WorkspaceRow>,
     ) -> anyhow::Result<Sent> {
         let head = match &channel.main_session_id {
             Some(id) => self.rt.store.session(id)?,
@@ -170,6 +192,10 @@ impl Manager {
         };
         let Some(head) = head else {
             let session = self.main_thread(channel)?;
+            if let Some(w) = workspace {
+                self.rt
+                    .bind_workspace(tern_store::Bind::Session(&session), Some(w))?;
+            }
             let started = self
                 .start(Some(&session), model, text, "api", "user", None)
                 .await?;
@@ -182,6 +208,15 @@ impl Manager {
                 woke: Vec::new(),
             });
         };
+        // A different folder starts a new topic: the old transcript talks
+        // about the old folder's paths, and mixing them is how a model
+        // writes to the wrong tree.
+        let mut new_topic = new_topic;
+        if let Some(w) = workspace
+            && self.rt.store.resolve_workspace(&head.id)?.0 != w.id
+        {
+            new_topic = true;
+        }
         if !new_topic && let Some((run_id, _)) = self.queue_message(&head.id, text)? {
             return Ok(Sent {
                 post: None,
@@ -200,6 +235,12 @@ impl Manager {
             }
             None => head.clone(),
         };
+        if let Some(w) = workspace
+            && session.id != head.id
+        {
+            self.rt
+                .bind_workspace(tern_store::Bind::Session(&session.id), Some(w))?;
+        }
         let started = self
             .start(Some(&session.id), model, text, "api", "user", None)
             .await?;

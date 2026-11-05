@@ -20,6 +20,7 @@ pub mod api_skills;
 mod api_subagents;
 pub mod api_tasks;
 mod api_webhooks;
+pub mod api_workspaces;
 pub mod auth;
 pub mod channels;
 pub mod delegations;

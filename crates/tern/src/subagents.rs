@@ -714,6 +714,16 @@ impl Subagents {
             return self.handle(&child);
         }
         let fail = |m: String| Err(anyhow::Error::msg(m));
+        // Narrowing to a subfolder: only ever deeper inside the caller's own
+        // handle. Refused here, before anything is created.
+        let narrowed = match req.subdir.as_deref() {
+            Some(sub) => Some(
+                ctx.scope
+                    .narrow(sub)
+                    .map_err(|e| anyhow::Error::msg(ctx.scope.fail("agent_spawn", sub, e)))?,
+            ),
+            None => None,
+        };
         if !valid_label(&req.label) {
             return fail(format!(
                 "invalid label {:?}: use lowercase letters, digits and dashes (up to 32), e.g. \"pricing-research\"",
@@ -844,6 +854,14 @@ impl Subagents {
                     self.store
                         .set_run_autonomy(&run_id, inherited.min(ceiling).as_str())?;
                 }
+            }
+            if let Some(n) = &narrowed {
+                self.store.set_run_workspace(
+                    &run_id,
+                    n.id(),
+                    &n.root().to_string_lossy(),
+                    n.subdir().map(|s| s.to_string_lossy()).as_deref(),
+                )?;
             }
             if req.post {
                 self.store.set_run_can_post(&run_id)?;
@@ -1627,6 +1645,7 @@ mod tests {
             budget_tokens: budget,
             post: false,
             agent: None,
+            subdir: None,
         };
         let got = child_limits(&limits, &req(None, None));
         assert_eq!((got.max_iterations, got.budget_tokens), (30, Some(400_000)));

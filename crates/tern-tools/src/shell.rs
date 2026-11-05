@@ -99,18 +99,23 @@ impl Shell {
     }
 
     /// What the OS does for a command in this run's folder: a verified
-    /// sandbox bounds it, a container bounds it unproven, and with no sandbox
-    /// at all it runs as the user. A probe still running counts as no
-    /// sandbox (fail closed; the daemon warms it at startup), so an unattended
-    /// run never runs a command on a guess. Recorded on the scope for whoever
-    /// asks (`ToolCtx.scope.shell_bound()`).
+    /// sandbox bounds it, a container (or a check still running) bounds it
+    /// unproven, and with no sandbox at all, or one whose check failed, it
+    /// runs as the user. Recorded on the scope for whoever asks
+    /// (`ToolCtx.scope.shell_bound()`).
     pub fn bound(&self, ctx: &ToolCtx) -> ShellBound {
         let v = self.backend.verify(ctx.workspace());
         let bound = if v.is_verified() {
             ShellBound::Bounded
         } else if self.backend.is_container() {
             ShellBound::BoundedUnverified
+        } else if self.backend.unconfined() {
+            ShellBound::Unbounded
+        } else if v.reason().is_some_and(|r| r.contains("still checking")) {
+            // The check hasn't landed (the daemon starts it at launch).
+            ShellBound::BoundedUnverified
         } else {
+            // The check ran and the sandbox didn't hold.
             ShellBound::Unbounded
         };
         ctx.scope.set_shell_bound(bound);

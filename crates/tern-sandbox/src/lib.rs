@@ -101,15 +101,21 @@ pub trait SandboxBackend: Send + Sync {
         true
     }
 
-    /// Whether the OS sandbox is confirmed active for commands run in
-    /// `workspace` (see [`HostBackend::verify`]). A backend that can't be
-    /// probed says so: nothing may waive an approval on its account.
     /// Whether commands run in a container (so confinement is by mounts and
     /// can't be probed), as opposed to a sandbox on this machine.
     fn is_container(&self) -> bool {
         false
     }
 
+    /// Whether nothing confines commands here, known without probing: the
+    /// confinement is off, or wanted but unavailable on this machine.
+    fn unconfined(&self) -> bool {
+        false
+    }
+
+    /// Whether the OS sandbox is confirmed active for commands run in
+    /// `workspace` (see [`HostBackend::verify`]). A backend that can't be
+    /// probed says so: nothing may waive an approval on its account.
     fn verify(&self, _workspace: &Path) -> Verification {
         Verification::not_verified("this backend's confinement can't be probed")
     }
@@ -429,6 +435,13 @@ impl SandboxBackend for HostBackend {
 
     fn writable_roots(&self, workspace: &Path) -> Vec<PathBuf> {
         policy::writable_roots(&self.policy, workspace)
+    }
+
+    fn unconfined(&self) -> bool {
+        matches!(
+            self.confinement(),
+            Confinement::Off | Confinement::Unavailable(_)
+        )
     }
 
     /// `network = false` only holds where an OS sandbox enforces it.

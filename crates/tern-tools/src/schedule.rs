@@ -818,6 +818,12 @@ impl Tool for ScheduleCreate {
             Ok(r) => r,
             Err(e) => return ToolResult::error(e),
         };
+        // It keeps the folder (and any narrowing) of the run that made it: a
+        // routine never drifts to another workspace, and if that folder is
+        // gone it pauses rather than run elsewhere.
+        if let Err(e) = self.store.inherit_schedule_workspace(&row.id, &ctx.run_id) {
+            return ToolResult::error(format!("saving its folder: {e}"));
+        }
         // Made in a topic channel, it posts there, and its agent joins it.
         if let Some(topic) = topic_of(&self.store, &ctx.session_id) {
             let filed = self

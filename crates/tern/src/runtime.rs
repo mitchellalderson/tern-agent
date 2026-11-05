@@ -326,6 +326,9 @@ impl Runtime {
             mock,
             deny,
         };
+        if let Err(e) = rt.ensure_default_workspace() {
+            tracing::warn!(error = %e, "couldn't set up the default workspace");
+        }
         rt.seed_starter_agents();
         rt.refresh_agent_chains();
         Ok(rt)
@@ -826,6 +829,32 @@ impl Runtime {
             })
             .map(|names| serde_json::to_string(&names))
             .transpose()?;
+        // The folder this run will have, checked now: a folder that is missing,
+        // replaced or refused means the run doesn't start (and nothing falls
+        // back to another folder).
+        let schedule = if trigger == "cron" {
+            self.store.schedule_for_session(&session.id)?.map(|s| s.id)
+        } else {
+            None
+        };
+        let frozen = match self.freeze_workspace(&session.id, schedule.as_deref()) {
+            Ok(f) => f,
+            Err(e) => {
+                if let (Some(id), Some(ws)) = (
+                    schedule.as_deref(),
+                    e.downcast_ref::<crate::workspaces::WorkspaceError>(),
+                ) {
+                    // A routine bound to a folder that isn't usable pauses
+                    // until the user fixes it, rather than running elsewhere.
+                    let until = tern_store::now_ms() + 10 * 365 * 24 * 3600 * 1000;
+                    let _ = self.store.pause_schedule(id, until, &ws.to_string());
+                    let _ = self
+                        .changes
+                        .send(Change::SchedulesChanged { id: id.to_owned() });
+                }
+                return Err(e);
+            }
+        };
         let run = self.agent.start_run_as(
             &session.id,
             text,
@@ -835,6 +864,12 @@ impl Runtime {
             tool_scope.as_deref(),
             agent.private_memory().then_some("private"),
             taint,
+        )?;
+        self.store.set_run_workspace(
+            &run.id,
+            &frozen.id,
+            &frozen.root.to_string_lossy(),
+            frozen.subdir.as_deref(),
         )?;
         // Frozen on the run, like its model (tooling spec §5.4); a routine
         // overrides it in `Manager::start_scheduled`, and the agent's

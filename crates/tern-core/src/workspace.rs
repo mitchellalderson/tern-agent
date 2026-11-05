@@ -17,6 +17,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub mod validate;
+
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, File, MetadataExt, OpenOptions, OpenOptionsExt};
 use serde::{Deserialize, Serialize};

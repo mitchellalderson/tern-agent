@@ -248,10 +248,28 @@ impl Agent {
         {
             return s.clone();
         }
-        let id = "default";
-        let root = self.cfg.workspace.clone();
-        let ro: Vec<Arc<crate::workspace::ReadRoot>> = Vec::new();
-        let sub: Option<&Path> = None;
+        // The folder frozen on the run when it started (and what a sub-agent
+        // narrowed it to), with its read-only extra folders; a run with none
+        // frozen predates workspaces and has the default.
+        let id = run.workspace_id.as_deref().unwrap_or("default");
+        let root = run
+            .workspace_root
+            .as_deref()
+            .map_or_else(|| self.cfg.workspace.clone(), PathBuf::from);
+        let ro: Vec<Arc<crate::workspace::ReadRoot>> = self
+            .store
+            .workspace_roots(id)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|r| match crate::workspace::ReadRoot::open(Path::new(&r.path)) {
+                Ok(r) => Some(Arc::new(r)),
+                Err(e) => {
+                    tracing::warn!(run = %run.id, error = %e, "a read-only folder isn't available");
+                    None
+                }
+            })
+            .collect();
+        let sub = run.workspace_subdir.as_deref().map(Path::new);
         let sink = self.refusal_sink(run);
         let scope = match WorkspaceScope::open(
             id,
