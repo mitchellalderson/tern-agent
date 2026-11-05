@@ -60,6 +60,10 @@ impl TernHome {
     pub fn drafts_dir(&self) -> PathBuf {
         self.connectors_dir().join("drafts")
     }
+    /// Code auto mode's shadow repositories, one per workspace.
+    pub fn checkpoints_dir(&self) -> PathBuf {
+        self.root.join("checkpoints")
+    }
     pub fn logs_dir(&self) -> PathBuf {
         self.root.join("logs")
     }

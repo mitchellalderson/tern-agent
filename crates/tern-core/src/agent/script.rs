@@ -465,7 +465,9 @@ impl Agent {
             });
             let Asked { outcome, why } = asked.value;
             match outcome {
-                ApprovalOutcome::Approved | ApprovalOutcome::ApprovedByGrant => {}
+                ApprovalOutcome::Approved
+                | ApprovalOutcome::ApprovedByGrant
+                | ApprovalOutcome::ApprovedByMode => {}
                 ApprovalOutcome::ApprovedForRun => s.egress.allow_all = true,
                 ApprovalOutcome::Deferred => {
                     // The outbox's contract: carry on with whatever doesn't
@@ -484,6 +486,9 @@ impl Agent {
                     return refuse(why);
                 }
             }
+        } else if !recorded && super::code_mode::by_code_mode(&name, &policy, gate) {
+            // A tool call from a script that code auto mode let through.
+            self.code_mode_step(s.run, &call, &s.ctx).await?;
         }
         reached.extend(host.clone());
 

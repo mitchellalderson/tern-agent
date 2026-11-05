@@ -303,6 +303,31 @@ impl Tool for Shell {
         // The call's own plan (by run and call id): the script, its hash and
         // whether a grant may be offered, decided once, here.
         let mut entry = self.judge(ctx, args);
+        // Code auto mode (docs/alpha-coding-agent.md §3.2): runs unasked only
+        // with a verified sandbox, no network of any kind, and nothing the
+        // classifier asks about. The folder is always the command's cwd.
+        let bound = self.bound(ctx);
+        let verdict = crate::shell_class::classify(args["command"].as_str().unwrap_or_default());
+        let asked_network = args["network"] == true;
+        let auto_code = bound == ShellBound::Bounded
+            && !self.backend.network_reachable()
+            && !asked_network
+            && verdict.is_auto();
+        if ctx.scope.code_mode() && !auto_code && entry.notice.is_none() {
+            let why = if asked_network {
+                "it asked for network access".to_owned()
+            } else if bound != ShellBound::Bounded {
+                "the sandbox isn't confirmed active, so code auto mode covers file edits only"
+                    .to_owned()
+            } else if self.backend.network_reachable() {
+                "the sandbox allows network access".to_owned()
+            } else if let crate::shell_class::Verdict::Ask(w) = &verdict {
+                w.clone()
+            } else {
+                "code auto mode doesn't cover it".to_owned()
+            };
+            entry.notice = Some(format!("Asked because: {why}."));
+        }
         if let Ok(mut plans) = self.plans.lock() {
             let id = Self::planning_id();
             // A re-plan (an effect probe) must not forget that a grant
@@ -322,8 +347,8 @@ impl Tool for Shell {
         // by the allowlist (`approval::allowed_by`).
         // The reach is the folder only where the OS bounds the command; with
         // no sandbox it is "unbounded" and, unattended, refused (`approval::check`).
-        let bound = self.bound(ctx);
         ToolPolicy::new(Effect::Destructive, false)
+            .auto_code(auto_code)
             .forced(true)
             .reaching(if bound == ShellBound::Bounded {
                 Reach::Workspace

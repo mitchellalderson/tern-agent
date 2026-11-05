@@ -40,6 +40,11 @@ pub enum Autonomy {
     /// The §5.1 defaults.
     #[default]
     Supervised,
+    /// Code auto mode (docs/alpha-coding-agent.md): per-agent opt-in. Writes
+    /// inside the workspace and sandbox-verified commands that pass the
+    /// shell classifier don't ask in untainted runs ([`ToolPolicy::auto_code`]);
+    /// everything else asks as in `supervised`. `autonomous` includes it.
+    Code,
     /// `write` doesn't ask in untainted runs; `destructive` still does.
     Autonomous,
     /// Nothing asks, tainted or not. Forbidden tools stay forbidden.
@@ -51,6 +56,7 @@ impl Autonomy {
         match self {
             Autonomy::ReadOnly => "readonly",
             Autonomy::Supervised => "supervised",
+            Autonomy::Code => "code",
             Autonomy::Autonomous => "autonomous",
             Autonomy::Yolo => "yolo",
         }
@@ -60,6 +66,7 @@ impl Autonomy {
         match s {
             "readonly" => Some(Autonomy::ReadOnly),
             "supervised" => Some(Autonomy::Supervised),
+            "code" => Some(Autonomy::Code),
             "autonomous" => Some(Autonomy::Autonomous),
             "yolo" => Some(Autonomy::Yolo),
             _ => None,
@@ -217,6 +224,12 @@ pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, gate: Gate) -> Chec
     }
     if gate.autonomy == Autonomy::Autonomous && effect == Effect::Write && !policy.requires_approval
     {
+        return Check::Allow;
+    }
+    // Code auto mode: a command the shell classifier cleared inside a
+    // verified sandbox ([`ToolPolicy::auto_code`]). Tainted runs returned
+    // above; an unconfined command returned above too.
+    if gate.autonomy >= Autonomy::Code && policy.auto_code {
         return Check::Allow;
     }
     match effect {
@@ -399,7 +412,13 @@ pub enum ApprovalOutcome {
     /// Approved because the user's scoped answer to an identical request
     /// covered this one ([`Decision::CoveredByGrant`]): they never saw it.
     ApprovedByGrant,
+    /// Approved by the run's autonomy mode, not a person: code auto mode
+    /// ([`CODE_MODE_REASON`]).
+    ApprovedByMode,
 }
+
+/// Why a call ran unasked under code auto mode (ledger `reason`).
+pub const CODE_MODE_REASON: &str = "code-mode";
 
 impl ApprovalOutcome {
     /// The call may run.
@@ -409,6 +428,7 @@ impl ApprovalOutcome {
             ApprovalOutcome::Approved
                 | ApprovalOutcome::ApprovedForRun
                 | ApprovalOutcome::ApprovedByGrant
+                | ApprovalOutcome::ApprovedByMode
         )
     }
 }
@@ -832,6 +852,9 @@ pub fn glob_match(pattern: &str, s: &str) -> bool {
     }
     rest.len() >= last.len() && rest.ends_with(last)
 }
+
+#[cfg(test)]
+mod code_tests;
 
 #[cfg(test)]
 mod tests {

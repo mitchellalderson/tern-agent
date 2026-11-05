@@ -284,6 +284,7 @@ impl Runtime {
                     config.outbox.expire_hours.saturating_mul(3600),
                 ),
                 script: config.python.script_limits(),
+                checkpoints: Some(home.checkpoints_dir()),
                 ..AgentConfig::default()
             },
         )

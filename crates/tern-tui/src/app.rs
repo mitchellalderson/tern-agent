@@ -1797,7 +1797,9 @@ impl App {
             } => {
                 if !matches!(
                     outcome,
-                    ApprovalOutcome::Approved | ApprovalOutcome::ApprovedByGrant
+                    ApprovalOutcome::Approved
+                        | ApprovalOutcome::ApprovedByGrant
+                        | ApprovalOutcome::ApprovedByMode
                 ) {
                     let why = if outcome == ApprovalOutcome::Timeout {
                         "approval timed out"
