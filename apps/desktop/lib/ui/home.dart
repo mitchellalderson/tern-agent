@@ -76,8 +76,23 @@ class _HomeState extends State<Home> {
   /// Closing the window quits the app; Settings decides whether tern
   /// stops with it.
   Future<AppExitResponse> _onExit() async {
-    if (_remote || _prefs.onClose != OnClose.quitTern) {
-      return AppExitResponse.exit;
+    if (_remote) return AppExitResponse.exit;
+    if (_prefs.onClose != OnClose.quitTern) {
+      // Leaving tern running with nothing in the menu bar: say so once, here.
+      if ((widget.store.health?.isLocal ?? false) &&
+          await daemonHasNoTray(_control)) {
+        if (!mounted) return AppExitResponse.exit;
+        switch (await askCloseTrayless(context)) {
+          case CloseChoice.cancel:
+            return AppExitResponse.cancel;
+          case CloseChoice.keepRunning:
+            return AppExitResponse.exit;
+          case CloseChoice.stop:
+            break;
+        }
+      } else {
+        return AppExitResponse.exit;
+      }
     }
     final quit = await quitTernCompletely(
       context,

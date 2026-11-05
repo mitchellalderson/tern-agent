@@ -161,6 +161,46 @@ void main() {
     expect(exited, isTrue);
   });
 
+  group('closing the window with no menu-bar icon', () {
+    TernControl status(String json) => TernControl(
+      bin: '/fake/tern',
+      env: const {'HOME': '/nonexistent'},
+      run: (bin, args) async => ProcessResult(0, 0, json, ''),
+    );
+
+    test('started at login means there is a tray', () async {
+      expect(await daemonHasNoTray(status('{"at_login": true}')), isFalse);
+    });
+
+    test('not started at login, or unknown, means none', () async {
+      expect(await daemonHasNoTray(status('{"at_login": false}')), isTrue);
+      expect(await daemonHasNoTray(TernControl(bin: null)), isTrue);
+    });
+
+    for (final (label, want) in [
+      ('Keep running', CloseChoice.keepRunning),
+      ('Stop tern', CloseChoice.stop),
+      ('Cancel', CloseChoice.cancel),
+    ]) {
+      testWidgets('asks, and "$label" is the answer', (tester) async {
+        late BuildContext ctx;
+        await tester.pumpWidget(
+          _app((c) {
+            ctx = c;
+            return const SizedBox();
+          }),
+        );
+        final answer = askCloseTrayless(ctx);
+        await tester.pumpAndSettle();
+        expect(find.text('Leave tern running?'), findsOneWidget);
+        expect(find.textContaining('menu-bar icon'), findsOneWidget);
+        await tester.tap(find.text(label));
+        await tester.pumpAndSettle();
+        expect(await answer, want);
+      });
+    }
+  });
+
   test('a tern that ignores shutdown is stopped with `tern stop`', () async {
     final client = _FakeClient(stops: false);
     final runs = <List<String>>[];
