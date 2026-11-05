@@ -704,8 +704,27 @@ mod tests {
         resolve(&ok(cmd), w, &[w.to_path_buf()], path())
     }
 
+    /// Whether this host's `python3` passes the inspection. Hosts with a
+    /// startup `.pth` that runs an `import` (Ubuntu's `zope.interface`
+    /// `-nspkg.pth`) are refused on purpose, so tests that need a covered
+    /// interpreter skip there.
+    fn host_python_usable() -> bool {
+        let (_d, w) = ws();
+        std::fs::write(w.join("a.py"), "x").unwrap();
+        match py(&w, "python3 a.py") {
+            Ok(_) => true,
+            Err(why) => {
+                eprintln!("skipping: this host's python3 isn't coverable: {why}");
+                false
+            }
+        }
+    }
+
     #[test]
     fn resolves_a_regular_file_inside_the_workspace() {
+        if !host_python_usable() {
+            return;
+        }
         let (_d, w) = ws();
         std::fs::create_dir(w.join("sub")).unwrap();
         std::fs::write(w.join("sub/a.py"), "print(1)").unwrap();
@@ -723,6 +742,9 @@ mod tests {
 
     #[test]
     fn refuses_missing_outside_symlinked_out_and_non_regular_scripts() {
+        if !host_python_usable() {
+            return;
+        }
         let (_d, w) = ws();
         let (_o, outside) = ws();
         std::fs::write(outside.join("evil.py"), "print(1)").unwrap();
@@ -791,6 +813,9 @@ mod tests {
 
     #[test]
     fn a_venv_style_launcher_in_a_writable_place_is_refused() {
+        if !host_python_usable() {
+            return;
+        }
         let Some(real) = real_python() else {
             return;
         };
@@ -879,6 +904,9 @@ mod tests {
 
     #[test]
     fn a_writable_site_packages_stdlib_or_prefix_is_refused() {
+        if !host_python_usable() {
+            return;
+        }
         let Some(real) = real_python() else {
             return;
         };
