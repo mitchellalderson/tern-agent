@@ -72,7 +72,7 @@ step() { printf '\n==> %s\n' "$*"; }
 if [ -z "$bundle" ]; then
   [ "$(uname -s)" = Linux ] || { echo "flutter build linux needs Linux; pass --bundle <dir> to pack an existing bundle" >&2; exit 1; }
   step "flutter build linux --release"
-  (cd "$desktop" && flutter build linux --release)
+  (cd "$desktop" && flutter build linux --release --dart-define=TERN_APP_VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$root/Cargo.toml")")
   bundle="$desktop/build/linux/$flutter_arch/release/bundle"
 fi
 [ -x "$bundle/tern_desktop" ] || { echo "no tern_desktop in $bundle" >&2; exit 1; }

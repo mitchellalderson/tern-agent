@@ -24,6 +24,7 @@ import 'side_panel.dart';
 import 'sidebar.dart';
 import 'tasks.dart';
 import 'thread_pane.dart';
+import 'version_banner.dart';
 import 'where_to_run.dart';
 import 'widgets.dart';
 
@@ -137,7 +138,7 @@ class _HomeState extends State<Home> {
                 if (store.health == null) {
                   return OfflineView(store: store, onSettings: _settings);
                 }
-                return LayoutBuilder(
+                final content = LayoutBuilder(
                   builder: (context, box) {
                     // Narrow windows drop the panel before the conversation.
                     final panel = _panel && box.maxWidth > 980;
@@ -224,6 +225,18 @@ class _HomeState extends State<Home> {
                       ],
                     );
                   },
+                );
+                final skew = store.coreSkew;
+                if (skew == null) return content;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    VersionBanner(
+                      message: skew,
+                      onRestart: _canRestart ? _restartTern : null,
+                    ),
+                    Expanded(child: content),
+                  ],
                 );
               },
             ),

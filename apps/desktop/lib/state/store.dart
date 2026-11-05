@@ -6,6 +6,7 @@ import 'package:tern_client/tern_client.dart';
 
 import 'notifier.dart';
 import 'transcript.dart';
+import 'version.dart';
 
 enum Link { connecting, online, offline }
 
@@ -643,6 +644,18 @@ class TernStore extends ChangeNotifier {
   /// so say why instead.
   bool get daemonTooOld =>
       health != null && !health!.features.contains('providers');
+
+  /// The core running here is not the version this app was built with:
+  /// what to tell the user, else null (see [coreSkewMessage]).
+  String? get coreSkew {
+    final h = health;
+    if (h == null) return null;
+    return coreSkewMessage(
+      appVersion: appVersion,
+      coreVersion: h.version,
+      local: h.isLocal,
+    );
+  }
 
   static const daemonTooOldMessage =
       'The running tern daemon is older than this app and has no model '
