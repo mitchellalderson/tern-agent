@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../state/store.dart';
-import '../state/transcript.dart';
 import '../theme.dart';
-import 'agents.dart';
 import 'inspector.dart';
 import 'memory_section.dart';
 import 'recent_work.dart';
@@ -11,8 +9,9 @@ import 'routines.dart';
 import 'tools.dart';
 import 'widgets.dart';
 
-/// What the agent is doing (spec §2.3): per agent with profiles, its
-/// routines, tools and memory (agent profiles §7.2).
+/// The agent's routines, usage, tools and memory (agent profiles §7.2). What
+/// it is doing right now is already in the conversation, so it isn't repeated
+/// here; "All runs…" opens the journal.
 class SidePanel extends StatelessWidget {
   const SidePanel({super.key, required this.store, required this.onClose});
 
@@ -22,8 +21,6 @@ class SidePanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
-    final t = store.current;
-    final work = t?.items.whereType<WorkItem>().lastOrNull;
     final usage = store.selected == null ? null : store.usage[store.selected];
     final labels = Theme.of(context).textTheme.labelSmall;
     return Container(
@@ -60,104 +57,6 @@ class SidePanel extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
               children: [
-                Text('Now', style: labels),
-                const SizedBox(height: 8),
-                if (t?.activeRun == null && work == null)
-                  Text('Idle', style: Theme.of(context).textTheme.bodySmall)
-                else ...[
-                  Text(
-                    t?.activeRun != null ? 'Running' : 'Last run',
-                    style: TextStyle(fontSize: 12.5, color: c.muted),
-                  ),
-                  const SizedBox(height: 6),
-                  for (final s in work?.steps ?? const <ToolStep>[])
-                    InkWell(
-                      borderRadius: BorderRadius.circular(6),
-                      // Into the run's journal: full input, output, timing.
-                      onTap: switch ((store.selected, work?.runId)) {
-                        (final String session, final String run) =>
-                          () => showInspector(
-                            context,
-                            store,
-                            session: session,
-                            run: run,
-                          ),
-                        _ => null,
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 3),
-                        child: Row(
-                          children: [
-                            Icon(
-                              switch (s.status) {
-                                StepStatus.ok => Icons.check,
-                                StepStatus.error => Icons.close,
-                                StepStatus.running => Icons.more_horiz,
-                              },
-                              size: 14,
-                              color: switch (s.status) {
-                                StepStatus.ok => c.ok,
-                                StepStatus.error => c.error,
-                                StepStatus.running => c.muted,
-                              },
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                s.summary,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 12.5),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
-                if ((t?.items.whereType<AgentsItem>().lastOrNull?.children ??
-                        const <AgentChild>[])
-                    case final kids when kids.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Text(
-                    'Agents',
-                    style: TextStyle(fontSize: 12.5, color: c.muted),
-                  ),
-                  const SizedBox(height: 4),
-                  for (final k in kids)
-                    InkWell(
-                      borderRadius: BorderRadius.circular(6),
-                      onTap: switch ((store.selected, k.runId)) {
-                        (final String session, final String run) =>
-                          () => showInspector(
-                            context,
-                            store,
-                            session: session,
-                            run: run,
-                          ),
-                        _ => null,
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 3),
-                        child: Row(
-                          children: [
-                            SizedBox(width: 16, child: AgentGlyph(k.status)),
-                            const SizedBox(width: 6),
-                            Text(k.label, style: mono.copyWith(fontSize: 12)),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                agentActivity(k, store),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(fontSize: 12, color: c.muted),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
                 if (store.selected case final session?
                     when (store.sessions.any(
                       (s) => s.id == session && s.runs > 0,

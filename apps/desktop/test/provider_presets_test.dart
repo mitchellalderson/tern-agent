@@ -135,7 +135,10 @@ Future<void> _font(String family, List<String> paths) async {
   }
 }
 
-Future<void> _pumpSetup(WidgetTester tester, _Fake client, TernStore store, {
+Future<void> _pumpSetup(
+  WidgetTester tester,
+  _Fake client,
+  TernStore store, {
   ValueChanged<ProviderStatus>? onDone,
   bool dark = false,
   GlobalKey? key,
@@ -261,9 +264,7 @@ void main() {
     expect(find.byKey(const ValueKey('preset-url')), findsOneWidget);
     expect(find.text('https://openrouter.ai/api/v1'), findsNothing);
     expect(
-      tester
-          .widget<Text>(find.byKey(const ValueKey('preset-url')))
-          .data,
+      tester.widget<Text>(find.byKey(const ValueKey('preset-url'))).data,
       'Talks to https://openrouter.ai/api/v1',
     );
     expect(find.text('Get an API key ↗'), findsOneWidget);
@@ -301,7 +302,7 @@ void main() {
     final client = _Fake()
       ..failWith =
           "openrouter.ai didn't recognise that address (HTTP 404). Check the "
-              'URL; it usually ends in /v1.';
+          'URL; it usually ends in /v1.';
     final store = _store(client);
     await _pumpSetup(tester, client, store);
     await tester.tap(find.text('OpenRouter'));
@@ -310,7 +311,10 @@ void main() {
     await tester.tap(find.text('Test connection'));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('setup-error')), findsOneWidget);
-    expect(find.textContaining("didn't recognise that address"), findsOneWidget);
+    expect(
+      find.textContaining("didn't recognise that address"),
+      findsOneWidget,
+    );
     expect(find.textContaining('{"error"'), findsNothing);
     expect(find.text('Test connection'), findsOneWidget);
     expect(client.saved, isEmpty);
@@ -422,7 +426,12 @@ void main() {
       expect(find.textContaining('HTTP 404'), findsNothing);
       await tester.tap(find.byKey(const ValueKey('show-error-details')));
       await tester.pump();
-      expect(tester.widget<SelectableText>(find.byKey(const ValueKey('raw-error'))).data, raw);
+      expect(
+        tester
+            .widget<SelectableText>(find.byKey(const ValueKey('raw-error')))
+            .data,
+        raw,
+      );
 
       await tester.tap(find.byKey(const ValueKey('fix-in-models')));
       await tester.pumpAndSettle();

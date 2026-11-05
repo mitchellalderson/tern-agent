@@ -184,6 +184,7 @@ class _MemorySectionState extends State<MemorySection> {
               TextButton(
                 key: const Key('memory-clear'),
                 style: TextButton.styleFrom(
+                  foregroundColor: c.muted,
                   visualDensity: VisualDensity.compact,
                   padding: const EdgeInsets.symmetric(horizontal: 6),
                   minimumSize: const Size(0, 24),

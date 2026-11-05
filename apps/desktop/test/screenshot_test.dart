@@ -64,9 +64,33 @@ ThemeData _withSymbols(ThemeData t) => t.copyWith(
   textTheme: t.textTheme.apply(fontFamilyFallback: const ['SymbolsFallback']),
 );
 
+/// Serves demo memories so the side panel doesn't show a load error.
+class _DemoClient extends TernClient {
+  _DemoClient() : super(const Endpoint.unix('/nonexistent'));
+
+  @override
+  Future<List<Memory>> memories({String? agent, String? query}) async => [
+    Memory(
+      id: 1,
+      content: 'Prefers short founder-voice openers, no sales language.',
+      createdAt: DateTime.now(),
+    ),
+    Memory(
+      id: 2,
+      content: 'Northwind is a paying customer. Never pitch them.',
+      createdAt: DateTime.now(),
+    ),
+    Memory(
+      id: 3,
+      content: 'Usage threshold for an activation follow-up: 100 events.',
+      createdAt: DateTime.now(),
+    ),
+  ];
+}
+
 TernStore demoStore() {
   final now = DateTime.now();
-  final store = TernStore(TernClient(const Endpoint.unix('/nonexistent')))
+  final store = TernStore(_DemoClient())
     ..link = Link.online
     ..health = const Health(
       pid: 1,
@@ -168,6 +192,7 @@ TernStore demoStore() {
       slug: 'research',
       name: 'Research',
       avatar: AvatarSpec(glyph: '★', color: 'teal'),
+      memory: 'shared',
       mainChannelId: 'dm:research',
     ),
     Agent(
@@ -175,6 +200,7 @@ TernStore demoStore() {
       slug: 'revops',
       name: 'RevOps',
       avatar: AvatarSpec(glyph: '■', color: 'amber'),
+      memory: 'shared',
       mainChannelId: 'dm:revops',
     ),
     Agent(
@@ -182,6 +208,7 @@ TernStore demoStore() {
       slug: 'growth',
       name: 'Growth',
       avatar: AvatarSpec(glyph: '▲', color: 'violet'),
+      memory: 'shared',
       mainChannelId: 'dm:growth',
     ),
     Agent(
@@ -189,6 +216,7 @@ TernStore demoStore() {
       slug: 'support',
       name: 'Support',
       avatar: AvatarSpec(glyph: '♥', color: 'pink'),
+      memory: 'shared',
       mainChannelId: 'dm:support',
     ),
   ];

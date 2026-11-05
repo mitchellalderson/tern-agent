@@ -184,19 +184,18 @@ void main() {
       findsOneWidget,
     );
     expect(inCard(scout, 'every connector you have'), findsOneWidget);
-    expect(inCard(scout, 'reads and writes your shared memory'), findsOneWidget);
-    expect(inCard(scout, 'Added capability: agent @scout: connectors: all'),
-        findsOneWidget);
     expect(
-      inCard(scout, 'You already have an agent @scout'),
+      inCard(scout, 'reads and writes your shared memory'),
       findsOneWidget,
     );
+    expect(
+      inCard(scout, 'Added capability: agent @scout: connectors: all'),
+      findsOneWidget,
+    );
+    expect(inCard(scout, 'You already have an agent @scout'), findsOneWidget);
     // Not repeated in the general WARNINGS list.
     expect(find.text('Warnings'), findsNothing);
-    expect(
-      find.textContaining('can use every built-in tool'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('can use every built-in tool'), findsOneWidget);
     // Reader is narrow: nothing to warn about, and kept as you have it.
     expect(inCard(reader, 'No autonomy ceiling'), findsOneWidget);
     expect(inCard(reader, 'builtins: read_only'), findsOneWidget);
@@ -232,10 +231,7 @@ void main() {
     expect(find.text('Agents: @scout, @reader'), findsOneWidget);
     await tester.tap(find.text('Remove'));
     await tester.pumpAndSettle();
-    expect(
-      find.textContaining('are archived, not deleted'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('are archived, not deleted'), findsOneWidget);
   });
 }
 
