@@ -402,6 +402,9 @@ impl Agent {
             tool_result: None,
         };
         let result = self.drive_inner(&run, &cancel, &mut outcome).await;
+        // Whatever the tools planned for this run's calls dies with it, however
+        // it ended (completed, failed, cancelled).
+        self.tools.forget_plans(&run.id, None);
         match result {
             Ok(status) => outcome.status = status,
             Err(e) => {
@@ -691,7 +694,10 @@ impl Agent {
                     match decision {
                         Ok(ApprovalOutcome::Approved | ApprovalOutcome::ApprovedByGrant) => {}
                         Ok(ApprovalOutcome::ApprovedForRun) => taint.allow_all_egress(),
-                        Ok(_) => continue,
+                        Ok(_) => {
+                            self.tools.forget_plans(&run.id, Some(&call.id));
+                            continue;
+                        }
                         Err(StepError::Cancelled) => return Ok(RunStatus::Interrupted),
                         Err(e) => return Err(e.into()),
                     }

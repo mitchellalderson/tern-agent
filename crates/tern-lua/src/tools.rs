@@ -136,6 +136,24 @@ impl Inspected {
         self.plans.lock().ok().and_then(|m| m.get(id).cloned())
     }
 
+    /// Drop one call's plan, or every plan of a run (`None`).
+    fn forget(&self, run_id: &str, call_id: Option<&str>) {
+        if let Ok(mut m) = self.plans.lock() {
+            match call_id {
+                Some(c) => {
+                    m.remove(&format!("{run_id}\0{c}"));
+                }
+                None => m.retain(|k, _| !k.starts_with(&format!("{run_id}\0"))),
+            }
+        }
+    }
+
+    /// How many plans are held (tests).
+    #[cfg(test)]
+    pub(crate) fn plans_held(&self) -> usize {
+        self.plans.lock().map_or(0, |m| m.len())
+    }
+
     /// The call's own plan, which it uses up.
     fn take_plan(&self, id: &str) -> Option<Plan> {
         self.plans.lock().ok().and_then(|mut m| m.remove(id))
@@ -412,6 +430,10 @@ impl Tool for ConnectorTest {
 
     fn allow_always(&self) -> bool {
         false
+    }
+
+    fn forget_plans(&self, run_id: &str, call_id: Option<&str>) {
+        self.inspected.forget(run_id, call_id);
     }
 
     /// What a scoped grant covers: this one tool of this draft, at exactly

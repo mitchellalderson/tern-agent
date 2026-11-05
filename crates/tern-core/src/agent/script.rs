@@ -26,7 +26,7 @@ use crate::approval::{self, ApprovalOutcome, Autonomy, Check, Gate};
 use crate::events::AgentEvent;
 use crate::journal::{InFlight, Outcome, StepError, StepKind, StepOutput, input_hash};
 use crate::script::{self, HostReply, HostRequest, ScriptEnv, ScriptHost, ScriptLimits};
-use crate::tool::{Effect, ToolCtx, ToolResult};
+use crate::tool::{Effect, ToolCtx, ToolResult, with_call};
 use crate::types::ToolCall;
 use crate::types::ToolSpec;
 
@@ -396,9 +396,13 @@ impl Agent {
             Check::Forbid(flag) => {
                 tracing::warn!(run = %s.run.id, tool = %name, flag, "refused a forbidden tool called from a script");
                 self.ledger_refused(s.run, &call, flag)?;
+                self.tools.forget_plans(&s.run.id, Some(&call.id));
                 return refuse(approval::forbidden_message(flag));
             }
-            Check::ReadOnly => return refuse(approval::READONLY_MESSAGE.to_owned()),
+            Check::ReadOnly => {
+                self.tools.forget_plans(&s.run.id, Some(&call.id));
+                return refuse(approval::READONLY_MESSAGE.to_owned());
+            }
             Check::Allow => recorded,
             Check::Ask { .. } => !host_granted || recorded,
         };
@@ -472,6 +476,7 @@ impl Agent {
                     ))));
                 }
                 ApprovalOutcome::Denied | ApprovalOutcome::Timeout => {
+                    self.tools.forget_plans(&s.run.id, Some(&call.id));
                     return refuse(why);
                 }
             }
@@ -534,7 +539,9 @@ impl Agent {
                 &input,
                 in_flight,
                 || async {
-                    let mut r = self.tools.call_in(scope, ctx, &call).await;
+                    // As a call of its own: tools find the plan made for this call id.
+                    let (mut r, _) =
+                        with_call(&call.id, self.tools.call_in(scope, ctx, &call)).await;
                     r.untrusted |= untrusted;
                     Ok(StepOutput::new(r))
                 },
@@ -620,7 +627,10 @@ impl Agent {
                     name: c["name"].as_str().unwrap_or_default().to_owned(),
                     input: c["input"].clone(),
                 };
-                if self.tools.policy(s.ctx, &call).effect != Effect::Read {
+                let effect = self.tools.policy(s.ctx, &call).effect;
+                // Only asked what it would do; it is not going to run.
+                self.tools.forget_plans(&s.run.id, Some(&call.id));
+                if effect != Effect::Read {
                     ran.push(self.tools.summarize(&call));
                 }
             } else if let Some(c) = old.get("ask") {

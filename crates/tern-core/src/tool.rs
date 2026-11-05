@@ -262,6 +262,10 @@ pub trait Tool: Send + Sync {
     fn grant_key(&self, _args: &Value) -> Option<GrantKey> {
         None
     }
+    /// Drop whatever [`Tool::policy`] planned for call `call_id` of `run_id`
+    /// (every call of the run when `None`): the call is not going to run,
+    /// or the run is over. Tools that keep nothing per call ignore it.
+    fn forget_plans(&self, _run_id: &str, _call_id: Option<&str>) {}
 }
 
 /// The precise thing a scoped grant covers ([`Tool::grant_key`]).
@@ -371,6 +375,14 @@ impl ToolRegistry {
     pub fn grant_key(&self, run_id: &str, call: &ToolCall) -> Option<GrantKey> {
         self.get(&call.name)
             .and_then(|t| planning(run_id, &call.id, || t.grant_key(&call.input)))
+    }
+
+    /// A call won't run (refused, denied, cancelled) or its run ended: tools
+    /// drop what they planned for it ([`Tool::forget_plans`]).
+    pub fn forget_plans(&self, run_id: &str, call_id: Option<&str>) {
+        for (_, t) in self.all() {
+            t.forget_plans(run_id, call_id);
+        }
     }
 
     pub fn allow_always(&self, call: &ToolCall) -> bool {

@@ -11,12 +11,12 @@ use crate::script::{HostReply, ScriptLimits};
 /// A `python` tool whose "script" is a list of calls: from its `calls`
 /// argument, or (without one) the next plan queued with `plan`. With
 /// `batch` they go out together, as `gather` would send them.
-struct Driver {
+pub(super) struct Driver {
     plans: Mutex<VecDeque<Vec<(&'static str, Value)>>>,
 }
 
 impl Driver {
-    fn new() -> Arc<Self> {
+    pub(super) fn new() -> Arc<Self> {
         Arc::new(Self {
             plans: Mutex::new(VecDeque::new()),
         })
@@ -84,7 +84,7 @@ impl Tool for Driver {
     }
 }
 
-fn agent_limited(
+pub(super) fn agent_limited(
     h: &Harness,
     script: Arc<Script>,
     tools: Vec<Arc<dyn Tool>>,
@@ -110,26 +110,26 @@ fn agent_limited(
     )
 }
 
-fn writable() -> ScriptLimits {
+pub(super) fn writable() -> ScriptLimits {
     ScriptLimits {
         allow_writes: true,
         ..ScriptLimits::default()
     }
 }
 
-fn python_turn(calls: Value, batch: bool) -> Reply {
+pub(super) fn python_turn(calls: Value, batch: bool) -> Reply {
     Reply::Tool(
         "python",
         json!({ "code": format!("# script making {calls}"), "calls": calls, "batch": batch }),
     )
 }
 
-fn call(name: &str, input: Value) -> Value {
+pub(super) fn call(name: &str, input: Value) -> Value {
     json!({ "name": name, "input": input })
 }
 
 /// What the model was told by the python call (the last tool result).
-fn said(script: &Script) -> String {
+pub(super) fn said(script: &Script) -> String {
     let seen = script.seen.lock().unwrap();
     last_tool_result(seen.last().unwrap()).unwrap().0
 }

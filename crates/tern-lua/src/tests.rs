@@ -729,6 +729,52 @@ async fn concurrent_identical_tests_each_replay_and_an_unplanned_one_never_goes_
     assert_eq!(requests().await, 1);
 }
 
+#[test]
+fn plans_of_calls_that_do_not_run_and_of_ended_runs_are_dropped() {
+    use tern_core::tool::ToolRegistry;
+    use tern_core::types::ToolCall;
+    let (host, tmp) = host_with(&[]);
+    let dirs = Dirs {
+        active: tmp.path().join("c"),
+        drafts: tmp.path().join("c/drafts"),
+    };
+    std::fs::create_dir_all(&dirs.drafts).unwrap();
+    std::fs::write(
+        dirs.draft_path("net"),
+        connector(
+            "net",
+            r#"http = { "api.example.com" }"#,
+            r#"t = { description = "d", run = function() end }"#,
+        ),
+    )
+    .unwrap();
+    let test = Arc::new(ConnectorTest {
+        host,
+        dirs,
+        inspected: Default::default(),
+    });
+    let mut reg = ToolRegistry::new();
+    reg.register(test.clone());
+    let c = ctx();
+    let call = |id: &str| ToolCall {
+        id: id.into(),
+        name: "connector_test".into(),
+        input: json!({"name": "net", "tool": "t"}),
+    };
+    for id in ["a", "b", "c"] {
+        reg.policy(&c, &call(id));
+    }
+    assert_eq!(test.inspected.plans_held(), 3);
+    // One call is denied: its plan goes, the others stay.
+    reg.forget_plans(&c.run_id, Some("a"));
+    assert_eq!(test.inspected.plans_held(), 2);
+    // Another run's plans are not touched by this run ending.
+    reg.forget_plans("other-run", None);
+    assert_eq!(test.inspected.plans_held(), 2);
+    reg.forget_plans(&c.run_id, None);
+    assert_eq!(test.inspected.plans_held(), 0);
+}
+
 /// The account is the one the approval named: a default that changes
 /// between the policy and the call stops the call.
 #[tokio::test]
