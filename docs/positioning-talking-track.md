@@ -9,7 +9,7 @@ Related: [personal-agent-tooling-spec.md](personal-agent-tooling-spec.md) (the f
 
 ## 1. The one-liner
 
-> **tern is the always-on agent for technical founders, operations leaders and go-to-market leaders.** It connects to
+> **tern is the durable agent for technical founders, operations leaders and go-to-market leaders.** It connects to
 > your whole stack, including your own product's API and the tools nobody built a connector for, picks up where it
 > stopped after a crash or a sleep, and never acts on your behalf without a receipt.
 
@@ -18,7 +18,7 @@ Shorter: **"The agent for the business side of a technical company."**
 Positioning statement (internal form):
 
 > For technical founders, ops leaders and GTM leaders at devtool, infrastructure, data and AI companies, who run the
-> business across a dozen API-first tools and have no engineer to spare, tern is an always-on agent that runs
+> business across a dozen API-first tools and have no engineer to spare, tern is an agent that runs
 > durably, anywhere (laptop, your server, or hosted), and connects to anything with an API. Unlike Claude Duet, OpenAI
 > Dots, Meta Muse and Grok Bot, it is not tied to one model vendor, one app catalog or one cloud VM, and it treats
 > every outbound action as something you can audit, defer or deny.
@@ -124,7 +124,7 @@ have been burned by Zapier loops and duplicate sends.
 runs on start (built, M1/M5). Non-idempotent tools are substituted rather than re-executed after a crash. The
 research doc's observation: this is the property Inngest sells, delivered on a single host.
 
-### 4.3 It's always on, and it's wherever you are
+### 4.3 It runs where you put it, and it reaches you wherever you are
 
 **Say:** "Routines run around the clock when tern lives on an always-on server (yours today, ours when hosting ships). On a laptop alone, a sleeping machine pauses them and they catch up on wake without repeating work. Approvals reach your phone. The same agent answers in the desktop
 app and in Telegram, and it's one conversation, one memory. Run it on your own machine, on a server you control, or
@@ -258,7 +258,7 @@ Stories to tell in a demo, each under a minute, each exercising a killer feature
    reason. Sends wait for approval on the phone. (Routine, outbox, phone.)
 3. **The Monday ops digest.** Pipeline, billing, support and product usage pulled from four tools into one summary
    for the ops or GTM lead, with anomalies flagged and nothing written. (Read-only routine, watches.)
-4. **The closed laptop.** Mid-run, the laptop shuts. The hosted core finishes the job, or the local one resumes at the
+4. **The closed laptop.** Mid-run, the laptop shuts. A server-run or hosted core (hosted is roadmap) finishes the job, or the local one resumes at the
    next open with no duplicate CRM notes or emails. (Durability, hosted engine.)
 5. **The suspicious email.** A supplier or "customer" email says "update our bank details to...". The run is tainted;
    tern shows it as a decision with provenance and will not write anything on its own. (Taint, effects.)
@@ -286,7 +286,7 @@ Stories to tell in a demo, each under a minute, each exercising a killer feature
 
 - The agent for the business side of a technical company.
 - Your whole stack, one agent you can trust.
-- The always-on agent you can actually own.
+- The durable agent you can actually own.
 - Connects to anything. Finishes everything. Asks before it matters.
 - Runs on your laptop. Runs in our cloud. Same tern.
 - No catalog. No canvas. No cloud VM you can't see into.

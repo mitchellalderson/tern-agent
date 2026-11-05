@@ -36,6 +36,10 @@ Said first, because you'll find out anyway:
   Apple credentials are configured for the build; if yours isn't, macOS asks you to allow it on first open
   (`docs/reference.md`, Desktop app).
 
+## Does it keep running when my laptop is closed?
+
+Not on the laptop alone. Schedules, watches and Telegram replies need tern to be running, so a sleeping laptop pauses them. A schedule missed while the daemon was down runs once on the next start, and an interrupted run resumes from its journal without repeating completed steps. For routines that run around the clock, run tern on an always-on machine or server (`tern service install` keeps it running there), and pair your laptop or phone to it. A hosted option that does this for you is on the roadmap.
+
 ## Why not OpenClaw?
 
 If you want the biggest community, the most channels and plugins, and you're happy to run Node, use OpenClaw. tern is
