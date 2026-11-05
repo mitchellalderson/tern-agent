@@ -397,3 +397,16 @@ class ContextMeter extends StatelessWidget {
     );
   }
 }
+
+/// A [Flexible] in a window of its own; when [embedded] in a scrolling page
+/// (Settings), its child just takes the room it needs.
+class MaybeFlexible extends StatelessWidget {
+  const MaybeFlexible({super.key, required this.embedded, required this.child});
+
+  final bool embedded;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) =>
+      embedded ? child : Flexible(child: child);
+}

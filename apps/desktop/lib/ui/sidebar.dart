@@ -8,7 +8,7 @@ import '../theme.dart';
 import 'agent_sheet.dart';
 import 'channel_view.dart';
 import 'manage.dart';
-import 'providers.dart';
+import 'preferences.dart';
 import 'servers.dart';
 import 'widgets.dart';
 
@@ -591,7 +591,11 @@ class _AgentRow extends StatelessWidget {
                 else
                   InkWell(
                     onTap: store.link == Link.online
-                        ? () => showProvidersDialog(context, store)
+                        ? () => openPreferences(
+                            context,
+                            store,
+                            section: PrefSection.models,
+                          )
                         : null,
                     child: Text(
                       'Set up a model…',
@@ -940,7 +944,11 @@ class _StatusFooter extends StatelessWidget {
             size: 16,
             tooltip: 'Models and API keys (⌘,)',
             onPressed: store.link == Link.online
-                ? () => showProvidersDialog(context, store)
+                ? () => openPreferences(
+                    context,
+                    store,
+                    section: PrefSection.models,
+                  )
                 : null,
           ),
         ],

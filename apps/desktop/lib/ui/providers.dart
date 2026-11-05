@@ -22,9 +22,19 @@ Future<void> showProvidersDialog(BuildContext context, TernStore store) =>
     );
 
 class ProvidersDialog extends StatefulWidget {
-  const ProvidersDialog({super.key, required this.store});
+  const ProvidersDialog({
+    super.key,
+    required this.store,
+    this.embedded = false,
+    this.onOpenSecrets,
+  });
 
   final TernStore store;
+
+  /// Shown inside Settings: no window chrome, title or Done; Settings
+  /// supplies those, and [onOpenSecrets] switches to its Secrets section.
+  final bool embedded;
+  final VoidCallback? onOpenSecrets;
 
   @override
   State<ProvidersDialog> createState() => _ProvidersDialogState();
@@ -162,133 +172,140 @@ class _ProvidersDialogState extends State<ProvidersDialog> {
     final c = context.colors;
     final providers = _providers;
     final setup = _setup;
+    final embedded = widget.embedded;
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (!embedded) ...[
+          const Text(
+            'Models',
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'The providers tern can use, their API keys, and the model '
+            'new conversations start with. Changes apply to the next '
+            'message.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 14),
+        ],
+        MaybeFlexible(
+          embedded: embedded,
+          child: SingleChildScrollView(
+            child: setup != null
+                ? ProviderSetup(
+                    store: widget.store,
+                    existing: setup.existing,
+                    onDone: _saved,
+                    onCancel: (providers?.isEmpty ?? true)
+                        ? null
+                        : () => setState(() => _setup = null),
+                  )
+                : providers == null
+                ? Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Center(
+                      child: _error == null
+                          ? const CircularProgressIndicator(strokeWidth: 2)
+                          : Text(_error!, style: TextStyle(color: c.error)),
+                    ),
+                  )
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _DefaultModelSection(
+                        store: widget.store,
+                        onChange: _chooseDefault,
+                        onNotice: (n) => setState(() {
+                          _error = null;
+                          _notice = n;
+                        }),
+                      ),
+                      const SizedBox(height: 10),
+                      const Hairline(),
+                      for (final p in providers)
+                        _ProviderRow(
+                          provider: p,
+                          onChangeKey: () =>
+                              setState(() => _setup = (existing: p)),
+                          onDefault: () => _chooseDefault(provider: p.name),
+                          onRefresh: _refresh,
+                          onRemove: () => _remove(p),
+                        ),
+                    ],
+                  ),
+          ),
+        ),
+        for (final (text, color) in [
+          if (_error case final e? when providers != null) (e, c.error),
+          if (_notice case final n? when setup == null) (n, c.ok),
+        ]) ...[
+          const SizedBox(height: 10),
+          Text(text, style: TextStyle(fontSize: 12.5, color: color)),
+        ],
+        const SizedBox(height: 12),
+        Wrap(
+          alignment: setup == null
+              ? WrapAlignment.spaceBetween
+              : WrapAlignment.end,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            if (setup == null)
+              TextButton.icon(
+                onPressed: providers == null
+                    ? null
+                    : () => setState(() {
+                        _notice = null;
+                        _setup = (existing: null);
+                      }),
+                icon: Icon(Icons.add, size: 16, color: c.muted),
+                label: Text(
+                  'Connect a provider',
+                  style: TextStyle(color: c.muted),
+                ),
+              ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (embedded && widget.onOpenSecrets == null)
+                  const SizedBox.shrink()
+                else
+                  TextButton(
+                    onPressed: embedded
+                        ? widget.onOpenSecrets
+                        : () {
+                            // The navigator outlives this dialog's
+                            // context.
+                            final nav = Navigator.of(context);
+                            nav.pop();
+                            showSecretsDialog(nav.context, widget.store);
+                          },
+                    child: Text(
+                      embedded ? 'Secrets…' : 'Secrets (advanced)…',
+                      style: TextStyle(color: c.muted),
+                    ),
+                  ),
+                if (!embedded)
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Done'),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+    if (embedded) return content;
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 600, maxHeight: 680),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(22, 20, 22, 14),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'Models',
-                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'The providers tern can use, their API keys, and the model '
-                'new conversations start with. Changes apply to the next '
-                'message.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 14),
-              Flexible(
-                child: SingleChildScrollView(
-                  child: setup != null
-                      ? ProviderSetup(
-                          store: widget.store,
-                          existing: setup.existing,
-                          onDone: _saved,
-                          onCancel: (providers?.isEmpty ?? true)
-                              ? null
-                              : () => setState(() => _setup = null),
-                        )
-                      : providers == null
-                      ? Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Center(
-                            child: _error == null
-                                ? const CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  )
-                                : Text(
-                                    _error!,
-                                    style: TextStyle(color: c.error),
-                                  ),
-                          ),
-                        )
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            _DefaultModelSection(
-                              store: widget.store,
-                              onChange: _chooseDefault,
-                              onNotice: (n) => setState(() {
-                                _error = null;
-                                _notice = n;
-                              }),
-                            ),
-                            const SizedBox(height: 10),
-                            const Hairline(),
-                            for (final p in providers)
-                              _ProviderRow(
-                                provider: p,
-                                onChangeKey: () =>
-                                    setState(() => _setup = (existing: p)),
-                                onDefault: () =>
-                                    _chooseDefault(provider: p.name),
-                                onRefresh: _refresh,
-                                onRemove: () => _remove(p),
-                              ),
-                          ],
-                        ),
-                ),
-              ),
-              for (final (text, color) in [
-                if (_error case final e? when providers != null) (e, c.error),
-                if (_notice case final n? when setup == null) (n, c.ok),
-              ]) ...[
-                const SizedBox(height: 10),
-                Text(text, style: TextStyle(fontSize: 12.5, color: color)),
-              ],
-              const SizedBox(height: 12),
-              Wrap(
-                alignment: setup == null
-                    ? WrapAlignment.spaceBetween
-                    : WrapAlignment.end,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  if (setup == null)
-                    TextButton.icon(
-                      onPressed: providers == null
-                          ? null
-                          : () => setState(() {
-                              _notice = null;
-                              _setup = (existing: null);
-                            }),
-                      icon: Icon(Icons.add, size: 16, color: c.muted),
-                      label: Text(
-                        'Connect a provider',
-                        style: TextStyle(color: c.muted),
-                      ),
-                    ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      TextButton(
-                        onPressed: () {
-                          // The navigator outlives this dialog's context.
-                          final nav = Navigator.of(context);
-                          nav.pop();
-                          showSecretsDialog(nav.context, widget.store);
-                        },
-                        child: Text(
-                          'Secrets (advanced)…',
-                          style: TextStyle(color: c.muted),
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('Done'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ],
-          ),
+          child: content,
         ),
       ),
     );

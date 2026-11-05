@@ -16,7 +16,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "general",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "max_iterations",
@@ -30,7 +33,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "secret_request_timeout_secs",
@@ -44,7 +50,33 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "advanced",
+     "advanced": true,
+     "restart_required": true
+    },
+    {
+     "key": "autonomy",
+     "kind": "choice",
+     "choices": [
+      "readonly",
+      "supervised",
+      "autonomous",
+      "yolo"
+     ],
+     "optional": false,
+     "value": "supervised",
+     "default": "supervised",
+     "set": false,
+     "description": "How much runs may do without asking: \"readonly\", \"supervised\" (the default), \"autonomous\" (untainted writes don't ask) or \"yolo\" (nothing asks; doctor shows it in red). Routines can set their own.",
+     "applies": "restart",
+     "restart_pending": false,
+     "security": "How much tern may do without asking, for every agent that doesn't set its own. Autonomous stops asking for ordinary writes; yolo asks for nothing, even in a run that read untrusted content.",
+     "risky": false,
+     "editable": true,
+     "group": "permissions",
+     "advanced": false,
+     "restart_required": true
     }
    ]
   },
@@ -63,7 +95,10 @@
      "applies": "live",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "models",
+     "advanced": false,
+     "restart_required": false
     },
     {
      "key": "context_window",
@@ -77,7 +112,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "models",
+     "advanced": true,
+     "restart_required": true
     }
    ]
   },
@@ -100,7 +138,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "permissions",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "sandbox.shell_timeout_secs",
@@ -114,7 +155,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "sandbox.network",
@@ -128,7 +172,10 @@
      "restart_pending": false,
      "security": "On: shell commands can reach the internet, which also gets around the hosts a connector is allowed to reach.",
      "risky": true,
-     "editable": true
+     "editable": true,
+     "group": "permissions",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "sandbox.confine",
@@ -147,7 +194,10 @@
      "restart_pending": false,
      "security": "Off (or auto where the OS sandbox is missing): shell commands can read and write anywhere you can.",
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "permissions",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "sandbox.read_paths",
@@ -167,7 +217,10 @@
      "restart_pending": false,
      "security": "Every shell command can read these.",
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "permissions",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "sandbox.write_paths",
@@ -183,7 +236,10 @@
      "restart_pending": false,
      "security": "Every shell command can change these.",
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "permissions",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "sandbox.docker_image",
@@ -196,7 +252,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "sandbox.docker_memory",
@@ -209,7 +268,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "sandbox.docker_cpus",
@@ -223,7 +285,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "sandbox.docker_pids",
@@ -237,7 +302,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": true,
+     "restart_required": true
     }
    ]
   },
@@ -257,7 +325,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "permissions",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "subagents.default_model",
@@ -270,7 +341,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "models",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "subagents.models",
@@ -283,7 +357,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": false
+     "editable": false,
+     "group": "limits",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "subagents.max_depth",
@@ -298,7 +375,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "subagents.max_concurrent",
@@ -312,7 +392,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "subagents.max_children",
@@ -326,7 +409,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "subagents.max_concurrent_global",
@@ -340,7 +426,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "subagents.max_iterations",
@@ -354,7 +443,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "subagents.max_iterations_ceiling",
@@ -368,7 +460,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "subagents.budget_tokens",
@@ -382,7 +477,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "subagents.budget_tokens_ceiling",
@@ -396,7 +494,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "subagents.ask_parent_timeout_secs",
@@ -410,7 +511,27 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": true,
+     "restart_required": true
+    },
+    {
+     "key": "subagents.max_result_chars",
+     "kind": "int",
+     "min": 200.0,
+     "optional": false,
+     "value": 8000,
+     "default": 8000,
+     "set": false,
+     "description": "most of a sub-agent's final report that reaches the parent (the rest: agent_result)",
+     "applies": "restart",
+     "restart_pending": false,
+     "risky": false,
+     "editable": true,
+     "group": "limits",
+     "advanced": false,
+     "restart_required": true
     }
    ]
   },
@@ -430,7 +551,10 @@
      "applies": "live",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "general",
+     "advanced": false,
+     "restart_required": false
     },
     {
      "key": "schedules.runs_per_day",
@@ -444,7 +568,10 @@
      "applies": "live",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": false,
+     "restart_required": false
     },
     {
      "key": "schedules.usd_per_day",
@@ -458,7 +585,10 @@
      "applies": "live",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": false,
+     "restart_required": false
     },
     {
      "key": "schedules.tokens_per_run",
@@ -472,7 +602,10 @@
      "applies": "live",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "limits",
+     "advanced": false,
+     "restart_required": false
     }
    ]
   },
@@ -493,7 +626,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "general",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "memory.memory_md_tokens",
@@ -507,7 +643,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "general",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "memory.flush",
@@ -520,7 +659,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "general",
+     "advanced": false,
+     "restart_required": true
     }
    ]
   },
@@ -541,7 +683,10 @@
      "applies": "live",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "general",
+     "advanced": false,
+     "restart_required": false
     },
     {
      "key": "home.day_starts",
@@ -554,7 +699,10 @@
      "applies": "live",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "general",
+     "advanced": false,
+     "restart_required": false
     }
    ]
   },
@@ -579,7 +727,10 @@
      "restart_pending": false,
      "security": "A tcp:// listener lets paired devices reach tern over the network.",
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "servers",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "api.tls",
@@ -598,7 +749,10 @@
      "restart_pending": false,
      "security": "Off sends device tokens and messages unencrypted: only behind a TLS proxy on this machine.",
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "servers",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "api.tls_cert",
@@ -611,7 +765,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "servers",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "api.tls_key",
@@ -624,7 +781,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "servers",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "api.trust_proxy",
@@ -638,7 +798,10 @@
      "restart_pending": false,
      "security": "On: tern believes the client address a local proxy reports. Only with a reverse proxy in front.",
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "servers",
+     "advanced": true,
+     "restart_required": true
     },
     {
      "key": "api.public_url",
@@ -651,7 +814,10 @@
      "applies": "restart",
      "restart_pending": false,
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "servers",
+     "advanced": false,
+     "restart_required": true
     },
     {
      "key": "api.remote_mcp_stdio",
@@ -665,7 +831,37 @@
      "restart_pending": false,
      "security": "On: paired devices can add MCP servers that run commands on this computer, outside the sandbox.",
      "risky": false,
-     "editable": true
+     "editable": true,
+     "group": "servers",
+     "advanced": true,
+     "restart_required": false
+    }
+   ]
+  },
+  {
+   "id": "taint",
+   "title": "Taint",
+   "settings": [
+    {
+     "key": "taint.egress",
+     "kind": "choice",
+     "choices": [
+      "ask",
+      "allow"
+     ],
+     "optional": false,
+     "value": "ask",
+     "default": "ask",
+     "set": false,
+     "description": "\"allow\" for runs meant to browse; an agent can set its own",
+     "applies": "live",
+     "restart_pending": false,
+     "security": "Allow: once a run has read a web page or an email, it can still send what it knows to any site without asking. Better set per agent for agents meant to browse.",
+     "risky": false,
+     "editable": true,
+     "group": "permissions",
+     "advanced": false,
+     "restart_required": false
     }
    ]
   }

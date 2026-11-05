@@ -1,7 +1,7 @@
-// The configuration window against a fake client serving a real
+// The Settings window against a fake client serving a real
 // `/v1/config/settings` reply (fixtures/config_settings.json). Also renders
-// it with real fonts to build/screenshots/config_{light,dark}.png:
-//   flutter test test/config_dialog_test.dart
+// it with real fonts to build/screenshots/settings_{light,dark}.png:
+//   flutter test test/preferences_test.dart
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -11,8 +11,13 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tern_client/tern_client.dart';
+import 'package:tern_desktop/state/daemon.dart';
+import 'package:tern_desktop/state/store.dart';
 import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/config_editor.dart';
+import 'package:tern_desktop/ui/preferences.dart';
+import 'package:tern_desktop/ui/providers.dart';
+import 'package:tern_desktop/ui/secrets.dart';
 
 Future<void> _font(String family, List<String> paths) async {
   for (final p in paths) {
@@ -49,6 +54,34 @@ class _FakeClient extends TernClient {
   final settings = <String, Json>{};
   final running = <String, Object?>{};
   final calls = <String>[];
+
+  @override
+  Future<List<ProviderStatus>> providers() async => const [
+    ProviderStatus(
+      name: 'anthropic',
+      kind: ProviderKind.anthropic,
+      secret: 'ANTHROPIC_API_KEY',
+      keySource: 'file',
+      keyHint: 'sk-ant…a1B2',
+      isDefault: true,
+    ),
+  ];
+
+  @override
+  Future<List<ProviderModels>> models({
+    String? provider,
+    bool refresh = false,
+  }) async => const [];
+
+  @override
+  Future<List<SecretStatus>> secrets() async => const [
+    SecretStatus(
+      name: 'ANTHROPIC_API_KEY',
+      inFile: true,
+      inEnv: false,
+      usedBy: ['provider anthropic'],
+    ),
+  ];
 
   @override
   Future<ConfigView> configSettings() async {
@@ -91,17 +124,20 @@ class _FakeClient extends TernClient {
   }
 }
 
-Future<void> _pump(
+Future<TernStore> _pump(
   WidgetTester tester,
   TernClient client, {
   bool dark = false,
   GlobalKey? key,
   List<String>? revealed,
   Future<void> Function()? onRestart,
+  PrefSection section = PrefSection.general,
 }) async {
-  tester.view.physicalSize = const Size(900, 760) * 2;
+  tester.view.physicalSize = const Size(1000, 780) * 2;
   tester.view.devicePixelRatio = 2;
   addTearDown(tester.view.reset);
+  final store = TernStore(client);
+  addTearDown(store.dispose);
   final c = dark ? TernColors.dark : TernColors.light;
   final theme = ternTheme(c, dark ? Brightness.dark : Brightness.light);
   await tester.pumpWidget(
@@ -113,9 +149,15 @@ Future<void> _pump(
           textTheme: theme.textTheme.apply(fontFamily: '.AppleSystemUIFont'),
         ),
         home: Scaffold(
-          body: ConfigDialog(
-            client: client,
+          body: PreferencesDialog(
+            control: TernControl(
+              bin: null,
+              env: const {'HOME': '/nonexistent'},
+            ),
+            prefs: AppPrefs(File('/nonexistent/desktop.json')),
+            store: store,
             onRestart: onRestart,
+            section: section,
             reveal: (p) async => revealed?.add(p),
           ),
         ),
@@ -123,13 +165,22 @@ Future<void> _pump(
     ),
   );
   await tester.pumpAndSettle();
+  return store;
 }
 
 Finder _row(String key) =>
     find.byWidgetPredicate((w) => w is SettingRow && w.setting.key == key);
 
-Future<void> _section(WidgetTester tester, String title) async {
-  await tester.tap(find.text(title).first);
+/// Scroll to [f] in the settings pane and tap it.
+Future<void> _tap(WidgetTester tester, Finder f) async {
+  await tester.ensureVisible(f);
+  await tester.pumpAndSettle();
+  await tester.tap(f);
+  await tester.pumpAndSettle();
+}
+
+Future<void> _section(WidgetTester tester, PrefSection s) async {
+  await tester.tap(find.byKey(Key('settings-nav-${s.name}')));
   await tester.pumpAndSettle();
 }
 
@@ -151,24 +202,27 @@ void main() {
     }
   });
 
-  testWidgets('sections, a flagged toggle, restart hint and reset', (
+  testWidgets('one window, every section, General first', (tester) async {
+    await _pump(tester, _FakeClient());
+    for (final s in PrefSection.values) {
+      expect(find.byKey(Key('settings-nav-${s.name}')), findsOneWidget);
+    }
+    expect(find.text('Start tern when I log in'), findsOneWidget);
+    expect(_row('workspace'), findsOneWidget);
+    // Settings that belong elsewhere are not here.
+    expect(_row('sandbox.network'), findsNothing);
+    expect(_row('secret_request_timeout_secs'), findsNothing);
+  });
+
+  testWidgets('permissions: a flagged toggle, restart hint and reset', (
     tester,
   ) async {
     final client = _FakeClient();
     var restarted = false;
-    final revealed = <String>[];
-    await _pump(
-      tester,
-      client,
-      revealed: revealed,
-      onRestart: () async => restarted = true,
-    );
-    for (final t in ['General', 'Models', 'Shell & sandbox', 'API & devices']) {
-      expect(find.text(t), findsOneWidget);
-    }
-    expect(find.text('Workspace'), findsOneWidget);
-
-    await _section(tester, 'Shell & sandbox');
+    await _pump(tester, client, onRestart: () async => restarted = true);
+    await _section(tester, PrefSection.permissions);
+    expect(_row('autonomy'), findsOneWidget);
+    expect(_row('taint.egress'), findsOneWidget);
     final net = _row('sandbox.network');
     expect(
       find.descendant(of: net, matching: find.textContaining('internet')),
@@ -181,8 +235,7 @@ void main() {
     );
     expect(find.text('Restart tern'), findsNothing);
 
-    await tester.tap(find.descendant(of: net, matching: find.byType(Switch)));
-    await tester.pumpAndSettle();
+    await _tap(tester, find.descendant(of: net, matching: find.byType(Switch)));
     expect(client.calls, ['set sandbox.network false']);
     expect(
       find.descendant(of: net, matching: find.text('Restart to apply')),
@@ -190,55 +243,85 @@ void main() {
     );
     expect(find.text('1 saved change applies when tern restarts.'), findsOne);
 
-    await tester.tap(
+    await _tap(
+      tester,
       find.descendant(
         of: net,
         matching: find.byTooltip('Reset to default (true)'),
       ),
     );
-    await tester.pumpAndSettle();
     expect(client.calls.last, 'reset sandbox.network');
     expect(find.text('Restart tern'), findsNothing);
 
-    // A choice.
-    await tester.tap(
+    await _tap(
+      tester,
       find.descendant(of: _row('sandbox.confine'), matching: find.text('off')),
     );
-    await tester.pumpAndSettle();
     expect(client.calls.last, 'set sandbox.confine "off"');
-    await tester.tap(find.text('Restart tern'));
-    await tester.pumpAndSettle();
+    await _tap(tester, find.text('Restart tern'));
     expect(restarted, isTrue);
-    expect(find.byType(ConfigDialog), findsNothing);
-
-    expect(revealed, isEmpty);
+    expect(find.byType(PreferencesDialog), findsNothing);
   });
 
-  testWidgets('numbers, lists and models are parsed; errors show inline', (
+  testWidgets('limits: numbers are parsed and server errors show inline', (
     tester,
   ) async {
     final client = _FakeClient();
     await _pump(tester, client);
+    await _section(tester, PrefSection.limits);
+    expect(_row('subagents.max_result_chars'), findsOneWidget);
+    expect(_row('schedules.usd_per_day'), findsOneWidget);
+    // Tuning knobs live under Advanced.
+    expect(_row('subagents.max_children'), findsNothing);
 
-    final iters = find.descendant(
-      of: _row('max_iterations'),
-      matching: find.byType(TextField),
-    );
-    await tester.enterText(iters, 'lots');
-    await tester.testTextInput.receiveAction(TextInputAction.done);
-    await tester.pumpAndSettle();
+    Future<void> enter(String key, String text) async {
+      await tester.enterText(
+        find.descendant(of: _row(key), matching: find.byType(TextField)),
+        text,
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+    }
+
+    await enter('max_iterations', 'lots');
     expect(find.text('A whole number'), findsOneWidget);
     expect(client.calls, isEmpty);
-    await tester.enterText(iters, '25');
-    await tester.testTextInput.receiveAction(TextInputAction.done);
-    await tester.pumpAndSettle();
+    await enter('max_iterations', '25');
     expect(client.calls, ['set max_iterations 25']);
-    expect(find.text('A whole number'), findsNothing);
 
-    await _section(tester, 'Models');
+    await enter('subagents.max_result_chars', '12000');
+    expect(client.calls.last, 'set subagents.max_result_chars 12000');
+
+    await enter('subagents.max_depth', '9');
+    expect(find.text('subagents.max_depth: must be at most 3'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: _row('subagents.max_depth'),
+        matching: find.text('Changed'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('models embeds the providers editor, once, without a copy', (
+    tester,
+  ) async {
+    final client = _FakeClient();
+    await _pump(tester, client);
+    await _section(tester, PrefSection.models);
+    expect(find.byType(ProvidersDialog), findsOneWidget);
+    expect(find.text('Connect a provider'), findsOneWidget);
+    expect(find.text('anthropic'), findsWidgets);
+    // The default model is edited by the providers editor's chain editor,
+    // not by a second row.
+    expect(_row('default_model'), findsNothing);
+    expect(_row('subagents.default_model'), findsOneWidget);
+    // The embedded editor has no window chrome of its own: the one Done is
+    // Settings'.
+    expect(find.text('Done'), findsOneWidget);
     await tester.enterText(
       find.descendant(
-        of: _row('default_model'),
+        of: _row('subagents.default_model'),
         matching: find.byType(TextField),
       ),
       'anthropic:a, openrouter:b',
@@ -247,40 +330,50 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       client.calls.last,
-      'set default_model ["anthropic:a","openrouter:b"]',
-    );
-
-    await _section(tester, 'Sub-agents');
-    await tester.enterText(
-      find.descendant(
-        of: _row('subagents.max_depth'),
-        matching: find.byType(TextField),
-      ),
-      '9',
-    );
-    await tester.testTextInput.receiveAction(TextInputAction.done);
-    await tester.pumpAndSettle();
-    expect(find.text('subagents.max_depth: must be at most 3'), findsOneWidget);
-    // The fixture sets max_depth = 2, not the default.
-    expect(
-      find.descendant(
-        of: _row('subagents.max_depth'),
-        matching: find.text('Changed'),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(
-        of: _row('subagents.models'),
-        matching: find.text('Edit in config.toml'),
-      ),
-      findsOneWidget,
+      'set subagents.default_model ["anthropic:a","openrouter:b"]',
     );
   });
 
-  testWidgets('search finds settings across sections', (tester) async {
+  testWidgets('secrets embeds the editor; values are never shown', (
+    tester,
+  ) async {
+    await _pump(tester, _FakeClient(), section: PrefSection.secrets);
+    expect(find.byType(SecretsDialog), findsOneWidget);
+    expect(find.text('ANTHROPIC_API_KEY'), findsOneWidget);
+    expect(find.textContaining("can't be shown again"), findsOneWidget);
+    expect(find.text('Add secret'), findsOneWidget);
+  });
+
+  testWidgets('advanced lists tuning knobs and reveals the file', (
+    tester,
+  ) async {
+    final revealed = <String>[];
+    await _pump(tester, _FakeClient(), revealed: revealed);
+    await _section(tester, PrefSection.advanced);
+    expect(_row('context_window'), findsOneWidget);
+    expect(_row('subagents.max_children'), findsOneWidget);
+    expect(_row('api.trust_proxy'), findsOneWidget);
+    expect(_row('workspace'), findsNothing);
+    await tester.tap(find.text('Open config.toml'));
+    expect(revealed, ['/Users/you/.tern/config.toml']);
+  });
+
+  testWidgets('about shows versions and where things are kept', (tester) async {
+    final store = await _pump(tester, _FakeClient());
+    store.health = const Health(pid: 1, version: '0.4.2');
+    await _section(tester, PrefSection.about);
+    expect(find.textContaining('tern desktop'), findsOneWidget);
+    expect(find.text('/Users/you/.tern'), findsOneWidget);
+    expect(find.text('/Users/you/.tern/logs'), findsOneWidget);
+    expect(find.textContaining('no telemetry'), findsOneWidget);
+  });
+
+  testWidgets('search finds settings and sections across the window', (
+    tester,
+  ) async {
     await _pump(tester, _FakeClient());
-    await tester.enterText(find.byType(TextField).first, 'timeout');
+    final search = find.byKey(const Key('settings-search'));
+    await tester.enterText(search, 'timeout');
     await tester.pumpAndSettle();
     expect(_row('sandbox.shell_timeout_secs'), findsOneWidget);
     expect(_row('subagents.ask_parent_timeout_secs'), findsOneWidget);
@@ -288,7 +381,16 @@ void main() {
     expect(_row('sandbox.network'), findsNothing);
     expect(find.text('Shell timeout (seconds)'), findsOneWidget);
 
-    await tester.enterText(find.byType(TextField).first, 'zzzz');
+    // A section with an editor of its own answers too, and opens.
+    await tester.enterText(search, 'api key');
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('settings-result-secrets')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('settings-result-secrets')));
+    await tester.pumpAndSettle();
+    expect(find.byType(SecretsDialog), findsOneWidget);
+    expect(tester.widget<TextField>(search).controller!.text, isEmpty);
+
+    await tester.enterText(search, 'zzzz');
     await tester.pumpAndSettle();
     expect(find.textContaining('No setting matches'), findsOneWidget);
   });
@@ -298,26 +400,25 @@ void main() {
     expect(find.textContaining('paired as owner'), findsOneWidget);
   });
 
-  testWidgets('Open config.toml reveals the file', (tester) async {
-    final revealed = <String>[];
-    await _pump(tester, _FakeClient(), revealed: revealed);
-    await tester.tap(find.text('Open config.toml'));
-    expect(revealed, ['/Users/you/.tern/config.toml']);
-  });
-
   for (final dark in [false, true]) {
     testWidgets('screenshot ${dark ? 'dark' : 'light'}', (tester) async {
       final client = _FakeClient();
       final key = GlobalKey();
-      await _pump(tester, client, dark: dark, key: key, onRestart: () async {});
-      await _section(tester, 'Shell & sandbox');
-      await tester.tap(
+      await _pump(
+        tester,
+        client,
+        dark: dark,
+        key: key,
+        onRestart: () async {},
+        section: PrefSection.permissions,
+      );
+      await _tap(
+        tester,
         find.descendant(
           of: _row('sandbox.confine'),
           matching: find.text('required'),
         ),
       );
-      await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       await tester.runAsync(() async {
         final boundary =
@@ -325,7 +426,7 @@ void main() {
         final image = await boundary.toImage(pixelRatio: 2);
         final png = await image.toByteData(format: ui.ImageByteFormat.png);
         final out = File(
-          'build/screenshots/config_${dark ? 'dark' : 'light'}.png',
+          'build/screenshots/settings_${dark ? 'dark' : 'light'}.png',
         );
         await out.create(recursive: true);
         await out.writeAsBytes(png!.buffer.asUint8List());

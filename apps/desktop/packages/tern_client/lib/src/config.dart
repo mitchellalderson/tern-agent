@@ -45,6 +45,9 @@ class ConfigSetting {
     this.security,
     this.risky = false,
     this.editable = true,
+    this.group = 'advanced',
+    this.advanced = false,
+    this.restartRequired = false,
   });
 
   factory ConfigSetting.fromJson(Json j) => ConfigSetting(
@@ -63,6 +66,9 @@ class ConfigSetting {
     security: j['security'] as String?,
     risky: j['risky'] as bool? ?? false,
     editable: j['editable'] as bool? ?? true,
+    group: j['group'] as String? ?? 'advanced',
+    advanced: j['advanced'] as bool? ?? false,
+    restartRequired: j['restart_required'] as bool? ?? j['applies'] != 'live',
   );
 
   /// Dotted path, e.g. `sandbox.network`.
@@ -95,6 +101,16 @@ class ConfigSetting {
   /// The current value is the less safe choice.
   final bool risky;
   final bool editable;
+
+  /// Where the platform Settings window shows it: `general`, `models`,
+  /// `permissions`, `limits`, `servers` or `advanced`.
+  final String group;
+
+  /// A tuning knob, shown under Advanced (or behind "show advanced").
+  final bool advanced;
+
+  /// A saved change needs tern to restart (as opposed to the next run).
+  final bool restartRequired;
 
   /// Differs from the default (a file entry equal to it doesn't count).
   bool get changed => set && !_same(value, defaultValue);
@@ -159,4 +175,13 @@ class ConfigView {
   final List<ConfigSection> sections;
 
   Iterable<ConfigSetting> get settings => sections.expand((s) => s.settings);
+
+  /// Some saved setting still waits on a restart.
+  bool get restartRequired => settings.any((s) => s.restartPending);
+
+  /// The settings of one Settings-window group, in file order.
+  List<ConfigSetting> inGroup(String group, {bool advanced = false}) => [
+    for (final s in settings)
+      if (s.group == group && s.advanced == advanced) s,
+  ];
 }

@@ -13,6 +13,7 @@ import 'agent_ap3.dart';
 import 'agent_face.dart';
 import 'agent_sheet.dart';
 import 'outbox.dart';
+import 'preferences.dart';
 import 'providers.dart';
 import 'widgets.dart';
 
@@ -235,7 +236,11 @@ class _Header extends StatelessWidget {
             if (store.link == Link.online)
               TextButton.icon(
                 onPressed: () => model == null
-                    ? showProvidersDialog(context, store)
+                    ? openPreferences(
+                        context,
+                        store,
+                        section: PrefSection.models,
+                      )
                     : _pickModel(context),
                 icon: Icon(Icons.memory, size: 15, color: c.muted),
                 label: Text(
@@ -270,7 +275,8 @@ class _Header extends StatelessWidget {
       context: context,
       builder: (dialog) => ModelPickerDialog(
         store: store,
-        onManage: () => showProvidersDialog(context, store),
+        onManage: () =>
+            openPreferences(context, store, section: PrefSection.models),
       ),
     );
   }

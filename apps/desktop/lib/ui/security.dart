@@ -128,6 +128,70 @@ class _SecurityAuditDialogState extends State<SecurityAuditDialog> {
   }
 }
 
+/// Settings › Permissions & Sandbox: the audit's counts, and a button for
+/// the full report.
+class SecurityAuditRow extends StatefulWidget {
+  const SecurityAuditRow({super.key, required this.store});
+
+  final TernStore store;
+
+  @override
+  State<SecurityAuditRow> createState() => _SecurityAuditRowState();
+}
+
+class _SecurityAuditRowState extends State<SecurityAuditRow> {
+  SecurityAudit? _audit;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final a = await widget.store.client.securityAudit();
+      if (mounted) setState(() => _audit = a);
+    } on TernException {
+      // The row still opens the full audit, which says why.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final a = _audit;
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(
+        a == null || a.high + a.medium == 0
+            ? Icons.verified_user_outlined
+            : Icons.gpp_maybe_outlined,
+        color: a == null
+            ? c.muted
+            : a.high > 0
+            ? c.error
+            : a.medium > 0
+            ? c.warn
+            : c.ok,
+      ),
+      title: const Text('Security audit'),
+      subtitle: Text(
+        a == null
+            ? 'Listeners, devices, autonomy, routines, connectors…'
+            : a.summary == 'nothing to fix'
+            ? 'Nothing to fix'
+            : 'To review: ${a.summary}',
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+      trailing: OutlinedButton(
+        onPressed: () => showSecurityAudit(context, widget.store),
+        child: const Text('Open…'),
+      ),
+    );
+  }
+}
+
 class AuditFindingRow extends StatelessWidget {
   const AuditFindingRow({super.key, required this.finding});
 

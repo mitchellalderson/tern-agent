@@ -1,33 +1,12 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:tern_client/tern_client.dart';
 
 import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
 import '../theme.dart';
-import 'config_editor.dart';
-import 'security.dart';
 import 'servers.dart';
-
-Future<void> showSettingsDialog(
-  BuildContext context,
-  TernControl control,
-  AppPrefs prefs, {
-  TernStore? store,
-  Connections? connections,
-  Future<void> Function()? onRestart,
-}) => showDialog<void>(
-  context: context,
-  builder: (_) => SettingsDialog(
-    control: control,
-    prefs: prefs,
-    store: store,
-    connections: connections,
-    onRestart: onRestart,
-  ),
-);
 
 /// Settings › General: where tern runs, and (on this computer) starting
 /// it at login and what closing the window does (spec §11.5a). On a
@@ -40,7 +19,8 @@ class SettingsDialog extends StatefulWidget {
     required this.prefs,
     this.store,
     this.connections,
-    this.onRestart,
+    this.embedded = false,
+    this.onOpenServers,
   });
 
   final TernControl control;
@@ -48,8 +28,13 @@ class SettingsDialog extends StatefulWidget {
   final TernStore? store;
   final Connections? connections;
 
-  /// Passed on to the configuration window.
-  final Future<void> Function()? onRestart;
+  /// Shown inside the Settings window's General section, which supplies the
+  /// window, the title and Done, and shows the security audit under
+  /// Permissions.
+  final bool embedded;
+
+  /// Embedded: switch to the Servers section instead of opening its dialog.
+  final VoidCallback? onOpenServers;
 
   @override
   State<SettingsDialog> createState() => _SettingsDialogState();
@@ -75,6 +60,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
   Future<void> _changeServer() async {
     final c = widget.connections;
     if (c == null) return;
+    if (widget.onOpenServers case final open?) return open();
     final before = c.activeId;
     await showServersDialog(context, c);
     // The app now shows another server: this dialog belonged to the old.
@@ -184,171 +170,100 @@ class _SettingsDialogState extends State<SettingsDialog> {
     }
   }
 
-  SecurityAudit? _audit;
-  var _auditAsked = false;
-
-  Future<void> _loadAudit(TernStore store) async {
-    try {
-      final a = await store.client.securityAudit();
-      if (mounted) setState(() => _audit = a);
-    } on TernException {
-      // The row still opens the full audit, which says why.
-    }
-  }
-
-  /// Settings › Security: the audit's counts, and the full report.
-  List<Widget> _security(BuildContext context, TernStore store) {
-    final c = context.colors;
-    final a = _audit;
-    if (!_auditAsked) {
-      _auditAsked = true;
-      _loadAudit(store);
-    }
-    return [
-      const SizedBox(height: 10),
-      Text(
-        'Security',
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-          color: c.muted,
-        ),
-      ),
-      ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: Icon(
-          a == null || a.high + a.medium == 0
-              ? Icons.verified_user_outlined
-              : Icons.gpp_maybe_outlined,
-          color: a == null
-              ? c.muted
-              : a.high > 0
-              ? c.error
-              : a.medium > 0
-              ? c.warn
-              : c.ok,
-        ),
-        title: const Text('Security audit'),
-        subtitle: Text(
-          a == null
-              ? 'Listeners, devices, autonomy, routines, connectors…'
-              : a.summary == 'nothing to fix'
-              ? 'Nothing to fix'
-              : 'To review: ${a.summary}',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        trailing: OutlinedButton(
-          onPressed: () => showSecurityAudit(context, store),
-          child: const Text('Open…'),
-        ),
-      ),
-    ];
-  }
-
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
     final small = Theme.of(context).textTheme.bodySmall;
     final canInstall = widget.control.bin != null;
+    final embedded = widget.embedded;
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (!embedded) ...[
+          const Text(
+            'Settings',
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 14),
+        ],
+        Text(
+          'This app',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: c.muted,
+          ),
+        ),
+        if (widget.connections != null) _where(context),
+        if (_server == null) ...[
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Start tern when I log in'),
+            subtitle: Text(
+              !canInstall
+                  ? "Couldn't find tern on this computer."
+                  : _needsApproval
+                  ? 'macOS needs your OK: turn tern on in System '
+                        'Settings › General › Login Items.'
+                  : Platform.isMacOS
+                  ? 'tern runs in the background with an icon in the '
+                        'menu bar, so routines and Telegram keep working '
+                        'with this window closed.'
+                  : 'tern runs in the background, so routines and '
+                        'Telegram keep working with this window closed.',
+              style: small,
+            ),
+            value: _atLogin,
+            onChanged: _busy || !canInstall ? null : _setAtLogin,
+          ),
+          const SizedBox(height: 10),
+          const Text('When I close the window:'),
+          RadioGroup<OnClose>(
+            groupValue: widget.prefs.onClose,
+            onChanged: _setOnClose,
+            child: const Column(
+              children: [
+                RadioListTile<OnClose>(
+                  contentPadding: EdgeInsets.zero,
+                  value: OnClose.keepRunning,
+                  title: Text(
+                    'Keep tern running in the background (recommended)',
+                  ),
+                ),
+                RadioListTile<OnClose>(
+                  contentPadding: EdgeInsets.zero,
+                  value: OnClose.quitTern,
+                  title: Text('Quit tern completely'),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (_error case final e?) ...[
+          const SizedBox(height: 8),
+          Text(e, style: TextStyle(fontSize: 12, color: c.error)),
+        ],
+        if (!embedded) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Done'),
+            ),
+          ),
+        ],
+      ],
+    );
+    if (embedded) return content;
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 520),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(22, 20, 22, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'Settings',
-                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 14),
-              Text(
-                'General',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: c.muted,
-                ),
-              ),
-              if (widget.connections != null) _where(context),
-              if (_server == null) ...[
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Start tern when I log in'),
-                  subtitle: Text(
-                    !canInstall
-                        ? "Couldn't find tern on this computer."
-                        : _needsApproval
-                        ? 'macOS needs your OK: turn tern on in System '
-                              'Settings › General › Login Items.'
-                        : Platform.isMacOS
-                        ? 'tern runs in the background with an icon in the '
-                              'menu bar, so routines and Telegram keep working '
-                              'with this window closed.'
-                        : 'tern runs in the background, so routines and '
-                              'Telegram keep working with this window closed.',
-                    style: small,
-                  ),
-                  value: _atLogin,
-                  onChanged: _busy || !canInstall ? null : _setAtLogin,
-                ),
-                const SizedBox(height: 10),
-                const Text('When I close the window:'),
-                RadioGroup<OnClose>(
-                  groupValue: widget.prefs.onClose,
-                  onChanged: _setOnClose,
-                  child: const Column(
-                    children: [
-                      RadioListTile<OnClose>(
-                        contentPadding: EdgeInsets.zero,
-                        value: OnClose.keepRunning,
-                        title: Text(
-                          'Keep tern running in the background (recommended)',
-                        ),
-                      ),
-                      RadioListTile<OnClose>(
-                        contentPadding: EdgeInsets.zero,
-                        value: OnClose.quitTern,
-                        title: Text('Quit tern completely'),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-              if (widget.store case final store? when store.hasSecurityAudit)
-                ..._security(context, store),
-              if (_error case final e?) ...[
-                const SizedBox(height: 8),
-                Text(e, style: TextStyle(fontSize: 12, color: c.error)),
-              ],
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  if (widget.store case final store? when store.health != null)
-                    TextButton(
-                      onPressed: () {
-                        // This dialog's context goes with it.
-                        final nav = Navigator.of(context)..pop();
-                        showConfigDialog(
-                          nav.context,
-                          store,
-                          onRestart: widget.onRestart,
-                        );
-                      },
-                      child: const Text('All settings (config.toml)…'),
-                    ),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Done'),
-                  ),
-                ],
-              ),
-            ],
-          ),
+          child: content,
         ),
       ),
     );
