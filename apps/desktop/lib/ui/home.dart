@@ -94,6 +94,7 @@ class _HomeState extends State<Home> {
         return AppExitResponse.exit;
       }
     }
+    if (!mounted) return AppExitResponse.exit;
     final quit = await quitTernCompletely(
       context,
       widget.store,
