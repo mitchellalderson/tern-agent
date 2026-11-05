@@ -23,8 +23,9 @@ Red is not a stripe color: on a dark background red, orange and yellow read as a
 | Token      | Light     | Dark      | Use |
 |------------|-----------|-----------|-----|
 | `cream`    | `#F7EEDC` | `#1F1812` | App background |
-| `paper`    | `#FCF7EB` | `#2A211A` | Raised: cards, inputs, agent bubbles |
-| `sand`     | `#EFE3CB` | `#261E17` | Sidebar, user bubble, code blocks |
+| `paper`    | `#FCF7EB` | `#2A211A` | Raised: cards, inputs |
+| `sand`     | `#EFE3CB` | `#261E17` | Sidebar, code blocks |
+| `sand-deep`| `#E9DBBF` | `#33281E` | User messages (a faint step off `cream`; ink text is 11:1 on it) |
 | `hairline` | `#E0D2B6` | `#3D3226` | Dividers, resting borders |
 | `ink`      | `#2B2118` | `#F3E8D2` | Text, interactive borders |
 | `muted`    | `#6F604F` | `#B3A58F` | Secondary text |
@@ -107,7 +108,7 @@ Flutter note: the three families must be bundled as app assets, not fetched at r
 - **Input:** `paper` fill, 1.5px `hairline` border. Focus: `ink` border plus a 3px `yellow` glow at about 55% opacity.
 - **Status:** a dot in the status color, then the word in `ink`, body 13px weight 500. No border, no fill, no uppercase. Where state shows in a list, the dot alone is fine.
 - **Sidebar selection:** `cream` fill, `ink` text weight 600, 3px `orange` bar on the left edge.
-- **Bubbles:** user is `sand`. Agent is `paper` with a 1px `hairline` border. Max width 80%.
+- **Messages:** user messages are a full-width `sand-deep` block, 8px radius, no border, padding 14 by 9. Agent replies sit directly on `cream` with the same 14px side padding so text edges align. Tool rows and approval cards keep their own cards.
 - **Composer:** `paper` fill, 1.5px `ink` border, 10px radius, orange Send button with `ink` text.
 
 ## 6. Voice
@@ -143,7 +144,7 @@ Plain, short, calm. Sentence case. Say what happened and what is needed next. No
 | `accent` | `orange` |
 | `onAccent` | `ink` (dark in both modes) |
 | `ok` / `warn` / `error` | `ok` / `warn` / `error` |
-| `userBubble` | `sand` |
+| `userBubble` | `sand-deep` |
 | `selection` | `sand`, with the orange left bar |
 
 New fields to add: `stripeOrange`, `stripeYellow`, `stripeTeal`, `link`, `ink` (for interactive borders). The multi-color avatar palette in `ui/widgets.dart` should be reduced to stripe and status colors.

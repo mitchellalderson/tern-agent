@@ -6,6 +6,7 @@
 mod app;
 mod history;
 mod input;
+mod markdown;
 mod mcp;
 mod models;
 pub mod outbox;
@@ -14,6 +15,7 @@ mod secrets;
 mod settings;
 mod setup;
 mod term;
+mod theme;
 mod ui;
 mod ui_mcp;
 mod ui_settings;

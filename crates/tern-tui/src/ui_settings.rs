@@ -2,11 +2,12 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::settings::{Focus, Mode, Section, SettingsPanel};
+use crate::theme;
 
 fn clip(s: &str, width: usize) -> String {
     if s.chars().count() <= width {
@@ -18,8 +19,8 @@ fn clip(s: &str, width: usize) -> String {
 }
 
 pub fn draw_settings(frame: &mut Frame<'_>, panel: &SettingsPanel, area: Rect) {
-    let dim = Style::new().fg(Color::DarkGray);
-    let key = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let dim = theme::muted();
+    let key = theme::accent().add_modifier(Modifier::BOLD);
     let bold = Style::new().add_modifier(Modifier::BOLD);
     let width = area.width.saturating_sub(2).min(112);
     let height = area.height.min(30);
@@ -32,7 +33,7 @@ pub fn draw_settings(frame: &mut Frame<'_>, panel: &SettingsPanel, area: Rect) {
     let block = Block::new()
         .borders(Borders::ALL)
         .title(" settings ")
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(theme::accent());
     let inner = block.inner(popup).inner(Margin::new(1, 0));
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
@@ -68,11 +69,11 @@ pub fn draw_settings(frame: &mut Frame<'_>, panel: &SettingsPanel, area: Rect) {
         0 => Line::default(),
         1 => Line::from(Span::styled(
             "↻ 1 saved change applies when tern restarts",
-            Style::new().fg(Color::Yellow),
+            theme::warn(),
         )),
         n => Line::from(Span::styled(
             format!("↻ {n} saved changes apply when tern restarts"),
-            Style::new().fg(Color::Yellow),
+            theme::warn(),
         )),
     };
     frame.render_widget(Paragraph::new(vec![first, second]), head);
@@ -125,9 +126,9 @@ pub fn draw_settings(frame: &mut Frame<'_>, panel: &SettingsPanel, area: Rect) {
         let selected = i == panel.selected && panel.focus == Focus::Rows;
         let value_width = (rows.width as usize).saturating_sub(name_width + 7);
         let value_style = if l.risky {
-            Style::new().fg(Color::Yellow)
+            theme::warn()
         } else if l.action {
-            Style::new().fg(Color::Cyan)
+            theme::accent()
         } else {
             Style::new()
         };
@@ -141,13 +142,10 @@ pub fn draw_settings(frame: &mut Frame<'_>, panel: &SettingsPanel, area: Rect) {
             Span::styled(clip(&l.value, value_width), value_style),
         ];
         if !l.marks.is_empty() {
-            spans.push(Span::styled(
-                format!(" {}", l.marks),
-                Style::new().fg(Color::Yellow),
-            ));
+            spans.push(Span::styled(format!(" {}", l.marks), theme::warn()));
         }
         if l.risky {
-            spans.push(Span::styled(" !", Style::new().fg(Color::Yellow)));
+            spans.push(Span::styled(" !", theme::warn()));
         }
         out.push(Line::from(spans));
     }
@@ -170,12 +168,12 @@ pub fn draw_settings(frame: &mut Frame<'_>, panel: &SettingsPanel, area: Rect) {
                 Span::styled("▏", key),
             ];
             if let Some((true, m)) = m {
-                spans.push(Span::styled(format!("   {m}"), Style::new().fg(Color::Red)));
+                spans.push(Span::styled(format!("   {m}"), theme::err()));
             }
             Line::from(spans)
         }
-        (_, Some((true, m))) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Red))),
-        (_, Some((false, m))) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Green))),
+        (_, Some((true, m))) => Line::from(Span::styled(m.clone(), theme::err())),
+        (_, Some((false, m))) => Line::from(Span::styled(m.clone(), theme::ok())),
         _ => Line::default(),
     });
     let help: &[(&str, &str)] = match panel.mode {
