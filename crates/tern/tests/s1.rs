@@ -528,7 +528,12 @@ async fn cancelling_the_parent_cancels_its_children() {
             "{label}"
         );
     }
-    // Each child still reported (as cancelled) to its parent.
+    // Each child still reported (as cancelled) to its parent. The report is
+    // posted when the child's drive ends, after its status is recorded as
+    // interrupted, so wait for it rather than reading it straight away.
+    env.wait_for("both cancelled children to report", 10, |e| {
+        e.query::<i64>("SELECT count(*) FROM agent_mail WHERE kind = 'finished'") == 2
+    });
     let reports: i64 = env.query("SELECT count(*) FROM agent_mail WHERE kind = 'finished'");
     assert_eq!(reports, 2);
 }
@@ -562,7 +567,9 @@ fn doctor_accepts_the_subagents_table_and_checks_its_models() {
 #[test]
 fn spawns_beyond_the_concurrency_limit_queue_and_still_finish() {
     let env = Env::with_config(
-        &fan_out_script(0),
+        // Slow children: "queued" is only deterministic if the first child
+        // is still running when the parent spawns the third.
+        &fan_out_script(600),
         "[subagents]\nenabled = true\nmax_concurrent = 1\n",
     );
     let o = env
