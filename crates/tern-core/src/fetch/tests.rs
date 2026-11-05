@@ -114,7 +114,7 @@ impl FetcherModels for ScriptedModels {
 
 pub(crate) fn ctx(run: &str) -> ToolCtx {
     ToolCtx {
-        workspace: std::env::temp_dir(),
+        scope: crate::workspace::WorkspaceScope::for_dir(std::env::temp_dir()),
         run_id: run.into(),
         session_id: "s".into(),
         cancel: CancellationToken::new(),

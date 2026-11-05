@@ -10,8 +10,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tern_core::fetch::ingest;
 use tern_core::tool::{
-    Effect, GrantKey, Ingestion, Reach, Tool, ToolCtx, ToolPolicy, ToolResult, Trust, current_call_id,
-    planning_scope, progress_sink,
+    Effect, GrantKey, Ingestion, Reach, Tool, ToolCtx, ToolPolicy, ToolResult, Trust,
+    current_call_id, planning_scope, progress_sink,
 };
 use tern_core::types::ToolSpec;
 use tern_core::workspace::ShellBound;
