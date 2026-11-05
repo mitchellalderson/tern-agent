@@ -22,12 +22,31 @@ and tern assumes the model may follow them. The safety layers are in the host pr
 `shell` always asks first (allow once, always for a pattern such as `git *`, or deny); every answer is journaled.
 "Always" patterns never match a command containing shell metacharacters (`` ; | & $ ` > < ( ) `` and newlines), and
 "always" is never offered for commands that run other commands (shells, `env`, `sudo`, `xargs`, `find`, `ssh`,
-`docker`, interpreters) or for activating connectors. The file tools work freely inside the workspace
-(`~/tern-workspace` by default) and ask before reading or writing anywhere else. They refuse paths that escape the
-workspace through `..`, symlinks or dangling symlinks, can never write inside `~/.tern`, and can never read
-`secrets.toml` or the database. That guard compares file identity (device and inode), not spelling, so a differently
-cased or Unicode-normalized name on macOS, a symlink chain, or a hardlink in the workspace to a protected file is
-refused the same way. `http_fetch` (GET only) refuses loopback, private, link-local, CGNAT and
+`docker`, interpreters) or for activating connectors. The file tools work only inside the run's workspace
+(`~/tern-workspace` by default, or the folder you chose for that channel, topic or agent) plus any read-only folders
+you added; **anywhere else is refused, never asked about**, so an agent can't talk you into a prompt. Every path goes
+through one capability handle opened on the folder (`openat`-style, via `cap-std`), so there is no moment between
+checking a path and using it: `..`, a symlink or dangling symlink out, an absolute path, another case or Unicode form
+of a name, and a directory swapped for a link mid-call all resolve inside the folder or fail. Writes go to a temp
+file in the same directory and are renamed over the target, so a symlink or hardlink at the target is replaced, never
+followed or written through. Special files (pipes, devices) are refused. The folder is re-checked on every call: if it
+is renamed, deleted or replaced while a run uses it, every file tool refuses. File tools can never write inside
+`~/.tern` or `.git`, and can never read `secrets.toml` or the database; that guard compares file identity (device and
+inode), not spelling, so a differently cased or Unicode-normalized name on macOS, a symlink chain, or a hardlink in
+the workspace to a protected file is refused the same way. Each refusal is a `workspace_refused` entry in the activity
+ledger and a `workspace_refused` event on the run stream. Which folder a run gets is data in tern's store (never a
+file in the folder, which the agent can write): the conversation's, else the channel's, else the agent's, else the
+default, frozen when the run starts; a sub-agent inherits it and may be narrowed to a subfolder, never widened, and a
+routine keeps the folder it was made in. Choosing a folder refuses `/`, your home folder, system folders, credentials
+folders (`~/.ssh`, `~/.aws`, `~/Library`, ...), temp folders and tern's own data, whatever the spelling or link.
+**What the core does not bound is `shell`:** a command can name a path in endless ways, so only the OS sandbox bounds
+it. With a verified sandbox it is limited as described below. With none (`confine = "off"`, no Landlock, or a check that failed) the command runs as you with the workspace only as its start directory, tern asks before every one (no
+"always", no grants), and under `autonomy = "autonomous"` or `"yolo"` it is **refused**, so an unattended run never
+runs a command on a machine that can't confine it. MCP servers run as you and are not bound by any of this. Commands
+get a per-workspace `TMPDIR` and tool caches (`CARGO_HOME`, `CARGO_TARGET_DIR`, npm, pip, Go, ...) inside the
+workspace's hidden `.tern/` directory, so one workspace can't stage files for or poison another's. Not done yet: on
+macOS a command can still read outside your home folder (a later phase denies reads under `/Users` and `/Volumes`
+except the workspace, read-only folders and detected toolchains); `/tmp` stays shared. `http_fetch` (GET only) refuses loopback, private, link-local, CGNAT and
 cloud-metadata addresses, resolves DNS itself, pins the connection to the checked address, and checks every redirect
 hop. Secrets live in the environment or in `~/.tern/secrets.toml`, which tern refuses to load unless it is mode 0600.
 They are not passed to `shell` (it gets a scrubbed environment), stdio MCP servers get only the secrets they declare,
