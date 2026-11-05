@@ -395,10 +395,21 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         if let Some(grant) = &p.request.grant {
             options.push(Span::styled("[r]", warn));
             options.push(Span::raw(format!(" this run ({})   ", grant.label)));
-            options.push(Span::styled("[c]", warn));
-            options.push(Span::raw(" this conversation   "));
-            options.push(Span::styled("[a]", warn));
-            options.push(Span::raw(" always   "));
+            if !grant.run_only {
+                options.push(Span::styled("[c]", warn));
+                options.push(Span::raw(" this conversation   "));
+                options.push(Span::styled("[a]", warn));
+                options.push(Span::raw(" always   "));
+            }
+        }
+        if let Some((n, tools)) = app.bulk_summary() {
+            options.push(Span::styled("[g]", warn));
+            options.push(Span::raw(format!(
+                " allow all {n} ({})   ",
+                tools.join(", ")
+            )));
+            options.push(Span::styled("[x]", warn));
+            options.push(Span::raw(format!(" deny all {n}   ")));
         }
         if let Some(host) = &p.request.egress_host {
             options.push(Span::styled("[r]", warn));

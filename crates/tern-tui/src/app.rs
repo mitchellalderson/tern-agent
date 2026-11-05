@@ -422,16 +422,33 @@ impl App {
         if self.approval.is_some() {
             let decision = match key.code {
                 KeyCode::Char('y' | 'Y') => Decision::AllowOnce,
+                // Waiting read-only requests of a tainted run tree: all at once.
+                KeyCode::Char('g' | 'G') if self.bulk_prompt() => {
+                    self.answer_bulk(Decision::AllowOnce);
+                    return vec![];
+                }
+                KeyCode::Char('x' | 'X') if self.bulk_prompt() => {
+                    self.answer_bulk(Decision::Deny);
+                    return vec![];
+                }
+                KeyCode::Char('r' | 'R') if self.grant_prompt() && self.bulk_prompt() => {
+                    self.answer_bulk(Decision::AllowRun);
+                    return vec![];
+                }
                 KeyCode::Char('a' | 'A')
                     if self.approval.as_ref().is_some_and(|p| {
-                        p.request.pattern.is_some() || p.request.grant.is_some()
+                        p.request.pattern.is_some()
+                            || p.request.grant.as_ref().is_some_and(|g| !g.run_only)
                     }) =>
                 {
                     Decision::AlwaysAllow
                 }
-                // A scoped grant: this run, or this conversation.
+                // A scoped grant: this run, or this conversation (never the
+                // latter for a tainted run's read scope).
                 KeyCode::Char('r' | 'R') if self.grant_prompt() => Decision::AllowRun,
-                KeyCode::Char('c' | 'C') if self.grant_prompt() => Decision::AllowSession,
+                KeyCode::Char('c' | 'C') if self.grant_prompt() && !self.run_only_prompt() => {
+                    Decision::AllowSession
+                }
                 // The tainted host limit's choices.
                 KeyCode::Char('r' | 'R') if self.egress_prompt() => Decision::AllowRun,
                 KeyCode::Char('h' | 'H') if self.egress_prompt() => Decision::AlwaysAllowHost,
@@ -551,6 +568,80 @@ impl App {
         self.approval
             .as_ref()
             .is_some_and(|p| p.request.grant.is_some())
+    }
+
+    /// The prompt's grant is a tainted run's read scope: "this run" only.
+    fn run_only_prompt(&self) -> bool {
+        self.approval
+            .as_ref()
+            .is_some_and(|p| p.request.grant.as_ref().is_some_and(|g| g.run_only))
+    }
+
+    /// Read-only requests of a tainted run tree can be answered together.
+    fn bulkable(r: &tern_core::approval::ApprovalRequest) -> bool {
+        r.effect == tern_core::tool::Effect::Read
+            && r.taint.is_some()
+            && r.egress_host.is_none()
+            && r.script.is_none()
+    }
+
+    /// The prompt is one of several waiting read-only requests of a tainted
+    /// run tree (its sub-agents ask concurrently).
+    pub(crate) fn bulk_prompt(&self) -> bool {
+        self.approval
+            .as_ref()
+            .is_some_and(|p| Self::bulkable(&p.request))
+            && self
+                .approval_queue
+                .iter()
+                .any(|q| Self::bulkable(&q.request))
+    }
+
+    /// How many requests [`App::answer_bulk`] answers, and which tools.
+    pub(crate) fn bulk_summary(&self) -> Option<(usize, Vec<String>)> {
+        if !self.bulk_prompt() {
+            return None;
+        }
+        let all = self
+            .approval
+            .iter()
+            .chain(self.approval_queue.iter())
+            .filter(|p| Self::bulkable(&p.request));
+        let mut tools: Vec<String> = Vec::new();
+        let mut n = 0;
+        for p in all {
+            n += 1;
+            if !tools.contains(&p.request.call.name) {
+                tools.push(p.request.call.name.clone());
+            }
+        }
+        Some((n, tools))
+    }
+
+    /// Answer the prompt and every waiting read-only request with
+    /// `decision`. For [`Decision::AllowRun`] only the ones in the same read
+    /// scope as the prompt (the run's grant covers exactly that), the others
+    /// stay queued.
+    fn answer_bulk(&mut self, decision: Decision) {
+        let key = self
+            .approval
+            .as_ref()
+            .and_then(|p| p.request.grant.as_ref().map(|g| g.key.clone()));
+        let mut keep = VecDeque::new();
+        let queued: Vec<_> = self.approval_queue.drain(..).collect();
+        for p in queued {
+            let same = decision != Decision::AllowRun
+                || key
+                    .as_deref()
+                    .is_some_and(|k| p.request.grant.as_ref().is_some_and(|g| g.key == k));
+            if Self::bulkable(&p.request) && same {
+                let _ = p.reply.send(decision);
+            } else {
+                keep.push_back(p);
+            }
+        }
+        self.approval_queue = keep;
+        self.answer_approval(decision);
     }
 
     /// The prompt asks only because of the tainted host limit.
