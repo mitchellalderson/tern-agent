@@ -257,6 +257,13 @@ fn search(
     guard: &Guard,
 ) -> Result<String, String> {
     let mut builder = ignore::WalkBuilder::new(root);
+    // Hidden directories (`.github`, `.config`) are searchable; only the
+    // repository metadata directory is not. Ignore files apply even outside
+    // a repository.
+    builder
+        .hidden(false)
+        .require_git(false)
+        .filter_entry(|e| e.file_name() != ".git");
     if let Some(glob) = glob {
         let mut ov = ignore::overrides::OverrideBuilder::new(root);
         ov.add(glob).map_err(|e| format!("invalid glob: {e}"))?;
@@ -592,5 +599,30 @@ mod tests {
                 .policy(&c, &json!({"path": "in.txt"}))
                 .requires_approval
         );
+    }
+
+    #[tokio::test]
+    async fn search_reaches_hidden_dirs_and_honors_gitignore_without_a_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::create_dir_all(ws.join(".github/workflows")).unwrap();
+        std::fs::write(ws.join(".github/workflows/ci.yml"), "needle in ci").unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
+        std::fs::write(ws.join(".git/config"), "needle in meta").unwrap();
+        std::fs::create_dir_all(ws.join("sub/build")).unwrap();
+        std::fs::write(ws.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(ws.join("sub/.gitignore"), "build/\n").unwrap();
+        std::fs::write(ws.join("ignored.txt"), "needle ignored").unwrap();
+        std::fs::write(ws.join("sub/build/out.txt"), "needle built").unwrap();
+        std::fs::write(ws.join("sub/keep.txt"), "needle kept").unwrap();
+        let r = SearchFiles { guard: g() }
+            .call(&ctx(ws), json!({"pattern": "needle"}))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("ci.yml"), "{}", r.content);
+        assert!(r.content.contains("keep.txt"), "{}", r.content);
+        assert!(!r.content.contains("config"), "{}", r.content);
+        assert!(!r.content.contains("ignored.txt"), "{}", r.content);
+        assert!(!r.content.contains("out.txt"), "{}", r.content);
     }
 }

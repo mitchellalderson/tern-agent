@@ -41,8 +41,69 @@ impl Guard {
 
     /// Whether `path` (canonical) may be read by file tools. Also used per
     /// file by `search_files`, so a directory search can't reach a secret.
+    ///
+    /// Identity, not spelling, decides: on a case-insensitive or
+    /// Unicode-normalizing filesystem `.TERN/SECRETS.TOML` is the same file
+    /// as `.tern/secrets.toml` though `canonicalize` keeps the typed case,
+    /// and a hardlink is the same file under any name. So the path is also
+    /// compared by `(dev, inode)` against the protected files.
     pub fn allows_read(&self, path: &Path) -> bool {
-        !self.no_read.iter().any(|p| p == path)
+        if self.no_read.iter().any(|p| p == path) {
+            return false;
+        }
+        match identity(path) {
+            Some(id) => !self.no_read.iter().any(|p| identity(p) == Some(id)),
+            None => true,
+        }
+    }
+
+    /// Whether `path` is, or is under, a protected directory, by identity
+    /// of the path and each of its ancestors.
+    fn under_protected_dir(&self, path: &Path) -> Option<&Path> {
+        if let Some(p) = self.no_write.iter().find(|p| path.starts_with(p)) {
+            return Some(p);
+        }
+        let dirs: Vec<_> = self
+            .no_write
+            .iter()
+            .filter_map(|d| identity(d).map(|i| (d, i)))
+            .collect();
+        for anc in path.ancestors() {
+            if let Some(id) = identity(anc)
+                && let Some((d, _)) = dirs.iter().find(|(_, i)| *i == id)
+            {
+                return Some(d);
+            }
+        }
+        None
+    }
+
+    /// Whether `path` is a second name (hardlink) for a protected file.
+    fn is_protected_hardlink(&self, path: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let Ok(m) = std::fs::metadata(path) else {
+                return false;
+            };
+            if !m.is_file() || m.nlink() < 2 {
+                return false;
+            }
+            let id = (m.dev(), m.ino());
+            if self.no_read.iter().any(|p| identity(p) == Some(id)) {
+                return true;
+            }
+            // Any other file in the data directory (connectors, skills).
+            let mut budget = 20_000usize;
+            self.no_write
+                .iter()
+                .any(|d| tree_has_inode(d, id, 6, &mut budget))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            false
+        }
     }
 
     pub fn check_read(&self, r: &Resolved) -> Result<(), String> {
@@ -53,7 +114,7 @@ impl Guard {
     }
 
     pub fn check_write(&self, r: &Resolved) -> Result<(), String> {
-        if let Some(p) = self.no_write.iter().find(|p| r.path.starts_with(p)) {
+        if let Some(p) = self.under_protected_dir(&r.path) {
             return Err(format!(
                 "{} is inside tern's data directory ({}), which file tools can't modify",
                 r.path.display(),
@@ -62,7 +123,16 @@ impl Guard {
         }
         // Git reads `.git/config` and hooks as code (`core.fsmonitor`,
         // `core.pager`), so a file tool writing there is a way to run commands.
-        if r.path.components().any(|c| c.as_os_str() == ".git") {
+        if self.is_protected_hardlink(&r.path) {
+            return Err(format!(
+                "{} is a hardlink to a file in tern's data directory; file tools can't modify it",
+                r.path.display()
+            ));
+        }
+        if r.path
+            .components()
+            .any(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
+        {
             return Err(format!(
                 "{} is git metadata; file tools can't modify it",
                 r.path.display()
@@ -70,6 +140,42 @@ impl Guard {
         }
         Ok(())
     }
+}
+
+/// `(dev, inode)` of what `path` names right now, following symlinks.
+#[cfg(unix)]
+fn identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+#[cfg(not(unix))]
+fn identity(_path: &Path) -> Option<(u64, u64)> {
+    None
+}
+
+#[cfg(unix)]
+fn tree_has_inode(dir: &Path, id: (u64, u64), depth: u32, budget: &mut usize) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for e in rd.flatten() {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        let Ok(m) = std::fs::symlink_metadata(e.path()) else {
+            continue;
+        };
+        if m.is_file() && (m.dev(), m.ino()) == id {
+            return true;
+        }
+        if m.is_dir() && depth > 0 && tree_has_inode(&e.path(), id, depth - 1, budget) {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn resolve(workspace: &Path, raw: &str) -> Result<Resolved, String> {
@@ -213,5 +319,93 @@ mod tests {
         std::fs::create_dir(&ws).unwrap();
         std::os::unix::fs::symlink(tmp.path(), ws.join("link")).unwrap();
         assert!(resolve(&ws, "link/secret").is_err());
+    }
+
+    fn data_guard() -> (tempfile::TempDir, PathBuf, Guard) {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join(".tern");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(data.join("secrets.toml"), "k = 1").unwrap();
+        std::fs::create_dir(tmp.path().join("ws")).unwrap();
+        let g = Guard::for_data_dir(&data);
+        (tmp, data, g)
+    }
+
+    fn case_insensitive(p: &Path) -> bool {
+        let probe = p.join("CaseProbe");
+        std::fs::write(&probe, "").unwrap();
+        let r = p.join("caseprobe").exists();
+        std::fs::remove_file(&probe).unwrap();
+        r
+    }
+
+    #[test]
+    fn typed_case_variant_is_denied_where_fs_is_case_insensitive() {
+        let (tmp, _data, g) = data_guard();
+        if !case_insensitive(tmp.path()) {
+            return; // case-sensitive fs: another spelling is another file
+        }
+        let ws = tmp.path().join("ws");
+        let typed = tmp.path().join(".TERN/SECRETS.TOML");
+        let r = resolve(&ws, typed.to_str().unwrap()).unwrap();
+        assert!(g.check_read(&r).is_err(), "{}", r.path.display());
+        assert!(g.check_write(&r).is_err());
+        let sub = resolve(&ws, tmp.path().join(".Tern/new.txt").to_str().unwrap()).unwrap();
+        assert!(g.check_write(&sub).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlink_to_a_protected_file_is_denied() {
+        let (tmp, data, g) = data_guard();
+        let ws = tmp.path().join("ws");
+        std::fs::hard_link(data.join("secrets.toml"), ws.join("innocent.txt")).unwrap();
+        let r = resolve(&ws, "innocent.txt").unwrap();
+        assert!(g.check_read(&r).is_err());
+        assert!(g.check_write(&r).is_err());
+        // A hardlink to a non-secret data file stays readable but not writable.
+        std::fs::create_dir(data.join("skills")).unwrap();
+        std::fs::write(data.join("skills/a.md"), "x").unwrap();
+        std::fs::hard_link(data.join("skills/a.md"), ws.join("a.md")).unwrap();
+        let r = resolve(&ws, "a.md").unwrap();
+        assert!(g.check_read(&r).is_ok());
+        assert!(g.check_write(&r).is_err());
+        // An unrelated hardlinked file is fine.
+        std::fs::write(ws.join("x"), "x").unwrap();
+        std::fs::hard_link(ws.join("x"), ws.join("y")).unwrap();
+        assert!(g.check_write(&resolve(&ws, "y").unwrap()).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_chains_to_protected_files_are_denied() {
+        let (tmp, data, g) = data_guard();
+        let ws = tmp.path().join("ws");
+        std::os::unix::fs::symlink(data.join("secrets.toml"), ws.join("l1")).unwrap();
+        std::os::unix::fs::symlink(ws.join("l1"), ws.join("l2")).unwrap();
+        let r = resolve(&ws, ws.join("l2").to_str().unwrap()).unwrap();
+        assert!(g.check_read(&r).is_err());
+        assert!(g.check_write(&r).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unicode_normalization_variants_are_denied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("d\u{e9}");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(data.join("secrets.toml"), "k").unwrap();
+        let g = Guard::for_data_dir(&data);
+        let nfd = tmp.path().join("de\u{301}/secrets.toml");
+        let r = resolve(tmp.path(), nfd.to_str().unwrap()).unwrap();
+        assert!(g.check_read(&r).is_err());
+        assert!(g.check_write(&r).is_err());
+    }
+
+    #[test]
+    fn git_metadata_is_matched_case_insensitively() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = resolve(tmp.path(), ".GIT/config").unwrap();
+        assert!(Guard::default().check_write(&r).is_err());
     }
 }
