@@ -301,3 +301,32 @@ fn the_canary_verifies_only_a_sandbox_that_really_blocks() {
         assert!(!broken.verify_fresh(ws.path()).is_verified());
     }
 }
+
+/// The interpreter inspection runs inside the sandbox: it works there, and
+/// without an OS sandbox it is refused rather than run unconfined.
+#[test]
+fn interpreters_are_inspected_inside_the_sandbox_or_not_at_all() {
+    let Some(b) = backend(HostPolicy::confined()) else {
+        return;
+    };
+    let ws = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let Some(python) = std::process::Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
+        .and_then(|p| std::fs::canonicalize(p).ok())
+    else {
+        return;
+    };
+    let program = tern_tools::shell_script::probe_program(&python);
+    match b.probe_confined(program.clone(), ws.path()) {
+        Ok(out) => assert!(out.contains("path "), "{out}"),
+        // Nested inside another sandbox, or a python the sandbox can't read.
+        Err(e) => eprintln!("confined probe unavailable here: {e}"),
+    }
+    let off = HostBackend::new(HostPolicy::unconfined());
+    let e = off.probe_confined(program, ws.path()).unwrap_err();
+    assert!(e.contains("no OS sandbox"), "{e}");
+}

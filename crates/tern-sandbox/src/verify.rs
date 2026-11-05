@@ -269,7 +269,7 @@ impl HostBackend {
             inside.into(),
             outside.into(),
         ];
-        let (code, stderr) = self.run_probe(shell, workspace, false)?;
+        let (code, _, stderr) = self.run_probe(shell, workspace, false)?;
         match code {
             Some(0) => Ok(()),
             Some(11) => Err("a write outside the workspace was not blocked".into()),
@@ -329,7 +329,7 @@ impl HostBackend {
                 continue;
             }
             drain(&listener);
-            let (code, _) = self.run_probe(argv, workspace, false)?;
+            let (code, _, _) = self.run_probe(argv, workspace, false)?;
             std::thread::sleep(Duration::from_millis(50));
             if drain(&listener) {
                 return Err("an outbound connection was not blocked".into());
@@ -345,13 +345,36 @@ impl HostBackend {
         Err(last)
     }
 
+    /// Run `program` (an inspection of a file the host is about to trust) inside
+    /// the sandbox with the network off and no extra write paths, and return
+    /// its stdout. Errors when there is no OS sandbox to run it in, so
+    /// whatever the program loads can only act inside the sandbox.
+    pub fn probe_confined(&self, program: Vec<OsString>, cwd: &Path) -> Result<String, String> {
+        let ro = crate::HostPolicy {
+            network: false,
+            write_paths: Vec::new(),
+            ..self.policy.clone()
+        };
+        let backend = HostBackend::new(ro);
+        match backend.confinement() {
+            Confinement::Seatbelt | Confinement::Landlock { .. } => {}
+            other => return Err(format!("no OS sandbox to inspect it in ({other})")),
+        }
+        let (code, out, err) = backend.run_probe(program, cwd, false)?;
+        if code == Some(0) {
+            Ok(out)
+        } else {
+            Err(format!("it didn't run inside the sandbox (exit {code:?}){}", first_line(&err)))
+        }
+    }
+
     /// Run `program` under the production wrapper and wait (bounded).
     fn run_probe(
         &self,
         program: Vec<OsString>,
         cwd: &Path,
         network: bool,
-    ) -> Result<(Option<i32>, String), String> {
+    ) -> Result<(Option<i32>, String, String), String> {
         let policy = if network && !self.policy.network {
             crate::HostPolicy {
                 network: true,
@@ -372,7 +395,7 @@ impl HostBackend {
                     .filter_map(|k| std::env::var_os(k).map(|v| (k, v))),
             )
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("couldn't start the probe: {e}"))?;
@@ -380,12 +403,15 @@ impl HostBackend {
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let mut err = String::new();
+                    use std::io::Read;
+                    let (mut out, mut err) = (String::new(), String::new());
+                    if let Some(mut s) = child.stdout.take() {
+                        let _ = s.read_to_string(&mut out);
+                    }
                     if let Some(mut s) = child.stderr.take() {
-                        use std::io::Read;
                         let _ = s.read_to_string(&mut err);
                     }
-                    return Ok((status.code(), err));
+                    return Ok((status.code(), out, err));
                 }
                 Ok(None) if start.elapsed() > PROBE_TIMEOUT => {
                     let _ = child.kill();

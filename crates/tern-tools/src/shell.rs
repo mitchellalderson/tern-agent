@@ -15,7 +15,7 @@ use tern_core::tool::{
 use tern_core::types::ToolSpec;
 use tern_sandbox::{ExecOpts, OutputSink, SandboxBackend};
 
-use crate::shell_script::{self, Resolved};
+use crate::shell_script::{self, Prober, Resolved};
 use crate::{args, spec};
 
 pub struct Shell {
@@ -26,6 +26,8 @@ pub struct Shell {
     plans: Mutex<HashMap<String, Entry>>,
     /// The `PATH` interpreters are looked up on (the process's own).
     path: Option<OsString>,
+    /// Tells this tool's inspection results from another's.
+    id: u64,
 }
 
 /// What `policy` saw of one call. Kept per call so a grant is offered for,
@@ -49,6 +51,18 @@ struct Entry {
     approved_key: Option<String>,
 }
 
+/// Inspects interpreters inside the sandbox, never outside it.
+struct Confined<'a>(&'a dyn SandboxBackend, u64);
+
+impl Prober for Confined<'_> {
+    fn cache_scope(&self) -> String {
+        format!("shell-{}", self.1)
+    }
+    fn inspect(&self, program: Vec<OsString>, cwd: &std::path::Path) -> Result<String, String> {
+        self.0.probe_blocking(program, cwd)
+    }
+}
+
 fn plan_key(run: &str, call: &str) -> String {
     format!("{run}\0{call}")
 }
@@ -60,6 +74,10 @@ impl Shell {
             default_timeout,
             plans: Mutex::new(HashMap::new()),
             path: std::env::var_os("PATH"),
+            id: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
         }
     }
 
@@ -107,12 +125,23 @@ impl Shell {
             ));
         }
         let writable = self.backend.writable_roots(&ctx.workspace);
-        let resolved =
-            match shell_script::resolve(&parsed, &ctx.workspace, &writable, self.path.clone()) {
-                Ok(r) => r,
-                Err(why) => return none(Some(format!("Not auto-approved: {why}."))),
-            };
         let verification = self.backend.verify(&ctx.workspace);
+        let resolved = match shell_script::resolve(
+            &parsed,
+            &ctx.workspace,
+            &writable,
+            self.path.clone(),
+            &Confined(self.backend.as_ref(), self.id),
+        ) {
+            Ok(r) => r,
+            Err(why) => {
+                // Without a confirmed sandbox that is the reason to give.
+                return none(Some(match verification.reason() {
+                    Some(v) => format!("Not auto-approved: the sandbox isn't confirmed active ({v})."),
+                    None => format!("Not auto-approved: {why}."),
+                }));
+            }
+        };
         let why_not = if let Some(why) = verification.reason() {
             Some(format!(
                 "Not auto-approved: the sandbox isn't confirmed active ({why})."
@@ -367,6 +396,7 @@ impl Tool for Shell {
                 &ctx.workspace,
                 &writable,
                 self.path.clone(),
+                &Confined(self.backend.as_ref(), self.id),
             );
             if !again.is_ok_and(|r| {
                 r.interpreter_canonical == plan.interpreter_canonical && r.hash == plan.hash
@@ -579,6 +609,21 @@ mod script_grant_tests {
         fn writable_roots(&self, _: &Path) -> Vec<PathBuf> {
             self.roots.clone()
         }
+        /// Test double: runs the inspection directly (the real backend runs
+        /// it inside the sandbox).
+        fn probe_blocking(&self, program: Vec<OsString>, cwd: &Path) -> Result<String, String> {
+            let (prog, args) = program.split_first().ok_or("empty")?;
+            let out = std::process::Command::new(prog)
+                .args(args)
+                .current_dir(cwd)
+                .env_clear()
+                .output()
+                .map_err(|e| e.to_string())?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+                .ok_or_else(|| "it didn't run".to_owned())
+        }
     }
 
     /// Like docker: runs commands, can't be probed.
@@ -790,6 +835,45 @@ mod script_grant_tests {
         // A backend that can't be probed (docker) never verifies.
         let (reg, _) = registry(Arc::new(NoProbe));
         assert_eq!(key(&e, &reg, &c), None);
+    }
+
+    /// Verified and offline, but it can't inspect an interpreter inside the
+    /// sandbox (the default for a backend that doesn't implement it).
+    struct CannotInspect(Arc<Claim>);
+
+    #[async_trait]
+    impl SandboxBackend for CannotInspect {
+        async fn exec(
+            &self,
+            cmd: &str,
+            opts: ExecOpts,
+            cancel: CancellationToken,
+        ) -> Result<ExecOutput, tern_sandbox::SandboxError> {
+            self.0.exec(cmd, opts, cancel).await
+        }
+        fn network_reachable(&self) -> bool {
+            false
+        }
+        fn verify(&self, w: &Path) -> Verification {
+            self.0.verify(w)
+        }
+        fn writable_roots(&self, w: &Path) -> Vec<PathBuf> {
+            self.0.writable_roots(w)
+        }
+    }
+
+    #[test]
+    fn if_the_interpreter_cannot_be_inspected_in_the_sandbox_no_grant_is_offered() {
+        if !have_python() {
+            return;
+        }
+        let e = env();
+        std::fs::write(e.ws.join("a.py"), "x").unwrap();
+        let (reg, _) = registry(Arc::new(CannotInspect(Claim::new(verified(), roots(&e)))));
+        let c = call("1", "python3 a.py");
+        assert_eq!(key(&e, &reg, &c), None);
+        let why = reg.grant_unavailable("run", &c).unwrap();
+        assert!(why.contains("couldn't inspect"), "{why}");
     }
 
     #[test]

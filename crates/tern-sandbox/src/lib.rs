@@ -102,6 +102,16 @@ pub trait SandboxBackend: Send + Sync {
         self.verify(workspace)
     }
 
+    /// Run an inspection program inside the sandbox (network off, no extra
+    /// writes) and return its stdout; `Err` when this backend can't.
+    fn probe_blocking(
+        &self,
+        _program: Vec<std::ffi::OsString>,
+        _cwd: &Path,
+    ) -> Result<String, String> {
+        Err("this backend can't run a confined inspection".into())
+    }
+
     /// Start whatever [`SandboxBackend::verify`] needs in the background.
     fn warm(&self, _workspace: &Path) {}
 
@@ -370,6 +380,14 @@ impl SandboxBackend for HostBackend {
 
     fn warm(&self, workspace: &Path) {
         HostBackend::warm(self, workspace);
+    }
+
+    fn probe_blocking(
+        &self,
+        program: Vec<std::ffi::OsString>,
+        cwd: &Path,
+    ) -> Result<String, String> {
+        self.probe_confined(program, cwd)
     }
 
     fn writable_roots(&self, workspace: &Path) -> Vec<PathBuf> {

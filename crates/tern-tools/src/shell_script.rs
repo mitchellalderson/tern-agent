@@ -130,10 +130,12 @@ pub fn resolve(
     workspace: &Path,
     writable: &[PathBuf],
     path: Option<OsString>,
+    prober: &dyn Prober,
 ) -> Result<Resolved, String> {
     let workspace = std::fs::canonicalize(workspace)
         .map_err(|_| "the workspace folder can't be resolved".to_owned())?;
-    let (interpreter, interpreter_canonical) = find_interpreter(&parsed.interpreter, path, writable)?;
+    let (interpreter, interpreter_canonical) =
+        find_interpreter(&parsed.interpreter, path, writable, prober, &workspace)?;
     let (script_canonical, hash) = read_script(&workspace, &workspace.join(&parsed.script))?;
     let script_rel = script_canonical
         .strip_prefix(&workspace)
@@ -207,6 +209,8 @@ fn find_interpreter(
     name: &str,
     path: Option<OsString>,
     writable: &[PathBuf],
+    prober: &dyn Prober,
+    workspace: &Path,
 ) -> Result<(PathBuf, PathBuf), String> {
     let path = path.ok_or("there is no PATH to find python on")?;
     for dir in std::env::split_paths(&path) {
@@ -246,7 +250,7 @@ fn find_interpreter(
                 canonical.display()
             ));
         }
-        interpreter_is_sealed(&candidate, &canonical, writable)?;
+        interpreter_is_sealed(&candidate, &canonical, writable, prober, workspace)?;
         return Ok((candidate, canonical));
     }
     Err(format!("{name} wasn't found on PATH"))
@@ -261,6 +265,8 @@ fn interpreter_is_sealed(
     candidate: &Path,
     canonical: &Path,
     writable: &[PathBuf],
+    prober: &dyn Prober,
+    workspace: &Path,
 ) -> Result<(), String> {
     let under = |p: &Path| {
         writable.iter().any(|w| p.starts_with(w))
@@ -277,8 +283,22 @@ fn interpreter_is_sealed(
             }
         }
     }
-    for p in interpreter_paths(canonical)? {
-        if under(&p) {
+    // The other way round, before anything is run: a writable place *inside*
+    // the prefix of the interpreter that will run (`write_paths` naming its
+    // `lib`, so pip works) is code it loads at startup.
+    if let Some(prefix) = canonical.ancestors().nth(2)
+        && prefix.parent().is_some()
+        && let Some(w) = writable.iter().find(|w| w.starts_with(prefix))
+    {
+        return Err(format!(
+            "{} is inside the prefix of the interpreter at {}, and commands can write there",
+            w.display(),
+            canonical.display()
+        ));
+    }
+    let found = interpreter_paths(prober, canonical, workspace)?;
+    for p in &found.loaded_from {
+        if under(p) {
             return Err(format!(
                 "the interpreter at {} loads code from {}, a place commands can write",
                 canonical.display(),
@@ -286,77 +306,153 @@ fn interpreter_is_sealed(
             ));
         }
     }
+    if let Some(why) = pth_problem(&found.site_dirs, &under) {
+        return Err(why);
+    }
     Ok(())
 }
 
+/// What an interpreter reports it loads code from.
+#[derive(Debug, Clone, Default)]
+pub struct InterpreterPaths {
+    /// Prefixes, `sys.path` (the standard library) and site-packages.
+    pub loaded_from: Vec<PathBuf>,
+    /// The site-packages directories (where `.pth` files are read).
+    pub site_dirs: Vec<PathBuf>,
+}
+
+/// Asks an interpreter what it loads code from, without letting anything it
+/// loads run outside the sandbox.
+pub trait Prober {
+    fn inspect(&self, program: Vec<OsString>, cwd: &Path) -> Result<String, String>;
+
+    /// Results are cached per interpreter file *and* per scope, so one
+    /// sandbox's answer is never taken for another's.
+    fn cache_scope(&self) -> String {
+        String::new()
+    }
+}
+
+/// The fixed inspection program: `-I -S` (no `site`, so no `.pth` runs).
+pub fn probe_program(canonical: &Path) -> Vec<OsString> {
+    const CODE: &str = "import sys, site\nfor p in (sys.prefix, sys.base_prefix, sys.exec_prefix, *sys.path):\n    print('path', p)\nfor p in site.getsitepackages():\n    print('site', p)\n";
+    vec![
+        canonical.into(),
+        "-I".into(),
+        "-S".into(),
+        "-c".into(),
+        CODE.into(),
+    ]
+}
+
+fn parse_probe(out: &str) -> InterpreterPaths {
+    let mut found = InterpreterPaths::default();
+    for line in out.lines() {
+        let Some((kind, p)) = line.split_once(' ') else {
+            continue;
+        };
+        let p = PathBuf::from(p);
+        if !p.is_absolute() {
+            continue;
+        }
+        match kind {
+            "path" => found.loaded_from.push(p),
+            "site" => {
+                found.loaded_from.push(p.clone());
+                found.site_dirs.push(p);
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
 type PathsCache = std::collections::HashMap<
-    (PathBuf, Option<std::time::SystemTime>),
-    Result<Vec<PathBuf>, String>,
+    (String, PathBuf, Option<std::time::SystemTime>),
+    InterpreterPaths,
 >;
 
-/// What the interpreter says it loads code from: prefixes, `sys.path`
-/// (standard library) and site-packages. Asked once per interpreter file
-/// (cached by path and mtime) by running it outside the sandbox with a fixed
-/// program, `-I -S` (so no `site`, no `.pth`, no user site: nothing the
-/// workspace can influence runs), from `/` with an empty environment.
-pub fn interpreter_paths(canonical: &Path) -> Result<Vec<PathBuf>, String> {
+/// What the interpreter says it loads code from, asked once per interpreter
+/// file (cached by path and mtime; failures aren't cached) through `prober`.
+pub fn interpreter_paths(
+    prober: &dyn Prober,
+    canonical: &Path,
+    cwd: &Path,
+) -> Result<InterpreterPaths, String> {
     static CACHE: std::sync::Mutex<Option<PathsCache>> = std::sync::Mutex::new(None);
     let mtime = std::fs::metadata(canonical).and_then(|m| m.modified()).ok();
-    let key = (canonical.to_path_buf(), mtime);
+    let key = (prober.cache_scope(), canonical.to_path_buf(), mtime);
     if let Some(hit) = CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .and_then(|c| c.get(&key))
     {
-        return hit.clone();
+        return Ok(hit.clone());
     }
-    let result = probe_interpreter(canonical);
+    let out = prober
+        .inspect(probe_program(canonical), cwd)
+        .map_err(|e| format!("couldn't inspect {}: {e}", canonical.display()))?;
+    let found = parse_probe(&out);
+    if found.loaded_from.is_empty() {
+        return Err(format!("couldn't inspect {} (it didn't answer as python)", canonical.display()));
+    }
     CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get_or_insert_with(Default::default)
-        .insert(key, result.clone());
-    result
+        .insert(key, found.clone());
+    Ok(found)
 }
 
-fn probe_interpreter(canonical: &Path) -> Result<Vec<PathBuf>, String> {
-    const CODE: &str = "import sys, site\nfor p in (sys.prefix, sys.base_prefix, sys.exec_prefix, *sys.path, *site.getsitepackages()):\n    print(p)\n";
-    let mut child = std::process::Command::new(canonical)
-        .args(["-I", "-S", "-c", CODE])
-        .current_dir("/")
-        .env_clear()
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("couldn't inspect {}: {e}", canonical.display()))?;
-    let start = std::time::Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) if start.elapsed() > std::time::Duration::from_secs(10) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("inspecting {} timed out", canonical.display()));
+/// `.pth` files in site-packages run at startup, even under `-I`: path lines
+/// add directories to `sys.path`, `import` lines run code. Read them
+/// statically: refuse a path line under a writable place, and any `import`
+/// line that isn't a known-benign one.
+fn pth_problem(site_dirs: &[PathBuf], under: &dyn Fn(&Path) -> bool) -> Option<String> {
+    for dir in site_dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().is_none_or(|x| x != "pth") {
+                continue;
             }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(5)),
-            Err(e) => return Err(format!("inspecting {}: {e}", canonical.display())),
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                return Some(format!("{} can't be read", path.display()));
+            };
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if line.starts_with("import ") || line.starts_with("import\t") {
+                    if !BENIGN_PTH.iter().any(|b| line.starts_with(b)) {
+                        return Some(format!(
+                            "{} runs code at startup (an `import` line)",
+                            path.display()
+                        ));
+                    }
+                    continue;
+                }
+                let target = dir.join(line);
+                if under(&target) {
+                    return Some(format!(
+                        "{} adds {} to the module path, a place commands can write",
+                        path.display(),
+                        target.display()
+                    ));
+                }
+            }
         }
-    };
-    let mut out = String::new();
-    if let Some(mut o) = child.stdout.take() {
-        let _ = o.read_to_string(&mut out);
     }
-    if !status.success() {
-        return Err(format!("couldn't inspect {} (it didn't run as python)", canonical.display()));
-    }
-    Ok(out
-        .lines()
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .collect())
+    None
 }
+
+/// `import` lines in `.pth` files that ship with setuptools and do nothing
+/// the workspace can steer (the distutils shim).
+const BENIGN_PTH: &[&str] = &["import os; var = 'SETUPTOOLS_USE_DISTUTILS'"];
 
 /// The first place on the way from `candidate` to its target (the path
 /// itself, each directory it sits in, each symlink hop) that is under a
@@ -453,8 +549,54 @@ pub fn offline(args: &serde_json::Value) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    /// Runs the inspection directly (a test double: production runs it in
+    /// the sandbox).
+    struct Direct;
+
+    impl Prober for Direct {
+        fn cache_scope(&self) -> String {
+            "direct".into()
+        }
+        fn inspect(&self, program: Vec<OsString>, cwd: &Path) -> Result<String, String> {
+            let (prog, args) = program.split_first().ok_or("empty")?;
+            let out = std::process::Command::new(prog)
+                .args(args)
+                .current_dir(cwd)
+                .env_clear()
+                .output()
+                .map_err(|e| e.to_string())?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+                .ok_or_else(|| "it didn't run".to_owned())
+        }
+    }
+
+    /// Answers with fixed text, and counts how often it was asked.
+    struct Fixed(String, AtomicUsize);
+
+    impl Prober for Fixed {
+        fn cache_scope(&self) -> String {
+            self.0.clone()
+        }
+        fn inspect(&self, _: Vec<OsString>, _: &Path) -> Result<String, String> {
+            self.1.fetch_add(1, Ordering::SeqCst);
+            Ok(self.0.clone())
+        }
+    }
+
+    fn resolve(
+        parsed: &Parsed,
+        w: &Path,
+        writable: &[PathBuf],
+        path: Option<OsString>,
+    ) -> Result<Resolved, String> {
+        super::resolve(parsed, w, writable, path, &Direct)
+    }
 
     fn ok(cmd: &str) -> Parsed {
         parse(cmd).unwrap_or_else(|e| panic!("{cmd:?} rejected: {e:?}"))
@@ -700,12 +842,12 @@ mod tests {
         assert!(ok.is_ok(), "{ok:?}");
         // What the interpreter reports it loads from, each made writable in turn
         // (as `write_paths = [site-packages]` would).
-        let reported = interpreter_paths(&real).unwrap();
+        let reported = interpreter_paths(&Direct, &real, Path::new("/")).unwrap().loaded_from;
         assert!(reported.len() >= 3, "{reported:?}");
         for dir in reported.iter().filter(|p| p.is_dir()) {
             let roots = [w.clone(), dir.clone()];
             let e = resolve(&ok_cmd(), &w, &roots, path()).unwrap_err();
-            assert!(e.contains("a place commands can write"), "{dir:?}: {e}");
+            assert!(e.contains("commands can write"), "{dir:?}: {e}");
         }
     }
 
@@ -744,6 +886,123 @@ mod tests {
         std::os::unix::fs::symlink(safe.join("mise"), safe.join("python3")).unwrap();
         let e = resolve(&ok_cmd(), &w, std::slice::from_ref(&w), Some(safe.into())).unwrap_err();
         assert!(e.contains("a launcher rather than a python interpreter"), "{e}");
+    }
+
+    #[test]
+    fn a_writable_lib_inside_the_prefix_is_refused_before_anything_runs() {
+        let (_d, w) = ws();
+        std::fs::write(w.join("a.py"), "x").unwrap();
+        // <prefix>/bin/python3 with only <prefix>/lib writable (write_paths
+        // so pip works): the stdlib it loads at startup is the agent's.
+        let (_o, prefix) = ws();
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::create_dir_all(prefix.join("lib/python3.12")).unwrap();
+        std::fs::copy("/bin/sh", prefix.join("bin/python3")).unwrap();
+        for lib in [prefix.join("lib"), prefix.join("lib/python3.12")] {
+            let fixed = Fixed("path /nowhere\n".into(), AtomicUsize::new(0));
+            let roots = [w.clone(), lib.clone()];
+            let e = super::resolve(
+                &ok_cmd(),
+                &w,
+                &roots,
+                Some(prefix.join("bin").into()),
+                &fixed,
+            )
+            .unwrap_err();
+            assert!(e.contains("inside the prefix"), "{lib:?}: {e}");
+            assert_eq!(fixed.1.load(Ordering::SeqCst), 0, "the interpreter was asked to run");
+        }
+    }
+
+    fn with_site(site: &Path, pth: &[(&str, &str)], writable: &[PathBuf]) -> Result<Resolved, String> {
+        let Some(real) = real_python() else {
+            return Ok(unreachable_resolved());
+        };
+        let (_s, safe) = ws();
+        std::os::unix::fs::symlink(&real, safe.join("python3")).unwrap();
+        for (name, text) in pth {
+            std::fs::write(site.join(name), text).unwrap();
+        }
+        let fixed = Fixed(format!("path /nowhere\nsite {}\n", site.display()), AtomicUsize::new(0));
+        let (_d, w) = ws();
+        std::fs::write(w.join("a.py"), "x").unwrap();
+        let mut roots = vec![w.clone()];
+        roots.extend(writable.iter().cloned());
+        let r = super::resolve(&ok_cmd(), &w, &roots, Some(safe.into()), &fixed);
+        drop(_d);
+        r
+    }
+
+    fn unreachable_resolved() -> Resolved {
+        Resolved {
+            workspace: PathBuf::new(),
+            interpreter: PathBuf::new(),
+            interpreter_canonical: PathBuf::new(),
+            script_canonical: PathBuf::new(),
+            script_rel: String::new(),
+            args: vec![],
+            hash: String::new(),
+        }
+    }
+
+    #[test]
+    fn pth_files_in_site_packages_are_read_not_trusted() {
+        if real_python().is_none() {
+            return;
+        }
+        // The workspace as a writable place the .pth could point into.
+        let (_w, wsdir) = ws();
+        let site = || tempfile::tempdir().unwrap();
+        // A plain path line outside any writable place is fine, and so is
+        // the distutils shim some setuptools installs ship.
+        let s = site();
+        let sd = std::fs::canonicalize(s.path()).unwrap();
+        let fine = with_site(
+            &sd,
+            &[
+                ("zz.pth", "/opt/some/lib\n# a comment\n\nrelative/dir\n"),
+                (
+                    "distutils-precedence.pth",
+                    "import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = os.environ.get(var, 'local') == 'local'; enabled and __import__('_distutils_hack').add_shim();\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(fine.is_ok(), "{fine:?}");
+        // Editable-install style: a path line into a writable place.
+        let s = site();
+        let sd = std::fs::canonicalize(s.path()).unwrap();
+        let e = with_site(
+            &sd,
+            &[("__editable__.proj.pth", &format!("{}\n", wsdir.join("proj/src").display()))],
+            std::slice::from_ref(&wsdir),
+        )
+        .unwrap_err();
+        assert!(e.contains("adds") && e.contains("a place commands can write"), "{e}");
+        // A relative line that lands in a writable place counts too.
+        let s = site();
+        let sd = std::fs::canonicalize(s.path()).unwrap();
+        let e = with_site(
+            &sd,
+            &[("rel.pth", "sub\n")],
+            std::slice::from_ref(&sd),
+        )
+        .unwrap_err();
+        assert!(e.contains("a place commands can write"), "{e}");
+        // An executable line that isn't a known-benign one.
+        let s = site();
+        let sd = std::fs::canonicalize(s.path()).unwrap();
+        let e = with_site(&sd, &[("evil.pth", "import evil\n")], &[]).unwrap_err();
+        assert!(e.contains("runs code at startup"), "{e}");
+        let s = site();
+        let sd = std::fs::canonicalize(s.path()).unwrap();
+        let e = with_site(
+            &sd,
+            &[("evil2.pth", "import os; os.system('id')\n")],
+            &[],
+        )
+        .unwrap_err();
+        assert!(e.contains("runs code at startup"), "{e}");
     }
 
     #[test]

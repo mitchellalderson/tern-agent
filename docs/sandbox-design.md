@@ -79,11 +79,14 @@ about `shell` asks exactly as before.
   reads the workspace). Python also reads `pyvenv.cfg` next to its binary or one level up, and loads the standard
   library, site-packages and `.pth` files from its prefix (`-I` still imports `site`), so the binary's directories
   (as found and canonical), their `pyvenv.cfg` paths, and everything the interpreter itself reports (`sys.prefix`,
-  `sys.path`, `site.getsitepackages()`) must be outside the writable roots. The report comes from running the
-  interpreter once per file (cached by path and mtime) outside the sandbox with a fixed `-I -S -c` program, from `/`
-  with an empty environment, after the directory checks pass (`-S`: no `site`, no `.pth`). A writable stdlib
-  directory would still execute in that one probe, so such a configuration should not list the interpreter's own
-  directories in `write_paths`. All of this is checked again when the call runs.
+  `sys.path`, `site.getsitepackages()`) must be outside the writable roots. Before anything is run, a writable root inside the interpreter's prefix
+  (`write_paths` naming its `lib`) is refused. The report then comes from running the interpreter once per file
+  (cached by path and mtime) **inside the sandbox** (network off, no extra write paths, a fixed `-I -S -c` program,
+  so no `site` and no `.pth`), so anything it loads at startup can only act in the sandbox; with no OS sandbox the
+  inspection is refused and no grant is offered. `.pth` files in each reported site-packages directory are then read
+  statically: a path line under a writable root is refused, and so is any `import` line except the setuptools
+  distutils shim (a granted run uses `-I` without `-S`, so `.pth` files do run, including editable-install ones).
+  All of this is checked again when the call runs.
 
 A python command that doesn't qualify says why on its card ("Not auto-approved: inline script. Saved as a .py file
 in the workspace and run as `python3 file.py`, it could be approved once for the whole run.").
