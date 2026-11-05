@@ -11,9 +11,10 @@ while spending as little as possible before we know.
 2. **Money.** Will enough of them pay for always-on hosting and phone reach? Answered by a priced waitlist, before any
    hosting infrastructure is built.
 
-The order matters. The hosted tier sells to people who already showed up. The business-operator audience from the
-positioning doc comes after both, once the desktop app, OAuth sign-in and the outbox exist (Stages 2–4 of the tooling
-spec).
+The order matters. The hosted tier sells to people who already showed up. The ICP (technical founders, operations
+leaders and go-to-market leaders at technical companies, revised 2026-11-05) is who the launch is aimed at. The
+non-technical owner-operator audience from the positioning doc comes after both, once the desktop app, OAuth sign-in
+and the outbox exist (Stages 2–4 of the tooling spec).
 
 ## 2. Principles
 
@@ -64,7 +65,9 @@ Ninety seconds, recorded in the terminal and on a phone, no voiceover needed. Sc
 
 Steps 4 and 5 are the ones nobody else can show. If the demo has to be cut, cut 1 and 2.
 
-The invoice tool for the demo should be one with a plain HTTPS API and a free tier, so the connector in step 5 is
+Given the ICP, the demo's routine can be the Flow C version in [vertical-demo-flows.md](vertical-demo-flows.md)
+(trial accounts that crossed a usage threshold, followed up in founder voice) instead of invoices; the beats are the
+same. Whichever is chosen, the tool should be one with a plain HTTPS API and a free tier, so the connector in step 5 is
 real and the viewer can repeat it. Pick one and keep the connector in `examples/`.
 
 ### 4.2 Where to post, and the angle for each
@@ -76,6 +79,8 @@ real and the viewer can repeat it. Pick one and keep the connector in `examples/
 | r/selfhosted | "Runs on your box, approves from your phone, no VM, no Node." Contrast with OpenClaw's exposure numbers. | "Self-hosted personal agent that isn't an exposed gateway" |
 | Lobsters | Same as HN, shorter. | |
 | X / Bluesky | The 90-second demo as a video, the kill-and-resume moment as the thumbnail. | |
+| LinkedIn | The ops and go-to-market side of the ICP. Lead with the outcome ("it followed up with the five trial accounts that hit 100 events, and skipped the one that's already a customer"), the demo as native video, and the receipt screenshot. | "The agent for the business side of a technical company" |
+| Communities for ops, RevOps, developer relations and founder-led sales | Share the demo and the connector moment, not the repo. Ask for the tool they are stuck with and offer to run it live. | |
 | Rust and AI newsletters (This Week in Rust, TLDR AI) | Submit after the HN post, with the HN link. | |
 
 Post HN on a Tuesday to Thursday morning, US Eastern. Have Phase 0 done at least two days before, so the install
@@ -109,7 +114,7 @@ the expectation.
 | Telegram pairings | Same, by hand | < 5 | 15 | 60+ |
 | Connectors written by users | PRs, gists, discussion posts | 0 | 3 | 10+ |
 | Waitlist signups at the stated prices | Form | < 20 | 50 | 300+ |
-| Inbound from businesses or agencies | Email, DMs | 0 | 2 | 5+ |
+| Inbound from ICP companies (technical founders, ops or GTM leaders) | Email, DMs, LinkedIn | 0 | 2 | 5+ |
 
 Why stars moved up and the money rows didn't: the claw numbers show the self-hosted audience is far larger than the
 original targets assumed, so a post that lands should clear 1,000 in a week. Nothing in the category gives evidence

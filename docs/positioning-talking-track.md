@@ -9,44 +9,65 @@ Related: [personal-agent-tooling-spec.md](personal-agent-tooling-spec.md) (the f
 
 ## 1. The one-liner
 
-> **tern is the always-on agent for people who run a business, not a dev team.** It connects to the tools you
-> actually use, including the ones nobody built a connector for, keeps working while your laptop is closed, and never
-> acts on your behalf without a receipt.
+> **tern is the always-on agent for technical founders, operations leaders and go-to-market leaders.** It connects to
+> your whole stack, including your own product's API and the tools nobody built a connector for, keeps working while
+> your laptop is closed, and never acts on your behalf without a receipt.
 
-Shorter: **"Your business's back office, as one agent you can trust."**
+Shorter: **"The agent for the business side of a technical company."**
 
 Positioning statement (internal form):
 
-> For owner-operators, consultants and small teams who are drowning in admin across a dozen SaaS tools, tern is a
-> personal business agent that runs durably, anywhere (laptop, your server, or hosted), and connects to anything with
-> an API. Unlike Claude Duet, OpenAI Dots, Meta Muse and Grok Bot, it is not tied to one model vendor, one app
-> catalog or one cloud VM, and it treats every outbound action as something you can audit, defer or deny.
+> For technical founders, ops leaders and GTM leaders at devtool, infrastructure, data and AI companies, who run the
+> business across a dozen API-first tools and have no engineer to spare, tern is an always-on agent that runs
+> durably, anywhere (laptop, your server, or hosted), and connects to anything with an API. Unlike Claude Duet, OpenAI
+> Dots, Meta Muse and Grok Bot, it is not tied to one model vendor, one app catalog or one cloud VM, and it treats
+> every outbound action as something you can audit, defer or deny.
 
-## 2. Why "business operator", not "engineer"
+## 2. Why technical business-side leaders
 
-The user's instinct is right. The evidence:
+Status: ICP revised 2026-11-05. Earlier drafts led with non-technical owner-operators (accountants, trades, property
+managers). That segment is real but needs the desktop app, OAuth sign-in and the hosted tier to be easy. We now lead
+with the people who can use tern **today** and who are the best fit for what it is.
 
-- **The engineer segment is taken and expensive.** Grok Bot ($30–200/mo, routines wired to GitHub, Linear, Sentry,
-  PagerDuty) and OpenAI Dots (Pro and Business Premium, launched from Codex, "a developer's dot that monitors customer
-  feedback and implements fixes") are both aimed at technical users with budgets. The open-source "claw" family
-  (OpenClaw, ZeroClaw, IronClaw, Hermes) owns the hobbyist-engineer slot and is where tern's feature set would be
-  compared line by line. We would be a smaller OpenClaw with fewer channels.
-- **The business segment is underserved by the incumbents on their own admission.** Claude Duet is individual Pro/Max
-  only, US, waitlist, with Team and Enterprise "later" and no published retention, training or admin terms. Meta Muse
-  expanded to small businesses on 2026-09-29 (QuickBooks, Shopify, Slack, Meta ad accounts), but its coverage is
-  dominated by trust failures (credential handling, leaked chats, a Marketplace seller's home address handed out), and
-  an Omdia analyst asked why a business would pick it over Microsoft or Google. Dots launches into Slack and Teams but
-  its governance story is "working with Microsoft on Agent 365", which is enterprise, not a 12-person firm.
-- **tern's strengths read as business strengths.** Auto-built connectors matter most where the catalog is thin: the
-  practice-management tool, the regional payroll provider, the niche CRM, the supplier portal. Durability and
-  deferred approvals matter most when the user isn't at a keyboard. "Runs where your data policy allows" matters most
-  to professionals with confidentiality duties (accountants, lawyers, agencies, healthcare-adjacent).
-- **tern's gaps don't hurt here.** No bundled browser, no OS-level clicking, no 6,000-connector marketplace, no voice.
-  Operators want the same ten things done reliably every day, not a demo of an agent booking a restaurant.
+**The ICP, in three roles, one company type.** The company is technical: a devtool, dev-infrastructure, data, security
+or AI product, usually 2 to 100 people. The buyers are:
 
-The one caveat: today's install is a CLI and a config file. The business pitch assumes the desktop app, the OAuth
-sign-in cards and the hosted tier (§6, Appendix A). Until those ship, the honest audience is **the technical founder
-or ops lead who runs a business**, which is a fine beachhead.
+- **Technical founders** running the business side themselves (sales, support, finance, hiring) next to the product.
+- **Operations leaders**: heads of ops, chiefs of staff, RevOps, business-systems and finance-ops people who own the
+  glue between a dozen SaaS tools and have more requests than hours.
+- **Go-to-market leaders in technical spaces**: heads of growth, developer relations, product marketing, sales
+  engineering and founder-led-sales owners, whose job depends on joining product usage data to the CRM, the docs, the
+  community and the inbox.
+
+Why this is the right segment:
+
+- **They can install it now.** Today's install is a terminal command and a provider key. This audience is comfortable
+  with both, so we are not blocked on the desktop onboarding, OAuth sign-in cards or the hosted tier.
+- **Their stack is API-first and long-tailed.** The most important tool is often their **own product's API**, which
+  no catalog will ever have, plus a CRM, a billing system, a docs platform and a community tool. Auto-written,
+  capability-approved connectors are the feature they care about most.
+- **They are where the launch happens.** Hacker News, Rust and self-hosting communities, X, LinkedIn and technical
+  newsletters reach exactly this group, and the launch plan is built on those channels.
+- **They read security claims critically, so the claims have to hold.** They will check the journal, the ledger and
+  the sandbox. "Reads are free, writes ask, money never moves" is a stronger line to them than to anyone else.
+- **They buy and influence.** A founder decides alone; an ops or GTM leader brings a tool in by trial and expands it
+  to a team. That is the path to Connect, then Cloud, then team plans.
+- **The competitors point elsewhere.** Grok Bot ($30 to 200/mo, routines on GitHub, Linear, Sentry, PagerDuty) and
+  OpenAI Dots (launched from Codex) aim at engineers writing and shipping code. The open-source claw family owns the
+  hobbyist slot. Nobody is building the durable, vendor-neutral agent for the people who run the business side of a
+  technical company. Claude Duet is individual Pro/Max only, with Team and Enterprise "later" and no published
+  retention or admin terms. Meta Muse's small-business push is dominated by trust failures, and Dots' governance story
+  is enterprise Agent 365.
+- **The gaps don't hurt.** No bundled browser, no OS-level clicking, no 6,000-connector marketplace, no voice. These
+  users want the same ten things done reliably every day, against APIs.
+
+What changes in how we sell: lead with the connector moment on a tool they use and with durability and receipts, show
+the CLI and the desktop app side by side, and let "runs where your data policy allows" speak to security-conscious
+buyers instead of a regulated-profession pitch.
+
+The earlier segments (accountants, trades, property managers, clinics) are deferred, not dropped. Revisit them after
+the desktop app, OAuth sign-in and hosted tier are live; the demo flows in
+[vertical-demo-flows.md](vertical-demo-flows.md) keep those scripts.
 
 ## 3. The niche, in one picture
 
@@ -215,29 +236,34 @@ is journaled and replayed," which is true at every tier.
 
 ## 7. Who we sell to, and the stories we tell
 
-**Primary:** the owner-operator. Solo consultants, agencies under 20 people, accountants and bookkeepers, e-commerce
-operators, property managers, clinic and practice managers. They have 8–15 SaaS tools, one or two of them obscure, and
-no engineer.
+**Primary (ICP, revised 2026-11-05):** technical founders, operations leaders and go-to-market leaders at technical
+companies: devtool, dev-infrastructure, data, security and AI products, usually 2 to 100 people. They run 10 to 20
+API-first tools, one of which is their own product, and have no engineer to spare for internal automation. Titles to
+look for: founder or co-founder, head of operations, chief of staff, RevOps or business systems, head of growth, head
+of developer relations, sales engineering lead.
 
-**Secondary (the beachhead today):** the technical founder or ops lead who runs the business side and is comfortable
-with a terminal for setup. They validate the engine before the app and hosted tier open the primary segment.
+**Next:** non-technical owner-operators (solo consultants, agencies, accountants, property managers, clinics). They
+need the desktop app, OAuth sign-in and hosted tier to be an easy yes, so they come after the ICP validates the engine.
 
-**Not now:** enterprise (needs admin consoles, SSO, DPAs, which Duet also lacks), consumers (Muse and Dots will
+**Not now:** enterprise (needs admin consoles, SSO and DPAs, which Duet also lacks), consumers (Muse and Dots will
 outspend us), and developers wanting a coding agent (Codex, Claude Code, Grok Bot).
 
 Stories to tell in a demo, each under a minute, each exercising a killer feature:
 
-1. **The invoice chase.** "Every Monday at 8, find invoices over 30 days in QuickBooks and draft a polite follow-up
-   for each." tern drafts; the sends wait in the outbox; the owner approves three of four from their phone over
-   coffee. (Routine + outbox + phone.)
-2. **The obscure tool.** "Connect to <regional payroll provider>." tern finds the docs, proposes sign-in, writes and
-   tests a connector, shows the capability card. (Self-written connectors + OAuth-first.)
-3. **The suspicious email.** A supplier email says "update our bank details to...". The run is tainted; tern surfaces
-   it as a decision with the provenance shown, and will not write anything on its own. (Taint + effects.)
-4. **The closed laptop.** The owner shuts the laptop mid-run. The hosted core finishes the job; the local one resumes
-   at the next open with no duplicate sends. (Durability + hosted engine.)
-5. **The two accounts.** Work Gmail and personal Gmail both connected; a reply is sent from the right one because
-   writes must name the account. (Connections, roadmap.)
+1. **Connect our own API.** "Connect to our API, the docs are at docs.acme.dev." tern writes a connector from the
+   docs, tests it against staging, and shows the capability card (hosts, secrets). The long-tail tool is the
+   founder's own product. (Self-written connectors, capability approval.)
+2. **The activation follow-up.** "Every day at 9, find trial accounts that crossed 100 events and aren't in the CRM at
+   a later stage; draft a founder-voice note for each." One account is already a customer and is skipped with the
+   reason. Sends wait for approval on the phone. (Routine, outbox, phone.)
+3. **The Monday ops digest.** Pipeline, billing, support and product usage pulled from four tools into one summary
+   for the ops or GTM lead, with anomalies flagged and nothing written. (Read-only routine, watches.)
+4. **The closed laptop.** Mid-run, the laptop shuts. The hosted core finishes the job, or the local one resumes at the
+   next open with no duplicate CRM notes or emails. (Durability, hosted engine.)
+5. **The suspicious email.** A supplier or "customer" email says "update our bank details to...". The run is tainted;
+   tern shows it as a decision with provenance and will not write anything on its own. (Taint, effects.)
+6. **The two accounts.** Work and personal Gmail both connected; a reply is sent from the right one because writes
+   must name the account. (Connections.)
 
 ## 8. Objections and answers
 
@@ -258,11 +284,13 @@ Stories to tell in a demo, each under a minute, each exercising a killer feature
 
 ## 9. Taglines to test
 
-- Your business's back office, as one agent you can trust.
+- The agent for the business side of a technical company.
+- Your whole stack, one agent you can trust.
 - The always-on agent you can actually own.
 - Connects to anything. Finishes everything. Asks before it matters.
 - Runs on your laptop. Runs in our cloud. Same tern.
 - No catalog. No canvas. No cloud VM you can't see into.
+- Connects to your own API in a minute, and asks before it matters.
 
 ## Appendix A: claim status (keep this honest)
 
