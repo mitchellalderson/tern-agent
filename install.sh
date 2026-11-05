@@ -80,7 +80,17 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 say "downloading $asset from $base"
-fetch "$base/$asset" "$tmp/$asset" || die "download failed: $base/$asset"
+if ! fetch "$base/$asset" "$tmp/$asset"; then
+  if [ -z "${TERN_DOWNLOAD_URL:-}" ]; then
+    say "error: couldn't download $base/$asset"
+    say "There may be no published release yet (or the repository is private, or TERN_VERSION=$VERSION doesn't exist)."
+    say "See https://github.com/$REPO/releases. To build from source instead (Rust 1.89+):"
+    say "  git clone https://github.com/$REPO && cd ${REPO##*/} && cargo build --profile dist -p tern"
+    say "  install -m 755 target/dist/tern ~/.local/bin/tern"
+    exit 1
+  fi
+  die "download failed: $base/$asset"
+fi
 fetch "$base/$asset.sha256" "$tmp/$asset.sha256" || die "checksum download failed"
 
 expected="$(cut -d' ' -f1 < "$tmp/$asset.sha256")"
@@ -96,4 +106,8 @@ case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) say "add $INSTALL_DIR to your PATH, e.g.: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
+pidfile="${TERN_HOME:-$HOME/.tern}/tern.pid"
+if [ -r "$pidfile" ] && pid="$(cat "$pidfile" 2>/dev/null)" && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  say "tern is running (pid $pid) and still on the old version; restart it to use the new one: tern stop && tern start"
+fi
 say "next: tern setup (then tern doctor to check everything)"
