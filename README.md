@@ -231,7 +231,7 @@ flowchart TB
     store["tern-store<br/>SQLite, migrations"]
 
     tern --> tui & gateway & tools & mcp & lua & providers & python
-    tui & gateway & tools & mcp & lua & providers & python --> core
+    tui & gateway & tools & mcp & lua & providers --> core
     tools --> sandbox
     core --> store
 
