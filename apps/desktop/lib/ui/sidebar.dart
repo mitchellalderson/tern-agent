@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:tern_client/tern_client.dart';
 
+import '../state/connection.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
@@ -8,12 +9,17 @@ import 'agent_sheet.dart';
 import 'channel_view.dart';
 import 'manage.dart';
 import 'providers.dart';
+import 'servers.dart';
 import 'widgets.dart';
 
 class Sidebar extends StatefulWidget {
-  const Sidebar({super.key, required this.store});
+  const Sidebar({super.key, required this.store, this.connections});
 
   final TernStore store;
+
+  /// The saved servers, for the switcher in the footer; without it the
+  /// footer only reports the connection.
+  final Connections? connections;
 
   @override
   State<Sidebar> createState() => _SidebarState();
@@ -128,7 +134,7 @@ class _SidebarState extends State<Sidebar> {
               ),
             ),
           const Hairline(),
-          _StatusFooter(store: store),
+          _StatusFooter(store: store, connections: widget.connections),
         ],
       ),
     );
@@ -343,47 +349,47 @@ class _AgentListRow extends StatelessWidget {
             if (pick == 'delete') showDeleteAgent(context, store, a);
           },
           child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: () => store.openAgent(a),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            child: Row(
-              children: [
-                AgentAvatar.of(a, size: 18),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    a.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 13.5,
-                      fontWeight: unread || selected
-                          ? FontWeight.w600
-                          : FontWeight.w400,
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => store.openAgent(a),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: Row(
+                children: [
+                  AgentAvatar.of(a, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      a.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: unread || selected
+                            ? FontWeight.w600
+                            : FontWeight.w400,
+                      ),
                     ),
                   ),
-                ),
-                if (waiting > 0)
-                  WaitingBadge(count: waiting)
-                else if (store.agentBusy(a))
-                  SizedBox(
-                    width: 10,
-                    height: 10,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 1.5,
-                      color: c.muted,
+                  if (waiting > 0)
+                    WaitingBadge(count: waiting)
+                  else if (store.agentBusy(a))
+                    SizedBox(
+                      width: 10,
+                      height: 10,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: c.muted,
+                      ),
+                    )
+                  else if (unread)
+                    Tooltip(
+                      message: 'New posts',
+                      child: _Dot(color: c.accent),
                     ),
-                  )
-                else if (unread)
-                  Tooltip(
-                    message: 'New posts',
-                    child: _Dot(color: c.accent),
-                  ),
-              ],
+                ],
+              ),
             ),
           ),
-        ),
         ),
       ),
     );
@@ -436,47 +442,50 @@ List<Widget> channelsSection(BuildContext context, TernStore store) {
               if (pick == 'delete') showDeleteChannel(context, store, ch);
             },
             child: InkWell(
-            borderRadius: BorderRadius.circular(8),
-            onTap: () => store.openChannelView(ch.id),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              child: Row(
-                children: [
-                  Text('#', style: TextStyle(fontSize: 14, color: c.muted)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      ch.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: store.unread(ch)
-                            ? FontWeight.w600
-                            : FontWeight.w400,
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => store.openChannelView(ch.id),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                child: Row(
+                  children: [
+                    Text('#', style: TextStyle(fontSize: 14, color: c.muted)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        ch.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: store.unread(ch)
+                              ? FontWeight.w600
+                              : FontWeight.w400,
+                        ),
                       ),
                     ),
-                  ),
-                  if (store.waitingIn(ch.id) case final n when n > 0)
-                    WaitingBadge(count: n)
-                  else if (store.busy(ch))
-                    SizedBox(
-                      width: 10,
-                      height: 10,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.5,
-                        color: c.muted,
+                    if (store.waitingIn(ch.id) case final n when n > 0)
+                      WaitingBadge(count: n)
+                    else if (store.busy(ch))
+                      SizedBox(
+                        width: 10,
+                        height: 10,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          color: c.muted,
+                        ),
+                      )
+                    else if (store.unread(ch))
+                      Tooltip(
+                        message: 'New posts',
+                        child: _Dot(color: c.accent),
                       ),
-                    )
-                  else if (store.unread(ch))
-                    Tooltip(
-                      message: 'New posts',
-                      child: _Dot(color: c.accent),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
           ),
         ),
       ),
@@ -884,9 +893,10 @@ class _Dot extends StatelessWidget {
 }
 
 class _StatusFooter extends StatelessWidget {
-  const _StatusFooter({required this.store});
+  const _StatusFooter({required this.store, this.connections});
 
   final TernStore store;
+  final Connections? connections;
 
   @override
   Widget build(BuildContext context) {
@@ -903,20 +913,26 @@ class _StatusFooter extends StatelessWidget {
           Expanded(
             child: Tooltip(
               message: store.linkError ?? store.client.endpoint.describe(),
-              child: Row(
-                children: [
-                  _Dot(color: color),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      text,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall,
+              child: connections != null
+                  ? ServerSwitcher(
+                      connections: connections!,
+                      statusColor: color,
+                      statusText: text,
+                    )
+                  : Row(
+                      children: [
+                        _Dot(color: color),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            text,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
             ),
           ),
           QuietIconButton(

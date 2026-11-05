@@ -179,8 +179,8 @@ void main() {
     test('the Keychain is reached through `security`', () async {
       final calls = <List<String>>[];
       final k = KeychainTokens(
-        run: (args) async {
-          calls.add(args);
+        run: (args, {stdin}) async {
+          calls.add([...args, ?stdin]);
           return ProcessResult(0, 0, 'tern_dev_x\n', '');
         },
       );
@@ -190,33 +190,36 @@ void main() {
       const s = KeychainTokens.service;
       expect(calls, [
         [
-          'add-generic-password',
-          '-U',
-          '-s',
-          s,
-          '-a',
-          'https://h:7420',
-          '-w',
-          'tern_dev_x',
+          '-i',
+          '"add-generic-password" "-U" "-s" "$s" "-a" "https://h:7420" '
+              '"-w" "tern_dev_x"\n',
         ],
+        // The read-back that confirms the write.
+        ['find-generic-password', '-s', s, '-a', 'https://h:7420', '-w'],
         ['find-generic-password', '-s', s, '-a', 'https://h:7420', '-w'],
         ['delete-generic-password', '-s', s, '-a', 'https://h:7420'],
       ]);
     });
 
-    test('connecting stores the token and switching back forgets it', () async {
-      final env = _Env();
-      addTearDown(env.dispose);
-      final p = await env.connections.connect(parseServerInput(_link));
-      expect(env.tokens.tokens, {p.account: 'tern_dev_secret'});
-      expect(env.connections.isRemote, isTrue);
-      expect((env.applied.single as RemoteEndpoint).token, 'tern_dev_secret');
+    test(
+      'connecting stores the token and switching back keeps the server',
+      () async {
+        final env = _Env();
+        addTearDown(env.dispose);
+        final p = await env.connections.connect(parseServerInput(_link));
+        expect(env.tokens.tokens, {p.account: 'tern_dev_secret'});
+        expect(env.connections.isRemote, isTrue);
+        expect((env.applied.single as RemoteEndpoint).token, 'tern_dev_secret');
 
-      await env.connections.useLocal();
-      expect(env.tokens.tokens, isEmpty);
-      expect(env.applied.last, isA<UnixEndpoint>());
-      expect(AppPrefs.fromFile(env.prefs.file).connection, isA<LocalProfile>());
-    });
+        await env.connections.useLocal();
+        expect(env.tokens.tokens, {p.account: 'tern_dev_secret'});
+        expect(env.applied.last, isA<UnixEndpoint>());
+        expect(
+          AppPrefs.fromFile(env.prefs.file).connection,
+          isA<LocalProfile>(),
+        );
+      },
+    );
   });
 
   group('first launch', () {
@@ -358,14 +361,14 @@ void main() {
     );
     expect(find.text('Start tern when I log in'), findsNothing);
     expect(find.text('Quit tern completely'), findsNothing);
-    expect(find.text('Change server…'), findsOneWidget);
+    expect(find.text('Servers…'), findsOneWidget);
     // It never asked the local service anything.
     expect(env.runs, isEmpty);
 
     await tester.tap(find.textContaining('instead'));
     await _settle(tester);
     expect(env.prefs.connection, isA<LocalProfile>());
-    expect(env.tokens.tokens, isEmpty);
+    expect(env.tokens.tokens, hasLength(1));
     expect(env.applied.last, isA<UnixEndpoint>());
   });
 }

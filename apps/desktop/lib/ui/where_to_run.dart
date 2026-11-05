@@ -192,14 +192,7 @@ class _WhereToRunDialogState extends State<WhereToRunDialog> {
 }
 
 /// A user-facing sentence for a failure while choosing.
-String errorText(Object e) => switch (e) {
-  FormatException(:final message) => message,
-  TernException(status: 401) =>
-    "The server didn't accept that code. Codes work once and expire after "
-        '10 minutes; make a new one with `tern devices pair`.',
-  TernException e when e.unreachable => "Couldn't reach the server: $e",
-  _ => '$e',
-};
+String errorText(Object e) => serverErrorText(e);
 
 /// The text fields of [ServerForm].
 class ServerFields {
@@ -209,6 +202,21 @@ class ServerFields {
   /// Throws [FormatException] with a message to show.
   PairingLink link() => parseServerInput(input.text, code: code.text);
 
+  /// Just where the server is (and its certificate pin, from a pairing
+  /// link), for testing it before there is a code. Throws
+  /// [FormatException] with a message to show.
+  ({Uri url, String? pin}) address() {
+    final text = input.text.trim();
+    if (text.startsWith('tern://')) {
+      final l = parseServerInput(text);
+      return (url: l.url, pin: l.fingerprint);
+    }
+    if (text.isEmpty) {
+      throw const FormatException('Paste a pairing link or a server URL.');
+    }
+    return (url: parseServerUrl(text), pin: null);
+  }
+
   void dispose() {
     input.dispose();
     code.dispose();
@@ -217,10 +225,16 @@ class ServerFields {
 
 /// "Pairing link or server URL", plus the code when it's a bare URL.
 class ServerForm extends StatefulWidget {
-  const ServerForm({super.key, required this.fields, this.enabled = true});
+  const ServerForm({
+    super.key,
+    required this.fields,
+    this.enabled = true,
+    this.autofocus = true,
+  });
 
   final ServerFields fields;
   final bool enabled;
+  final bool autofocus;
 
   @override
   State<ServerForm> createState() => _ServerFormState();
@@ -251,7 +265,7 @@ class _ServerFormState extends State<ServerForm> {
         TextField(
           controller: f.input,
           enabled: widget.enabled,
-          autofocus: true,
+          autofocus: widget.autofocus,
           decoration: const InputDecoration(
             labelText: 'Pairing link or server URL',
             hintText: 'tern://pair?… or https://home.example.net:7420',
@@ -268,78 +282,6 @@ class _ServerFormState extends State<ServerForm> {
           'On the server, run `tern devices pair` (or use Add device in its '
           'app) and paste the link it shows.',
           style: small,
-        ),
-      ],
-    );
-  }
-}
-
-/// Settings › Change server…: pair with a (different) server.
-class ConnectServerDialog extends StatefulWidget {
-  const ConnectServerDialog({super.key, required this.connections});
-
-  final Connections connections;
-
-  @override
-  State<ConnectServerDialog> createState() => _ConnectServerDialogState();
-}
-
-class _ConnectServerDialogState extends State<ConnectServerDialog> {
-  final _fields = ServerFields();
-  var _busy = false;
-  String? _error;
-
-  @override
-  void dispose() {
-    _fields.dispose();
-    super.dispose();
-  }
-
-  Future<void> _connect() async {
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      await widget.connections.connect(_fields.link());
-      if (mounted) Navigator.pop(context, true);
-    } on Exception catch (e) {
-      if (mounted) {
-        setState(() {
-          _busy = false;
-          _error = errorText(e);
-        });
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.colors;
-    return AlertDialog(
-      title: const Text('Connect to a tern server'),
-      content: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 440, minWidth: 400),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            ServerForm(fields: _fields, enabled: !_busy),
-            if (_error case final e?) ...[
-              const SizedBox(height: 8),
-              Text(e, style: TextStyle(fontSize: 12, color: c.error)),
-            ],
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: _busy ? null : () => Navigator.pop(context, false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: _busy ? null : _connect,
-          child: Text(_busy ? 'Connecting…' : 'Connect'),
         ),
       ],
     );

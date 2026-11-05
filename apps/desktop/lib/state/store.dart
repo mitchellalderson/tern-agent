@@ -1133,8 +1133,19 @@ class TernStore extends ChangeNotifier {
     Agent a, {
     Map<String, Object?> fields = const {},
     String? persona,
+    List<String>? defaultChain,
   }) async {
     try {
+      // The default agent's fallbacks live in `default_model` (the agent
+      // update takes only its primary), so they go through the config.
+      if (defaultChain != null) {
+        try {
+          await client.setDefaultModelChain(defaultChain);
+        } on TernException catch (e) {
+          return chainSaveMessage(e);
+        }
+        await refreshInfo(notify: false);
+      }
       if (fields.isNotEmpty) await client.updateAgent(a.id, fields);
       if (persona != null) await client.setPersona(a.id, persona);
       agents = await client.agents();
@@ -2279,6 +2290,37 @@ class TernStore extends ChangeNotifier {
   String? modelWarning;
 
   /// Re-read the default model and whether setup is needed.
+  /// The default model with its fallbacks (T6a), primary first: what
+  /// `default_model` holds (read from the config, which only an owner may),
+  /// else the default agent's model, else just the default model.
+  Future<List<String>> loadDefaultChain() async {
+    try {
+      final view = await client.configSettings();
+      final s = view.settings.where((s) => s.key == 'default_model');
+      final chain = chainFromJson(s.firstOrNull?.value);
+      if (chain.isNotEmpty) return chain;
+    } on TernException {
+      // Not an owner, or an older daemon: what the agent list says.
+    }
+    final fromAgent = defaultAgent?.model ?? const <String>[];
+    if (fromAgent.isNotEmpty) return fromAgent;
+    return [?info?.defaultModel];
+  }
+
+  /// Save `default_model` as [chain] (the primary first). Returns a
+  /// sentence on failure, null on success.
+  Future<String?> saveDefaultChain(List<String> chain) async {
+    try {
+      await client.setDefaultModelChain(chain);
+    } on TernException catch (e) {
+      return chainSaveMessage(e);
+    }
+    await refreshInfo(notify: false);
+    await _refreshAgents();
+    notifyListeners();
+    return null;
+  }
+
   Future<void> refreshInfo({bool notify = true}) async {
     try {
       info = await client.info();
