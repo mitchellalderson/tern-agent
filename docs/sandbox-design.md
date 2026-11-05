@@ -53,6 +53,80 @@ command exits normally, background processes it started keep running (on purpose
 - `/proc` on Linux shows other processes' command lines (not their environments).
 - Processes that escape the process group (above).
 
+## Script grants: allow one python script for a run
+
+A data-analysis agent runs `python3 something.py` dozens of times; asking for every one is noise that trains people
+to click "yes". One exact shape can be allowed instead, for this run, this conversation, or always. Everything else
+about `shell` asks exactly as before.
+
+**What qualifies.** The command is, token for token, `python3 <file>.py <args>` (or `python`):
+
+- it is tokenised on plain spaces over a small alphabet (letters, digits, `_ . / - + , : = @ %`): no quotes, `$`,
+  `` ` ``, `;`, `|`, `&`, `<`, `>`, `(`, `)`, `~`, globs, braces, `#`, `!`, backslashes or newlines, so there is no
+  shell syntax left for `sh` to interpret (a pipe or `2>&1` doesn't qualify; output is already captured and capped);
+- no interpreter options (`-c`, `-m`, `-`, `-i`, `-x`, ...), no heredoc, no env prefix and no wrapper (`env`, `time`,
+  `sudo`);
+- the script is relative, has no `..`, ends in `.py`, resolves (symlinks followed) to a regular file inside the
+  workspace (checked on the open handle; a fifo can't hang the check), and is at most 8 MB;
+- `network` is absent or `false` for the call;
+- `python3` resolves, on the absolute `PATH` entries, to a file outside every place the sandbox can write (the
+  workspace, temp dirs, `write_paths`), so a command can't replace the interpreter it is approved to run.
+
+A python command that doesn't qualify says why on its card ("Not auto-approved: inline script. Saved as a .py file
+in the workspace and run as `python3 file.py`, it could be approved once for the whole run.").
+
+**What a grant covers.** The key is a SHA-256 over the canonical interpreter path (and the path as found), the
+canonical script path, the sha256 of the script's bytes, the arguments, and the workspace root. Change any of them
+(edit the script, another argument, a copy of it under another name, another interpreter) and the key is different, so
+the call asks again. The card shows the script path, a short hash and the arguments, and "Imports from other files
+aren't covered".
+
+**Imports are not covered.** Only the entry file is hashed. `import helper` loads `helper.py` from the script's
+folder (or any package on `sys.path`) as it is at run time, so a script that was approved can run different code if
+a module it imports was edited. Hashing sibling files would not be sound (packages, `sys.path`, `.pth` files,
+`__pycache__`), so tern doesn't pretend to. The same holds for data files the script reads: a script that reads a
+spreadsheet or a PDF is not tainted by it.
+
+**Plan, then run exactly that.** `policy` plans the call (keyed by run id and call id, like `connector_test`):
+the resolved interpreter and script, the hash, and the key. `call` uses up exactly its own plan, re-reads the
+script and the interpreter, and refuses (running nothing, with a message saying the file changed since it was
+approved) if the hash, the canonical path or the interpreter differ. It then runs the planned interpreter and the
+canonical script path, not the text that was typed. Plans are dropped when a call won't run (denied, refused,
+cancelled) and when the run ends. A call with no plan never has a key, so it can't be auto-approved; it asks like
+any command. The read-then-spawn window is milliseconds; a background process started by an earlier approved
+command could still rewrite the file inside it, but such a process already runs arbitrary code in the same sandbox.
+
+**The sandbox gate.** A grant is offered, and applied, only when the sandbox is confirmed active for this call:
+
+- the OS sandbox is *verified*, not just detected (below);
+- the sandbox has the network off (`sandbox.network = false`), so a script can't send what it reads anywhere (with
+  the network on the output is also untrusted, which taints the run, which ignores grants anyway);
+- the run is not tainted and not `readonly` (the usual rules for every grant).
+
+Otherwise no grant is offered and the card says so: "Not auto-approved: the sandbox isn't confirmed active (...)".
+A Docker backend can't be probed from the host, so it never verifies; `confine = "off"` never verifies.
+
+**The canary.** `HostBackend::verify` runs a tiny command through the same wrapper production commands use
+(`sandbox-exec` with the production profile on macOS, the Landlock helper on Linux) and checks, with the files and a
+loopback listener on the tern side as the oracle:
+
+1. a write inside the workspace works (positive control: this is what tells "blocked" from "nothing ran", and why a
+   sandbox nested inside another one, which fails to start with exit 71, is *not verified*);
+2. a write outside the workspace, in a folder the profile doesn't make writable (`$HOME`, else the workspace's parent),
+   fails, and no file appears;
+3. with the network off, an outbound connect to a listener on loopback is refused: the listener sees nothing, and the
+   probe tool (`perl`, else `python3`) reports it tried and failed (it must also work unsandboxed, so a missing tool
+   can't pass for a block).
+
+The result is cached per (policy, workspace) for 10 minutes (30 seconds after a failure), so asking before every
+call is cheap; a config change is a different policy and probes again. It shows in `tern doctor`, `tern security
+audit`, and `/v1/info` (`sandbox.verified`, `sandbox.detail`). Verified means the profile bites on this machine now;
+it does not mean the profile is complete (see "Not covered").
+
+**What it can still do.** Arbitrary code, inside the sandbox: change or delete any file in the workspace (originals
+are not protected from the agent's scripts yet), read what the sandbox lets it read, write to the temp dirs. Every
+auto-run is in the ledger as `approved_by_grant` with the key, script hash, interpreter and sandbox state.
+
 ## Docker backend
 
 Unchanged in shape (one long-lived container per workspace, your uid, workspace at `/workspace`), plus:

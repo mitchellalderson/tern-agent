@@ -477,6 +477,7 @@ mod tests {
 /// Script grants: the key, the sandbox gate, and the plan that makes
 /// "approved" and "run" the same file.
 #[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
 mod script_grant_tests {
     use std::path::{Path, PathBuf};
 

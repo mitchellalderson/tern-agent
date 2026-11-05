@@ -262,6 +262,7 @@ pub fn offline(args: &serde_json::Value) -> bool {
 }
 
 #[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -408,7 +409,7 @@ mod tests {
         let e = resolve(
             &ok("python3 a.py"),
             &w,
-            &[w.clone()],
+            std::slice::from_ref(&w),
             Some(bin.clone().into()),
         )
         .unwrap_err();

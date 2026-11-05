@@ -60,6 +60,20 @@ only the workspace mounted (read-write) at `/workspace`, all capabilities droppe
 container runs inside your Docker runtime's Linux VM (Docker Desktop or similar). Approvals still apply in both
 backends. Details: [docs/sandbox-design.md](docs/sandbox-design.md).
 
+**Python script grants.** One shell shape can skip the per-call prompt: `python3 <workspace file>.py <plain args>`,
+with no shell syntax, interpreter options, wrappers or network, after you answer "this run", "this conversation" or
+"always" for that exact script. The grant is keyed on the interpreter, the script's path and SHA-256, the arguments
+and the workspace, so an edited script or different arguments ask again, and the file is re-hashed immediately
+before it runs. It applies only when a canary has verified that the OS sandbox is active (a write outside the
+workspace and an outbound connection both fail), the network is off, and the run is untainted; otherwise the card says
+"Not auto-approved: ...". What it covers: arbitrary Python inside the sandbox. It can overwrite or delete any file in
+the workspace (originals aren't protected from it yet), and it isn't limited by the grant's label in any other way.
+Imports from other files are not hashed, so a module the script imports can change without asking. Reading a data file
+(a spreadsheet, a PDF) does not taint the run, so injected text in a data file can steer the agent's next script,
+which then asks unless a grant covers that exact script. Docker, `confine = "off"` and an unverifiable sandbox never
+get grants. Auto-runs are recorded in the ledger (`approved_by_grant`); `tern grants` lists and revokes "always"
+script grants.
+
 **What it does not cover.**
 - **Prompt injection, beyond approvals.** Every tool has an effect, and a run that has read untrusted content (a web
   page, mail, a tool marked untrusted) is marked tainted: its writes ask whatever "always" says, it can reach new sites
