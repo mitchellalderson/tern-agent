@@ -455,6 +455,7 @@ fn placement(key: &str) -> (&'static str, bool) {
         "outbox.wait_secs"
         | "outbox.expire_hours"
         | "bundles.allow_private_hosts"
+        | "fetch.ask_when_tainted"
         | "python.enabled"
         | "subagents.enabled" => ("permissions", true),
         "max_iterations"

@@ -27,9 +27,10 @@ and tern assumes the model may follow them. The safety layers are in the host pr
 workspace through `..`, symlinks or dangling symlinks, can never write inside `~/.tern`, and can never read
 `secrets.toml` or the database. That guard compares file identity (device and inode), not spelling, so a differently
 cased or Unicode-normalized name on macOS, a symlink chain, or a hardlink in the workspace to a protected file is
-refused the same way. `http_fetch` (GET only) refuses loopback, private, link-local, CGNAT and
-cloud-metadata addresses, resolves DNS itself, pins the connection to the checked address, and checks every redirect
-hop. Secrets live in the environment or in `~/.tern/secrets.toml`, which tern refuses to load unless it is mode 0600.
+refused the same way. `http_fetch` (GET only) never lets the calling agent read a page: a separate low-privilege fetcher does
+(two tools, no approvals, memory, files or secrets, hard limits) and returns a short, validated result. It refuses
+loopback, private, link-local, CGNAT and cloud-metadata addresses, resolves DNS itself, pins the connection to the
+checked address, and checks every redirect hop. Secrets live in the environment or in `~/.tern/secrets.toml`, which tern refuses to load unless it is mode 0600.
 They are not passed to `shell` (it gets a scrubbed environment), stdio MCP servers get only the secrets they declare,
 and every secret value tern knows about is replaced with `[REDACTED]` in the journal, the stored conversation, logs,
 connector and MCP server output that goes to the log, and `tern report`. Luau connectors run in a separate VM each,
@@ -84,7 +85,20 @@ script grants.
   be chained, and a read from a site you already allowed can carry data out in a URL. Taint is tracked from the
   sources tern knows about: an MCP server or connector that returns third-party text without being marked untrusted
   isn't caught. See [docs/reference.md](docs/reference.md) (Taint, Outbox).
-- **Persistent injection through memory.** A page can tell an agent to "remember" an instruction, and a later run
+- **Web pages and the quarantined fetcher.** `http_fetch` runs the page through a separate fetcher agent (docs/quarantined-fetch-design.md); the
+  caller sees typed, capped fields (title, headings, tables, links, facts that carry an exact quote from the page) and, only when it asks for
+  `answer` or `text`, free text. With `[fetch] taint = "strict"` (the default) a result of checked fields only does not taint
+  the caller, free text does; `legacy` taints on every fetch. What remains: a checked field is still attacker-chosen text (a 200-character
+  quoted value can say "ignore previous instructions"), the fetcher's `answer` can itself carry an injection (the known limit of
+  quarantine designs), a page can lie, and a result of checked fields can steer an untainted run into writes it is allowed to make without
+  asking (provenance-gated approval of fetched values and the "unverified" memory rule for them are not built). The fetcher parses hostile
+  HTML in the tern process (a small Rust parser, no isolation yet; helper-process isolation is planned). A tainted caller cannot send the
+  fetcher a free-text question (it is forced to `extract`) unless `fetch.ask_when_tainted` is on. The fetcher uses only your own model
+  providers. **Gap:** `shell` with `network: true` (or `sandbox.network = true`) still lets an agent run `curl`, which skips the fetcher: its
+  output taints the run, each network command asks, and the prompt steers agents to `http_fetch`, but it is not removed. MCP servers and
+  connectors that return web or third-party text still taint as a whole and do not go through the fetcher yet.
+- **Persistent injection through memory.**
+ A page can tell an agent to "remember" an instruction, and a later run
   would read it back. Agent memory is a class of its own: no approval, so even a read-only agent has it, and bounded
   instead. Notes go only to the agent's own namespace (a read-only or tainted run never writes the shared pool, and a
   sub-agent writes only as the agent it runs as), with caps on size, count and writes per run, each change a ledger
