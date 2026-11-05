@@ -1856,6 +1856,7 @@ impl App {
             }
             AgentEvent::RunStarted { .. }
             | AgentEvent::RunFinished { .. }
+            | AgentEvent::WorkspaceRefused { .. }
             | AgentEvent::ToolOutput { .. } => {}
         }
     }
@@ -1982,6 +1983,7 @@ impl App {
             }
             AgentEvent::SubagentMessage { .. }
             | AgentEvent::ToolOutput { .. }
+            | AgentEvent::WorkspaceRefused { .. }
             | AgentEvent::Retrying { .. }
             | AgentEvent::Compacted { .. } => {}
         }

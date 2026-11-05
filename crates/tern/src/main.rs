@@ -39,6 +39,8 @@ mod tasks_cmd;
 mod tray;
 mod tui_backend;
 mod uninstall_cmd;
+mod workspaces;
+mod workspaces_cmd;
 
 use std::process::ExitCode;
 
@@ -193,6 +195,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         },
         Some(Command::Agents { command }) => agents_cmd::run(&home, command),
         Some(Command::Channels { command }) => channels_cmd::run(&home, command),
+        Some(Command::Workspace { command }) => workspaces_cmd::run(&home, command),
         Some(Command::Sessions { command }) => {
             match command.unwrap_or(SessionsCommand::List) {
                 SessionsCommand::List => inspect::sessions_list(&home)?,

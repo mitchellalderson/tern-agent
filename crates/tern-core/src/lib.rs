@@ -26,6 +26,7 @@ pub mod skills;
 pub mod subagent;
 pub mod tool;
 pub mod types;
+pub mod workspace;
 
 pub use config::{Config, ConfigError};
 pub use home::TernHome;

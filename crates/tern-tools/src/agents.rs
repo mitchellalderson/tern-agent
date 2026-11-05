@@ -90,6 +90,8 @@ impl Tool for AgentSpawn {
                         "description": "Tokens for this sub-agent (input + output + cache, counted on every step). Ask for more when it must read a lot, or when retrying one that ran out." },
                     "agent": { "type": "string",
                         "description": "Run it as this agent of the user's (its name, e.g. 'research'), when the task matches that agent's job. Leave out for a generic sub-agent." },
+                    "subdir": { "type": "string",
+                        "description": "Confine it to this folder inside your workspace (a relative path to a directory that exists, e.g. 'crates/api'). It can read and write only there. Leave out to share your whole workspace." },
                     "post": { "type": "boolean",
                         "description": "Let it post progress to this conversation's channel with channel_post, and post its report there when it finishes. For long background work the user should see as it goes. Default false: it reports only to you." }
                 }

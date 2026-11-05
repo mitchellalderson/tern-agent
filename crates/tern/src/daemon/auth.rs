@@ -75,6 +75,10 @@ pub const FEATURES: &[&str] = &[
     "bundles",
     // `/v1/skills` and `/v1/skill-offers`: skill capture (tooling spec §7, T5b).
     "skill_capture",
+    // `/v1/workspaces`: the folder an agent can reach, chosen per Home topic,
+    // channel and agent, with read-only extra folders
+    // (docs/alpha-workspaces.md). Older cores lack it: hide the folder picker.
+    "workspaces",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";

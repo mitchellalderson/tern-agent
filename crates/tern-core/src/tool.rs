@@ -1,7 +1,7 @@
 //! The `Tool` trait and the registry the agent loop calls through.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -10,6 +10,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::types::{ToolCall, ToolSpec};
+use crate::workspace::WorkspaceScope;
 
 /// Tool output beyond this is cut in the middle (spec §6).
 pub const MAX_TOOL_OUTPUT: usize = 32 * 1024;
@@ -56,6 +57,23 @@ impl std::fmt::Display for Effect {
     }
 }
 
+/// How far a call's effects can reach (workspaces design §11): what an
+/// unattended mode may rely on when it decides whether to wave a call through.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reach {
+    /// Bound to the run's workspace: file tools (the core enforces it) and a
+    /// shell inside a verified OS sandbox.
+    Workspace,
+    /// Not bound: MCP servers and connectors with side effects run as the
+    /// user or talk to the world, and a shell with no verified sandbox.
+    #[default]
+    Unbounded,
+    /// Touches only tern's own state (memory, schedules, channels), which has
+    /// its own rules.
+    None,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolPolicy {
     /// Safe to re-run after a crash interrupted it.
@@ -77,6 +95,12 @@ pub struct ToolPolicy {
     /// desktop app over the local socket), not a chat gateway or a paired
     /// device: it would run a command here outside the sandbox.
     pub local_approval: bool,
+    /// How far the call reaches ([`Reach`]).
+    pub reach: Reach,
+    /// A command the OS can't confine (no verified sandbox): no grant or
+    /// allowlist entry covers it, it asks every time, and an unattended
+    /// profile (`autonomous`, `yolo`) refuses it.
+    pub unbounded: bool,
 }
 
 impl ToolPolicy {
@@ -88,7 +112,17 @@ impl ToolPolicy {
             granted: false,
             forbidden: None,
             local_approval: false,
+            reach: Reach::Unbounded,
+            unbounded: false,
         }
+    }
+
+    pub const fn reaching(self, reach: Reach) -> Self {
+        Self { reach, ..self }
+    }
+
+    pub const fn unconfined(self, unbounded: bool) -> Self {
+        Self { unbounded, ..self }
     }
 
     /// A `write` the host grants by itself (see [`ToolPolicy::granted`]).
@@ -108,10 +142,19 @@ impl ToolPolicy {
 }
 
 pub struct ToolCtx {
-    pub workspace: PathBuf,
+    /// The folder this run may reach, frozen when it started. File tools go
+    /// through it; nothing builds a path from a bare workspace string.
+    pub scope: Arc<WorkspaceScope>,
     pub run_id: String,
     pub session_id: String,
     pub cancel: CancellationToken,
+}
+
+impl ToolCtx {
+    /// The folder commands start in (the run's root, or its narrowed subdir).
+    pub fn workspace(&self) -> &Path {
+        self.scope.cwd()
+    }
 }
 
 /// Where a running tool sends output as it is produced.

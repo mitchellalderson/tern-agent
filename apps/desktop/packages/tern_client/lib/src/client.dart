@@ -22,14 +22,19 @@ import 'security.dart';
 import 'tasks.dart';
 import 'tools.dart';
 import 'webhooks.dart';
+import 'workspaces.dart';
 
 /// An error response from the daemon (`{"error": "..."}`) or a failure to
 /// reach it.
 class TernException implements Exception {
-  const TernException(this.message, {this.status});
+  const TernException(this.message, {this.status, this.body});
 
   final String message;
   final int? status;
+
+  /// The error response's JSON, when it had one (extra fields such as a
+  /// folder `verdict` or an `impact`).
+  final Map<String, dynamic>? body;
 
   bool get unreachable => status == null;
 
@@ -501,15 +506,21 @@ class TernClient {
   ];
 
   /// A topic channel. Throws [TernException] (409) if the slug is taken.
+  ///
+  /// [workspace] (a workspace id or a folder path) binds the channel's folder
+  /// at creation, so its first run already uses it. A folder Tern refuses
+  /// throws [TernException] with status 422 and the reason.
   Future<Channel> createChannel({
     required String slug,
     String? title,
     String? instructions,
+    String? workspace,
   }) async => Channel.fromJson(
     await _json('POST', '/v1/channels', {
       'slug': slug,
       'title': ?title,
       'instructions': ?instructions,
+      'workspace': ?workspace,
     }),
   );
 
@@ -594,16 +605,23 @@ class TernClient {
   /// (a side thread with `replyTo`). A run already working there gets the
   /// text as a message instead of being stopped; `newTopic` starts a new
   /// segment of Home.
+  ///
+  /// [workspace] (a workspace id or folder path) is the folder this
+  /// conversation should use: a topic channel is bound to it from this run;
+  /// in Home a folder other than the topic's current one starts a new topic
+  /// in it (`Sent.newSegment`), so the first run already uses it.
   Future<Sent> sendToChannel(
     String channel,
     String text, {
     int? replyTo,
     bool newTopic = false,
+    String? workspace,
   }) async => Sent.fromJson(
     await _json('POST', '/v1/channels/${_seg(channel)}/posts', {
       'text': text,
       'reply_to': ?replyTo,
       if (newTopic) 'new_topic': true,
+      'workspace': ?workspace,
     }),
   );
 
@@ -678,14 +696,189 @@ class TernClient {
   /// Send a message. Without `session` the daemon starts a new
   /// conversation. A run already in progress in that session is cancelled
   /// first. (Conversations in a channel go through [sendToChannel].)
-  Future<Started> send(String text, {String? session, String? model}) async =>
-      Started.fromJson(
-        await _json('POST', '/v1/runs', {
-          'text': text,
-          'session_id': ?session,
-          'model': ?model,
-        }),
+  Future<Started> send(
+    String text, {
+    String? session,
+    String? model,
+    String? workspace,
+  }) async => Started.fromJson(
+    await _json('POST', '/v1/runs', {
+      'text': text,
+      'session_id': ?session,
+      'model': ?model,
+      'workspace': ?workspace,
+    }),
+  );
+
+  // ---- workspaces (docs/alpha-workspaces.md) ----
+
+  /// Every folder the agent can reach, the default first. [archived] adds
+  /// removed ones. The sandbox check isn't waited for here, so `shellState`
+  /// may read `unverified` until it lands; [workspace] waits.
+  Future<List<Workspace>> workspaces({bool archived = false}) async => [
+    for (final w
+        in await _json('GET', '/v1/workspaces${archived ? '?archived=1' : ''}')
+            as List)
+      Workspace.fromJson(w as Json),
+  ];
+
+  Future<Workspace> workspace(String id) async => Workspace.fromJson(
+    await _json('GET', '/v1/workspaces/${_seg(id)}') as Json,
+  );
+
+  /// Judge a folder without saving anything: the words for the confirm
+  /// sheet. [readOnly] judges it as a read-only extra folder or file.
+  Future<WorkspaceVerdict> validateWorkspace(
+    String path, {
+    bool readOnly = false,
+  }) async => WorkspaceVerdict.fromJson(
+    await _json('POST', '/v1/workspaces/validate', {
+      'path': path,
+      if (readOnly) 'kind': 'read_root',
+    }),
+  );
+
+  /// Add a folder (one already added is returned). Throws
+  /// [WorkspaceRefused] with the reason when Tern won't use it.
+  Future<Workspace> addWorkspace(String path, {String? name}) async {
+    try {
+      final j =
+          await _json('POST', '/v1/workspaces', {'path': path, 'name': ?name})
+              as Json;
+      return Workspace.fromJson(j['workspace'] as Json);
+    } on TernException catch (e) {
+      throw _refusal(e);
+    }
+  }
+
+  /// Rename it, or set its network (`'off'`; null inherits).
+  Future<Workspace> updateWorkspace(
+    String id, {
+    String? name,
+    String? network,
+    bool clearNetwork = false,
+  }) async => Workspace.fromJson(
+    await _json('PATCH', '/v1/workspaces/${_seg(id)}', {
+      'name': ?name,
+      if (clearNetwork) 'network': null else 'network': ?network,
+    }),
+  );
+
+  /// Point a missing folder at its new place (Locate). The same folder is
+  /// accepted at once; another needs [confirm], else this throws
+  /// [TernException] with status 409 and `body['needs_confirm'] == true`.
+  Future<Workspace> locateWorkspace(
+    String id,
+    String path, {
+    bool confirm = false,
+  }) async => Workspace.fromJson(
+    await _json('PATCH', '/v1/workspaces/${_seg(id)}', {
+      'locate': path,
+      if (confirm) 'confirm': true,
+    }),
+  );
+
+  /// Re-check a folder now; the result has its status.
+  Future<Workspace> checkWorkspace(String id) async => Workspace.fromJson(
+    await _json('POST', '/v1/workspaces/${_seg(id)}/check') as Json,
+  );
+
+  /// Remove a folder from Tern (its files are never touched). Throws with
+  /// status 409 (and `body['impact']`) while something uses it, unless
+  /// [reassignTo] names the workspace to move those to.
+  Future<void> removeWorkspace(String id, {String? reassignTo}) => _json(
+    'DELETE',
+    '/v1/workspaces/${_seg(id)}'
+        '${reassignTo == null ? '' : '?reassign_to=${Uri.encodeQueryComponent(reassignTo)}'}',
+  );
+
+  /// The read-only extra folders (and pinned files) of a workspace.
+  Future<List<WorkspaceRoot>> workspaceRoots(String id) async => [
+    for (final r
+        in await _json('GET', '/v1/workspaces/${_seg(id)}/roots') as List)
+      WorkspaceRoot.fromJson(r as Json),
+  ];
+
+  /// Let the agent read [path] (a folder or one file), never change it.
+  /// Throws [WorkspaceRefused] when Tern won't allow it.
+  Future<WorkspaceRoot> addWorkspaceRoot(String id, String path) async {
+    try {
+      final j =
+          await _json('POST', '/v1/workspaces/${_seg(id)}/roots', {
+                'path': path,
+              })
+              as Json;
+      return WorkspaceRoot.fromJson(j['root'] as Json);
+    } on TernException catch (e) {
+      throw _refusal(e);
+    }
+  }
+
+  Future<void> removeWorkspaceRoot(String id, String path) => _json(
+    'DELETE',
+    '/v1/workspaces/${_seg(id)}/roots?path=${Uri.encodeQueryComponent(path)}',
+  );
+
+  /// The folder a channel uses, where it comes from, and its own binding.
+  Future<WorkspaceBinding> channelWorkspace(String channel) async =>
+      WorkspaceBinding.fromJson(
+        await _json('GET', '/v1/channels/${_seg(channel)}/workspace') as Json,
       );
+
+  /// Bind a channel to [workspace] (an id or a folder path); null clears
+  /// (inherit the agent's, then the default). Applies from its next run.
+  Future<WorkspaceBinding> setChannelWorkspace(
+    String channel,
+    String? workspace,
+  ) => _bindWorkspace('channels', channel, workspace);
+
+  Future<WorkspaceBinding> sessionWorkspace(String session) async =>
+      WorkspaceBinding.fromJson(
+        await _json('GET', '/v1/sessions/${_seg(session)}/workspace') as Json,
+      );
+
+  /// Bind one conversation (a Home topic). For a new Home topic in another
+  /// folder, send with `workspace:` instead, which starts the topic there.
+  Future<WorkspaceBinding> setSessionWorkspace(
+    String session,
+    String? workspace,
+  ) => _bindWorkspace('sessions', session, workspace);
+
+  Future<WorkspaceBinding> agentWorkspace(String agent) async =>
+      WorkspaceBinding.fromJson(
+        await _json('GET', '/v1/agents/${_seg(agent)}/workspace') as Json,
+      );
+
+  /// An agent's default folder (used where its channel and topic set none).
+  Future<WorkspaceBinding> setAgentWorkspace(String agent, String? workspace) =>
+      _bindWorkspace('agents', agent, workspace);
+
+  Future<WorkspaceBinding> _bindWorkspace(
+    String kind,
+    String id,
+    String? workspace,
+  ) async {
+    try {
+      return WorkspaceBinding.fromJson(
+        await _json('PUT', '/v1/$kind/${_seg(id)}/workspace', {
+              'workspace': workspace,
+            })
+            as Json,
+      );
+    } on TernException catch (e) {
+      throw _refusal(e);
+    }
+  }
+
+  /// A 422 with a folder verdict becomes [WorkspaceRefused]; anything else
+  /// passes through.
+  Object _refusal(TernException e) {
+    final v = e.body?['verdict'];
+    if (e.status == 422 && v is Json) {
+      return WorkspaceRefused(WorkspaceVerdict.fromJson(v), e.message);
+    }
+    return e;
+  }
 
   Future<bool> cancel(String run) async =>
       (await _json('POST', '/v1/runs/$run/cancel'))['cancelled'] as bool;
@@ -1209,7 +1402,10 @@ class TernClient {
     }
     if (res.statusCode >= 300) {
       final msg = decoded is Json ? decoded['error'] as String? : null;
-      throw _error(res.statusCode, msg);
+      final err = _error(res.statusCode, msg);
+      throw decoded is Json && err.runtimeType == TernException
+          ? TernException(err.message, status: err.status, body: decoded)
+          : err;
     }
     return decoded;
   }

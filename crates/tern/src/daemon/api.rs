@@ -207,6 +207,7 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_channels::routes())
         .merge(super::suggestions::routes())
         .merge(super::api_agents::routes())
+        .merge(super::api_workspaces::routes())
         .merge(super::api_config::routes())
         .merge(super::api_schedules::routes())
         .merge(super::api_webhooks::routes())
@@ -354,6 +355,10 @@ pub struct StartBody {
     /// Refused: side chats were removed. Old side chats keep the column.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branched_from: Option<String>,
+    /// The folder for this conversation (a workspace id or a folder path),
+    /// bound before the run starts, so the very first run already uses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -377,7 +382,22 @@ async fn start_run(State(m): State<Shared>, Json(b): Json<StartBody>) -> ApiResu
             "starting a thread in a channel was removed: use POST /v1/channels/{id}/posts",
         ));
     }
-    let thread = b.session_id.clone();
+    let mut thread = b.session_id.clone();
+    if let Some(w) = b.workspace.as_deref() {
+        let ws = m.rt.resolve_ws_ref(w).map_err(bad)?;
+        let id = match thread.clone() {
+            Some(id) => id,
+            None => {
+                m.rt.store
+                    .create_session(&tern_core::agent::new_id(), "api", None)
+                    .map_err(internal)?
+                    .id
+            }
+        };
+        m.rt.bind_workspace(tern_store::Bind::Session(&id), Some(&ws))
+            .map_err(bad)?;
+        thread = Some(id);
+    }
     let s = m
         .start(
             thread.as_deref(),

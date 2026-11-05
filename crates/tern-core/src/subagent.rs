@@ -121,6 +121,11 @@ pub struct SpawnRequest {
     /// may delegate to (agent profiles §6.1).
     #[serde(default)]
     pub agent: Option<String>,
+    /// Narrow the sub-agent to a folder inside the caller's workspace (a
+    /// relative path to an existing directory). It can only go deeper: it
+    /// can't widen, name another workspace, or leave through `..`.
+    #[serde(default)]
+    pub subdir: Option<String>,
 }
 
 /// `"all"`, `"read_only"`, or a list of tool names.

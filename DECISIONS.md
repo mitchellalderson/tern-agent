@@ -1530,3 +1530,37 @@ and "Deny". Taint exists so an injected run cannot cause effects or exfiltrate; 
   needs egress, which asks per site, and protected paths stay refused. Not done: the screenshot's reads came from a
   folder outside the run's workspace, so the workspace work in flight (W0/W1) should make a project folder the
   workspace to take them out of the prompt path altogether.
+## Workspaces: the folder an agent can reach (2026-11-05)
+
+Built from docs/alpha-workspaces.md, phases W0 and W1, with the owner's answers to its open questions.
+
+- **Outside is refused, never asked.** The approve-outside path for file tools is gone (`read_policy`/`write_policy`
+  no longer depend on arguments); the user widens access by adding a read-only folder or copying the file in. An
+  attached file stays copy-in.
+- **A capability handle, not path strings.** `tern-core::workspace::WorkspaceScope` opens the folder once per run
+  (`cap-std`, `openat`-style) and every file tool, upload and the Python mount goes through it. Strings only choose
+  which handle (an absolute path is matched to a root by asking the filesystem who each ancestor is, so case and
+  Unicode spelling can't matter). The deny set (tern's secrets, database, data directory) is by `(dev, ino)`; writes are
+  temp-file-then-rename so links are replaced, not followed. Special files are refused; every call re-checks that the
+  folder is still the one that was opened (`Moved`). `tests/workspace_escape.rs` runs the escape matrix against every
+  tool; `no_raw_fs.rs` keeps `fs.rs` free of raw filesystem calls (a source check, instead of a clippy ban, which
+  can't be scoped to one crate's module without allow-attributes across the crate).
+- **Fresh installs keep the default workspace**, created on first use. Existing installs resolve everything to it
+  (all new columns NULL), so behaviour is unchanged.
+- **Read-only extra folders and single files** are a `ReadRoot` type with no write methods. No writable extra roots.
+- **Unconfined shell is refused unattended.** `ToolPolicy.unbounded` (set by the shell tool when no verified OS
+  sandbox backs it: `confine = "off"`, no Landlock, or a check that ran and failed; a check still running counts as
+  unverified, as Docker does, and neither is refused) makes `approval::check` return `Check::Unbounded` under
+  `autonomous` and `yolo`, never covers it with an allowlist entry or grant, and asks every time (no "always") under
+  `supervised`. This changes what `yolo` meant on a machine with no sandbox (it ran commands); accepted for the alpha.
+  `ToolPolicy.reach` (`Workspace`/`Unbounded`/`None`) is the field Code auto mode builds on.
+- **Per-workspace temp and caches.** Commands get `TMPDIR` and cache env under `<workspace>/.tern/{tmp,cache}`
+  (including `CARGO_HOME`), not shared; `.tern/.gitignore` keeps them out of version control. The sandbox's
+  `ExecOpts` gained `env` and `read_roots`, the input the later macOS read-denial phase builds on (deny `/Users` and
+  `/Volumes` reads except the workspace, read roots and detected toolchains).
+- **Settings live in the store**, never in the folder. Resolution is session, channel, agent, default, frozen on the
+  run (`runs.workspace_*`); children copy it; a routine copies its creator's and pauses if the folder is unusable.
+- **Not done:** the desktop folder picker and chips (W2); the macOS profile change and per-workspace Docker
+  containers (W3); allowlist entries scoped to a folder (`allowlist.workspace_id`); sandboxing MCP stdio servers; a
+  Home card for a paused routine; `/tmp` stays shared. Integration tests allow temp-dir workspaces through a
+  daemon-environment variable read only at startup (`TERN_TEST_ALLOW_SCRATCH_WORKSPACES`), never a setting.

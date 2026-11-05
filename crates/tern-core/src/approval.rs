@@ -20,6 +20,9 @@ pub enum Check {
     Forbid(&'static str),
     /// Refuse without asking: the run's autonomy is `readonly`.
     ReadOnly,
+    /// Refuse without asking: a command nothing confines, in an unattended
+    /// run ([`ToolPolicy::unbounded`]).
+    Unbounded,
 }
 
 /// How much a run may do without asking (tooling spec §5.4), most
@@ -168,6 +171,11 @@ pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, gate: Gate) -> Chec
         return Check::Allow;
     }
     let contained = TAINT_CONTAINED.contains(&tool);
+    // A command nothing confines never runs unattended: with no verified OS
+    // sandbox, `autonomous` and `yolo` have no folder to be bounded to.
+    if policy.unbounded && matches!(gate.autonomy, Autonomy::Autonomous | Autonomy::Yolo) {
+        return Check::Unbounded;
+    }
     match gate.autonomy {
         Autonomy::ReadOnly if policy.effect != Effect::Read && !contained => {
             return Check::ReadOnly;
@@ -177,7 +185,7 @@ pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, gate: Gate) -> Chec
     }
     let own_grant = granted;
     // No grant covers anything in a tainted run.
-    let granted = granted && !gate.tainted;
+    let granted = granted && !gate.tainted && !policy.unbounded;
     let shell = tool == "shell";
     let effect = if shell && granted && policy.effect == Effect::Destructive {
         Effect::Write
@@ -198,6 +206,13 @@ pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, gate: Gate) -> Chec
             Effect::Read if policy.requires_approval => never,
             Effect::Read => Check::Allow,
             _ => never,
+        };
+    }
+    // Asks every time, and no "always" is offered: nothing bounds it.
+    if policy.unbounded {
+        return Check::Ask {
+            effect,
+            always: false,
         };
     }
     if gate.autonomy == Autonomy::Autonomous && effect == Effect::Write && !policy.requires_approval
@@ -328,6 +343,10 @@ pub fn needs_check(tool: &str, policy: &ToolPolicy, gate: Gate) -> bool {
 /// The message the model gets for a call a `readonly` run may not make.
 pub const READONLY_MESSAGE: &str = "blocked: this run is read-only (autonomy = \"readonly\"), so it \
      can't make changes. Say what you would do instead, and the user can do it or run you with more autonomy.";
+
+/// The message the model gets for a command that can't be confined, in an
+/// unattended run.
+pub const UNBOUNDED_MESSAGE: &str = "blocked: this machine can't confine commands (no verified OS sandbox), so unattended commands are off. Say what you would run and the user can run it, or work with the file tools, which are bounded to the folder.";
 
 /// The message the model gets for a forbidden call.
 pub fn forbidden_message(flag: &str) -> String {
@@ -1148,5 +1167,65 @@ mod tests {
         };
         assert_eq!(pattern_for(&call), None);
         assert!(!allowed_by(&[], &call));
+    }
+
+    fn gate(autonomy: Autonomy) -> Gate {
+        Gate {
+            tainted: false,
+            autonomy,
+        }
+    }
+
+    /// A `shell` call the OS can't confine (no verified sandbox).
+    fn unbounded_shell() -> ToolPolicy {
+        ToolPolicy::new(Effect::Destructive, false)
+            .forced(true)
+            .unconfined(true)
+    }
+
+    #[test]
+    fn an_unconfined_shell_is_refused_when_unattended() {
+        let p = unbounded_shell();
+        for autonomy in [Autonomy::Autonomous, Autonomy::Yolo] {
+            for granted in [false, true] {
+                assert_eq!(
+                    check("shell", &p, granted, gate(autonomy)),
+                    Check::Unbounded,
+                    "{autonomy:?} granted={granted}"
+                );
+                assert!(needs_check("shell", &p, gate(autonomy)));
+            }
+        }
+        assert!(UNBOUNDED_MESSAGE.contains("unattended commands are off"));
+    }
+
+    #[test]
+    fn an_unconfined_shell_asks_every_time_when_supervised() {
+        let p = unbounded_shell();
+        let ask = Check::Ask {
+            effect: Effect::Destructive,
+            always: false,
+        };
+        // No allowlist entry or grant covers it, and none is offered.
+        assert_eq!(check("shell", &p, false, gate(Autonomy::Supervised)), ask);
+        assert_eq!(check("shell", &p, true, gate(Autonomy::Supervised)), ask);
+        // A read-only run is refused as before.
+        assert_eq!(
+            check("shell", &p, false, gate(Autonomy::ReadOnly)),
+            Check::ReadOnly
+        );
+    }
+
+    #[test]
+    fn a_confined_shell_keeps_its_grants_and_unattended_modes() {
+        let p = ToolPolicy::new(Effect::Destructive, false).forced(true);
+        assert_eq!(
+            check("shell", &p, true, gate(Autonomy::Supervised)),
+            Check::Allow
+        );
+        assert_eq!(
+            check("shell", &p, false, gate(Autonomy::Yolo)),
+            Check::Allow
+        );
     }
 }

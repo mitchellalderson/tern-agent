@@ -38,6 +38,8 @@ pub use helper::{HELPER_ARG, Helper};
 
 /// Where the workspace appears inside scripts, read-only.
 pub const WORKSPACE_MOUNT: &str = "/workspace";
+/// Where the user's read-only extra folders appear, as `/ro/<name>`.
+pub const RO_MOUNT: &str = "/ro";
 
 /// What one script may use (docs/python-tool-spec.md §5.1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,7 +192,14 @@ impl Tool for Python {
             code: args.code,
             inputs: args.inputs,
             env,
-            workspace: ctx.workspace.clone(),
+            workspace: ctx.workspace().to_path_buf(),
+            read_roots: ctx
+                .scope
+                .read_roots()
+                .iter()
+                .filter(|r| !r.is_file())
+                .map(|r| (r.mount_name(), r.path().to_path_buf()))
+                .collect(),
             blocked: host
                 .as_ref()
                 .map(|h| h.blocked().clone())
@@ -247,6 +256,9 @@ pub(crate) struct Job {
     inputs: serde_json::Map<String, Value>,
     env: ScriptEnv,
     workspace: PathBuf,
+    /// The user's read-only extra folders, mounted at `/ro/<name>`.
+    #[serde(default)]
+    read_roots: Vec<(String, PathBuf)>,
     callable: BTreeMap<String, ToolSpec>,
     /// Tools the run has that scripts can't call, and why.
     blocked: BTreeMap<String, String>,
@@ -544,6 +556,16 @@ fn drive(
         && let Err(e) = mounts.mount(WORKSPACE_MOUNT, &job.workspace, MountMode::ReadOnly, None)
     {
         tracing::warn!(error = %e, "python: workspace not mounted");
+    }
+    for (name, path) in &job.read_roots {
+        if let Err(e) = mounts.mount(
+            &format!("{RO_MOUNT}/{name}"),
+            path,
+            MountMode::ReadOnly,
+            None,
+        ) {
+            tracing::warn!(error = %e, folder = %name, "python: read-only folder not mounted");
+        }
     }
 
     // A script that uses `async` gets awaitables from tool calls (spec

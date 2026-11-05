@@ -59,6 +59,8 @@ impl Env {
             .env("TERN_HOME", &self.tern_home)
             .env("TERN_PROVIDER", format!("mock:{}", self.script.display()))
             .env("TERN_SEED_AGENTS", "0")
+            // Workspaces live in temp dirs here; the daemon allows them.
+            .env("TERN_TEST_ALLOW_SCRATCH_WORKSPACES", "1")
             .stdin(Stdio::null());
         c
     }

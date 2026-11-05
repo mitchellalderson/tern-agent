@@ -194,6 +194,20 @@ impl Agent {
         Ok(())
     }
 
+    /// A command nothing could confine was refused in an unattended run.
+    pub(super) fn ledger_unbounded(&self, run: &RunRow, call: &ToolCall) -> Result<(), StepError> {
+        let summary = format!(
+            "refused {} (no verified OS sandbox; unattended commands are off)",
+            self.tools.summarize(call)
+        );
+        let e = self
+            .ledger_entry("approval", run, call, summary)
+            .actor(ACTOR_TERN)
+            .detail(json!({ "decision": "refused", "flag": "unbounded_shell" }));
+        self.store.ledger_append(&e)?;
+        Ok(())
+    }
+
     /// A call nobody answered went to the outbox.
     pub(super) fn ledger_queued(
         &self,

@@ -73,6 +73,12 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<ChannelsCommand>,
     },
+    /// The folders agents can reach: list, add, choose per channel, topic or
+    /// agent, check, and read-only extra folders.
+    Workspace {
+        #[command(subcommand)]
+        command: Option<WorkspaceCommand>,
+    },
     /// List or show conversation sessions.
     Sessions {
         #[command(subcommand)]
@@ -538,6 +544,82 @@ pub enum MemoryAction {
         #[arg(long, short)]
         yes: bool,
     },
+}
+
+/// What a folder choice applies to: exactly one of these.
+#[derive(Debug, Clone, clap::Args)]
+pub struct WorkspaceTarget {
+    /// A conversation (session id): a Home topic's own folder.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// A topic channel (#name).
+    #[arg(long)]
+    pub channel: Option<String>,
+    /// An agent (its default folder).
+    #[arg(long)]
+    pub agent: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkspaceCommand {
+    /// List the folders (the default first), what uses them, and their status.
+    List {
+        /// Include removed ones.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Add a folder after checking it (not `/`, your home, a system folder,
+    /// Tern's own data, a credentials folder, a temp folder).
+    Add {
+        path: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Show the folder a channel, topic or agent uses and where that comes
+    /// from; with no target, the default folder.
+    Get {
+        #[command(flatten)]
+        target: WorkspaceTarget,
+    },
+    /// Choose a folder (a workspace id, or a path that is added) for a
+    /// channel, topic or agent. A channel's or topic's change applies from
+    /// its next run.
+    Set {
+        workspace: String,
+        #[command(flatten)]
+        target: WorkspaceTarget,
+    },
+    /// Go back to inheriting: topic, then channel, then agent, then default.
+    Clear {
+        #[command(flatten)]
+        target: WorkspaceTarget,
+    },
+    /// Re-check folders now (missing, replaced, refused). Exit 1 if any isn't usable.
+    Check { workspace: Option<String> },
+    /// Remove a folder from Tern (the files are never touched). Refused while
+    /// something uses it unless you pass --reassign-to.
+    Remove {
+        workspace: String,
+        #[arg(long)]
+        reassign_to: Option<String>,
+    },
+    /// Read-only extra folders (or single files) the agent may read in this
+    /// workspace but never change.
+    Roots {
+        workspace: String,
+        #[command(subcommand)]
+        command: Option<WorkspaceRootsCommand>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkspaceRootsCommand {
+    /// List them.
+    List,
+    /// Add a folder or a single file, read-only.
+    Add { path: String },
+    /// Remove one.
+    Remove { path: String },
 }
 
 #[derive(Debug, Subcommand)]

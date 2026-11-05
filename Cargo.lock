@@ -4927,9 +4927,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "cap-std",
  "chrono",
  "fastrand",
  "futures",
+ "ignore",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

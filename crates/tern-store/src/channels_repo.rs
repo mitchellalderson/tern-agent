@@ -298,6 +298,15 @@ impl Store {
                 t.agent_id,
             ],
         )?;
+        // A new segment keeps the folder of the one it continues, so the
+        // folder follows the conversation (docs/alpha-workspaces.md §3).
+        if let Some(prev) = t.prev_session_id {
+            self.conn()?.execute(
+                "UPDATE sessions SET workspace_id = (SELECT workspace_id FROM sessions WHERE id = ?2)
+                 WHERE id = ?1",
+                params![t.id, prev],
+            )?;
+        }
         if let Some(prev) = t.prev_session_id {
             // A new segment has seen what the one before it saw.
             self.conn()?.execute(

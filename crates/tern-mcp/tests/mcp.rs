@@ -55,7 +55,7 @@ fn secrets(pairs: &[(&str, &str)]) -> (Arc<Secrets>, tempfile::TempDir) {
 
 fn ctx() -> ToolCtx {
     ToolCtx {
-        workspace: std::env::temp_dir(),
+        scope: tern_core::workspace::WorkspaceScope::for_dir(std::env::temp_dir()),
         run_id: "r".into(),
         session_id: "s".into(),
         cancel: CancellationToken::new(),

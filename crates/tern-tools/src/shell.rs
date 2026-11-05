@@ -9,10 +9,11 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tern_core::tool::{
-    Effect, GrantKey, Tool, ToolCtx, ToolPolicy, ToolResult, current_call_id, planning_scope,
-    progress_sink,
+    Effect, GrantKey, Reach, Tool, ToolCtx, ToolPolicy, ToolResult, current_call_id,
+    planning_scope, progress_sink,
 };
 use tern_core::types::ToolSpec;
+use tern_core::workspace::ShellBound;
 use tern_sandbox::{ExecOpts, OutputSink, SandboxBackend};
 
 use crate::shell_script::{self, Prober, Resolved};
@@ -97,6 +98,30 @@ impl Shell {
         plan_key(&run, &call)
     }
 
+    /// What the OS does for a command in this run's folder: a verified
+    /// sandbox bounds it, a container (or a check still running) bounds it
+    /// unproven, and with no sandbox at all, or one whose check failed, it
+    /// runs as the user. Recorded on the scope for whoever asks
+    /// (`ToolCtx.scope.shell_bound()`).
+    pub fn bound(&self, ctx: &ToolCtx) -> ShellBound {
+        let v = self.backend.verify(ctx.workspace());
+        let bound = if v.is_verified() {
+            ShellBound::Bounded
+        } else if self.backend.is_container() {
+            ShellBound::BoundedUnverified
+        } else if self.backend.unconfined() {
+            ShellBound::Unbounded
+        } else if v.reason().is_some_and(|r| r.contains("still checking")) {
+            // The check hasn't landed (the daemon starts it at launch).
+            ShellBound::BoundedUnverified
+        } else {
+            // The check ran and the sandbox didn't hold.
+            ShellBound::Unbounded
+        };
+        ctx.scope.set_shell_bound(bound);
+        bound
+    }
+
     fn take_entry(&self, ctx: &ToolCtx) -> Option<Entry> {
         let id = plan_key(&ctx.run_id, &current_call_id().unwrap_or_default());
         self.plans.lock().ok().and_then(|mut m| m.remove(&id))
@@ -128,11 +153,11 @@ impl Shell {
                 "Not auto-approved: the command asked for network access.".into(),
             ));
         }
-        let writable = self.backend.writable_roots(&ctx.workspace);
-        let verification = self.backend.verify(&ctx.workspace);
+        let writable = self.backend.writable_roots(ctx.workspace());
+        let verification = self.backend.verify(ctx.workspace());
         let resolved = match shell_script::resolve(
             &parsed,
-            &ctx.workspace,
+            ctx.workspace(),
             &writable,
             self.path.clone(),
             &Confined(self.backend.as_ref(), self.id),
@@ -290,7 +315,17 @@ impl Tool for Shell {
         // Destructive outside the allowlist, a granted write inside it
         // (`approval::check`). A call asking for network is never covered
         // by the allowlist (`approval::allowed_by`).
-        ToolPolicy::new(Effect::Destructive, false).forced(true)
+        // The reach is the folder only where the OS bounds the command; with
+        // no sandbox it is "unbounded" and, unattended, refused (`approval::check`).
+        let bound = self.bound(ctx);
+        ToolPolicy::new(Effect::Destructive, false)
+            .forced(true)
+            .reaching(if bound == ShellBound::Bounded {
+                Reach::Workspace
+            } else {
+                Reach::Unbounded
+            })
+            .unconfined(bound == ShellBound::Unbounded)
     }
 
     /// Only for `python3 file.py args` in a verified, offline sandbox, and
@@ -351,8 +386,19 @@ impl Tool for Shell {
             Ok(a) => a,
             Err(e) => return e,
         };
-        if let Err(e) = tokio::fs::create_dir_all(&ctx.workspace).await {
-            return ToolResult::error(format!("creating workspace: {e}"));
+        // The folder must still be the one the run started in. It is never
+        // recreated here: an unplugged drive must not make a command run in
+        // (or create) a same-named folder on the boot disk.
+        if let Err(e) = ctx.scope.check_alive() {
+            return ToolResult::error(ctx.scope.fail("shell", &a.command, e));
+        }
+        // Per-workspace temp and cache directories, inside the folder.
+        {
+            let scope = ctx.scope.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                tern_core::workspace::prepare_shell_dirs(&scope)
+            })
+            .await;
         }
         // A planned script run: the file must still be what was approved, and
         // what runs is the interpreter and file that were hashed.
@@ -390,7 +436,7 @@ impl Tool for Shell {
                     ));
                 }
             }
-            let writable = self.backend.writable_roots(&ctx.workspace);
+            let writable = self.backend.writable_roots(ctx.workspace());
             let interpreter = plan.interpreter.file_name().map_or_else(
                 || "python3".to_owned(),
                 |n| n.to_string_lossy().into_owned(),
@@ -401,7 +447,7 @@ impl Tool for Shell {
                     script: plan.script_rel.clone(),
                     args: plan.args.clone(),
                 },
-                &ctx.workspace,
+                ctx.workspace(),
                 &writable,
                 self.path.clone(),
                 &Confined(self.backend.as_ref(), self.id),
@@ -421,11 +467,19 @@ impl Tool for Shell {
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
         let opts = ExecOpts {
-            cwd: ctx.workspace.clone(),
+            cwd: ctx.workspace().to_path_buf(),
             timeout,
             max_output: 256 * 1024,
             on_output: progress_sink().map(|sink| OutputSink(Arc::new(move |s| sink(s)))),
             network,
+            env: tern_core::workspace::shell_env(&ctx.scope),
+            read_roots: ctx
+                .scope
+                .read_roots()
+                .iter()
+                .filter(|r| !r.is_file())
+                .map(|r| r.path().to_path_buf())
+                .collect(),
         };
         let out = match self.backend.exec(&command, opts, ctx.cancel.clone()).await {
             Ok(o) => o,
@@ -473,11 +527,89 @@ mod tests {
 
     use super::*;
 
+    fn ctx_in(dir: &std::path::Path) -> ToolCtx {
+        ToolCtx {
+            scope: tern_core::workspace::WorkspaceScope::for_dir(dir.to_path_buf()),
+            run_id: "r".into(),
+            session_id: "s".into(),
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    #[test]
+    fn with_no_os_sandbox_the_shell_is_unbounded_and_its_policy_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ctx_in(tmp.path());
+        let shell = Shell::new(Arc::new(HostBackend::unconfined()), Duration::from_secs(10));
+        let p = shell.policy(&ctx, &json!({"command": "ls"}));
+        assert!(p.unbounded, "no sandbox: unconfined");
+        assert_eq!(p.reach, Reach::Unbounded);
+        assert_eq!(ctx.scope.shell_bound(), ShellBound::Unbounded);
+        // The gate that follows: refused unattended, asks every time otherwise.
+        use tern_core::approval::{Autonomy, Check, Gate, check};
+        let g = |autonomy| Gate {
+            tainted: false,
+            autonomy,
+        };
+        assert_eq!(
+            check("shell", &p, true, g(Autonomy::Autonomous)),
+            Check::Unbounded
+        );
+        assert_eq!(
+            check("shell", &p, true, g(Autonomy::Yolo)),
+            Check::Unbounded
+        );
+        assert!(matches!(
+            check("shell", &p, true, g(Autonomy::Supervised)),
+            Check::Ask { always: false, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn commands_get_a_per_workspace_tmpdir_and_cache_env() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let shell = Shell::new(Arc::new(HostBackend::unconfined()), Duration::from_secs(10));
+        let mut seen = Vec::new();
+        for dir in [a.path(), b.path()] {
+            let r = shell
+                .call(
+                    &ctx_in(dir),
+                    json!({"command": "echo $TMPDIR; echo $CARGO_TARGET_DIR; echo $npm_config_cache"}),
+                )
+                .await;
+            assert!(!r.is_error, "{}", r.content);
+            let lines: Vec<&str> = r.content.lines().filter(|l| l.starts_with('/')).collect();
+            assert_eq!(lines.len(), 3, "{}", r.content);
+            let root = std::fs::canonicalize(dir).unwrap();
+            assert!(
+                lines.iter().all(|l| l.starts_with(root.to_str().unwrap())),
+                "{lines:?} not inside {root:?}"
+            );
+            assert!(root.join(".tern/tmp").is_dir());
+            seen.push(lines[0].to_owned());
+        }
+        assert_ne!(seen[0], seen[1], "shared TMPDIR");
+    }
+
+    #[tokio::test]
+    async fn a_missing_folder_is_not_recreated_and_the_command_does_not_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gone = tmp.path().join("unplugged");
+        std::fs::create_dir(&gone).unwrap();
+        let ctx = ctx_in(&gone);
+        std::fs::remove_dir(&gone).unwrap();
+        let shell = Shell::new(Arc::new(HostBackend::unconfined()), Duration::from_secs(10));
+        let r = shell.call(&ctx, json!({"command": "touch ran"})).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(!gone.exists(), "the folder was recreated");
+    }
+
     #[tokio::test]
     async fn streams_output_while_running_and_still_returns_it() {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = ToolCtx {
-            workspace: tmp.path().into(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(tmp.path().into()),
             run_id: "r".into(),
             session_id: "s".into(),
             cancel: CancellationToken::new(),
@@ -508,7 +640,7 @@ mod tests {
     async fn a_command_given_network_says_so_and_its_output_is_untrusted() {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = ToolCtx {
-            workspace: tmp.path().into(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(tmp.path().into()),
             run_id: "r".into(),
             session_id: "s".into(),
             cancel: CancellationToken::new(),
@@ -670,7 +802,7 @@ mod script_grant_tests {
         let dir = tempfile::tempdir().unwrap();
         let ws = std::fs::canonicalize(dir.path()).unwrap();
         let ctx = ToolCtx {
-            workspace: ws.clone(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(ws.clone()),
             run_id: "run".into(),
             session_id: "s".into(),
             cancel: CancellationToken::new(),

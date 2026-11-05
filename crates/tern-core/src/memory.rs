@@ -443,6 +443,9 @@ mod tests {
             memory_scope: None,
             autonomy: None,
             egress: None,
+            workspace_id: None,
+            workspace_root: None,
+            workspace_subdir: None,
         }
     }
 

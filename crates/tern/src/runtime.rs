@@ -129,6 +129,8 @@ pub struct Runtime {
     pub auth_targets: tern_auth::tools::Targets,
     /// Set when `TERN_PROVIDER=mock:<script>` overrides real providers.
     pub mock: bool,
+    /// What file tools must never touch (tern's data directory).
+    pub deny: Arc<tern_core::workspace::DenySet>,
 }
 
 impl Runtime {
@@ -240,6 +242,8 @@ impl Runtime {
             .with_secrets(secrets.clone())
             .with_crash_after_from_env();
 
+        // What file tools never touch, by identity (tern's data directory).
+        let deny = Arc::new(tern_core::workspace::DenySet::for_data_dir(home.root()));
         let agent = Agent::new(
             journal.clone(),
             providers,
@@ -247,6 +251,7 @@ impl Runtime {
             approvals,
             AgentConfig {
                 workspace: canonical(workspace),
+                deny: deny.clone(),
                 max_iterations: config.max_iterations,
                 default_context_window: config.context_window,
                 context_windows: config
@@ -319,7 +324,11 @@ impl Runtime {
             auth: auth_host,
             auth_targets: targets,
             mock,
+            deny,
         };
+        if let Err(e) = rt.ensure_default_workspace() {
+            tracing::warn!(error = %e, "couldn't set up the default workspace");
+        }
         rt.seed_starter_agents();
         rt.refresh_agent_chains();
         Ok(rt)
@@ -820,6 +829,32 @@ impl Runtime {
             })
             .map(|names| serde_json::to_string(&names))
             .transpose()?;
+        // The folder this run will have, checked now: a folder that is missing,
+        // replaced or refused means the run doesn't start (and nothing falls
+        // back to another folder).
+        let schedule = if trigger == "cron" {
+            self.store.schedule_for_session(&session.id)?.map(|s| s.id)
+        } else {
+            None
+        };
+        let frozen = match self.freeze_workspace(&session.id, schedule.as_deref()) {
+            Ok(f) => f,
+            Err(e) => {
+                if let (Some(id), Some(ws)) = (
+                    schedule.as_deref(),
+                    e.downcast_ref::<crate::workspaces::WorkspaceError>(),
+                ) {
+                    // A routine bound to a folder that isn't usable pauses
+                    // until the user fixes it, rather than running elsewhere.
+                    let until = tern_store::now_ms() + 10 * 365 * 24 * 3600 * 1000;
+                    let _ = self.store.pause_schedule(id, until, &ws.to_string());
+                    let _ = self
+                        .changes
+                        .send(Change::SchedulesChanged { id: id.to_owned() });
+                }
+                return Err(e);
+            }
+        };
         let run = self.agent.start_run_as(
             &session.id,
             text,
@@ -829,6 +864,12 @@ impl Runtime {
             tool_scope.as_deref(),
             agent.private_memory().then_some("private"),
             taint,
+        )?;
+        self.store.set_run_workspace(
+            &run.id,
+            &frozen.id,
+            &frozen.root.to_string_lossy(),
+            frozen.subdir.as_deref(),
         )?;
         // Frozen on the run, like its model (tooling spec §5.4); a routine
         // overrides it in `Manager::start_scheduled`, and the agent's
@@ -1266,7 +1307,6 @@ fn build_tools(
         &mut registry,
         tern_tools::BuiltinOptions {
             store: store.clone(),
-            guard: tern_tools::paths::Guard::for_data_dir(home.root()),
             skills_dir: home.skills_dir(),
             sandbox,
             shell_timeout: Duration::from_secs(config.sandbox.shell_timeout_secs),

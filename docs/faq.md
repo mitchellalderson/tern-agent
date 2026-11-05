@@ -131,7 +131,10 @@ The same policy on both, enforced by each OS's own mechanism:
   workspace mounted, no capabilities, and memory, CPU and process limits (2 GB, 2 CPUs, 512 by default).
   It has no network unless `sandbox.network = true`. On macOS that container lives in your Docker runtime's Linux VM.
 - **Luau connectors** are sandboxed in-process the same way on every platform (previous answer).
-- **File tools** are confined by tern itself: free inside the workspace, approval outside it, never `~/.tern`.
+- **File tools** are confined by tern itself, through a handle opened on the folder (no path-string checks to race or
+  trick): free inside the conversation's workspace, **refused** (never asked about) anywhere else, never `~/.tern`.
+  Add a read-only folder or file if the agent needs to look at it, or copy the file in. `shell` is only as bounded as the
+  OS sandbox: with none, tern asks before every command and refuses them in `autonomous` and `yolo` runs.
 
 Tools that need more of your home directory (a `~/.cargo` registry, `~/.npm`) need it in `sandbox.read_paths` or
 `sandbox.write_paths`. How it works: [docs/sandbox-design.md](sandbox-design.md).

@@ -136,7 +136,7 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("scripts/merge.py"), "print(1)").unwrap();
         let ctx = ToolCtx {
-            workspace: tmp.path().into(),
+            scope: tern_core::workspace::WorkspaceScope::for_dir(tmp.path().into()),
             run_id: "r".into(),
             session_id: "s".into(),
             cancel: CancellationToken::new(),

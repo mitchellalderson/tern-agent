@@ -106,6 +106,10 @@ pub enum Change {
     ChannelsChanged {},
     /// An agent profile was created, edited or archived.
     AgentsChanged {},
+    /// A workspace (folder) was added, renamed, archived, found missing or
+    /// back, or a folder binding or read-only folder changed; re-read
+    /// `/v1/workspaces`.
+    WorkspacesChanged {},
     /// An outbox item was queued or changed state; re-read `/v1/outbox`.
     OutboxChanged {
         id: i64,
