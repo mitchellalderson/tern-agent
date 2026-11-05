@@ -3,6 +3,15 @@
 // validation). The UI only ever sees [WorkspaceApi]; the one file that talks
 // to the core is workspaces_adapter.dart.
 
+import 'package:tern_client/tern_client.dart'
+    show WorkspaceVerdict, WorkspaceRefused;
+
+export 'package:tern_client/tern_client.dart' show WorkspaceRefused;
+
+/// A refusal carrying just the core's wording.
+WorkspaceRefused refusal(String message) =>
+    WorkspaceRefused(WorkspaceVerdict(errors: [message]), message);
+
 /// What a folder binding is attached to.
 enum WorkspaceKind { session, channel, agent }
 
@@ -34,8 +43,9 @@ enum WorkspaceStatus { ok, missing, replaced, denied }
 /// What the core can promise about shell commands here (section 8).
 enum ShellBound { bounded, unverified, unbounded }
 
-class Workspace {
-  const Workspace({
+/// The UI's view of tern_client's `Workspace` (see workspaces_adapter.dart).
+class WorkspaceView {
+  const WorkspaceView({
     required this.id,
     required this.path,
     this.name,
@@ -62,13 +72,13 @@ class Workspace {
     return parts.isEmpty ? path : parts.last;
   }
 
-  Workspace copyWith({
+  WorkspaceView copyWith({
     String? path,
     WorkspaceStatus? status,
     ShellBound? shellBound,
     List<String>? extraRoots,
     List<WorkspaceUse>? usedBy,
-  }) => Workspace(
+  }) => WorkspaceView(
     id: id,
     path: path ?? this.path,
     name: name,
@@ -92,7 +102,7 @@ class WorkspaceUse {
 /// The folder a target runs in, and why.
 class WorkspaceResolution {
   const WorkspaceResolution(this.workspace, this.origin);
-  final Workspace workspace;
+  final WorkspaceView workspace;
   final WorkspaceOrigin origin;
 }
 
@@ -126,14 +136,6 @@ class BrowseListing {
   final List<String> dirs;
 }
 
-/// The core refused a request; [message] is its own wording.
-class WorkspaceRefused implements Exception {
-  const WorkspaceRefused(this.message);
-  final String message;
-  @override
-  String toString() => message;
-}
-
 abstract class WorkspaceApi {
   /// True when the core runs on this computer, so a native picker can see its
   /// folders. False hides the picker and shows the core-side browser.
@@ -150,21 +152,21 @@ abstract class WorkspaceApi {
   Future<WorkspaceResolution> clear(WorkspaceTarget target);
 
   /// The global default folder.
-  Future<Workspace> getDefault();
-  Future<Workspace> setDefault(String path);
+  Future<WorkspaceView> getDefault();
+  Future<WorkspaceView> setDefault(String path);
 
   /// Every workspace, with what uses it.
-  Future<List<Workspace>> list();
+  Future<List<WorkspaceView>> list();
 
   /// Stop tracking a workspace; what used it falls back to the default.
   Future<void> remove(String workspaceId);
 
   /// Point a missing workspace at a new place.
-  Future<Workspace> locate(String workspaceId, String path);
+  Future<WorkspaceView> locate(String workspaceId, String path);
 
   /// Read-only extra folders of a workspace.
-  Future<Workspace> addRoot(String workspaceId, String path);
-  Future<Workspace> removeRoot(String workspaceId, String path);
+  Future<WorkspaceView> addRoot(String workspaceId, String path);
+  Future<WorkspaceView> removeRoot(String workspaceId, String path);
 
   /// The core's verdict on [path], without binding anything.
   Future<Verdict> validate(String path);

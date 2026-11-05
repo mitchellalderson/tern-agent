@@ -121,6 +121,7 @@ class _FakeClient extends TernClient {
     String text, {
     int? replyTo,
     bool newTopic = false,
+    String? workspace,
   }) async {
     sent.add((channel: channel, text: text, replyTo: replyTo));
     return Sent(
@@ -143,6 +144,7 @@ class _FakeClient extends TernClient {
     required String slug,
     String? title,
     String? instructions,
+    String? workspace,
   }) async {
     created.add(slug);
     return _ch(slug, slug, title ?? slug);

@@ -943,6 +943,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
             instructions: _instructions.text.trim().isEmpty
                 ? null
                 : _instructions.text.trim(),
+            workspace: _folder,
           )
         : await widget.store.updateChannel(
             editing.id,
@@ -962,19 +963,6 @@ class _ChannelDialogState extends State<ChannelDialog> {
           );
     if (!mounted) return;
     if (err == null) {
-      if (editing == null && _folder != null) {
-        final id = widget.store.openChannel?.id;
-        try {
-          if (id != null) {
-            await widget.store.workspaces?.set(
-              WorkspaceTarget.channel(id),
-              _folder!,
-            );
-          }
-        } on WorkspaceRefused {
-          // The channel is made; the chip shows the folder it really uses.
-        }
-      }
       if (mounted) Navigator.of(context).pop();
     } else {
       setState(() {

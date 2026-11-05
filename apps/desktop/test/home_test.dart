@@ -164,6 +164,7 @@ class _FakeClient extends TernClient {
     String text, {
     int? replyTo,
     bool newTopic = false,
+    String? workspace,
   }) async {
     sends.add((text: text, newTopic: newTopic));
     return Sent(

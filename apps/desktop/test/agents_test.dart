@@ -384,6 +384,7 @@ class _FakeClient extends TernClient {
     String text, {
     int? replyTo,
     bool newTopic = false,
+    String? workspace,
   }) async {
     sends.add((channel: channel, text: text));
     return Sent(runId: 'r-new', sessionId: channel == 'home' ? 'h1' : 'd1');

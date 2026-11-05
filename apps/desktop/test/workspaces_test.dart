@@ -90,16 +90,11 @@ void main() {
   });
 
   group('feature check', () {
-    test('an older core, or an unwired adapter, hides the folder UI', () {
-      expect(kWorkspacesWired, isFalse);
+    test('an older core hides the folder UI', () {
+      expect(kWorkspacesWired, isTrue);
       expect(_store().workspaces, isNull);
-      expect(_store(features: {workspacesFeature}).workspaces, isNull);
+      expect(_store(features: {workspacesFeature}).workspaces, isNotNull);
       expect(_store(api: FakeWorkspaces()).workspaces, isNotNull);
-    });
-
-    test('the adapter stub throws until it is wired', () {
-      final api = TernWorkspaceApi(_store());
-      expect(() => api.list(), throwsA(isA<UnimplementedError>()));
     });
 
     testWidgets('no Settings > Folders on a core without it', (tester) async {
@@ -743,5 +738,5 @@ class _Stale extends FakeWorkspaces {
   _Stale(FakeWorkspaces base) : super(isLocal: base.isLocal);
   @override
   Future<WorkspaceResolution> set(WorkspaceTarget t, String path) async =>
-      throw const WorkspaceRefused('This folder changed since you chose it.');
+      throw refusal('This folder changed since you chose it.');
 }

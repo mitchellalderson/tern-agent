@@ -17,7 +17,12 @@ class _Client extends TernClient {
   final answers = <(String, Decision)>[];
 
   @override
-  Future<Started> send(String text, {String? session, String? model}) async {
+  Future<Started> send(
+    String text, {
+    String? session,
+    String? model,
+    String? workspace,
+  }) async {
     if (fail) throw const TernException('no model is set up');
     sent.add(text);
     return Started(sessionId: session ?? 's1', runId: 'r1', model: 'm');

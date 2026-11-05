@@ -1352,12 +1352,14 @@ class TernStore extends ChangeNotifier {
     required String slug,
     String? title,
     String? instructions,
+    String? workspace,
   }) async {
     try {
       final c = await client.createChannel(
         slug: slug,
         title: title,
         instructions: instructions,
+        workspace: workspace,
       );
       channels = await client.channels();
       await openChannelView(c.id);
@@ -2107,19 +2109,17 @@ class TernStore extends ChangeNotifier {
       notifyListeners();
     }
     try {
-      final sent = await client.sendToChannel(id, text, newTopic: topic);
+      // The folder chosen for a new topic rides on the send, so the first
+      // run already uses it.
+      final folder = topic ? pendingFolder : null;
+      final sent = await client.sendToChannel(
+        id,
+        text,
+        newTopic: topic,
+        workspace: folder,
+      );
       newTopic = false;
-      if (pendingFolder case final f?) {
-        pendingFolder = null;
-        // TODO(workspaces-wire): the core should take the folder on the send
-        // itself so the first run already uses it; until then it is bound
-        // right after.
-        try {
-          await workspaces?.set(WorkspaceTarget.session(sent.sessionId), f);
-        } on Object {
-          // The chip shows what the topic really uses.
-        }
-      }
+      pendingFolder = null;
       _runSession[sent.runId] = sent.sessionId;
       _runChannel[sent.runId] = id;
       _streamSessions.add(sent.sessionId);

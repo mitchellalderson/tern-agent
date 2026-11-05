@@ -14,8 +14,8 @@ class FakeWorkspaces implements WorkspaceApi {
   final bool isLocal;
   ShellBound shell;
 
-  late Workspace _default;
-  final all = <Workspace>[];
+  late WorkspaceView _default;
+  final all = <WorkspaceView>[];
   final bindings = <WorkspaceTarget, String>{}; // target -> workspace id
   final calls = <String>[];
 
@@ -37,21 +37,21 @@ class FakeWorkspaces implements WorkspaceApi {
   };
 
   int _n = 0;
-  Workspace _make(String path) {
-    final w = Workspace(id: 'ws${_n++}', path: path, shellBound: shell);
+  WorkspaceView _make(String path) {
+    final w = WorkspaceView(id: 'ws${_n++}', path: path, shellBound: shell);
     all.add(w);
     return w;
   }
 
-  void _replace(Workspace w) {
+  void _replace(WorkspaceView w) {
     final i = all.indexWhere((x) => x.id == w.id);
     if (i >= 0) all[i] = w;
     if (_default.id == w.id) _default = w;
   }
 
-  Workspace _byId(String id) => all.firstWhere((w) => w.id == id);
+  WorkspaceView _byId(String id) => all.firstWhere((w) => w.id == id);
 
-  Workspace _forPath(String path) {
+  WorkspaceView _forPath(String path) {
     for (final w in all) {
       if (w.path == path) return w;
     }
@@ -78,9 +78,9 @@ class FakeWorkspaces implements WorkspaceApi {
 
   Future<void> _check(String path) async {
     final v = await validate(path);
-    if (v.errors.isNotEmpty) throw WorkspaceRefused(v.errors.first);
+    if (v.errors.isNotEmpty) throw refusal(v.errors.first);
     if (v.denied) {
-      throw const WorkspaceRefused('macOS did not let Tern open it.');
+      throw refusal('macOS did not let Tern open it.');
     }
   }
 
@@ -100,10 +100,10 @@ class FakeWorkspaces implements WorkspaceApi {
   }
 
   @override
-  Future<Workspace> getDefault() async => _default;
+  Future<WorkspaceView> getDefault() async => _default;
 
   @override
-  Future<Workspace> setDefault(String path) async {
+  Future<WorkspaceView> setDefault(String path) async {
     calls.add('setDefault $path');
     await _check(path);
     _default = _forPath(path);
@@ -111,7 +111,7 @@ class FakeWorkspaces implements WorkspaceApi {
   }
 
   @override
-  Future<List<Workspace>> list() async => [
+  Future<List<WorkspaceView>> list() async => [
     for (final w in all)
       w.copyWith(
         usedBy: [
@@ -134,7 +134,7 @@ class FakeWorkspaces implements WorkspaceApi {
   }
 
   @override
-  Future<Workspace> locate(String id, String path) async {
+  Future<WorkspaceView> locate(String id, String path) async {
     calls.add('locate $id $path');
     await _check(path);
     final w = _byId(id).copyWith(path: path, status: WorkspaceStatus.ok);
@@ -143,7 +143,7 @@ class FakeWorkspaces implements WorkspaceApi {
   }
 
   @override
-  Future<Workspace> addRoot(String id, String path) async {
+  Future<WorkspaceView> addRoot(String id, String path) async {
     calls.add('addRoot $id $path');
     final w = _byId(id);
     final n = w.copyWith(extraRoots: [...w.extraRoots, path]);
@@ -152,7 +152,7 @@ class FakeWorkspaces implements WorkspaceApi {
   }
 
   @override
-  Future<Workspace> removeRoot(String id, String path) async {
+  Future<WorkspaceView> removeRoot(String id, String path) async {
     calls.add('removeRoot $id $path');
     final w = _byId(id);
     final n = w.copyWith(

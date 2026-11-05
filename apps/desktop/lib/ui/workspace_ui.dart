@@ -308,7 +308,7 @@ class WorkspaceStatusCard extends StatelessWidget {
     this.onUseDefault,
   });
 
-  final Workspace workspace;
+  final WorkspaceView workspace;
 
   /// Locate (missing / replaced) or Choose another.
   final VoidCallback onLocate;
@@ -1211,8 +1211,8 @@ class FoldersSection extends StatefulWidget {
 }
 
 class _FoldersSectionState extends State<FoldersSection> {
-  Workspace? _default;
-  List<Workspace> _all = const [];
+  WorkspaceView? _default;
+  List<WorkspaceView> _all = const [];
   var _filter = _Filter.all;
   String? _error;
   var _loaded = false;
@@ -1454,7 +1454,7 @@ class _OverrideRow extends StatelessWidget {
     required this.onUseDefault,
   });
 
-  final Workspace workspace;
+  final WorkspaceView workspace;
   final WorkspaceUse use;
   final VoidCallback onUseDefault;
 
@@ -1511,7 +1511,7 @@ class _RootsGroup extends StatelessWidget {
     required this.onRemove,
   });
 
-  final Workspace workspace;
+  final WorkspaceView workspace;
   final VoidCallback onAdd;
   final void Function(String root) onRemove;
 
