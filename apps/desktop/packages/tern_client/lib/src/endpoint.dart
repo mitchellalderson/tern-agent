@@ -135,6 +135,33 @@ bool _sameBytes(List<int> a, List<int> b) {
   return diff == 0;
 }
 
+/// Whether [host] is this computer: `localhost`, `*.localhost`, 127.0.0.0/8
+/// or `::1`.
+bool isLoopbackHost(String host) {
+  final h = host.toLowerCase();
+  if (h == 'localhost' || h.endsWith('.localhost')) return true;
+  final ip = InternetAddress.tryParse(h);
+  return ip != null && ip.isLoopback;
+}
+
+/// Why a tern server can't be at [url], in a sentence, or null when it can:
+/// it must be `https` (the token travels with every request) unless it is
+/// this computer, where `http` never leaves the machine.
+String? remoteUrlProblem(Uri url) {
+  if (url.host.isEmpty || (url.scheme != 'https' && url.scheme != 'http')) {
+    return "That doesn't look like a server address.";
+  }
+  if (url.hasQuery || url.hasFragment || url.userInfo.isNotEmpty) {
+    return 'Use just the server address, like https://home.example.net:7420, '
+        'with no login, query or #.';
+  }
+  if (url.scheme == 'http' && !isLoopbackHost(url.host)) {
+    return 'Use https:// for a server on another computer. tern sends a '
+        'secret key with every request, and http would send it unprotected.';
+  }
+  return null;
+}
+
 /// A `tern://pair?u=…&c=…&fp=…&n=…` link from `tern devices pair` or the
 /// desktop app's Add device (deployment spec §6.2).
 class PairingLink {

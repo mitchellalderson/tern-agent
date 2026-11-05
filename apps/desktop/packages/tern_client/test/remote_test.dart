@@ -125,6 +125,105 @@ void main() {
     });
   });
 
+  group('server addresses', () {
+    test('https is required except for this computer', () {
+      expect(
+        remoteUrlProblem(Uri.parse('https://home.example.net:7420')),
+        isNull,
+      );
+      for (final ok in [
+        'http://localhost:7420',
+        'http://127.0.0.1:7420',
+        'http://[::1]:7420',
+        'http://tern.localhost',
+      ]) {
+        expect(remoteUrlProblem(Uri.parse(ok)), isNull, reason: ok);
+      }
+      expect(
+        remoteUrlProblem(Uri.parse('http://home.example.net')),
+        contains('https://'),
+      );
+      // A look-alike of localhost is another computer.
+      expect(
+        remoteUrlProblem(Uri.parse('http://localhost.evil.example')),
+        isNotNull,
+      );
+      expect(remoteUrlProblem(Uri.parse('ftp://x')), isNotNull);
+      expect(remoteUrlProblem(Uri.parse('https://u:p@x.example')), isNotNull);
+      expect(remoteUrlProblem(Uri.parse('https://x.example/?a=1')), isNotNull);
+    });
+
+    test('pairing and probing refuse plain http to another computer', () async {
+      final link = PairingLink(
+        url: Uri.parse('http://203.0.113.9:7420'),
+        code: 'C',
+      );
+      await expectLater(
+        TernClient.pair(link, deviceName: 'd'),
+        throwsA(isA<TernException>()),
+      );
+      await expectLater(
+        TernClient.probe(Uri.parse('http://203.0.113.9:7420')),
+        throwsA(isA<TernException>()),
+      );
+    });
+
+    test('probe asks /healthz with no token', () async {
+      core.handle = (req, _) async {
+        req.response.write('ok');
+        await req.response.close();
+      };
+      await TernClient.probe(core.url, pin: pin);
+      expect(core.requests.single.uri.path, '/healthz');
+      expect(core.requests.single.headers.value('authorization'), isNull);
+    });
+
+    test(
+      'probe says when it is not tern, or the certificate differs',
+      () async {
+        core.handle = (req, _) => _json(req, 404, {'error': 'nope'});
+        await expectLater(
+          TernClient.probe(core.url, pin: pin),
+          throwsA(isA<TernException>().having((e) => e.status, 'status', 404)),
+        );
+        await expectLater(
+          TernClient.probe(core.url, pin: 'sha256:${'00' * 32}'),
+          throwsA(
+            isA<TernException>().having(
+              (e) => e.message,
+              'message',
+              contains("isn't the one this device paired with"),
+            ),
+          ),
+        );
+      },
+    );
+
+    test('a redirect is not followed, so the token never leaves', () async {
+      final other = await FakeCore.start();
+      addTearDown(other.close);
+      core.handle = (req, _) async {
+        req.response
+          ..statusCode = 302
+          ..headers.set('location', '${other.url}/v1/sessions');
+        await req.response.close();
+      };
+      final client = TernClient(
+        Endpoint.remote(core.url, token: 'tern_dev_secret', pin: pin),
+      );
+      addTearDown(client.close);
+      await expectLater(
+        client.sessions(),
+        throwsA(
+          isA<TernException>()
+              .having((e) => e.status, 'status', 302)
+              .having((e) => e.message, 'message', contains('not followed')),
+        ),
+      );
+      expect(other.requests, isEmpty);
+    });
+  });
+
   group('signed out', () {
     test('a 401 is a SignedOutException, with no retry', () async {
       core.handle = (req, _) =>

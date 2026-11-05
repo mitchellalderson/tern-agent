@@ -204,19 +204,25 @@ void main() {
       ]);
     });
 
-    test('connecting stores the token and switching back forgets it', () async {
-      final env = _Env();
-      addTearDown(env.dispose);
-      final p = await env.connections.connect(parseServerInput(_link));
-      expect(env.tokens.tokens, {p.account: 'tern_dev_secret'});
-      expect(env.connections.isRemote, isTrue);
-      expect((env.applied.single as RemoteEndpoint).token, 'tern_dev_secret');
+    test(
+      'connecting stores the token and switching back keeps the server',
+      () async {
+        final env = _Env();
+        addTearDown(env.dispose);
+        final p = await env.connections.connect(parseServerInput(_link));
+        expect(env.tokens.tokens, {p.account: 'tern_dev_secret'});
+        expect(env.connections.isRemote, isTrue);
+        expect((env.applied.single as RemoteEndpoint).token, 'tern_dev_secret');
 
-      await env.connections.useLocal();
-      expect(env.tokens.tokens, isEmpty);
-      expect(env.applied.last, isA<UnixEndpoint>());
-      expect(AppPrefs.fromFile(env.prefs.file).connection, isA<LocalProfile>());
-    });
+        await env.connections.useLocal();
+        expect(env.tokens.tokens, {p.account: 'tern_dev_secret'});
+        expect(env.applied.last, isA<UnixEndpoint>());
+        expect(
+          AppPrefs.fromFile(env.prefs.file).connection,
+          isA<LocalProfile>(),
+        );
+      },
+    );
   });
 
   group('first launch', () {
@@ -358,14 +364,14 @@ void main() {
     );
     expect(find.text('Start tern when I log in'), findsNothing);
     expect(find.text('Quit tern completely'), findsNothing);
-    expect(find.text('Change server…'), findsOneWidget);
+    expect(find.text('Servers…'), findsOneWidget);
     // It never asked the local service anything.
     expect(env.runs, isEmpty);
 
     await tester.tap(find.textContaining('instead'));
     await _settle(tester);
     expect(env.prefs.connection, isA<LocalProfile>());
-    expect(env.tokens.tokens, isEmpty);
+    expect(env.tokens.tokens, hasLength(1));
     expect(env.applied.last, isA<UnixEndpoint>());
   });
 }
