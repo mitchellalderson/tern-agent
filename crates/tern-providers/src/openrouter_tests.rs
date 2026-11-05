@@ -108,3 +108,39 @@ fn the_openrouter_host_turns_attribution_on_and_fixes_the_path() {
     let other = OpenAiCompat::new("o", "https://api.openai.com/v1", None).unwrap();
     assert!(!other.attribution);
 }
+
+/// The user's real config: `base_url = ".../api/v1/responses"` (OpenRouter's
+/// Responses API address), built through the same path the daemon uses.
+#[tokio::test]
+async fn a_pasted_responses_endpoint_still_reaches_chat_completions() {
+    use tern_core::Secrets;
+    use tern_core::config::{ProviderConfig, ProviderKind};
+    let server = openrouter_like().await;
+    let cfg = ProviderConfig {
+        kind: ProviderKind::OpenaiCompat,
+        base_url: Some(format!("{}/api/v1/responses", server.uri())),
+        api_key_secret: Some("OPENROUTER_TEST_KEY".into()),
+        context_window: None,
+        prices: Default::default(),
+    };
+    // The key comes from a secrets file, not the environment.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("secrets.toml");
+    std::fs::write(&path, "OPENROUTER_TEST_KEY = \"sk-or-test\"\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let secrets = Secrets::load(&path).unwrap();
+    let p = crate::build("openrouter", &cfg, &secrets).unwrap();
+    let stream = p.stream(req(), CancellationToken::new()).await.unwrap();
+    let events: Vec<_> = stream.collect().await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::TextDelta(t)) if t == "hi"))
+    );
+    let seen = &server.received_requests().await.unwrap()[0];
+    assert_eq!(seen.url.path(), "/api/v1/chat/completions");
+}

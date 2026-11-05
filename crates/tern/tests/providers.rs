@@ -682,6 +682,28 @@ async fn presets_and_address_mistakes() {
         "{v}"
     );
 
+    // The mistake seen in the wild: a Responses API address pasted as the base.
+    let v = api
+        .ok(
+            Method::POST,
+            "/v1/providers/verify",
+            Some(json!({
+                "preset": "other",
+                "base_url": format!("{root}/v1/responses/"),
+                "key": "sk-good",
+            })),
+        )
+        .await;
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(
+        v["warnings"][0],
+        format!(
+            "That looks like a full endpoint, not the base address; using {root}/v1. \
+             (tern calls the chat completions endpoint itself.)"
+        ),
+        "{v}"
+    );
+
     // An address with no API behind it is an error, not a saved provider
     // that fails on the first message.
     let v = api

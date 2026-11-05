@@ -532,10 +532,7 @@ impl Runtime {
             let url = if cfg.kind == ProviderKind::OpenaiCompat {
                 tidy = tern_core::presets::normalize_base_url(url);
                 if tidy != url {
-                    warnings.push(format!(
-                        "Using {tidy}: that is the address {} expects.",
-                        host_of(&tidy)
-                    ));
+                    warnings.push(tern_core::presets::repair_note(url, &tidy));
                 }
                 tidy.as_str()
             } else {

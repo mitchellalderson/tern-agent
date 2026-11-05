@@ -590,6 +590,15 @@ async fn probe(
     match tern_providers::list_models(p, key).await {
         Ok(l) => {
             let mut msg = format!("reachable ({base}, {} models)", l.models.len());
+            if p.kind == tern_core::config::ProviderKind::OpenaiCompat {
+                let fixed = tern_core::presets::normalize_base_url(base);
+                if fixed != base.trim_end_matches('/') {
+                    msg.push_str(&format!(
+                        "; {} Set base_url to that.",
+                        tern_core::presets::repair_note(base, &fixed)
+                    ));
+                }
+            }
             if let Some(url) = l.suggested_base_url {
                 msg.push_str(&format!("; models answered at {url}, set base_url to that"));
             }

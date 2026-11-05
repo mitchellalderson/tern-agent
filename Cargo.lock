@@ -5016,6 +5016,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tern-core",
  "tokio",
  "tokio-util",

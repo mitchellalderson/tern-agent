@@ -213,6 +213,43 @@ fn path(url: &str) -> &str {
     }
 }
 
+/// Endpoint paths people paste instead of the base address. tern adds
+/// `/chat/completions` (the Chat Completions API, not the newer Responses
+/// API) or `/models` itself.
+const ENDPOINT_SUFFIXES: [&str; 6] = [
+    "/chat/completions",
+    "/completions",
+    "/responses",
+    "/messages",
+    "/embeddings",
+    "/models",
+];
+
+/// Whether `url` ends in an endpoint path rather than a base address.
+pub fn is_pasted_endpoint(url: &str) -> bool {
+    let u = url.trim().trim_end_matches('/');
+    ENDPOINT_SUFFIXES.iter().any(|s| u.ends_with(s))
+}
+
+/// What to tell the user when `typed` was changed to `fixed`.
+pub fn repair_note(typed: &str, fixed: &str) -> String {
+    if is_pasted_endpoint(typed) {
+        format!(
+            "That looks like a full endpoint, not the base address; using {fixed}. \
+             (tern calls the chat completions endpoint itself.)"
+        )
+    } else {
+        format!(
+            "Using {fixed}: that is the address {} expects.",
+            fixed_host(fixed)
+        )
+    }
+}
+
+fn fixed_host(url: &str) -> String {
+    host(url)
+}
+
 /// Tidy a base URL so a chat call goes where the server expects it:
 ///
 /// - drop whitespace and trailing slashes;
@@ -227,7 +264,7 @@ pub fn normalize_base_url(url: &str) -> String {
     let mut u = url.trim().trim_end_matches('/').to_owned();
     loop {
         let before = u.len();
-        for suffix in ["/chat/completions", "/completions", "/models"] {
+        for suffix in ENDPOINT_SUFFIXES {
             if let Some(stripped) = u.strip_suffix(suffix) {
                 u = stripped.trim_end_matches('/').to_owned();
             }
@@ -287,6 +324,30 @@ mod tests {
         assert_eq!(id(oc, Some("http://localhost:8000/v1")), None);
         assert_eq!(id(ProviderKind::Anthropic, None), Some("anthropic"));
         assert_eq!(id(oc, Some("https://example.com/v1")), None);
+    }
+
+    #[test]
+    fn strips_a_pasted_responses_endpoint() {
+        let n = normalize_base_url;
+        for bad in [
+            "https://openrouter.ai/api/v1/responses",
+            "https://openrouter.ai/api/v1/responses/",
+            "https://openrouter.ai/api/v1/embeddings",
+            "https://openrouter.ai/api/v1/messages",
+        ] {
+            assert_eq!(n(bad), "https://openrouter.ai/api/v1", "{bad}");
+            assert!(is_pasted_endpoint(bad));
+        }
+        assert_eq!(
+            n("https://example.com/v1/responses"),
+            "https://example.com/v1"
+        );
+        assert!(!is_pasted_endpoint("https://openrouter.ai/api/v1"));
+        let note = repair_note(
+            "https://openrouter.ai/api/v1/responses",
+            "https://openrouter.ai/api/v1",
+        );
+        assert!(note.starts_with("That looks like a full endpoint, not the base address; using https://openrouter.ai/api/v1."));
     }
 
     #[test]
