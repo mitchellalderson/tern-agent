@@ -844,15 +844,18 @@ impl Subagents {
                 self.store.set_session_agent(&session_id, &a.id)?;
                 // It keeps its caller's autonomy (copied by the store),
                 // lowered to its own ceiling if that is stricter.
-                if let Some(ceiling) = a
-                    .autonomy
-                    .as_deref()
-                    .and_then(tern_core::approval::Autonomy::parse)
-                {
-                    let inherited =
-                        tern_core::approval::Autonomy::of_run(parent.autonomy.as_deref());
-                    self.store
-                        .set_run_autonomy(&run_id, inherited.min(ceiling).as_str())?;
+                // It reaches `code` only if the parent's run does, or its own
+                // agent opted in (and its ceiling allows): never because the
+                // parent was more permissive than the child's ceiling.
+                use tern_core::approval::Autonomy;
+                let inherited = Autonomy::of_run(parent.autonomy.as_deref());
+                let level = tern_core::approval::delegate_autonomy(
+                    inherited,
+                    a.autonomy.as_deref().and_then(Autonomy::parse),
+                    a.code_auto,
+                );
+                if level != inherited {
+                    self.store.set_run_autonomy(&run_id, level.as_str())?;
                 }
             }
             if let Some(n) = &narrowed {

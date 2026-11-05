@@ -38,8 +38,13 @@ pub enum Skipped {
     /// `git` isn't installed (or won't run).
     NoGit,
     /// More than [`MAX_FILES`] files or [`MAX_BYTES`] bytes.
-    TooLarge { files: usize, bytes: u64 },
-    Failed { message: String },
+    TooLarge {
+        files: usize,
+        bytes: u64,
+    },
+    Failed {
+        message: String,
+    },
 }
 
 impl Skipped {
@@ -163,7 +168,9 @@ impl Repo {
     }
 
     fn resolve(&self, run_id: &str) -> Option<String> {
-        let out = self.run(&["rev-parse", "--verify", "--quiet", &run_ref(run_id)]).ok()?;
+        let out = self
+            .run(&["rev-parse", "--verify", "--quiet", &run_ref(run_id)])
+            .ok()?;
         let s = String::from_utf8_lossy(&out).trim().to_owned();
         (!s.is_empty()).then_some(s)
     }
@@ -181,7 +188,13 @@ pub fn create(
     if let Some(commit) = repo.resolve(run_id) {
         return Ok(Checkpoint { commit, files: 0 });
     }
-    let listing = repo.run(&["ls-files", "-z", "--cached", "--others", "--exclude-standard"])?;
+    let listing = repo.run(&[
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+    ])?;
     let (mut files, mut bytes) = (0usize, 0u64);
     for rel in listing.split(|b| *b == 0).filter(|p| !p.is_empty()) {
         files += 1;
@@ -223,7 +236,14 @@ pub fn changes(
         return Ok(vec![]);
     };
     repo.run(&["add", "-A"])?;
-    let out = repo.run(&["diff", "--cached", "--name-status", "--no-renames", "-z", &commit])?;
+    let out = repo.run(&[
+        "diff",
+        "--cached",
+        "--name-status",
+        "--no-renames",
+        "-z",
+        &commit,
+    ])?;
     let mut parts = out.split(|b| *b == 0).filter(|p| !p.is_empty());
     let mut list = vec![];
     while let (Some(status), Some(path)) = (parts.next(), parts.next()) {

@@ -257,7 +257,7 @@ pub struct AgentTemplate {
     /// all skills (it fails closed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<tern_core::agents::ToolScope>,
-    /// The autonomy ceiling: `readonly`, `supervised`, `autonomous`, `yolo`.
+    /// The autonomy ceiling: `readonly`, `supervised`, `code`, `autonomous`, `yolo`. A bundle never turns code auto mode itself on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomy: Option<String>,
 }
@@ -287,7 +287,7 @@ impl AgentTemplate {
             && tern_core::approval::Autonomy::parse(a).is_none()
         {
             return Err(bad(format!(
-                "autonomy must be readonly, supervised, autonomous or yolo, not {a:?}"
+                "autonomy must be readonly, supervised, code, autonomous or yolo, not {a:?}"
             )));
         }
         if let Some(av) = &t.avatar

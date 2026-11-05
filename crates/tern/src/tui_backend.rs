@@ -510,6 +510,42 @@ impl Backend for TuiBackend {
             .collect())
     }
 
+    fn set_code_auto(&self, id: &str, on: bool) -> BackendResult<String> {
+        use tern_core::approval::Autonomy;
+        let rt = self.rt();
+        let a = rt
+            .store
+            .agent(id.trim_start_matches('@'))
+            .map_err(err)?
+            .ok_or_else(|| format!("no agent {id:?}"))?;
+        let mut ch = tern_store::AgentChange {
+            code_auto: Some(on),
+            ..Default::default()
+        };
+        if on && let Some(c) = a.autonomy.as_deref().and_then(Autonomy::parse) {
+            if c == Autonomy::ReadOnly {
+                return Err(format!(
+                    "@{} is read-only: it can't use code auto mode",
+                    a.slug
+                ));
+            }
+            if c < Autonomy::Code {
+                // The visible step: the ceiling is raised with the opt-in.
+                ch.autonomy = Some(Some("code".into()));
+            }
+        }
+        rt.store.update_agent(&a.id, &ch).map_err(err)?;
+        Ok(if on {
+            format!(
+                "code auto mode is on for @{}: it edits files and runs build and test commands \
+                 in its folder without asking (not fully sandboxed). /autonomy off turns it off.",
+                a.slug
+            )
+        } else {
+            format!("code auto mode is off for @{}", a.slug)
+        })
+    }
+
     fn agents(&self) -> BackendResult<Vec<AgentInfo>> {
         let rows = self.rt().store.agents(false).map_err(err)?;
         Ok(rows
@@ -521,6 +557,8 @@ impl Backend for TuiBackend {
                 name: a.name,
                 needs_you: 0,
                 active_runs: 0,
+                ceiling: a.autonomy.clone(),
+                code_auto: a.code_auto,
             })
             .collect())
     }

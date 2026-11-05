@@ -798,6 +798,33 @@ fn check_autonomy(r: &mut Report, home: &TernHome, config: &Config) {
     let Ok(store) = Store::open(&path) else {
         return;
     };
+    let coders: Vec<String> = store
+        .agents(false)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|g| g.code_auto)
+        .map(|g| format!("{} in the workspace", g.name))
+        .collect();
+    if !coders.is_empty() {
+        let list = format!(
+            "Code auto: {} agent(s) ({})",
+            coders.len(),
+            coders.join(", ")
+        );
+        if crate::runtime::shell_sandbox_status(config, home).is_verified() {
+            r.check(
+                Status::Warn,
+                format!("{list}; sandbox verified; commands run without asking inside it"),
+                Some("`tern agents code-auto <agent> off` turns it off."),
+            );
+        } else {
+            r.check(
+                Status::Warn,
+                format!("{list}; sandbox NOT active: only file edits are automatic, commands ask"),
+                Some("Keep sandbox.confine = \"auto\" on a host with Seatbelt or Landlock."),
+            );
+        }
+    }
     for s in store.schedules().unwrap_or_default() {
         let Some(a) = s.autonomy.as_deref().and_then(Autonomy::parse) else {
             continue;

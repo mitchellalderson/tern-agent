@@ -67,6 +67,10 @@ pub struct AgentInfo {
     pub needs_you: usize,
     pub active_runs: usize,
     pub is_default: bool,
+    /// Its autonomy ceiling (`readonly`, `supervised`, `code`, ...), if any.
+    pub ceiling: Option<String>,
+    /// Opted in to code auto mode.
+    pub code_auto: bool,
 }
 
 /// What an agent is doing, as the `/agents` list and the status line show
@@ -402,6 +406,12 @@ pub trait Backend: Send + Sync + 'static {
     /// be deleted now (and why).
     fn delete_preview(&self, _what: Managed, _id: &str) -> BackendResult<String> {
         Err("this backend can't delete".into())
+    }
+    /// Opt agent `id` in to (or out of) code auto mode. Turning it on raises
+    /// a ceiling below `code` to `code` in the same step (the caller has shown
+    /// the disclaimer and said so). What happened, in words.
+    fn set_code_auto(&self, _id: &str, _on: bool) -> BackendResult<String> {
+        Err("this backend can't change code auto mode".into())
     }
     /// Delete `id` (the user confirmed). What happened, in words.
     fn delete(&self, _what: Managed, _id: &str, _choice: &DeleteChoice) -> BackendResult<String> {

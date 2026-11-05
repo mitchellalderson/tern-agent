@@ -467,7 +467,7 @@ pub enum AgentsCommand {
         /// `private` (default) or `shared`.
         #[arg(long)]
         memory: Option<String>,
-        /// The most autonomy its runs may have: readonly, supervised,
+        /// The most autonomy its runs may have: readonly, supervised, code,
         /// autonomous or yolo (the lower of this and `autonomy` applies).
         #[arg(long)]
         autonomy: Option<String>,
@@ -484,6 +484,22 @@ pub enum AgentsCommand {
         agent: String,
         /// readonly, supervised, autonomous, yolo, or `none` to remove it.
         level: String,
+    },
+    /// Turn code auto mode (edits files and runs build and test commands in
+    /// the workspace without asking; not fully sandboxed) on or off for one
+    /// agent. `on` shows what it does and does not protect, then asks you to
+    /// type "code auto". A ceiling below `code` is raised to `code` with it
+    /// (`--raise-ceiling` says you know).
+    CodeAuto {
+        agent: String,
+        /// `on` or `off`.
+        state: String,
+        /// Raise a ceiling below `code` to `code` without a second question.
+        #[arg(long)]
+        raise_ceiling: bool,
+        /// Don't ask for confirmation (you have read the disclaimer).
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Open an agent's persona in $EDITOR.
     Edit { agent: String },
@@ -681,6 +697,15 @@ pub enum RunsCommand {
     List,
     /// Print a run's step journal.
     Show { run_id: String },
+    /// Files a code auto mode run changed since its pre-run snapshot.
+    Changes { run_id: String },
+    /// Put the folder back as a code auto mode run's snapshot had it
+    /// (lists what it would do; `--yes` does it).
+    Undo {
+        run_id: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

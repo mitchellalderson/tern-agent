@@ -30,18 +30,83 @@ impl Verdict {
 /// Programs that always ask: privilege, remote shells and transfers, the
 /// network, containers, desktop and OS control, and system package managers.
 const ASK_PROGRAMS: &[&str] = &[
-    "sudo", "su", "doas", "ssh", "scp", "sftp", "rsync", "curl", "wget", "nc", "ncat", "socat",
-    "telnet", "ftp", "docker", "podman", "kubectl", "osascript", "open", "launchctl", "security",
-    "defaults", "crontab", "at", "systemctl", "mount", "brew", "apt", "apt-get", "yum", "dnf",
-    "pacman", "snap", "gem", "composer", "pipx", "conda", "mamba", "xargs", "nohup", "setsid",
-    "disown", "eval", "exec", "source", ".", "npx", "bunx", "pnpx", "gh", "aws", "gcloud", "az",
-    "terraform", "pbcopy", "pbpaste", "xdg-open", "shutdown", "reboot", "kill", "killall", "pkill",
-    "diskutil", "hdiutil",
+    "sudo",
+    "su",
+    "doas",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "curl",
+    "wget",
+    "nc",
+    "ncat",
+    "socat",
+    "telnet",
+    "ftp",
+    "docker",
+    "podman",
+    "kubectl",
+    "osascript",
+    "open",
+    "launchctl",
+    "security",
+    "defaults",
+    "crontab",
+    "at",
+    "systemctl",
+    "mount",
+    "brew",
+    "apt",
+    "apt-get",
+    "yum",
+    "dnf",
+    "pacman",
+    "snap",
+    "gem",
+    "composer",
+    "pipx",
+    "conda",
+    "mamba",
+    "xargs",
+    "nohup",
+    "setsid",
+    "disown",
+    "eval",
+    "exec",
+    "source",
+    ".",
+    "npx",
+    "bunx",
+    "pnpx",
+    "gh",
+    "aws",
+    "gcloud",
+    "az",
+    "terraform",
+    "pbcopy",
+    "pbpaste",
+    "xdg-open",
+    "shutdown",
+    "reboot",
+    "kill",
+    "killall",
+    "pkill",
+    "diskutil",
+    "hdiutil",
 ];
 
 /// Programs that run another command given on their command line.
 const WRAPPERS: &[&str] = &[
-    "env", "time", "nice", "command", "timeout", "stdbuf", "caffeinate", "ionice", "builtin",
+    "env",
+    "time",
+    "nice",
+    "command",
+    "timeout",
+    "stdbuf",
+    "caffeinate",
+    "ionice",
+    "builtin",
 ];
 
 /// Programs that delete, move or rewrite what their operands name: an operand
@@ -99,8 +164,18 @@ const BAD_VARS: &[&str] = &[
 
 /// Prefixes of well-known credentials.
 const TOKEN_PREFIXES: &[&str] = &[
-    "ghp_", "gho_", "ghs_", "github_pat_", "sk-", "xoxb-", "xoxp-", "akia", "npm_", "glpat-",
-    "pypi-", "ya29.",
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "github_pat_",
+    "sk-",
+    "xoxb-",
+    "xoxp-",
+    "akia",
+    "npm_",
+    "glpat-",
+    "pypi-",
+    "ya29.",
 ];
 
 /// Flags that carry a credential.
@@ -337,7 +412,9 @@ fn classify_simple(words: &[String], depth: usize) -> Verdict {
     }
     // Shells with -c: judge the text they run.
     if matches!(prog, "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish") {
-        if let Some(pos) = words.iter().position(|w| w == "-c" || w == "-lc" || w == "-ec")
+        if let Some(pos) = words
+            .iter()
+            .position(|w| w == "-c" || w == "-lc" || w == "-ec")
             && let Some(text) = words.get(pos + 1)
         {
             return classify_at(text, depth + 1);
@@ -532,14 +609,20 @@ fn classify_simple(words: &[String], depth: usize) -> Verdict {
         }
         "bundle" | "dotnet" | "mvn" | "gradle" | "gradlew" | "./gradlew" => {
             if has_flag(&["install", "add", "restore", "publish", "deploy"]) || {
-                matches!(operands.first().copied(), Some("install" | "add" | "restore"))
+                matches!(
+                    operands.first().copied(),
+                    Some("install" | "add" | "restore")
+                )
             } {
                 return ask(format!("`{prog}` fetches dependencies"));
             }
         }
         "flutter" | "dart" => {
             if matches!(operands.first().copied(), Some("pub"))
-                && matches!(operands.get(1).copied(), Some("get" | "add" | "upgrade" | "publish"))
+                && matches!(
+                    operands.get(1).copied(),
+                    Some("get" | "add" | "upgrade" | "publish")
+                )
             {
                 return ask("`pub` downloads packages");
             }
@@ -595,7 +678,9 @@ fn classify_git(args: &[String]) -> Verdict {
         "checkout" | "restore" | "switch" if dot() || any(&["-f", "--force"]) => {
             ask("it would overwrite uncommitted work across the folder")
         }
-        "branch" if any(&["-D", "--delete", "-d", "-M", "-m"]) => ask("it deletes or renames a branch"),
+        "branch" if any(&["-D", "--delete", "-d", "-M", "-m"]) => {
+            ask("it deletes or renames a branch")
+        }
         "reflog" => ask("`git reflog` can expire history"),
         "stash" if matches!(rest.first().map(String::as_str), Some("drop" | "clear")) => {
             ask("it drops stashed work")

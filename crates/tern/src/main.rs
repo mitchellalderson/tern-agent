@@ -217,6 +217,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             match command {
                 RunsCommand::List => inspect::runs_list(&home)?,
                 RunsCommand::Show { run_id } => inspect::runs_show(&home, &run_id)?,
+                RunsCommand::Changes { run_id } => inspect::runs_changes(&home, &run_id)?,
+                RunsCommand::Undo { run_id, yes } => inspect::runs_undo(&home, &run_id, yes)?,
             }
             Ok(ExitCode::SUCCESS)
         }

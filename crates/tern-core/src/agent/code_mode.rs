@@ -23,7 +23,6 @@ pub(super) fn by_code_mode(tool: &str, policy: &ToolPolicy, gate: Gate) -> bool 
     gate.autonomy == Autonomy::Code
         && !gate.tainted
         && policy.effect != Effect::Read
-        && !policy.requires_approval
         && !policy.unbounded
         && (policy.auto_code || (policy.granted && policy.reach == Reach::Workspace))
         && approval::check(tool, policy, false, gate) == approval::Check::Allow
@@ -107,7 +106,10 @@ impl Agent {
             g.snapshots.insert(run.id.clone(), snap.clone());
         }
         let summary = match &snap {
-            Ok(c) => format!("saved a snapshot before this run's changes ({})", &c.commit[..c.commit.len().min(10)]),
+            Ok(c) => format!(
+                "saved a snapshot before this run's changes ({})",
+                &c.commit[..c.commit.len().min(10)]
+            ),
             Err(s) => s.describe(),
         };
         let e = LedgerEntry::new("code_auto.checkpoint", "checkpoint", summary)

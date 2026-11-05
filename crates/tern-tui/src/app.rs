@@ -195,6 +195,8 @@ pub struct App {
     /// nothing to say.
     pub fleet: Vec<AgentInfo>,
     pub spend: Option<String>,
+    /// The agent in front opted in to code auto mode (status line, /autonomy).
+    pub code_auto: bool,
 }
 
 /// "Research: …" (a card: "▲ needs you", a suggestion: how to decide).
@@ -242,6 +244,8 @@ Commands:
   /agents           list your agents and the last run's sub-agents
   /agents rename <@name> <name> | slug <@name> <new-name> | delete <@name>
                     rename an agent or delete it (delete asks first)
+  /autonomy [code|off]  show, or turn code auto mode on or off for the agent you
+                    are talking to (not fully sandboxed; it explains first)
   /agent <name>     talk to one of your agents in its DM (/agent tern: back)
   /agent <label>    show a sub-agent's transcript (Esc closes)
   /agent <label> <message>  send a running sub-agent a message
@@ -296,6 +300,7 @@ impl App {
             channel_seen: 0,
             needs_you: 0,
             fleet: Vec::new(),
+            code_auto: false,
             spend: None,
         }
     }
@@ -1053,6 +1058,7 @@ impl App {
                 }
                 return self.channel_command(arg);
             }
+            "autonomy" => self.autonomy_command(arg),
             "agents" if matches!(arg.split_whitespace().next(), Some("rename" | "slug" | "delete")) => {
                 return self.manage_agent(arg);
             }
@@ -1484,7 +1490,87 @@ impl App {
         }
     }
 
+    /// The agent the composer talks to, fresh from the backend.
+    fn current_agent(&self) -> Option<AgentInfo> {
+        let list = self.backend.agents().ok()?;
+        match &self.profile {
+            Some(p) => list.into_iter().find(|a| a.id == p.id),
+            None => list.into_iter().find(|a| a.is_default),
+        }
+    }
+
+    /// `/autonomy`: show the ceiling, or opt the agent in to (or out of)
+    /// code auto mode. Opting in shows the disclaimer first and needs `yes`.
+    fn autonomy_command(&mut self, arg: &str) {
+        let Some(me) = self.current_agent() else {
+            self.error("no agent to change");
+            return;
+        };
+        let words: Vec<&str> = arg.split_whitespace().collect();
+        let ceiling = me
+            .ceiling
+            .as_deref()
+            .unwrap_or("none (the configured autonomy)");
+        match words.as_slice() {
+            [] => self.notice(format!(
+                "@{}: autonomy ceiling {ceiling}; code auto mode {}.\n\
+                 /autonomy code turns code auto mode on (it shows what it does and does not protect first); \
+                 /autonomy off turns it off.",
+                me.slug,
+                if me.code_auto { "ON (not fully sandboxed)" } else { "off" }
+            )),
+            ["code"] | ["code", "auto"] => {
+                if me.ceiling.as_deref() == Some("readonly") {
+                    self.error(format!(
+                        "@{} is read-only (autonomy ceiling readonly), so it can't use code auto mode",
+                        me.slug
+                    ));
+                    return;
+                }
+                let raises = me
+                    .ceiling
+                    .as_deref()
+                    .filter(|c| *c == "supervised")
+                    .map(str::to_owned);
+                let text = tern_core::approval::code_auto_disclaimer(
+                    &format!("@{}", me.slug),
+                    "this conversation's folder",
+                    raises.as_deref(),
+                );
+                self.notice(format!(
+                    "{text}\nTo turn it on for @{}, type: /autonomy code yes",
+                    me.slug
+                ));
+            }
+            ["code", "yes"] | ["code", "auto", "yes"] => {
+                if me.ceiling.as_deref() == Some("readonly") {
+                    self.error(format!(
+                        "@{} is read-only (autonomy ceiling readonly), so it can't use code auto mode",
+                        me.slug
+                    ));
+                    return;
+                }
+                match self.backend.set_code_auto(&me.id, true) {
+                    Ok(done) => {
+                        self.notice(done);
+                        self.refresh_needs_you();
+                    }
+                    Err(e) => self.error(e),
+                }
+            }
+            ["off"] | ["supervised"] => match self.backend.set_code_auto(&me.id, false) {
+                Ok(done) => {
+                    self.notice(done);
+                    self.refresh_needs_you();
+                }
+                Err(e) => self.error(e),
+            },
+            _ => self.error("usage: /autonomy [code | code yes | off]"),
+        }
+    }
+
     fn refresh_needs_you(&mut self) {
+        self.code_auto = self.current_agent().is_some_and(|a| a.code_auto);
         self.fleet = match self.backend.agents() {
             Ok(list) if list.len() > 1 => list,
             _ => Vec::new(),
@@ -1834,6 +1920,16 @@ impl App {
             AgentEvent::Compacted { .. } => {
                 self.notice("summarized earlier messages to fit the context window")
             }
+            // Code auto mode: said once per run, before its first change.
+            AgentEvent::Checkpoint {
+                commit, skipped, ..
+            } => match (commit, skipped) {
+                (Some(_), _) => self.notice(
+                    "code auto: saved a snapshot before this run's changes (undo with `tern runs undo`)",
+                ),
+                (None, Some(why)) => self.notice(format!("code auto: {why}")),
+                (None, None) => {}
+            },
             AgentEvent::Usage { usage, .. } => self.last_usage = Some(usage),
             AgentEvent::SubagentSpawned {
                 child_run_id,
@@ -1986,6 +2082,7 @@ impl App {
             AgentEvent::SubagentMessage { .. }
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::WorkspaceRefused { .. }
+            | AgentEvent::Checkpoint { .. }
             | AgentEvent::Retrying { .. }
             | AgentEvent::Compacted { .. } => {}
         }

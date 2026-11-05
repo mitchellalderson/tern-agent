@@ -830,7 +830,12 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         f if f.is_empty() => String::new(),
         f => format!(" · {f}"),
     };
-    let left = format!(" {place}{agent} · {model} · {session}{waiting}{fleet}");
+    let code = if app.code_auto {
+        " · code auto (not fully sandboxed)"
+    } else {
+        ""
+    };
+    let left = format!(" {place}{agent} · {model} · {session}{waiting}{fleet}{code}");
     let right = if let Some(h) = &app.hint {
         h.clone()
     } else if app.secret_prompt.is_some() {

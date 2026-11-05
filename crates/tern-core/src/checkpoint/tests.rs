@@ -16,11 +16,7 @@ fn fx() -> Fx {
     let root = t.path().join("ws");
     std::fs::create_dir_all(&root).unwrap();
     let root = std::fs::canonicalize(root).unwrap();
-    Fx {
-        _t: t,
-        base,
-        root,
-    }
+    Fx { _t: t, base, root }
 }
 
 fn write(root: &Path, rel: &str, body: &str) {
@@ -65,7 +61,10 @@ fn a_snapshot_lists_changes_and_restores_them() {
     );
 
     restore(&f.base, "ws_1", &f.root, "run1").unwrap();
-    assert_eq!(std::fs::read_to_string(f.root.join("edit.txt")).unwrap(), "before");
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("edit.txt")).unwrap(),
+        "before"
+    );
     assert_eq!(
         std::fs::read_to_string(f.root.join("gone.txt")).unwrap(),
         "precious"
@@ -73,7 +72,9 @@ fn a_snapshot_lists_changes_and_restores_them() {
     assert!(!f.root.join("new/made.txt").exists(), "created files go");
     assert!(f.root.join("keep.txt").exists());
     assert!(
-        changes(&f.base, "ws_1", &f.root, "run1").unwrap().is_empty(),
+        changes(&f.base, "ws_1", &f.root, "run1")
+            .unwrap()
+            .is_empty(),
         "nothing left to undo"
     );
 }
@@ -103,7 +104,10 @@ fn the_users_own_git_is_never_touched() {
     changes(&f.base, "ws_2", &f.root, "r").unwrap();
     restore(&f.base, "ws_2", &f.root, "r").unwrap();
     assert_eq!(user_git(&["status", "--porcelain"]), before);
-    assert_eq!(std::fs::read(f.root.join(".git/index")).unwrap(), index_before);
+    assert_eq!(
+        std::fs::read(f.root.join(".git/index")).unwrap(),
+        index_before
+    );
     assert!(
         !f.root.join(".git/refs/tern").exists(),
         "the shadow refs live elsewhere"
@@ -122,7 +126,10 @@ fn a_resumed_run_keeps_its_first_snapshot() {
     let again = create(&f.base, "ws_3", &f.root, "r").unwrap();
     assert_eq!(first.commit, again.commit);
     restore(&f.base, "ws_3", &f.root, "r").unwrap();
-    assert_eq!(std::fs::read_to_string(f.root.join("a.txt")).unwrap(), "one");
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("a.txt")).unwrap(),
+        "one"
+    );
 }
 
 #[test]
@@ -131,8 +138,16 @@ fn an_unknown_run_has_nothing_to_undo() {
         return;
     }
     let f = fx();
-    assert!(changes(&f.base, "ws_4", &f.root, "nope").unwrap().is_empty());
-    assert!(restore(&f.base, "ws_4", &f.root, "nope").unwrap().is_empty());
+    assert!(
+        changes(&f.base, "ws_4", &f.root, "nope")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        restore(&f.base, "ws_4", &f.root, "nope")
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -151,5 +166,8 @@ fn a_workspace_over_the_cap_is_reported_not_silently_skipped() {
         bytes: 0,
     };
     assert_eq!(s.describe(), "no snapshot: workspace too large");
-    assert_eq!(Skipped::NoGit.describe(), "no snapshot: git isn't installed");
+    assert_eq!(
+        Skipped::NoGit.describe(),
+        "no snapshot: git isn't installed"
+    );
 }

@@ -135,6 +135,7 @@ pub fn audit(home: &TernHome, config: &Config, store: Option<&Store>) -> Audit {
     listeners(&mut a, config);
     secrets_file(&mut a, home);
     autonomy(&mut a, config, store);
+    code_auto(&mut a, home, config, store);
     sandbox(&mut a, home, config);
     egress(&mut a, config, store);
     gateways(&mut a, home, config, store);
@@ -260,6 +261,46 @@ fn secrets_file(a: &mut Audit, home: &TernHome) {
     }
     #[cfg(not(unix))]
     let _ = (a, path);
+}
+
+/// Agents the user opted in to code auto mode (docs/alpha-coding-agent.md):
+/// medium, and high when the sandbox that bounds their commands isn't active.
+fn code_auto(a: &mut Audit, home: &TernHome, config: &Config, store: Option<&Store>) {
+    let Some(store) = store else { return };
+    let agents: Vec<_> = store
+        .agents(false)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|g| g.code_auto)
+        .collect();
+    if agents.is_empty() {
+        return;
+    }
+    let names = agents
+        .iter()
+        .map(|g| format!("@{}", g.slug))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let verified = crate::runtime::shell_sandbox_status(config, home).is_verified();
+    if verified {
+        a.add(
+            Severity::Medium,
+            "autonomy",
+            format!(
+                "code auto mode is on for {names}: file edits and sandboxed build and test commands run without asking, in the workspace; not fully sandboxed"
+            ),
+            Some("`tern agents code-auto <agent> off` turns it off. Review what it changed before you run it yourself."),
+        );
+    } else {
+        a.add(
+            Severity::High,
+            "autonomy",
+            format!(
+                "code auto mode is on for {names} but the OS sandbox is not active: only file edits are automatic, commands still ask"
+            ),
+            Some("Keep sandbox.confine = \"auto\" on a host with Seatbelt or Landlock, or turn the mode off."),
+        );
+    }
 }
 
 fn autonomy(a: &mut Audit, config: &Config, store: Option<&Store>) {

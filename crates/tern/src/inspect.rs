@@ -133,6 +133,95 @@ pub fn runs_show(home: &TernHome, run_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What a code auto mode run changed since its snapshot (`tern runs changes`).
+pub fn runs_changes(home: &TernHome, run_id: &str) -> anyhow::Result<()> {
+    let run = run_for_checkpoint(home, run_id)?;
+    let list = checkpoint_changes(home, &run)?;
+    if list.is_empty() {
+        println!("no changes since this run's snapshot (or it has none)");
+    } else {
+        println!("{} change(s) since this run's snapshot:", list.len());
+        print_changes(&list, false);
+        println!("`tern runs undo {run_id}` puts the folder back as the snapshot had it.");
+    }
+    Ok(())
+}
+
+/// Restore the folder to the run's snapshot (`tern runs undo`). Lists what it
+/// would do first; `yes` does it. Nothing outside the folder and nothing in
+/// the user's own `.git` is touched.
+pub fn runs_undo(home: &TernHome, run_id: &str, yes: bool) -> anyhow::Result<()> {
+    let run = run_for_checkpoint(home, run_id)?;
+    let list = checkpoint_changes(home, &run)?;
+    if list.is_empty() {
+        println!("nothing to undo: no changes since this run's snapshot (or it has none)");
+        return Ok(());
+    }
+    println!(
+        "undoing run {run_id} in {} would:",
+        run.workspace_root.as_deref().unwrap_or("?")
+    );
+    print_changes(&list, true);
+    if !yes {
+        println!("\nRun again with --yes to do this.");
+        return Ok(());
+    }
+    let (id, root) = checkpoint_target(&run)?;
+    let done = tern_core::checkpoint::restore(&home.checkpoints_dir(), &id, &root, run_id)
+        .map_err(|e| anyhow::anyhow!(e.describe()))?;
+    println!("restored: {} file(s) changed back", done.len());
+    Ok(())
+}
+
+fn run_for_checkpoint(home: &TernHome, run_id: &str) -> anyhow::Result<tern_store::RunRow> {
+    let store = open(home)?.context("no database yet")?;
+    store
+        .run(run_id)?
+        .with_context(|| format!("run {run_id} not found"))
+}
+
+fn checkpoint_target(run: &tern_store::RunRow) -> anyhow::Result<(String, std::path::PathBuf)> {
+    let root = run
+        .workspace_root
+        .as_deref()
+        .context("this run has no workspace folder on record")?;
+    Ok((
+        run.workspace_id.clone().unwrap_or_else(|| "default".into()),
+        std::path::PathBuf::from(root),
+    ))
+}
+
+fn checkpoint_changes(
+    home: &TernHome,
+    run: &tern_store::RunRow,
+) -> anyhow::Result<Vec<tern_core::checkpoint::Change>> {
+    let (id, root) = checkpoint_target(run)?;
+    tern_core::checkpoint::changes(&home.checkpoints_dir(), &id, &root, &run.id)
+        .map_err(|e| anyhow::anyhow!(e.describe()))
+}
+
+/// One line per change; `plan` words it as what undoing would do.
+fn print_changes(list: &[tern_core::checkpoint::Change], plan: bool) {
+    use tern_core::checkpoint::ChangeKind;
+    for c in list {
+        if plan {
+            let what = match c.kind {
+                ChangeKind::Added => "remove (the run created it)",
+                ChangeKind::Modified => "restore the earlier version of",
+                ChangeKind::Deleted => "bring back",
+            };
+            println!("  {what} {}", c.path);
+        } else {
+            let mark = match c.kind {
+                ChangeKind::Added => "+",
+                ChangeKind::Modified => "~",
+                ChangeKind::Deleted => "-",
+            };
+            println!("  {mark} {}", c.path);
+        }
+    }
+}
+
 /// `child` and its descendants, one line each, indented by depth.
 fn print_tree(store: &Store, child: &tern_store::RunRow, level: usize) -> anyhow::Result<()> {
     println!(
