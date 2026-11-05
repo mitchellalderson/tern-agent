@@ -1206,6 +1206,15 @@ fn build_tools(
         },
     )
     .map_err(anyhow::Error::msg)?;
+    // The memory class, with the configured caps (replacing the built-ins'
+    // defaults).
+    let caps = config.memory.limits();
+    registry.register(Arc::new(
+        tern_tools::memory::MemorySave::new(store.clone()).with_limits(caps),
+    ));
+    registry.register(Arc::new(
+        tern_tools::memory::MemoryForget::new(store.clone()).with_limits(caps),
+    ));
     registry.register(Arc::new(
         tern_tools::memory::ProfileEdit::new(home.clone(), config.memory.clone())
             .with_store(store.clone()),

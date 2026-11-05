@@ -33,6 +33,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0023_let_agents_decide.sql"),
     include_str!("../migrations/0024_agent_tombstones.sql"),
     include_str!("../migrations/0025_starter_seed.sql"),
+    include_str!("../migrations/0026_memory_provenance.sql"),
 ];
 
 /// The migration that introduced first-run seeding.

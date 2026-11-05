@@ -11,7 +11,7 @@ use tern_core::TernHome;
 use tern_core::approval::AutoDeny;
 use tern_store::AgentChange;
 
-use crate::cli::AgentsCommand;
+use crate::cli::{AgentsCommand, MemoryAction};
 use crate::runtime::{NewAgent, Runtime};
 
 pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<ExitCode> {
@@ -118,6 +118,7 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
             }
         }
         AgentsCommand::Edit { agent } => edit(&rt, &agent)?,
+        AgentsCommand::Memory { agent, action } => return memory(&rt, &agent, action),
         AgentsCommand::Rename { agent, name, slug } => rename(&rt, &agent, name, slug)?,
         AgentsCommand::Delete {
             agent,
@@ -212,6 +213,91 @@ fn list(rt: &Runtime, all: bool) -> anyhow::Result<()> {
             "@{:<16} {:<16} {:<8} memory  {model}  {routines} routine(s){cap}{bot}{archived}",
             a.slug, a.name, a.memory
         );
+    }
+    Ok(())
+}
+
+/// `tern agents memory`: view and fix what an agent remembers.
+fn memory(rt: &Runtime, agent: &str, action: Option<MemoryAction>) -> anyhow::Result<ExitCode> {
+    // The default agent's memory is the shared pool.
+    let (label, ns) = match agent.trim_start_matches('@') {
+        "shared" => ("shared".to_owned(), None),
+        other => {
+            let a = find(rt, other)?;
+            if a.is_default() {
+                ("shared".to_owned(), None)
+            } else {
+                (format!("@{}", a.slug), Some(a.id))
+            }
+        }
+    };
+    let scope = ns.as_deref().unwrap_or("shared");
+    match action.unwrap_or(MemoryAction::List) {
+        MemoryAction::List => {
+            let rows = rt.store.list_memories(Some(scope), None, 500)?;
+            if rows.is_empty() {
+                println!("{label} remembers nothing yet");
+            }
+            for m in rows {
+                let when = chrono::DateTime::from_timestamp_millis(m.created_at)
+                    .map(|d| {
+                        d.with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d")
+                            .to_string()
+                    })
+                    .unwrap_or_default();
+                let tag = match m.source.as_str() {
+                    "unverified" => "  [unverified]",
+                    "user" => "  [yours]",
+                    _ => "",
+                };
+                println!(
+                    "#{:<5} {when}{tag}\n       {}",
+                    m.id,
+                    m.content.replace('\n', "\n       ")
+                );
+            }
+        }
+        MemoryAction::Edit { id, text } => {
+            check_owned(rt, id, scope)?;
+            let max = rt.config.memory.entry_max_chars;
+            if text.trim().is_empty() || text.chars().count() > max {
+                bail!("a memory is 1 to {max} characters");
+            }
+            rt.store.edit_memory(id, text.trim(), None)?;
+            println!("rewrote memory #{id}; it is yours now");
+        }
+        MemoryAction::Rm { id } => {
+            check_owned(rt, id, scope)?;
+            rt.store.delete_memory(id)?;
+            println!("deleted memory #{id}");
+        }
+        MemoryAction::Clear { yes } => {
+            let (n, _) = rt.store.memory_usage(ns.as_deref())?;
+            if n == 0 {
+                println!("{label} remembers nothing");
+                return Ok(ExitCode::SUCCESS);
+            }
+            println!("This deletes all {n} memories of {label}.");
+            if !yes && !crate::manage::confirm_cli("clear")? {
+                println!("left as it was");
+                return Ok(ExitCode::FAILURE);
+            }
+            let n = rt.store.clear_memories(ns.as_deref())?;
+            println!("cleared {n} memories of {label}");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Memory `id` is in namespace `scope` (`shared` or an agent id).
+fn check_owned(rt: &Runtime, id: i64, scope: &str) -> anyhow::Result<()> {
+    let m = rt
+        .store
+        .memory(id)?
+        .with_context(|| format!("no memory #{id}"))?;
+    if m.agent_id.as_deref().unwrap_or("shared") != scope {
+        bail!("memory #{id} is not in that agent's memory");
     }
     Ok(())
 }

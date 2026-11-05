@@ -11,7 +11,12 @@
 //! | GET / PUT | `/v1/agents/{id}/persona` | `{persona}`; GET adds `system_sections`, what tern adds to every persona |
 //! | GET | `/v1/agents/templates` | `[Template]` for the create sheet |
 //! | GET | `/v1/agents/{id}/work?limit=` | its recent work, newest first: delegated batches (`delegated` posts in its DM) and routine runs |
-//! | GET | `/v1/memories?agent=&q=&limit=` | memories: `agent` = `shared`, an agent (its own), or absent for all |
+//! | GET | `/v1/memories?agent=&q=&limit=` | memories: `agent` = `shared`, an agent (its own), or absent for all. Each has a `source`: `agent`, `unverified` (saved in a run that had read untrusted content) or `user` |
+//! | PATCH | `/v1/memories/{id}` | `{content, tags?}`: rewrite one; it becomes the user's (`source: user`) |
+//! | DELETE | `/v1/memories/{id}` | delete one |
+//! | DELETE | `/v1/memories?agent=<shared\|agent>` | clear one namespace (`agent` is required: never everything at once) → `{deleted}` |
+//!
+//! Each change is a `memory.*` entry in the ledger with the user as actor.
 //!
 //! `model` is a model or a fallback chain (a list). The default agent's
 //! model is `default_model`: setting it there writes config.toml, as
@@ -20,7 +25,7 @@
 
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{get, patch};
 use axum::{Json, Router};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -43,7 +48,11 @@ pub fn routes() -> Router<Shared> {
         .route("/v1/agents/{id}/impact", get(impact))
         .route("/v1/agents/{id}/persona", get(persona).put(set_persona))
         .route("/v1/agents/{id}/work", get(work))
-        .route("/v1/memories", get(memories))
+        .route("/v1/memories", get(memories).delete(clear_memories))
+        .route(
+            "/v1/memories/{id}",
+            patch(edit_memory).delete(delete_memory),
+        )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -659,6 +668,26 @@ pub struct Memory {
     /// Absent = shared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// `agent`, `unverified` or `user`.
+    #[serde(default = "agent_source")]
+    pub source: String,
+}
+
+fn agent_source() -> String {
+    "agent".into()
+}
+
+impl From<tern_store::MemoryRow> for Memory {
+    fn from(r: tern_store::MemoryRow) -> Self {
+        Self {
+            id: r.id,
+            content: r.content,
+            tags: r.tags.split_whitespace().map(str::to_owned).collect(),
+            created_at: r.created_at,
+            agent_id: r.agent_id,
+            source: r.source,
+        }
+    }
 }
 
 async fn memories(State(m): State<Shared>, Query(q): Query<MemoriesQuery>) -> ApiResult<Value> {
@@ -675,15 +704,68 @@ async fn memories(State(m): State<Shared>, Query(q): Query<MemoriesQuery>) -> Ap
                 q.limit.unwrap_or(100).clamp(1, 500),
             )
             .map_err(internal)?;
-    let out: Vec<Memory> = rows
-        .into_iter()
-        .map(|r| Memory {
-            id: r.id,
-            content: r.content,
-            tags: r.tags.split_whitespace().map(str::to_owned).collect(),
-            created_at: r.created_at,
-            agent_id: r.agent_id,
-        })
-        .collect();
+    let out: Vec<Memory> = rows.into_iter().map(Memory::from).collect();
     serde_json::to_value(out).map(Json).map_err(internal)
+}
+
+#[derive(Deserialize)]
+struct MemoryEdit {
+    content: String,
+    tags: Option<Vec<String>>,
+}
+
+async fn edit_memory(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<i64>,
+    Json(b): Json<MemoryEdit>,
+) -> ApiResult<Value> {
+    let content = b.content.trim();
+    if content.is_empty() {
+        return Err(bad("content is empty"));
+    }
+    let max = m.rt.live().memory.entry_max_chars;
+    if content.chars().count() > max {
+        return Err(bad(format!("a memory is at most {max} characters")));
+    }
+    let tags = b.tags.map(|t| {
+        t.iter()
+            .flat_map(|t| t.split_whitespace().map(str::to_owned))
+            .collect::<Vec<_>>()
+    });
+    if !m
+        .rt
+        .store
+        .edit_memory(id, content, tags.as_deref())
+        .map_err(internal)?
+    {
+        return Err(not_found("memory"));
+    }
+    let row = m.rt.store.memory(id).map_err(internal)?;
+    serde_json::to_value(row.map(Memory::from))
+        .map(Json)
+        .map_err(internal)
+}
+
+async fn delete_memory(State(m): State<Shared>, UrlPath(id): UrlPath<i64>) -> ApiResult<Value> {
+    if !m.rt.store.delete_memory(id).map_err(internal)? {
+        return Err(not_found("memory"));
+    }
+    Ok(Json(serde_json::json!({ "deleted": 1 })))
+}
+
+#[derive(Deserialize)]
+struct ClearQuery {
+    agent: Option<String>,
+}
+
+async fn clear_memories(State(m): State<Shared>, Query(q): Query<ClearQuery>) -> ApiResult<Value> {
+    let ns = match q.agent.as_deref() {
+        None | Some("") | Some("all") => {
+            return Err(bad("name what to clear: agent=shared or an agent"));
+        }
+        Some("shared") => None,
+        Some(a) => Some(find(&m, a)?.id),
+    };
+    let n = m.rt.store.clear_memories(ns.as_deref()).map_err(internal)?;
+    Ok(Json(serde_json::json!({ "deleted": n })))
 }

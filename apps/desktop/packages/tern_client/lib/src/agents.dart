@@ -334,6 +334,7 @@ class Memory {
     this.tags = const [],
     required this.createdAt,
     this.agentId,
+    this.source = 'agent',
   });
 
   factory Memory.fromJson(Json j) => Memory(
@@ -342,6 +343,7 @@ class Memory {
     tags: [for (final t in j['tags'] as List? ?? const []) t as String],
     createdAt: DateTime.fromMillisecondsSinceEpoch(j['created_at'] as int),
     agentId: j['agent_id'] as String?,
+    source: j['source'] as String? ?? 'agent',
   );
 
   final int id;
@@ -352,7 +354,13 @@ class Memory {
   /// Null: shared.
   final String? agentId;
 
+  /// `agent`, `unverified` (saved in a run that had read untrusted content:
+  /// recalled as a lead to check, not a fact) or `user` (you wrote or
+  /// edited it).
+  final String source;
+
   bool get shared => agentId == null;
+  bool get unverified => source == 'unverified';
 }
 
 /// A line of an agent's recent work: a batch delegated to it, or a routine

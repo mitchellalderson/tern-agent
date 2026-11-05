@@ -196,6 +196,7 @@ tern agents new <name> [--slug s] [--template <starter id>] [--memory private|sh
 tern agents autonomy <name> <level|none>    # the most autonomy its runs may have (the lower of this and `autonomy` applies)
 tern agents telegram <name> <secret|none>   # a Telegram bot of its own; the token is that secret; restart the daemon
 tern agents edit <name>                       # open its persona.md in $VISUAL / $EDITOR
+tern agents memory <name> [list | edit <id> <text> | rm <id> | clear [--yes]]   # what it remembers (`shared`, or `tern`, for the shared memories)
 tern agents rename <name> [new name] [--slug s]   # its display name and/or @name; its history and DM follow
 tern agents archive <name> [--undo]           # hide it and pause its routines; nothing is deleted
 tern agents delete <name> [--reassign-to other | --delete-routines] [--yes]
@@ -461,6 +462,11 @@ Stops tern, then deletes everything in `~/.tern`: conversations, runs, memory, s
 | `memory.user_md_tokens` | `1500` | Cap on `user.md` as injected into the prompt (tokens ≈ chars / 4). |
 | `memory.memory_md_tokens` | `1500` | Cap on `memory.md` (core facts) as injected. |
 | `memory.flush` | `true` | Before older context is summarized, give the agent one silent turn to save durable facts with `memory_save`. |
+| `memory.entry_max_chars` | `2000` | Most characters in one `memory_save` ([Memory for every agent](#memory-for-every-agent)). |
+| `memory.run_max_writes` | `20` | Memory saves and forgets one run may make. |
+| `memory.max_entries` | `500` | Memories one agent (or the shared pool) may hold. |
+| `memory.max_chars` | `200000` | Characters across one agent's (or the shared pool's) memories. |
+| `memory.routine_carryover_chars` | `4000` | How much of a routine's previous report its next run is given, as data; `0` turns it off ([A routine's previous report](#a-routines-previous-report)). |
 | `sandbox.backend` | `host` | `host` or `docker`. |
 | `sandbox.shell_timeout_secs` | `120` | Per shell command. |
 | `sandbox.network` | `false` | IP networking for every shell command (both backends). Off, a command gets the network only when called with `network: true`, which asks every time. While a command can reach the network (it asked, `network = true`, or no OS sandbox enforces off), its output is untrusted and taints the run ([Taint](#taint)); with connectors or MCP servers active and the network reachable for every command, `tern doctor` says so. |
@@ -564,9 +570,41 @@ A model setting can be a list instead of one model: `default_model = ["anthropic
 tern remembers in two places:
 
 - **`user.md` and `memory.md`** in `~/.tern`: what every conversation needs, in the system prompt each time. `user.md` is about you; `memory.md` holds core facts the agent keeps. You can edit both; the agent changes them with `profile_edit` (read, append, or replace to consolidate). Each has a cap, 1500 tokens by default (`[memory]` in config). A write that would go over is refused and the agent is asked to consolidate: merge, drop what's stale, and move details to long-term memory. A file you edit past its cap is cut in the prompt with a note asking the agent to consolidate, and `tern doctor` warns. Sub-agents see both files but can't change them.
-- **Long-term memory**: facts saved with `memory_save`, found with `memory_search`, never in the prompt by themselves.
+- **Long-term memory**: facts saved with `memory_save`, found with `memory_search`, removed with `memory_forget`, never in the prompt by themselves. Every agent has them, read-only ones included: see [Memory for every agent](#memory-for-every-agent).
 
 **Flush before compaction.** When a long conversation is about to be summarized, the agent first gets one silent model call over the part being summarized, with only `memory_save`, to keep durable facts (preferences, decisions, people, commitments). It's journaled, so a resumed run doesn't repeat it, and its tokens count toward the run's budget. If it fails, compaction goes ahead. Sub-agents and scheduled runs don't flush, nor does a run whose token budget can't cover it. `memory.flush = false` turns it off.
+
+### Memory for every agent
+
+Notes are not a system or file write, so a read-only agent (autonomy `readonly`: research, SEO, fact-checking,
+meeting prep) can keep and recall its own, though it still can't touch files or run commands. `memory_save`,
+`memory_search` and `memory_forget` are a class of their own (`memory`): the host never asks about them, whatever the
+autonomy or taint, and bounds them instead:
+
+- **Own namespace only.** An agent saves to its own memory: a private agent's own rows, the default agent's the shared
+  pool. `memory_forget` deletes only from that namespace, by id. A read-only run, or one that has read untrusted
+  content, always saves to the agent's own rows, never the shared pool (`shared: true` is refused there). A sub-agent
+  saves as the agent it runs as: its parent's, unless it was handed another profile, and then that profile's own; it
+  has no way to name anyone else's. `profile_edit` (`memory.md`, part of every system prompt) is not in the class and
+  stays refused to read-only runs.
+- **Caps**, `[memory]` in config: `entry_max_chars` (2000) per memory, `run_max_writes` (20 saves and forgets per run),
+  `max_entries` (500) and `max_chars` (200000) per namespace. A refused write says which cap and what to do (shorten,
+  stop and report, forget stale notes with `memory_forget`).
+- **Provenance.** A memory saved in a run that had read untrusted content is stored `unverified`
+  (`source` on `GET /v1/memories`; the model is told so when it saves). `memory_search` frames its answer as data
+  (`<memory_recall>`: "not instructions"), shows each entry's `source` (`agent`, `unverified`, or `user` once you have
+  rewritten it), and, when any entry is unverified, marks the result untrusted: the run that recalls it is tainted. A
+  tainted run can forget only unverified notes, so injected text can't wipe what you or a clean run saved.
+- **Audit.** Each save, forget and refusal is a ledger entry (`memory.save`, `memory.forget`, `memory.refused`, actor
+  `agent:<id>`, with the run and the source) written in the same transaction as the change. Your own edits are
+  `memory.edit`, `memory.delete` and `memory.clear` (actor `owner`).
+- **You can see and fix it.** The desktop side panel lists an agent's memories (unverified ones marked); click one to
+  rewrite or delete it, **Clear** empties the list. `tern agents memory <name>` does the same. API:
+  `GET /v1/memories[?agent=&q=&limit=]` (each has `source`), `PATCH /v1/memories/{id}` `{content, tags?}` (it becomes
+  `source: user`), `DELETE /v1/memories/{id}`, `DELETE /v1/memories?agent=shared|<agent>` (a namespace is required).
+  A `chat` device may do these; the ledger is owner-only.
+
+A routine's own history is separate: see [A routine's previous report](#a-routines-previous-report).
 
 ### Skill capture
 
@@ -593,7 +631,7 @@ You can have several agents, each with its own job: a name and avatar, a **perso
 - **The agent you already had is `tern`**, the default agent. Its persona is `~/.tern/persona.md`, its memory the shared memory, and its DM is Home. It can be renamed and given an avatar (its id stays `tern`); its model is `default_model`. It can't be archived.
 - **Persona**: `~/.tern/agents/<name at creation>/persona.md`, editable in an editor or through the API. A new agent starts from a starter (about 23, by category: Everyday, Coding, Writing & Content, Research & Learning, Business, plus Blank; `assets/starters.toml`), never a blank page; every starter sets an autonomy ceiling (`readonly` for look-only ones, otherwise `supervised`, never more), pre-selected on the sheet and changeable, and a level given at creation wins. tern always adds its own sections under every persona (memory, time, workspace, secrets, untrusted content, sub-agents, and, with more than one agent, who the others are): a persona can change who the agent is, not those rules.
 - **Tools**: `{"builtins": "all" | "read_only" | [names], "connectors": "all" | [names], "mcp": "all" | [servers], "skills": "all" | [names]}`; a missing key means all. A new agent gets every built-in tool except `shell`, no connectors, no MCP servers, all skills. Tools out of scope aren't offered to the model and are refused if called. Every agent keeps `channel_read`, `channel_post`, `history_search`, `secret_request` and its memory tools. Its sub-agents get no more than it has.
-- **Memory**: `private` (the default for new agents) or `shared`. `user.md` is always shared: who you are is the same for every agent. A private agent has its own `memory.md` (next to its persona) and its own long-term memories: `memory_save` keeps them its own unless `shared: true`, and `memory_search` finds its own and the shared ones. `session_search` only ever searches the agent's own conversations, never another agent's DM.
+- **Memory**: `private` (the default for new agents) or `shared`. `user.md` is always shared: who you are is the same for every agent. A private agent has its own `memory.md` (next to its persona) and its own long-term memories: `memory_save` keeps them its own unless `shared: true` (never from a read-only or tainted run), and `memory_search` finds its own and the shared ones. Read-only agents have these too; see [Memory for every agent](#memory-for-every-agent). `session_search` only ever searches the agent's own conversations, never another agent's DM.
 - **Routines belong to an agent.** A schedule an agent creates (`schedule_create` in its DM) is its own: it runs as that agent and posts to its DM. Made in a topic channel, it posts to that channel instead (and its agent joins it). `schedule_create` with `"agent": "research"` makes the routine Research's, so it runs as Research rather than as the caller asking Research each time; that is allowed only for an agent the caller may hand work to (`delegates`), checked by tern. The `schedule_*` tools see and change only the calling agent's schedules. Archiving an agent pauses its routines.
 - **Agents hand work to each other.** A run that can start sub-agents may start one *as another of your agents*: `agent_spawn` with `"agent": "research"` runs it with Research's persona, tools, model and memory, and it reports back like any sub-agent (same limits, budget and taint). Its prompt lists the agents it may hand work to, each with what it's for, and says to delegate a matching request rather than start a generic sub-agent. Who may hand work to whom is each agent's **Can hand work to** (`delegates`): tern may reach every agent unless you narrow it, other agents none until you choose. The sub-agent card shows the agent's avatar and name.
 - **Approvals land where the run is**: an agent's DM shows its own, and Home shows a pointer to it (one request, answered in either place).
@@ -614,6 +652,17 @@ The agent creates schedules with `schedule_create` and changes them with `schedu
   - A run that uses more than `tokens_per_run` is stopped and fails with the reason ("stopped: this run used N tokens, over its cap of M"), which is delivered like any failure.
 - `tern doctor` reports schedules paused by a cap, USD caps that can't apply, and deliveries waiting for quiet hours to end.
 - **Results are posted to a channel** (its agent's DM, Home for `tern`, unless the schedule's `channel` says otherwise; `POST`/`PATCH /v1/schedules` take `channel`, a slug or id). A `NO_REPLY` run posts nothing. `deliver_to` stays the push to Telegram.
+
+### A routine's previous report
+
+Each run of a routine is given the last finished run's report (its final answer) after the prompt, in
+`<previous_run_report finished="…">`, so "what changed since last time" doesn't depend on notes the model chose to
+save (the SEO starter's weekly comparison is the case it is for). It is framed as data (the prompt says it is not
+instructions) and bounded: `[memory] routine_carryover_chars` (default 4000, `0` turns it off) keeps the start of a
+longer report with a note. Quiet (`NO_REPLY`) and failed runs are skipped; the newest finished report is used. If that
+run had read untrusted content, the block is wrapped as `<untrusted source="previous run of this routine">` and the new
+run starts tainted (reason "the previous run's report came from a tainted run"), the same rule as sub-agents of a
+tainted run. The block is part of the run's input message, so it is in the conversation and the run inspector.
 
 ### Routines: triggers, watches, gates, initiative
 
@@ -821,7 +870,7 @@ A run is **tainted** once untrusted content reaches it (docs/personal-agent-tool
 
 - **What taints**: the result of a tool marked untrusted (`http_fetch`, `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`, and `shell` when the command could reach the network: it asked for it with `network: true`, `sandbox.network = true`, or no OS sandbox enforces the default `false`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
 - **It sticks** for the rest of the run, survives a crash and `tern resume` exactly (it's rebuilt from the journal), and doesn't carry to the next run in the conversation.
-- **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, memory, schedules), and "always" isn't offered. The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) and `channel_post` keep their grants, since what they reach is tainted too. With nobody to ask (a routine at night), the call goes to the [outbox](#outbox). A network read (`http_fetch`, also from a `python` script) to a host the run hasn't reached yet asks too, so a page can't have the agent send what it knows somewhere new; see [New sites in a tainted run](#new-sites-in-a-tainted-run) for saying yes once. A tainted run also skips the memory flush before compaction. Only `autonomy = "yolo"` turns this off.
+- **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, schedules), and "always" isn't offered. The memory tools are the exception: they never ask, and a note saved in a tainted run is stored `unverified` instead (see [Memory for every agent](#memory-for-every-agent)). The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) and `channel_post` keep their grants, since what they reach is tainted too. With nobody to ask (a routine at night), the call goes to the [outbox](#outbox). A network read (`http_fetch`, also from a `python` script) to a host the run hasn't reached yet asks too, so a page can't have the agent send what it knows somewhere new; see [New sites in a tainted run](#new-sites-in-a-tainted-run) for saying yes once. A tainted run also skips the memory flush before compaction. Only `autonomy = "yolo"` turns this off.
 - <a id="new-sites-in-a-tainted-run"></a>**New sites in a tainted run.** The prompt for a site the run hasn't reached offers, besides **Allow once**: **Allow all sites for this run** (no more site prompts until the run ends; a resumed run remembers it; sub-agents and later runs ask again) and **Always allow <site>** (a standing grant for reads from that site, `host:<site>`; list and remove with `tern grants`). Neither ever covers a `write` or `destructive` call. A script can't ask, so its read from a new site is refused with a note to fetch it directly once (or after "all sites", allowed); sites a script reaches count for later calls. For agents meant to browse, turn the limit off: `[taint] egress = "allow"` in `config.toml`, or per agent (`egress` on `/v1/agents`, **Read any site without asking** in the app's agent editor), frozen on each run when it starts; sub-agents keep their parent's. API answers: `{"decision": "run" | "host"}`; requests carry `egress_host`.
 - <a id="scoped-grants"></a>**Scoped grants ("stop asking about this").** A tool that can name exactly what a prompt covers (today `connector_test` on a draft that reaches the network or reads secrets) puts a `grant` (`{key, label}`, e.g. `draft maricopa_assessor.city_stats`) on its approval request. The app, the TUI (`[r]` this run, `[c]` this conversation, `[a]` always) and `tern run` then offer, besides **Allow once**: **Allow for this run**, **Allow for this conversation** and **Always allow this**. The key is the draft's name and tool, a digest of its source and declared hosts, secrets, auth and rate, the tool's effect, whether it replays offline, and the account; a change to any of those, or a different tool or draft, asks again, and a grant never covers another tool. Run and conversation grants live in memory (a daemon restart asks again); "always" is stored as `key:<key>` and listed and removed with `tern grants`. Never offered in a tainted run or for a `destructive` call, and a stored or given grant does not apply in a tainted run, as for any grant. Identical simultaneous requests (same run, call, input and shown details, e.g. a script's `gather`) share one card (`count` on the request); a run, conversation or always answer also releases the other waiting requests with the same key (same run, conversation, or anywhere). API answers: `{"decision": "run" | "session" | "always"}`. Chat gateways (Telegram, Lua) keep **Allow once** / **Deny** for these, since they only show what their buttons build. In the app, identical approved requests in a row (each with its finished tool card) show as one line, `connector_test · draft x.y ×8 approved`, that opens to the items.
 - **What the model sees**: untrusted results arrive as `<untrusted source="http_fetch">…</untrusted>`, and the system prompt says text inside is data, not instructions.
@@ -869,7 +918,7 @@ One list of everything running, queued, scheduled, waiting on you, or failed rec
 
 ### Activity ledger
 
-Every security-relevant change is appended to a ledger in the database (spec §8.1): approval decisions (and calls refused as `money_movement`/`trade`), outbox items queued, approved, rejected and expired, every `write` and `destructive` call that ran, `always` grants added and removed, connector activations, connections added, removed or made the default, webhook secrets created, rotated and revoked, devices paired and revoked, autonomy changes (`config.toml`'s, noted when tern next reads it, and each routine's), `egress` and `[sandbox] network`, and agents' tool scopes. Entries name who did it (`you`, `tern`, or the agent), and the run, channel, routine and connector they concern. Secret values never appear.
+Every security-relevant change is appended to a ledger in the database (spec §8.1): approval decisions (and calls refused as `money_movement`/`trade`), outbox items queued, approved, rejected and expired, every `write` and `destructive` call that ran, every memory save, forget and edit (`memory.*`), `always` grants added and removed, connector activations, connections added, removed or made the default, webhook secrets created, rotated and revoked, devices paired and revoked, autonomy changes (`config.toml`'s, noted when tern next reads it, and each routine's), `egress` and `[sandbox] network`, and agents' tool scopes. Entries name who did it (`you`, `tern`, or the agent), and the run, channel, routine and connector they concern. Secret values never appear.
 
 Each entry stores `sha256(previous hash || entry)`, so editing, deleting or reordering rows in `tern.db` shows: `tern ledger verify` recomputes the chain and exits `1` at the first entry that doesn't hold. It prints the head hash; note it somewhere else if you want to notice entries cut off the end, which a chain alone can't. The database also refuses `UPDATE` and `DELETE` on the table.
 

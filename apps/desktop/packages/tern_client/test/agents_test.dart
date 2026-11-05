@@ -43,6 +43,21 @@ void main() {
     expect(tern.model, ['mock:m']);
   });
 
+  test('a memory carries where it came from', () {
+    final base = {
+      'id': 3,
+      'content': 'Acme renews in March',
+      'tags': ['acme'],
+      'created_at': 1762185600000,
+      'agent_id': 'tern:research',
+    };
+    final m = Memory.fromJson(base);
+    expect((m.source, m.unverified, m.shared), ('agent', false, false));
+    final bad = Memory.fromJson({...base, 'source': 'unverified'});
+    expect(bad.unverified, isTrue);
+    expect(Memory.fromJson({...base, 'source': 'user'}).unverified, isFalse);
+  });
+
   test('templates, approvals and channels carry their agent', () {
     final t = AgentTemplate.fromJson({
       'id': 'inbox',

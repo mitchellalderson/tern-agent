@@ -133,6 +133,11 @@ pub struct MemoryRow {
     pub created_at: i64,
     /// `None` = shared; else the agent whose private memory it is.
     pub agent_id: Option<String>,
+    /// `agent`, `unverified` (saved in a run that had read untrusted
+    /// content) or `user`.
+    pub source: String,
+    /// The run that saved it.
+    pub run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -786,20 +791,12 @@ impl Store {
         };
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT m.id, m.content, COALESCE(m.tags, ''), m.created_at
+            "SELECT m.id, m.content, COALESCE(m.tags, ''), m.created_at, m.agent_id, m.source, m.run_id
              FROM memories_fts f JOIN memories m ON m.id = f.rowid
              WHERE memories_fts MATCH ?1 AND m.agent_id IS NULL
              ORDER BY bm25(memories_fts) LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![q, limit as i64], |r| {
-            Ok(MemoryRow {
-                id: r.get(0)?,
-                content: r.get(1)?,
-                tags: r.get(2)?,
-                created_at: r.get(3)?,
-                agent_id: None,
-            })
-        })?;
+        let rows = stmt.query_map(params![q, limit as i64], crate::agents_repo::memory_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
