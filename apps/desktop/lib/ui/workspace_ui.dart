@@ -15,6 +15,13 @@ import 'underline_tabs.dart';
 /// The bits that touch the machine, replaceable in tests.
 class WorkspaceEnv {
   /// The native directory picker. Null result = cancelled.
+  ///
+  /// macOS entitlements: the app runs unsandboxed (`app-sandbox` is false in
+  /// both entitlements files), so the picker needs no
+  /// `files.user-selected.read-write` entitlement and no security-scoped
+  /// bookmark; the daemon, a separate process, opens the path itself and a
+  /// TCC refusal comes back as a `denied` verdict. If the app is ever
+  /// sandboxed this has to change (docs/alpha-workspaces.md section 4).
   static Future<String?> Function(String? initial) picker = (initial) =>
       getDirectoryPath(initialDirectory: initial, confirmButtonText: 'Choose');
 

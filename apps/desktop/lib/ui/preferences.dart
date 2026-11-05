@@ -14,6 +14,7 @@ import 'secrets.dart';
 import 'security.dart';
 import 'servers.dart';
 import 'settings.dart';
+import 'workspace_ui.dart';
 
 export '../state/version.dart' show appVersion;
 
@@ -25,6 +26,12 @@ enum PrefSection {
     Icons.tune,
     'launch login startup close window quit tray menu bar workspace quiet '
         'hours initiative digest memory skills where tern runs',
+  ),
+  folders(
+    'Folders',
+    Icons.folder_outlined,
+    'folder workspace project directory default read-only extra finder '
+        'sandbox where files',
   ),
   models(
     'Models & Providers',
@@ -95,6 +102,9 @@ const _intro = {
   PrefSection.general:
       'How tern behaves day to day: where it runs, when it speaks up, what '
       'it remembers.',
+  PrefSection.folders:
+      'The folder an agent works in, and the only place its file tools '
+      'reach. Each topic, channel and agent can choose its own.',
   PrefSection.models:
       'The providers tern can use, their API keys, and the model new '
       'conversations start with. Changes apply to the next message.',
@@ -209,6 +219,10 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
   var _restarting = false;
 
   TernClient? get _client => widget.store?.client;
+
+  /// Folders only exist on a core that has them.
+  bool _shows(PrefSection s) =>
+      s != PrefSection.folders || widget.store?.workspaces != null;
 
   bool get _local =>
       widget.connections?.isRemote == false ||
@@ -437,26 +451,27 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
           child: ListView(
             children: [
               for (final s in PrefSection.values)
-                _NavTile(
-                  key: Key('settings-nav-${s.name}'),
-                  section: s,
-                  selected: !searching && s == _section,
-                  changed: switch (s.group) {
-                    final g? =>
-                      _view?.settings
-                              .where((x) => x.group == g && x.changed)
-                              .length ??
-                          0,
-                    _ => 0,
-                  },
-                  risky:
-                      s.group != null &&
-                      (_view?.settings.any(
-                            (x) => x.group == s.group && x.risky,
-                          ) ??
-                          false),
-                  onTap: () => _go(s),
-                ),
+                if (_shows(s))
+                  _NavTile(
+                    key: Key('settings-nav-${s.name}'),
+                    section: s,
+                    selected: !searching && s == _section,
+                    changed: switch (s.group) {
+                      final g? =>
+                        _view?.settings
+                                .where((x) => x.group == g && x.changed)
+                                .length ??
+                            0,
+                      _ => 0,
+                    },
+                    risky:
+                        s.group != null &&
+                        (_view?.settings.any(
+                              (x) => x.group == s.group && x.risky,
+                            ) ??
+                            false),
+                    onTap: () => _go(s),
+                  ),
             ],
           ),
         ),
@@ -521,6 +536,16 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
           ),
           heading('Behavior'),
           ..._rows('general'),
+        ];
+      case PrefSection.folders:
+        return [
+          if (store?.workspaces case final api?)
+            FoldersSection(api: api)
+          else
+            Text(
+              'This tern does not support folders yet.',
+              style: TextStyle(color: c.muted),
+            ),
         ];
       case PrefSection.models:
         return [
@@ -713,7 +738,9 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
     ];
     final sections = [
       for (final s in PrefSection.values)
-        if (s.title.toLowerCase().contains(q) || s.keywords.contains(q)) s,
+        if (_shows(s) &&
+            (s.title.toLowerCase().contains(q) || s.keywords.contains(q)))
+          s,
     ];
     if (settings.isEmpty && sections.isEmpty) {
       return Padding(

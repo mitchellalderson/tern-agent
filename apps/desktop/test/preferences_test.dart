@@ -204,9 +204,11 @@ void main() {
 
   testWidgets('one window, every section, General first', (tester) async {
     await _pump(tester, _FakeClient());
-    for (final s in PrefSection.values) {
+    // Folders appears only on a core with workspaces (workspaces_test.dart).
+    for (final s in PrefSection.values.where((s) => s != PrefSection.folders)) {
       expect(find.byKey(Key('settings-nav-${s.name}')), findsOneWidget);
     }
+    expect(find.byKey(const Key('settings-nav-folders')), findsNothing);
     expect(find.text('Start tern when I log in'), findsOneWidget);
     expect(_row('workspace'), findsOneWidget);
     // Settings that belong elsewhere are not here.
