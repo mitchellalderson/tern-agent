@@ -542,6 +542,22 @@ impl Backend for Remote {
         self.get("/v1/secrets")
     }
 
+    fn config_view(&self) -> BackendResult<tern_core::config::settings::ConfigView> {
+        self.get("/v1/config/settings")
+    }
+
+    fn change_setting(
+        &self,
+        key: &str,
+        value: Option<Value>,
+    ) -> BackendResult<tern_core::config::settings::Setting> {
+        let path = format!("/v1/config/settings/{key}");
+        match value {
+            Some(v) => self.send_json(reqwest::Method::PUT, &path, json!({ "value": v })),
+            None => self.send_json(reqwest::Method::DELETE, &path, Value::Null),
+        }
+    }
+
     fn outbox(&self) -> BackendResult<Vec<tern_core::outbox::OutboxItem>> {
         self.get("/v1/outbox")
     }

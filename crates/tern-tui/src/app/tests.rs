@@ -59,7 +59,13 @@ struct Fake {
     /// passed to `delete`.
     renames: Mutex<Vec<Renamed>>,
     deletes: Mutex<Vec<(crate::Managed, String, crate::DeleteChoice)>>,
+    /// The settings view the core would describe, once read, and the
+    /// (key, value) pairs passed to `change_setting`.
+    config: Mutex<Option<tern_core::config::settings::ConfigView>>,
+    setting_calls: Mutex<Vec<(String, Option<serde_json::Value>)>>,
 }
+
+mod settings;
 
 #[async_trait]
 impl Backend for Fake {
@@ -171,6 +177,51 @@ impl Backend for Fake {
     }
     fn remove_secret(&self, name: &str) -> BackendResult<bool> {
         Ok(self.secrets.lock().unwrap().remove(name).is_some())
+    }
+    fn config_view(&self) -> BackendResult<tern_core::config::settings::ConfigView> {
+        let mut view = self.config.lock().unwrap();
+        if view.is_none() {
+            let file = tern_core::config::edit::ConfigFile::open(std::path::Path::new(
+                "/nonexistent/tern/config.toml",
+            ))
+            .map_err(|e| e.to_string())?;
+            *view = Some(tern_core::config::settings::view(
+                &file,
+                &tern_core::Config::default(),
+            ));
+        }
+        Ok(view.clone().unwrap())
+    }
+    /// Answers as the core does for the cases the tests use: a range
+    /// error, otherwise the new value, `set`, and a pending restart.
+    fn change_setting(
+        &self,
+        key: &str,
+        value: Option<serde_json::Value>,
+    ) -> BackendResult<tern_core::config::settings::Setting> {
+        use tern_core::config::settings::Applies;
+        self.config_view()?;
+        self.setting_calls
+            .lock()
+            .unwrap()
+            .push((key.into(), value.clone()));
+        if key == "subagents.max_depth" && value.as_ref().and_then(|v| v.as_i64()) > Some(3) {
+            return Err("subagents.max_depth: must be at most 3".into());
+        }
+        let mut guard = self.config.lock().unwrap();
+        let s = guard
+            .as_mut()
+            .unwrap()
+            .sections
+            .iter_mut()
+            .flat_map(|s| s.settings.iter_mut())
+            .find(|s| s.key == key)
+            .ok_or("unknown setting")?;
+        s.set = value.is_some();
+        s.value = value.unwrap_or_else(|| s.default.clone());
+        s.restart_pending = s.applies == Applies::Restart && s.value != s.default;
+        s.risky = key == "sandbox.network" && s.value == serde_json::Value::Bool(true);
+        Ok(s.clone())
     }
     fn outbox(&self) -> BackendResult<Vec<tern_core::outbox::OutboxItem>> {
         Ok(self.outbox.lock().unwrap().clone())

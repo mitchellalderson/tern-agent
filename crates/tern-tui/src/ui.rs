@@ -39,6 +39,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(panel) = &app.mcp {
         crate::ui_mcp::draw_mcp(frame, panel, transcript);
     }
+    if let Some(panel) = &app.settings {
+        crate::ui_settings::draw_settings(frame, panel, transcript);
+    }
     if let Some(panel) = &app.setup {
         crate::ui_setup::draw_setup(frame, panel, transcript);
     }

@@ -11,10 +11,12 @@ mod models;
 pub mod outbox;
 mod secret_prompt;
 mod secrets;
+mod settings;
 mod setup;
 mod term;
 mod ui;
 mod ui_mcp;
+mod ui_settings;
 mod ui_setup;
 mod wrap;
 
@@ -43,6 +45,7 @@ pub use term::run;
 pub type BackendResult<T> = Result<T, String>;
 
 const NO_SETUP: &str = "this backend can't manage providers";
+const NO_SETTINGS: &str = "this backend can't edit settings";
 const NO_MCP: &str = "this backend can't manage MCP servers";
 const NO_CHANNELS: &str =
     "channels need the background agent: start it with `tern start`, then reopen tern";
@@ -239,6 +242,20 @@ pub trait Backend: Send + Sync + 'static {
     /// Set `default_model`; returns the resolved `provider:model`.
     fn set_default_model(&self, _model: &str) -> BackendResult<Resolved> {
         Err(NO_SETUP.into())
+    }
+    /// Every platform setting in `config.toml`, as the core describes it
+    /// (`/settings`).
+    fn config_view(&self) -> BackendResult<tern_core::config::settings::ConfigView> {
+        Err(NO_SETTINGS.into())
+    }
+    /// Set `key` to `value`, or back to its default with `None`. The core
+    /// checks it and keeps the file's comments; the error says what is wrong.
+    fn change_setting(
+        &self,
+        _key: &str,
+        _value: Option<serde_json::Value>,
+    ) -> BackendResult<tern_core::config::settings::Setting> {
+        Err(NO_SETTINGS.into())
     }
     /// Configured MCP servers with their state.
     fn mcp_servers(&self) -> BackendResult<Vec<McpStatus>> {

@@ -189,6 +189,18 @@ impl Backend for TuiBackend {
         Ok(self.rt().secret_statuses())
     }
 
+    fn config_view(&self) -> BackendResult<tern_core::config::settings::ConfigView> {
+        Ok(self.rt().config_view())
+    }
+
+    fn change_setting(
+        &self,
+        key: &str,
+        value: Option<serde_json::Value>,
+    ) -> BackendResult<tern_core::config::settings::Setting> {
+        self.rt().change_setting(key, value.as_ref()).map_err(err)
+    }
+
     fn connections(&self) -> BackendResult<Vec<String>> {
         let conns = &self.rt().connections;
         conns.reload();

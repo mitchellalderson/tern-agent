@@ -18,6 +18,7 @@ use crate::models::{ModelPicker, PickerAction};
 use crate::outbox::OutboxPanel;
 use crate::secret_prompt::{Done, SecretPrompt};
 use crate::secrets::SecretsPanel;
+use crate::settings::{Section, SettingsAction, SettingsPanel, Target};
 use crate::setup::{SetupAction, SetupPanel, Task, TaskDone};
 use crate::{
     AgentInfo, Backend, BackendResult, ChannelInfo, PendingApproval, PendingAuth, PendingSecret,
@@ -154,6 +155,11 @@ pub struct App {
     pub hint: Option<String>,
     /// The `/secrets` panel, drawn over the transcript while open.
     pub secrets: Option<SecretsPanel>,
+    /// The `/settings` screen, drawn over the transcript while open.
+    pub settings: Option<SettingsPanel>,
+    /// Closing the providers, secrets or MCP panel this screen opened
+    /// comes back here, on this section.
+    back_to_settings: Option<Section>,
     /// The `/outbox` panel, drawn over the transcript while open.
     pub outbox: Option<OutboxPanel>,
     /// The `/setup` panel, drawn over the transcript while open.
@@ -204,6 +210,9 @@ const HELP: &str = "\
 Commands:
   /new              start a new session
   /model [model]    pick a model, or set one (the provider may be left off)
+  /settings [section|text]  every platform setting in one place: general,
+                    models, secrets, permissions, limits, servers, advanced,
+                    about (agent settings stay in /agents)
   /setup            add or change model providers and API keys
   /sessions         list recent sessions
   /resume <id>      open a session, or resume an interrupted run
@@ -265,6 +274,8 @@ impl App {
             last_usage: None,
             hint: None,
             secrets: None,
+            settings: None,
+            back_to_settings: None,
             outbox: None,
             setup,
             mcp: None,
@@ -303,9 +314,25 @@ impl App {
 
         // The panel takes every key, so a value being typed can't answer
         // an approval or land in the chat input.
+        if let Some(panel) = &mut self.settings {
+            let section = panel.section;
+            return match panel.on_key(key, self.backend.as_ref()) {
+                SettingsAction::None => vec![],
+                SettingsAction::Close => {
+                    self.settings = None;
+                    vec![]
+                }
+                SettingsAction::Open(target) => {
+                    self.settings = None;
+                    self.back_to_settings = Some(section);
+                    self.open_from_settings(target)
+                }
+            };
+        }
         if let Some(panel) = &mut self.secrets {
             if !panel.on_key(key, self.backend.as_ref()) {
                 self.secrets = None;
+                self.reopen_settings();
             }
             return vec![];
         }
@@ -325,6 +352,7 @@ impl App {
                 SetupAction::None => vec![],
                 SetupAction::Close => {
                     self.setup = None;
+                    self.reopen_settings();
                     vec![]
                 }
                 SetupAction::Run(task) => vec![Effect::Task(task)],
@@ -335,6 +363,7 @@ impl App {
                 McpAction::None => vec![],
                 McpAction::Close => {
                     self.mcp = None;
+                    self.reopen_settings();
                     vec![]
                 }
                 McpAction::Run(task) => vec![Effect::Task(task)],
@@ -449,7 +478,9 @@ impl App {
     }
 
     pub fn on_paste(&mut self, text: &str) {
-        if let Some(panel) = &mut self.secrets {
+        if let Some(panel) = &mut self.settings {
+            panel.on_paste(text);
+        } else if let Some(panel) = &mut self.secrets {
             panel.on_paste(text);
         } else if let Some(panel) = &mut self.outbox {
             panel.on_paste(text);
@@ -476,7 +507,9 @@ impl App {
         }
         self.last_ctrl_c = Some(now);
         self.hint = Some("press Ctrl+C again to quit".into());
+        self.back_to_settings = None;
         if self.secrets.take().is_some()
+            || self.settings.take().is_some()
             || self.outbox.take().is_some()
             || self.setup.take().is_some()
             || self.mcp.take().is_some()
@@ -883,6 +916,17 @@ impl App {
                 }
             }
             "mcp" => return self.mcp_command(arg),
+            "settings" | "preferences" | "config" => {
+                let opened = match (arg.is_empty(), Section::parse(arg)) {
+                    (true, _) => SettingsPanel::open(self.backend.as_ref(), None),
+                    (false, Some(s)) => SettingsPanel::open(self.backend.as_ref(), Some(s)),
+                    (false, None) => SettingsPanel::open_search(self.backend.as_ref(), arg),
+                };
+                match opened {
+                    Ok(panel) => self.settings = Some(panel),
+                    Err(e) => self.error(e),
+                }
+            }
             "outbox" => match OutboxPanel::open(self.backend.as_ref()) {
                 Ok(panel) => self.outbox = Some(panel),
                 Err(e) => self.error(e),
@@ -1969,6 +2013,32 @@ impl App {
     }
 
     /// `/mcp` and its shortcuts.
+    /// Open the panel a `/settings` row points at.
+    fn open_from_settings(&mut self, target: Target) -> Vec<Effect> {
+        match target {
+            Target::Providers => match SetupPanel::open(self.backend.as_ref()) {
+                Ok(panel) => self.setup = Some(panel),
+                Err(e) => self.error(e),
+            },
+            Target::Secrets => match SecretsPanel::open(self.backend.as_ref(), None) {
+                Ok(panel) => self.secrets = Some(panel),
+                Err(e) => self.error(e),
+            },
+            Target::Mcp => return self.mcp_command(""),
+        }
+        vec![]
+    }
+
+    /// Back to `/settings` after the panel it opened closes.
+    fn reopen_settings(&mut self) {
+        let Some(section) = self.back_to_settings.take() else {
+            return;
+        };
+        if let Ok(panel) = SettingsPanel::open(self.backend.as_ref(), Some(section)) {
+            self.settings = Some(panel);
+        }
+    }
+
     fn mcp_command(&mut self, arg: &str) -> Vec<Effect> {
         let backend = self.backend.clone();
         let (sub, name) = match arg.split_once(char::is_whitespace) {
