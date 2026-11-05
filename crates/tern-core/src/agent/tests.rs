@@ -1992,7 +1992,7 @@ impl Tool for Inbox {
         Effect::Read
     }
     fn ingestion(&self) -> crate::tool::Ingestion {
-        crate::tool::Ingestion::Web
+        crate::tool::Ingestion::Internal
     }
     fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
         ToolPolicy::new(Effect::Read, true)
@@ -2911,7 +2911,7 @@ impl Tool for Fetch {
         Effect::Read
     }
     fn ingestion(&self) -> crate::tool::Ingestion {
-        crate::tool::Ingestion::Web
+        crate::tool::Ingestion::Internal
     }
     fn egress_host(&self, args: &Value) -> Option<String> {
         args["host"].as_str().map(Into::into)
@@ -3360,3 +3360,5 @@ mod py_scripts;
 mod grants;
 
 mod plans;
+
+mod fetch_e2e;
