@@ -512,6 +512,14 @@ impl Tool for Shell {
         if out.truncated {
             text.push_str("\n[output truncated]");
         }
+        for hint in tern_sandbox::failure_hints(
+            &out,
+            network || self.backend.network_reachable(),
+            ctx.workspace(),
+        ) {
+            text.push_str("\n[hint] ");
+            text.push_str(&hint);
+        }
         let r = ToolResult {
             content: text,
             is_error: out.exit_code != Some(0),
@@ -613,6 +621,25 @@ mod tests {
         let r = shell.call(&ctx, json!({"command": "touch ran"})).await;
         assert!(r.is_error, "{}", r.content);
         assert!(!gone.exists(), "the folder was recreated");
+    }
+
+    #[tokio::test]
+    async fn a_denied_read_outside_the_workspace_gets_a_settings_hint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shell = Shell::new(Arc::new(HostBackend::unconfined()), Duration::from_secs(10));
+        let r = shell
+            .call(
+                &ctx_in(tmp.path()),
+                json!({"command": "echo 'cat: /Users/someone/notes.txt: Operation not permitted' >&2; exit 1"}),
+            )
+            .await;
+        assert!(r.is_error);
+        assert!(r.content.contains("[hint]"), "{}", r.content);
+        assert!(r.content.contains("Settings > Folders"), "{}", r.content);
+        let ok = shell
+            .call(&ctx_in(tmp.path()), json!({"command": "echo fine"}))
+            .await;
+        assert!(!ok.content.contains("[hint]"), "{}", ok.content);
     }
 
     #[tokio::test]

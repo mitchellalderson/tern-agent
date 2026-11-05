@@ -3,12 +3,14 @@
 
 mod docker;
 mod helper;
+mod hints;
 mod policy;
 mod toolchain;
 mod verify;
 
 pub use docker::{DockerBackend, DockerSettings};
 pub use helper::{HELPER_ARG, run_if_requested as run_helper_if_requested};
+pub use hints::failure_hints;
 pub use policy::{Confine, HostPolicy};
 pub use toolchain::{ToolchainGrant, detect_here as detect_toolchains};
 pub use verify::Verification;
