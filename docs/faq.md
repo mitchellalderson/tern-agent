@@ -170,6 +170,19 @@ conversation grants live in memory, so a daemon restart forgets them; "always" i
 Nothing is offered on a tainted run or for a `destructive` call, which ask every time, and Telegram's buttons are Allow
 once and Deny. Identical requests waiting at once share one card.
 
+## Can a coding agent run my tests without asking every time? What is "Code auto mode"?
+
+Yes, if you turn it on for that agent. Coding starters ship at `supervised`, so `cargo test` or `npm test` asks every
+time. **Code auto mode** (pick **Code** in the agent's autonomy list, `/autonomy code` in the terminal, or `tern agents
+code-auto <agent> on`) lets one agent edit files and run build and test commands in its workspace without asking. It
+asks you to confirm first, says when it raises a starter's ceiling, and it is **not fully sandboxed**: the code it writes
+runs on your computer inside the OS sandbox, anything in the folder can change, and it doesn't cover what you run
+yourself afterwards. It still asks for network access, installs (`npm install`, `pip install`), `git push`, deleting much
+of the folder, secrets, and anything once the run has read a web page or mail. If the sandbox can't be confirmed active,
+commands ask as usual and only file edits are automatic (the chip says "edits only"). Before a run's first change tern
+saves a snapshot of the folder (separate from your `.git`); `tern runs changes <run>` lists what changed and `tern runs
+undo <run> --yes` puts it back. Use it on code you would be willing to run yourself.
+
 ## Can a read-only agent remember things? Isn't that a way around "read-only"?
 
 It can keep its own notes, and nothing else: `memory_save`, `memory_search` and `memory_forget` are a separate class from
