@@ -14,7 +14,7 @@ pub mod api_mcp_serve;
 mod api_outbox;
 mod api_providers;
 mod api_runs;
-mod api_schedules;
+pub mod api_schedules;
 mod api_secrets;
 pub mod api_skills;
 mod api_subagents;

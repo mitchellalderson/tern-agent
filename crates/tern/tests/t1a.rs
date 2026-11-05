@@ -484,6 +484,11 @@ async fn usd_per_day_is_ignored_without_a_price_and_applies_with_one() {
         0,
         "no price: the cap is ignored"
     );
+    let view = env.schedule(&id).await;
+    assert!(
+        view.get("spent_usd").is_none() && view.get("usd_cap").is_none(),
+        "no price: no spend is shown: {view}"
+    );
     let logs = env.logs();
     assert_eq!(
         logs.matches("usd_per_day is ignored").count(),
@@ -507,4 +512,7 @@ async fn usd_per_day_is_ignored_without_a_price_and_applies_with_one() {
     let notice = tg.wait_for("⏸ Paused", 15).await;
     assert!(notice.contains("usd_per_day = $0.0001"), "{notice}");
     assert_eq!(env.query(runs), 3);
+    let view = env.schedule(&id).await;
+    assert_eq!(view["usd_cap"], 0.0001, "{view}");
+    assert!(view["spent_usd"].as_f64().unwrap() > 0.0, "{view}");
 }

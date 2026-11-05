@@ -21,6 +21,8 @@ use tokio_util::sync::CancellationToken;
 use super::*;
 use crate::{HistoryMessage, PendingSecret, Started, UserPrompt};
 
+mod fleet;
+
 /// (session, model, text) passed to `start_run`.
 type StartCall = (Option<String>, Option<String>, String);
 

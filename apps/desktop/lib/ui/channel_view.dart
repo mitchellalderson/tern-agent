@@ -8,6 +8,7 @@ import '../theme.dart';
 import 'agent_face.dart';
 import 'channel_items.dart' show SuggestionActions;
 import 'conversation.dart';
+import 'fleet_status.dart';
 import 'routines.dart';
 import 'items.dart';
 import 'manage.dart';
@@ -70,6 +71,11 @@ class ChannelView extends StatelessWidget {
           onTogglePanel: onTogglePanel,
         ),
         const Hairline(),
+        if (store.homeOpen && store.hasAgents)
+          FleetStrip(
+            store: store,
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+          ),
         Expanded(
           child: shown.isEmpty && extra == 0
               ? _EmptyChannel(channel: ch)
