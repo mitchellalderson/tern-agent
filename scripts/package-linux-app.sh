@@ -83,6 +83,8 @@ fi
 
 version="$(sed -n 's/^version: \([^+]*\).*/\1/p' "$desktop/pubspec.yaml")"
 [ -n "$version" ] || { echo "no version in apps/desktop/pubspec.yaml" >&2; exit 1; }
+# Debian orders "0.1.0-alpha.1" after "0.1.0"; "~" sorts a pre-release before its release.
+deb_version="$(printf %s "$version" | sed "s/-/~/")"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
@@ -137,7 +139,7 @@ ln -s ../lib/tern-desktop/tern "$pkg/usr/bin/tern"
 size_kb="$(du -sk "$pkg/usr" | cut -f1)"
 cat > "$pkg/DEBIAN/control" <<CONTROL
 Package: tern-desktop
-Version: $version
+Version: $deb_version
 Architecture: $deb_arch
 Maintainer: Mitchell Alderson <mitchell@inngest.com>
 Installed-Size: $size_kb

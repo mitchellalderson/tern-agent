@@ -69,6 +69,24 @@ desktop="$root/apps/desktop"
 # The app compares the core's version with this one (Settings > About, version banner).
 workspace_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$root/Cargo.toml")"
 [ -n "$workspace_version" ] || { echo "no workspace version in Cargo.toml" >&2; exit 1; }
+
+# Apple's version fields are stricter than semver: CFBundleShortVersionString
+# is up to three dot-separated integers and CFBundleVersion is integers and
+# dots, so neither may carry "-alpha.1". The marketing version is the core
+# X.Y.Z, and the build number comes from the pre-release counter so builds
+# still sort, and a final release sorts after its pre-releases:
+#   0.1.0-alpha.N -> 0.1.0 (N)    0.1.0-beta.N -> (100+N)    0.1.0-rc.N -> (200+N)
+#   0.1.0         -> 0.1.0 (1000)
+# (documented in docs/desktop-release.md). TERN_APP_VERSION keeps the full string.
+apple_version="${workspace_version%%-*}"
+case "$workspace_version" in
+  *-alpha.[0-9]*) apple_build="${workspace_version##*alpha.}" ;;
+  *-beta.[0-9]*) apple_build=$((100 + ${workspace_version##*beta.})) ;;
+  *-rc.[0-9]*) apple_build=$((200 + ${workspace_version##*rc.})) ;;
+  *-*) echo "unsupported pre-release in Cargo.toml: $workspace_version (use alpha.N, beta.N or rc.N)" >&2; exit 1 ;;
+  *) apple_build=1000 ;;
+esac
+case "$apple_build" in '' | *[!0-9]*) echo "bad pre-release number in $workspace_version" >&2; exit 1 ;; esac
 app="$desktop/build/macos/Build/Products/Release/tern.app"
 name=tern-desktop-macos
 
@@ -157,14 +175,14 @@ if [ "$skip_build" = 1 ]; then
   [ -d "$app" ] || { echo "no $app; build it first" >&2; exit 1; }
 else
   step "flutter build macos --release"
-  (cd "$desktop" && flutter build macos --release --dart-define=TERN_APP_VERSION="$workspace_version")
+  (cd "$desktop" && flutter build macos --release --build-name="$apple_version" --build-number="$apple_build" --dart-define=TERN_APP_VERSION="$workspace_version")
 fi
 [ -d "$app" ] || { echo "Flutter didn't produce $app" >&2; exit 1; }
 
 # --- 2. bundle tern ---------------------------------------------------------
 step "bundle tern into tern Tray.app"
 tray="$app/Contents/Library/LoginItems/tern Tray.app"
-version="$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")"
+version="$apple_version"
 rm -rf "$app/Contents/Helpers" "$tray"
 mkdir -p "$tray/Contents/MacOS" "$tray/Contents/Library/LaunchAgents"
 install -m 755 "$bin" "$tray/Contents/MacOS/tern-tray"
@@ -187,7 +205,7 @@ cat > "$tray/Contents/Info.plist" <<PLIST
 	<key>CFBundleShortVersionString</key>
 	<string>$version</string>
 	<key>CFBundleVersion</key>
-	<string>$version</string>
+	<string>$apple_build</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>12.0</string>
 	<key>LSUIElement</key>
