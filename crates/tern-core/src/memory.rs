@@ -28,6 +28,30 @@ pub struct MemoryConfig {
     pub memory_md_tokens: u64,
     /// Let the agent save durable facts before older context is summarized.
     pub flush: bool,
+    /// Characters in one `memory_save`.
+    pub entry_max_chars: usize,
+    /// Saves and forgets one run may make (a loop or an injected page
+    /// can't flood memory).
+    pub run_max_writes: u32,
+    /// Memories one agent (or the shared pool) may hold.
+    pub max_entries: u32,
+    /// Characters across one agent's (or the shared pool's) memories.
+    pub max_chars: u64,
+    /// How much of a routine's previous report the next run is given, as
+    /// data (0 = none).
+    pub routine_carryover_chars: usize,
+}
+
+impl MemoryConfig {
+    /// The write caps as the store enforces them.
+    pub fn limits(&self) -> tern_store::MemoryLimits {
+        tern_store::MemoryLimits {
+            entry_chars: self.entry_max_chars,
+            run_writes: self.run_max_writes,
+            max_entries: self.max_entries,
+            max_chars: self.max_chars,
+        }
+    }
 }
 
 impl Default for MemoryConfig {
@@ -36,6 +60,11 @@ impl Default for MemoryConfig {
             user_md_tokens: 1500,
             memory_md_tokens: 1500,
             flush: true,
+            entry_max_chars: 2000,
+            run_max_writes: 20,
+            max_entries: 500,
+            max_chars: 200_000,
+            routine_carryover_chars: 4000,
         }
     }
 }

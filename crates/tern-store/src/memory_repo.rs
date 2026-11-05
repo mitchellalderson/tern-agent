@@ -72,6 +72,9 @@ pub enum Forgot {
     Gone,
     /// No such memory in the caller's namespace (others' are not revealed).
     NotYours,
+    /// A run that read untrusted content may forget only what was saved
+    /// after untrusted input too.
+    Protected,
     RunLimit {
         max: u32,
     },
@@ -198,6 +201,7 @@ impl Store {
         &self,
         id: i64,
         agent: Option<&str>,
+        tainted: bool,
         run_id: &str,
         session_id: &str,
         actor_agent: &str,
@@ -230,6 +234,19 @@ impl Store {
         let Some((content, source)) = row else {
             return Ok(Forgot::NotYours);
         };
+        if tainted && source != SOURCE_UNVERIFIED {
+            let e = LedgerEntry::new(
+                "memory.refused",
+                namespace_label(agent),
+                format!("refused to forget memory #{id} (the run read untrusted content)"),
+            )
+            .actor(&format!("agent:{actor_agent}"))
+            .run(run_id, session_id)
+            .detail(json!({ "reason": "tainted run", "memory_id": id }));
+            append_on(&tx, &e)?;
+            tx.commit()?;
+            return Ok(Forgot::Protected);
+        }
         tx.execute("DELETE FROM memories WHERE id = ?1", [id])?;
         let ns = namespace_label(agent);
         let e = LedgerEntry::new(
@@ -429,7 +446,7 @@ mod tests {
         // Forgetting counts as a write for the run: r1 made 2 saves, so one
         // more write fits, the next doesn't, whether save or forget.
         assert_eq!(
-            s.forget_memory(1, a, "r1", "s", "tern:research", &lim)
+            s.forget_memory(1, a, false, "r1", "s", "tern:research", &lim)
                 .unwrap(),
             Forgot::Gone
         );
@@ -438,7 +455,7 @@ mod tests {
             Err(MemoryRefusal::RunLimit { max: 3 })
         );
         assert_eq!(
-            s.forget_memory(2, a, "r1", "s", "tern:research", &lim)
+            s.forget_memory(2, a, false, "r1", "s", "tern:research", &lim)
                 .unwrap(),
             Forgot::RunLimit { max: 3 }
         );
@@ -467,13 +484,13 @@ mod tests {
         let shared = s.remember(&new("shared", None, "r"), &lim).unwrap().unwrap();
         for id in [theirs, shared] {
             assert_eq!(
-                s.forget_memory(id, Some("tern:a"), "r", "s", "tern:a", &lim)
+                s.forget_memory(id, Some("tern:a"), false, "r", "s", "tern:a", &lim)
                     .unwrap(),
                 Forgot::NotYours
             );
         }
         assert_eq!(
-            s.forget_memory(mine, Some("tern:a"), "r", "s", "tern:a", &lim)
+            s.forget_memory(mine, Some("tern:a"), false, "r", "s", "tern:a", &lim)
                 .unwrap(),
             Forgot::Gone
         );

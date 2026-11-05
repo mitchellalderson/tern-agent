@@ -20,6 +20,7 @@ pub const SYSTEM_TOOLS: &[&str] = &[
     "secret_request",
     "memory_save",
     "memory_search",
+    "memory_forget",
     "profile_edit",
     "session_search",
 ];

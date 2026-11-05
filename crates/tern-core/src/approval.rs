@@ -158,6 +158,13 @@ pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, gate: Gate) -> Chec
     if let Some(flag) = policy.forbidden {
         return Check::Forbid(flag);
     }
+    // An agent's own notes are a class of their own: never asked about,
+    // whatever the autonomy or taint. The host bounds them instead (own
+    // namespace, size and rate caps, a source tag on notes saved after
+    // untrusted input) and records each in the ledger.
+    if MEMORY_TOOLS.contains(&tool) {
+        return Check::Allow;
+    }
     let contained = TAINT_CONTAINED.contains(&tool);
     match gate.autonomy {
         Autonomy::ReadOnly if policy.effect != Effect::Read && !contained => {
@@ -219,6 +226,13 @@ pub const TAINT_CONTAINED: &[&str] = &[
     // Only a card: the user decides, and it's marked tainted like a post.
     "channel_suggest",
 ];
+
+/// The memory class: an agent's notes in its own namespace. Not a system
+/// or file write, so a read-only agent has them and no run is asked about
+/// them; see `tern_tools::memory` for the guardrails and DECISIONS.md
+/// "Memory for read-only agents". `profile_edit` is not in it: `memory.md`
+/// is part of every system prompt, so writing it stays a write.
+pub const MEMORY_TOOLS: &[&str] = &["memory_save", "memory_forget"];
 
 /// Why a tainted run asks, for approval prompts.
 pub fn taint_note(reason: &str) -> String {
@@ -910,6 +924,42 @@ mod tests {
             Check::Forbid("trade")
         );
         assert!(taint_note("http_fetch").contains("untrusted content"));
+    }
+
+    #[test]
+    fn the_memory_class_is_never_asked_about_and_never_refused() {
+        let write = ToolPolicy::granted_write(false);
+        for autonomy in [
+            Autonomy::ReadOnly,
+            Autonomy::Supervised,
+            Autonomy::Autonomous,
+            Autonomy::Yolo,
+        ] {
+            for tainted in [false, true] {
+                let gate = Gate { tainted, autonomy };
+                for tool in MEMORY_TOOLS {
+                    assert_eq!(check(tool, &write, false, gate), Check::Allow);
+                    assert!(!needs_check(tool, &write, gate));
+                }
+            }
+        }
+        // Anything else that writes, `profile_edit` included, is still
+        // refused to a read-only run and asked of a tainted one.
+        let ro = Gate {
+            tainted: false,
+            autonomy: Autonomy::ReadOnly,
+        };
+        assert_eq!(check("profile_edit", &write, false, ro), Check::ReadOnly);
+        assert_eq!(check("write_file", &write, true, ro), Check::ReadOnly);
+        // A tool flagged as money movement stays forbidden even by name.
+        let flagged = ToolPolicy {
+            forbidden: Some("trade"),
+            ..write
+        };
+        assert_eq!(
+            check("memory_save", &flagged, false, ro),
+            Check::Forbid("trade")
+        );
     }
 
     #[test]

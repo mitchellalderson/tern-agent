@@ -118,6 +118,13 @@ docker_pids = 512          # 0 for no limit
 # user_md_tokens = 1500        # cap for user.md, what tern knows about you
 # memory_md_tokens = 1500      # cap for memory.md, the agent's own notes
 # flush = true                 # before compacting, let the agent save durable facts (memory_save)
+# Every agent, read-only ones too, can save and recall its own notes. These
+# caps keep a loop or an injected page from flooding them:
+# entry_max_chars = 2000       # one memory_save
+# run_max_writes = 20          # saves and forgets one run may make
+# max_entries = 500            # memories one agent (or the shared pool) may hold
+# max_chars = 200000           # characters across them
+# routine_carryover_chars = 4000  # a routine's last report the next run is given, as data (0 = off)
 
 # Skill capture: after a long, clean run tern offers once to save it as a
 # skill. Accepting writes a draft to skills/<name>/SKILL.md (draft: true) that
