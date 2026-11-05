@@ -2,3 +2,8 @@
 b30c3c417584bf170181246a68e4b8bf28bdb423:crates/tern/src/report_cmd.rs:generic-api-key:274
 # Help text for the bearer-token field in the /mcp form, not a key.
 608bc7b74c103a99b27df019eb7fc4c54dafd548:crates/tern-tui/src/mcp.rs:generic-api-key:69
+# Test fixture: a public minisign test verification key (RWT... prefix), not a secret.
+2ce98cebd8ba4829513595166d865020a4610ca5:apps/desktop/packages/tern_client/test/fixtures/bundle_list.json:generic-api-key:9
+2ce98cebd8ba4829513595166d865020a4610ca5:apps/desktop/packages/tern_client/test/fixtures/bundle_preview.json:generic-api-key:124
+# Test fixture: obvious placeholder webhook secret (0123456789abcdef...), not a real secret.
+dc83b388266b0c34b5a024422f7857653b0e2a88:apps/desktop/packages/tern_client/test/fixtures/webhook.json:generic-api-key:7
