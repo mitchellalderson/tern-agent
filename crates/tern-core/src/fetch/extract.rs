@@ -562,7 +562,7 @@ fn decode_entities(s: &str) -> String {
     while let Some(p) = rest.find('&') {
         out.push_str(&rest[..p]);
         rest = &rest[p..];
-        let Some(semi) = rest[..rest.len().min(12)].find(';') else {
+        let Some(semi) = crate::text::prefix_bytes(rest, 12).find(';') else {
             out.push('&');
             rest = &rest[1..];
             continue;
@@ -633,6 +633,20 @@ mod tests {
         assert_eq!(p.tables[0], vec![vec!["Plan", "Price"], vec!["Pro", "$29"]]);
         let urls: Vec<&str> = p.anchors.iter().map(|a| a.0.as_str()).collect();
         assert_eq!(urls, ["https://ex.test/home", "https://other.test/x"]);
+    }
+
+    #[test]
+    fn entity_lookahead_never_splits_a_multibyte_char() {
+        // 10 ASCII bytes then a 4-byte emoji: byte 12 is inside it.
+        let html = "<p>&aaaaaaaaa💫 and 💫&x💫💫💫 &amp; &#128171;</p>";
+        let p = parse_html(html, "https://ex.test/");
+        assert!(p.text.contains("💫"), "{}", p.text);
+        assert!(p.text.contains("& 💫"), "{}", p.text);
+        for prefix in 0..20 {
+            let s: String = "a".repeat(prefix) + "&" + "💫".repeat(4).as_str();
+            assert_eq!(decode_entities(&s), s);
+        }
+        assert_eq!(decode_entities("&amp;💫&gt;"), "&💫>");
     }
 
     #[test]

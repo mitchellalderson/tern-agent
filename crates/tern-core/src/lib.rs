@@ -26,6 +26,7 @@ pub mod secrets;
 pub mod skill_capture;
 pub mod skills;
 pub mod subagent;
+pub mod text;
 pub mod tool;
 pub mod types;
 pub mod workspace;

@@ -51,14 +51,7 @@ pub fn clean_line(s: &str, max: usize) -> String {
 
 /// Cut `s` to at most `max` bytes at a character boundary.
 pub fn cut(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
+    crate::text::prefix_bytes(s, max)
 }
 
 /// Remove anything that looks like a frame opener or closer: `<untrusted`,

@@ -761,4 +761,6 @@ pub async fn fetch_page(
 }
 
 #[cfg(test)]
+mod fuzz;
+#[cfg(test)]
 pub(crate) mod tests;
