@@ -395,3 +395,237 @@ fn interpreters_are_inspected_inside_the_sandbox_or_not_at_all() {
     let e = off.probe_confined(program, ws.path()).unwrap_err();
     assert!(e.contains("no OS sandbox"), "{e}");
 }
+
+// ---- reads: deny by default under /Users and /Volumes (macOS), toolchains ----
+
+async fn run_with(
+    b: &HostBackend,
+    ws: &Path,
+    cmd: &str,
+    env: Vec<(String, String)>,
+    network: bool,
+) -> ExecOutput {
+    b.exec(
+        cmd,
+        ExecOpts {
+            cwd: ws.to_path_buf(),
+            timeout: Duration::from_secs(300),
+            max_output: 64 * 1024,
+            on_output: None,
+            network,
+            env,
+            read_roots: Vec::new(),
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap()
+}
+
+fn home_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap())
+}
+
+/// A scratch dir under /Users or /Volumes, where macOS reads are denied
+/// unless granted. `None` when the scratch dir lands somewhere readable
+/// anyway (a Linux runner's temp).
+fn private_dir() -> Option<tempfile::TempDir> {
+    let d = outside();
+    let canon = std::fs::canonicalize(d.path()).unwrap();
+    let private = canon.starts_with("/Users") || canon.starts_with("/Volumes");
+    private.then_some(d)
+}
+
+#[tokio::test]
+async fn workspace_reads_work_and_other_places_under_users_are_denied() {
+    let Some(b) = backend(HostPolicy::confined()) else {
+        return;
+    };
+    if !matches!(b.confinement(), Confinement::Seatbelt) {
+        return;
+    }
+    let Some(base) = private_dir() else { return };
+    let ws = base.path().join("ws");
+    let other = base.path().join("other");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(ws.join("in.txt"), "INSIDE").unwrap();
+    std::fs::write(other.join("out.txt"), "OUTSIDE").unwrap();
+    let out = run(&b, &ws, "cat in.txt && ls . && pwd").await;
+    assert_eq!(out.exit_code, Some(0), "{out:?}");
+    assert!(out.stdout.contains("INSIDE"), "{out:?}");
+    let out = run(
+        &b,
+        &ws,
+        &format!("cat {}", sh_quote(&other.join("out.txt"))),
+    )
+    .await;
+    assert_ne!(out.exit_code, Some(0), "{out:?}");
+    assert!(!out.stdout.contains("OUTSIDE"), "{out:?}");
+    // The listing is denied too, not just the file.
+    let out = run(&b, &ws, &format!("ls {}", sh_quote(&other))).await;
+    assert_ne!(out.exit_code, Some(0), "{out:?}");
+    // System files outside /Users and /Volumes stay readable, and so does
+    // the state dir inside the workspace.
+    let out = run(
+        &b,
+        &ws,
+        "cat /etc/hosts > /dev/null && mkdir -p .tern/tmp && echo ok > .tern/tmp/x && cat .tern/tmp/x",
+    )
+    .await;
+    assert_eq!(out.exit_code, Some(0), "{out:?}");
+    // A mounted volume's listing is denied.
+    let out = run(&b, &ws, "ls /Volumes").await;
+    assert_ne!(out.exit_code, Some(0), "{out:?}");
+}
+
+#[tokio::test]
+async fn a_read_only_folder_is_readable_and_not_writable() {
+    let Some(base) = private_dir() else { return };
+    let ro = base.path().join("docs");
+    std::fs::create_dir_all(&ro).unwrap();
+    std::fs::write(ro.join("a.txt"), "RO").unwrap();
+    let Some(b) = backend(HostPolicy {
+        read_paths: vec![ro.clone()],
+        ..HostPolicy::confined()
+    }) else {
+        return;
+    };
+    let ws = tempfile::tempdir().unwrap();
+    let out = run(
+        &b,
+        ws.path(),
+        &format!("cat {}", sh_quote(&ro.join("a.txt"))),
+    )
+    .await;
+    assert_eq!(out.stdout.trim(), "RO", "{out:?}");
+    let out = run(
+        &b,
+        ws.path(),
+        &format!("echo x > {}", sh_quote(&ro.join("b.txt"))),
+    )
+    .await;
+    assert_ne!(out.exit_code, Some(0), "{out:?}");
+    assert!(!ro.join("b.txt").exists());
+}
+
+#[tokio::test]
+async fn credential_dirs_in_home_are_denied_and_toolchain_installs_are_read_only() {
+    let Some(b) = backend(HostPolicy::confined()) else {
+        return;
+    };
+    let ws = tempfile::tempdir().unwrap();
+    let home = home_dir();
+    for secret in [".ssh", ".aws", ".gnupg", ".config", "Library/Keychains"] {
+        let p = home.join(secret);
+        if p.is_dir() {
+            let out = run(&b, ws.path(), &format!("ls {}", sh_quote(&p))).await;
+            assert_ne!(out.exit_code, Some(0), "listed {secret}: {out:?}");
+        }
+    }
+    for t in &tern_sandbox::detect_toolchains() {
+        let out = run(&b, ws.path(), &format!("ls {}", sh_quote(&t.path))).await;
+        assert_eq!(out.exit_code, Some(0), "{} unreadable: {out:?}", t.name);
+        let probe = t.path.join(".tern-write-probe");
+        let out = run(&b, ws.path(), &format!("touch {}", sh_quote(&probe))).await;
+        assert_ne!(out.exit_code, Some(0), "{} writable: {out:?}", t.name);
+        assert!(!probe.exists());
+    }
+    // Cargo's credentials sit beside the granted bin dir and stay hidden.
+    let creds = home.join(".cargo/credentials.toml");
+    if creds.exists() {
+        let out = run(&b, ws.path(), &format!("cat {}", sh_quote(&creds))).await;
+        assert_ne!(out.exit_code, Some(0), "{out:?}");
+    }
+}
+
+/// Per-workspace environment like `tern_core::workspace::shell_env`, without
+/// depending on it here.
+fn workspace_env(ws: &Path) -> Vec<(String, String)> {
+    let state = ws.join(".tern");
+    std::fs::create_dir_all(state.join("tmp")).unwrap();
+    std::fs::create_dir_all(state.join("cache")).unwrap();
+    let c = |s: &str| state.join("cache").join(s).display().to_string();
+    vec![
+        ("TMPDIR".into(), state.join("tmp").display().to_string()),
+        ("CARGO_TARGET_DIR".into(), c("cargo-target")),
+        ("CARGO_HOME".into(), c("cargo-home")),
+        ("npm_config_cache".into(), c("npm")),
+        ("PIP_CACHE_DIR".into(), c("pip")),
+        ("XDG_CACHE_HOME".into(), c("xdg")),
+    ]
+}
+
+#[tokio::test]
+async fn cargo_builds_a_tiny_crate_offline_in_the_sandbox() {
+    let Some(b) = backend(HostPolicy::confined()) else {
+        return;
+    };
+    if which("cargo").is_none() {
+        eprintln!("skipping: no cargo on PATH");
+        return;
+    }
+    let base = outside();
+    let ws = base.path().join("crate");
+    std::fs::create_dir_all(ws.join("src")).unwrap();
+    std::fs::write(
+        ws.join("Cargo.toml"),
+        "[package]\nname = \"tiny\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        ws.join("src/main.rs"),
+        "fn main() { println!(\"tiny ok\"); }\n",
+    )
+    .unwrap();
+    let env = workspace_env(&ws);
+    let out = run_with(&b, &ws, "cargo --version", env.clone(), false).await;
+    assert_eq!(out.exit_code, Some(0), "{out:?}");
+    assert!(out.stdout.starts_with("cargo "), "{out:?}");
+    let out = run_with(
+        &b,
+        &ws,
+        "cargo build --offline 2>&1 && cargo run --offline -q 2>&1",
+        env,
+        false,
+    )
+    .await;
+    assert_eq!(out.exit_code, Some(0), "{out:?}");
+    assert!(out.stdout.contains("tiny ok"), "{out:?}");
+    assert!(ws.join(".tern/cache/cargo-target").is_dir());
+}
+
+#[tokio::test]
+async fn node_and_npm_run_in_the_sandbox_when_installed() {
+    let Some(b) = backend(HostPolicy::confined()) else {
+        return;
+    };
+    if which("node").is_none() {
+        eprintln!("skipping: no node on PATH");
+        return;
+    }
+    let base = outside();
+    let ws = base.path().join("n");
+    std::fs::create_dir_all(&ws).unwrap();
+    let env = workspace_env(&ws);
+    let out = run_with(&b, &ws, "node --version", env.clone(), false).await;
+    assert_eq!(out.exit_code, Some(0), "{out:?}");
+    if which("npm").is_some() {
+        let out = run_with(&b, &ws, "npm --version", env, false).await;
+        assert_eq!(out.exit_code, Some(0), "{out:?}");
+    }
+}
+
+#[tokio::test]
+async fn system_python_runs_in_the_sandbox() {
+    let Some(b) = backend(HostPolicy::confined()) else {
+        return;
+    };
+    if which("python3").is_none() {
+        return;
+    }
+    let ws = tempfile::tempdir().unwrap();
+    let env = workspace_env(ws.path());
+    let out = run_with(&b, ws.path(), "python3 --version", env, false).await;
+    assert_eq!(out.exit_code, Some(0), "{out:?}");
+}
