@@ -10,6 +10,11 @@ mod subagents_env;
 use serde_json::{Value, json};
 use subagents_env::{Env, get, post};
 use tern_core::agents::{self, Pick};
+use tern_core::approval::Autonomy;
+
+fn served_for<'a>(served: &'a [Value], id: &str) -> &'a Value {
+    served.iter().find(|t| t["id"] == id).unwrap()
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn every_starter_creates_a_working_agent() {
@@ -42,6 +47,11 @@ async fn every_starter_creates_a_working_agent() {
         let (code, a) = post(&s, "/v1/agents", json!({ "name": name, "template": t.id })).await;
         assert_eq!(code, 201, "{}: {a}", t.id);
         assert_eq!(a["memory"], t.memory, "{}", t.id);
+        // The starter's ceiling lands on the agent, and no starter is above supervised.
+        let ceiling = t.autonomy.expect("every starter has a ceiling");
+        assert!(ceiling <= Autonomy::Supervised, "{}", t.id);
+        assert_eq!(a["autonomy"], ceiling.as_str(), "{}", t.id);
+        assert_eq!(served_for(served, &t.id)["autonomy"], ceiling.as_str());
         assert_eq!(a["avatar"]["glyph"], t.avatar.0, "{}", t.id);
         let expected = match &t.tools {
             Some(scope) => serde_json::to_value(scope).unwrap(),
@@ -74,4 +84,27 @@ async fn every_starter_creates_a_working_agent() {
             t.id
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chosen_autonomy_beats_the_starters() {
+    let env = Env::with_config(&json!({ "turns": [] }), "");
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    // Research is readonly; the user asks for supervised and gets it.
+    let (code, a) = post(
+        &s,
+        "/v1/agents",
+        json!({ "name": "Looker", "template": "research", "autonomy": "supervised" }),
+    )
+    .await;
+    assert_eq!(code, 201, "{a}");
+    assert_eq!(a["autonomy"], "supervised");
+    let (_, b) = post(
+        &s,
+        "/v1/agents",
+        json!({ "name": "Reader", "template": "research" }),
+    )
+    .await;
+    assert_eq!(b["autonomy"], "readonly");
 }

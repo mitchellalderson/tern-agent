@@ -260,6 +260,7 @@ class AgentTemplate {
     this.category = '',
     this.tools,
     this.memory = 'private',
+    this.autonomy,
     this.routine,
     this.avatar,
   });
@@ -272,6 +273,7 @@ class AgentTemplate {
     category: j['category'] as String? ?? '',
     tools: j['tools'] is Json ? ToolScope.fromJson(j['tools'] as Json) : null,
     memory: j['memory'] as String? ?? 'private',
+    autonomy: j['autonomy'] as String?,
     routine: switch (j['routine']) {
       [final String cron, final String prompt] => (cron: cron, prompt: prompt),
       _ => null,
@@ -298,8 +300,14 @@ class AgentTemplate {
   /// Null: the narrow default the core picks.
   final ToolScope? tools;
   final String memory;
+
+  /// The autonomy ceiling this starter gives a new agent (`readonly` or
+  /// `supervised` in the catalog); null: none.
+  final String? autonomy;
   final ({String cron, String prompt})? routine;
   final AvatarSpec? avatar;
+
+  AutonomyLevel? get autonomyLevel => AutonomyLevel.parse(autonomy);
 
   /// What a search over the starters matches: name, description, category.
   String get searchText => '$name $description $category $id'.toLowerCase();

@@ -135,6 +135,7 @@ class _FakeClient extends TernClient {
           category: 'Research',
           description: 'Looks things up.',
           persona: 'You are Research.',
+          autonomy: 'readonly',
           tools: ToolScope(builtins: Pick.readOnly()),
         ),
         AgentTemplate(
@@ -143,6 +144,7 @@ class _FakeClient extends TernClient {
           category: 'Everyday',
           description: 'Sweeps your mail.',
           persona: 'You are Inbox.',
+          autonomy: 'supervised',
           routine: (cron: '0 8 * * 1-5', prompt: 'Check my inbox.'),
         ),
         AgentTemplate(
@@ -1161,6 +1163,49 @@ void main() {
       final fields = client.updated.single.$2;
       expect(fields.containsKey('autonomy'), isFalse);
       expect(fields.containsKey('telegram'), isFalse);
+    });
+
+    ap3Test('a starter pre-selects its ceiling, which the user can change', (
+      tester,
+    ) async {
+      final (store, client) = await _store();
+      await _pump(tester, store);
+      await tester.tap(find.byTooltip('New agent'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('starter-ceiling')), findsNothing);
+      await tester.tap(find.byKey(const Key('starter-research')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<Text>(find.byKey(const Key('starter-ceiling'))).data,
+        startsWith('Ceiling: Read-only.'),
+      );
+      await show(tester, find.byKey(const Key('autonomy-readonly')));
+      String? picked() => tester
+          .widget<RadioGroup<String>>(
+            find.ancestor(
+              of: find.byKey(const Key('autonomy-none')),
+              matching: find.byType(RadioGroup<String>),
+            ),
+          )
+          .groupValue;
+      expect(picked(), 'readonly');
+      await tester.tap(find.byKey(const Key('autonomy-supervised')));
+      await tester.pump();
+      expect(picked(), 'supervised');
+      await tester.ensureVisible(find.byKey(const Key('starter-inbox')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('starter-inbox')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('autonomy-readonly')));
+      await tester.pumpAndSettle();
+      expect(picked(), 'supervised');
+      await tester.ensureVisible(find.byKey(const Key('starter-research')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('starter-research')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+      await tester.pumpAndSettle();
+      expect(client.created.single['autonomy'], 'readonly');
     });
 
     ap3Test('No ceiling sends an explicit null', (tester) async {

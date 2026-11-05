@@ -403,7 +403,10 @@ impl Runtime {
             tools: Some(serde_json::to_string(&tools)?),
             memory,
             egress: a.egress.map(|e| e.as_str().to_owned()),
-            autonomy: a.autonomy.map(|e| e.as_str().to_owned()),
+            autonomy: a
+                .autonomy
+                .or_else(|| template.as_ref().and_then(|t| t.autonomy))
+                .map(|e| e.as_str().to_owned()),
             ..tern_store::AgentRow::default()
         })?;
         self.refresh_agent_chains();

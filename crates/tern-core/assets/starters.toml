@@ -12,6 +12,10 @@
 #   - `tools` lists only what the job needs. `shell` only goes to
 #     coding/data starters; file writes only to starters that make files. Leaving `tools` out means the narrow default
 #     (all built-ins except shell, no connectors, no MCP servers).
+#   - `autonomy` is the ceiling the new agent's runs get (`readonly` or
+#     `supervised`, never more; every starter sets one), chosen by what the
+#     agent can touch, with the reason in a comment above it. `readonly` is only
+#     for starters with no write-capable tool. The user can change it on the sheet.
 #   - `memory` is "private" unless the agent is meant to share what it learns.
 #   - `avatar` is [glyph, colour] from the picker's glyphs and colours.
 #   - `routine` is an optional [cron, prompt] the sheet offers to schedule.
@@ -24,6 +28,8 @@ name = "Inbox"
 description = "Sweeps your mail every morning and tells you what needs a reply."
 category = "Everyday"
 memory = "private"
+# Ceiling: connectors reach the user's mail; sends and changes ask.
+autonomy = "supervised"
 avatar = ["■", "amber"]
 routine = ["0 8 * * 1-5", "Check my inbox and tell me what needs a reply today, most urgent first."]
 persona = '''
@@ -44,6 +50,8 @@ name = "Assistant"
 description = "Plans your day, schedules things, keeps track of errands and follow-ups."
 category = "Everyday"
 memory = "private"
+# Ceiling: calendar and errands through connectors; changes involving others ask.
+autonomy = "supervised"
 avatar = ["●", "teal"]
 routine = ["30 7 * * 1-5", "Look at my calendar and open tasks and give me a short plan for today: what's fixed, what's flexible, and what I should do first."]
 persona = '''
@@ -66,6 +74,8 @@ name = "Meeting Prep"
 description = "Briefs you before each meeting: who, context, past threads, suggested questions."
 category = "Everyday"
 memory = "private"
+# Ceiling: reads calendar, mail and docs; connector writes (sending, inviting) are refused, it only drafts text.
+autonomy = "readonly"
 avatar = ["♦", "violet"]
 routine = ["0 8 * * 1-5", "Look at today's meetings and prepare a short brief for each one: who is attending, what we last discussed, open items, and two or three questions worth asking."]
 persona = '''
@@ -88,6 +98,8 @@ name = "Project Manager"
 description = "Tracks tasks, owners and deadlines, and writes the weekly status."
 category = "Everyday"
 memory = "private"
+# Ceiling: connectors change tickets and boards; changes ask.
+autonomy = "supervised"
 avatar = ["▲", "orange"]
 routine = ["0 16 * * 5", "Write this week's project status: what shipped, what is in progress, what is blocked or late, and the decisions I need to make."]
 persona = '''
@@ -112,6 +124,8 @@ name = "Code Reviewer"
 description = "Reviews a diff or branch for bugs, risks and unclear code. Never edits."
 category = "Coding"
 memory = "private"
+# Ceiling: shell for read-only git; shell is never readonly, so commands outside the allowlist ask.
+autonomy = "supervised"
 avatar = ["✓", "blue"]
 persona = '''
 You are {name}, a careful code reviewer.
@@ -133,6 +147,8 @@ name = "Bug Fixer"
 description = "Reproduces a bug, finds the root cause, and makes the smallest fix with a test."
 category = "Coding"
 memory = "private"
+# Ceiling: edits files and runs commands; each write asks.
+autonomy = "supervised"
 avatar = ["♣", "orange"]
 persona = '''
 You are {name}, a debugging specialist.
@@ -154,6 +170,8 @@ name = "Test Writer"
 description = "Writes focused, readable tests for existing code, in the project's own style."
 category = "Coding"
 memory = "private"
+# Ceiling: edits files and runs commands; each write asks.
+autonomy = "supervised"
 avatar = ["♠", "green"]
 persona = '''
 You are {name}, a test writer.
@@ -175,6 +193,8 @@ name = "Refactorer"
 description = "Restructures code in small, behaviour-preserving steps, with tests green throughout."
 category = "Coding"
 memory = "private"
+# Ceiling: edits files and runs commands; each write asks.
+autonomy = "supervised"
 avatar = ["♦", "teal"]
 persona = '''
 You are {name}, a refactoring specialist.
@@ -196,6 +216,8 @@ name = "Docs Writer"
 description = "Writes and updates READMEs, API docs and guides from the code itself."
 category = "Coding"
 memory = "private"
+# Ceiling: writes files; each write asks.
+autonomy = "supervised"
 avatar = ["★", "violet"]
 persona = '''
 You are {name}, a technical documentation writer.
@@ -217,6 +239,8 @@ name = "DevOps Helper"
 description = "Works on CI pipelines, builds, containers and deploy scripts, cautiously."
 category = "Coding"
 memory = "private"
+# Ceiling: edits files, runs commands and fetches the web; each write asks.
+autonomy = "supervised"
 avatar = ["▲", "amber"]
 persona = '''
 You are {name}, a DevOps and CI helper.
@@ -238,6 +262,8 @@ name = "Security Reviewer"
 description = "Audits code and config for vulnerabilities, secrets and risky dependencies. Never edits."
 category = "Coding"
 memory = "private"
+# Ceiling: shell for read-only git and scans; commands ask.
+autonomy = "supervised"
 avatar = ["♠", "pink"]
 persona = '''
 You are {name}, an application security reviewer.
@@ -259,6 +285,8 @@ name = "PR & Changelog"
 description = "Summarizes diffs into PR descriptions, release notes and changelogs."
 category = "Coding"
 memory = "private"
+# Ceiling: shell for read-only git; commands ask.
+autonomy = "supervised"
 avatar = ["●", "blue"]
 persona = '''
 You are {name}, who turns code changes into clear written summaries.
@@ -282,6 +310,8 @@ name = "Marketing"
 description = "Drafts posts and copy in your voice."
 category = "Writing & Content"
 memory = "private"
+# Ceiling: default tools include file writes; each write asks.
+autonomy = "supervised"
 avatar = ["♥", "pink"]
 routine = ["0 9 * * 1-5", "Draft today's posts from what's new, ready for me to review."]
 persona = '''
@@ -297,6 +327,8 @@ name = "Writer & Editor"
 description = "Drafts, rewrites and edits in your voice, and tells you what to cut."
 category = "Writing & Content"
 memory = "private"
+# Ceiling: writes files; each write asks.
+autonomy = "supervised"
 avatar = ["☾", "purple"]
 persona = '''
 You are {name}, the user's writer and editor.
@@ -318,6 +350,8 @@ name = "Social Media"
 description = "Plans and drafts posts for each platform, and turns long pieces into threads."
 category = "Writing & Content"
 memory = "private"
+# Ceiling: connectors reach the user's accounts; posting asks.
+autonomy = "supervised"
 avatar = ["♥", "blue"]
 persona = '''
 You are {name}, the user's social media manager.
@@ -341,6 +375,8 @@ name = "Research"
 description = "Looks things up on the web and in your files, and reports with sources."
 category = "Research & Learning"
 memory = "private"
+# Ceiling: reads and searches only.
+autonomy = "readonly"
 avatar = ["★", "blue"]
 persona = '''
 You are Research, the user's research agent.
@@ -360,6 +396,8 @@ name = "Deep Research"
 description = "Takes a big question, investigates from many angles, and writes a sourced report."
 category = "Research & Learning"
 memory = "private"
+# Ceiling: reads and searches only.
+autonomy = "readonly"
 avatar = ["♣", "violet"]
 persona = '''
 You are {name}, a deep research analyst.
@@ -382,6 +420,8 @@ name = "Fact Checker"
 description = "Checks claims against primary sources and rates how well they hold up."
 category = "Research & Learning"
 memory = "private"
+# Ceiling: reads and searches only.
+autonomy = "readonly"
 avatar = ["✓", "green"]
 persona = '''
 You are {name}, a fact checker.
@@ -403,6 +443,8 @@ name = "Competitive Intel"
 description = "Tracks competitors and markets, and writes up what changed and what it means."
 category = "Research & Learning"
 memory = "private"
+# Ceiling: writes schedules; each write asks.
+autonomy = "supervised"
 avatar = ["▲", "purple"]
 routine = ["0 9 * * 1", "Check what my competitors shipped, announced or changed in the last week and tell me what matters, with links."]
 persona = '''
@@ -425,6 +467,8 @@ name = "Tutor"
 description = "Teaches any subject step by step, checks your understanding, and adapts to you."
 category = "Research & Learning"
 memory = "private"
+# Ceiling: writes study notes; each write asks.
+autonomy = "supervised"
 avatar = ["☾", "amber"]
 persona = '''
 You are {name}, the user's tutor.
@@ -449,6 +493,8 @@ name = "Customer Support"
 description = "Triages tickets, drafts empathetic replies from your docs, and flags what to escalate."
 category = "Business"
 memory = "private"
+# Ceiling: connectors reach the helpdesk; replies and changes ask.
+autonomy = "supervised"
 avatar = ["♥", "green"]
 persona = '''
 You are {name}, a customer support agent.
@@ -470,6 +516,8 @@ name = "Sales Outreach"
 description = "Researches prospects and drafts personal, honest outreach and follow-ups."
 category = "Business"
 memory = "private"
+# Ceiling: connectors reach CRM and mail; sends ask.
+autonomy = "supervised"
 avatar = ["★", "orange"]
 persona = '''
 You are {name}, the user's sales outreach assistant.
@@ -494,6 +542,8 @@ name = "Data Analyst"
 description = "Explores your data files and databases, runs the numbers, and explains what they say."
 category = "Data & Finance"
 memory = "private"
+# Ceiling: runs commands and writes files; each write asks.
+autonomy = "supervised"
 avatar = ["♦", "blue"]
 persona = '''
 You are {name}, a data analyst.
@@ -515,6 +565,8 @@ name = "Bookkeeper"
 description = "Categorizes expenses, reconciles statements, and flags what looks off. Never moves money."
 category = "Data & Finance"
 memory = "private"
+# Ceiling: connectors reach the books; changes ask.
+autonomy = "supervised"
 avatar = ["■", "green"]
 routine = ["0 9 * * 1", "Review last week's transactions and receipts: categorize what's new, flag anything unusual or duplicated, and list what is missing a receipt."]
 persona = '''
@@ -539,6 +591,8 @@ name = ""
 description = "Start from a short persona and the default tools."
 category = "General"
 memory = "private"
+# Ceiling: default tools include file writes; each write asks.
+autonomy = "supervised"
 avatar = ["●", "green"]
 persona = '''
 You are {name}, one of the user's agents.

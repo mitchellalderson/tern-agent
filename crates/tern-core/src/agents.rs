@@ -306,6 +306,10 @@ pub struct Template {
     #[serde(default)]
     pub tools: Option<ToolScope>,
     pub memory: String,
+    /// The autonomy ceiling a new agent gets from this starter (a cap, never
+    /// a grant). The catalog only uses `readonly` and `supervised`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomy: Option<crate::approval::Autonomy>,
     /// A suggested routine: (cron, prompt).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<(String, String)>,
@@ -341,6 +345,18 @@ pub const STARTER_TOOLS: &[&str] = &[
 const POWER_TOOLS: &[&str] = &["shell"];
 /// Categories whose starters may have [`POWER_TOOLS`].
 const POWER_CATEGORIES: &[&str] = &["Coding", "Data & Finance"];
+/// Built-in tools that change something: a `readonly` ceiling on a starter
+/// that has any of them would be pointless (every call would be refused).
+const WRITE_TOOLS: &[&str] = &[
+    "write_file",
+    "edit_file",
+    "shell",
+    "schedule_create",
+    "schedule_update",
+    "schedule_delete",
+];
+/// The most autonomy any starter may ship with.
+pub const STARTER_MAX_AUTONOMY: crate::approval::Autonomy = crate::approval::Autonomy::Supervised;
 
 impl Template {
     /// The checks a starter must pass: everything a user-created agent is
@@ -385,6 +401,22 @@ impl Template {
         }
         if !persona.starts_with("You are ") {
             return bad("persona should start with \"You are \"");
+        }
+        if let Some(a) = self.autonomy {
+            if a > STARTER_MAX_AUTONOMY {
+                return bad("autonomy may be at most supervised");
+            }
+            if a == crate::approval::Autonomy::ReadOnly {
+                // `None` is the narrow default, which includes file writes.
+                let writes = match self.tools.as_ref().map(|t| &t.builtins) {
+                    None | Some(Pick::All) => true,
+                    Some(Pick::ReadOnly) => false,
+                    Some(Pick::Names(n)) => n.iter().any(|n| WRITE_TOOLS.contains(&n.as_str())),
+                };
+                if writes {
+                    return bad("a readonly starter must not have write-capable tools");
+                }
+            }
         }
         if let Some((cron, prompt)) = &self.routine {
             cron.parse::<crate::cron::Cron>()
@@ -690,8 +722,56 @@ mod tests {
             ..ToolScope::default()
         });
         assert!(t.validate().is_err());
-        let mut t = good;
+        let mut t = good.clone();
         t.category = " ".into();
         assert!(t.validate().is_err());
+        // The ceiling: a real level, no higher than supervised, and readonly
+        // only without write-capable tools.
+        use crate::approval::Autonomy;
+        let mut t = good.clone();
+        t.autonomy = Some(Autonomy::Autonomous);
+        assert!(t.validate().is_err());
+        t.autonomy = Some(Autonomy::Yolo);
+        assert!(t.validate().is_err());
+        t.autonomy = Some(Autonomy::ReadOnly); // code-reviewer has shell
+        assert!(t.validate().is_err());
+        let mut t = template("research").unwrap();
+        assert_eq!(t.autonomy, Some(Autonomy::ReadOnly));
+        assert!(t.validate().is_ok());
+        t.tools = None; // the narrow default writes files
+        assert!(t.validate().is_err());
+        let mut t = good;
+        t.autonomy = Some(Autonomy::Supervised);
+        assert!(t.validate().is_ok());
+        // An unknown level fails to parse at all.
+        let src = r#"[[starter]]
+id = "x"
+name = "X"
+description = "d"
+category = "c"
+memory = "private"
+autonomy = "loose"
+avatar = ["●", "amber"]
+persona = "You are X."
+"#;
+        assert!(parse_starters(src).is_err());
+    }
+
+    #[test]
+    fn every_starter_has_a_conservative_ceiling() {
+        use crate::approval::Autonomy;
+        for t in templates() {
+            let a = t
+                .autonomy
+                .unwrap_or_else(|| panic!("{} has no autonomy", t.id));
+            assert!(a <= Autonomy::Supervised, "{}: {a}", t.id);
+        }
+        let level = |id: &str| template(id).unwrap().autonomy.unwrap();
+        for id in ["research", "deep-research", "fact-checker", "meeting-prep"] {
+            assert_eq!(level(id), Autonomy::ReadOnly, "{id}");
+        }
+        for id in ["inbox", "bug-fixer", "code-reviewer", "bookkeeper", "blank"] {
+            assert_eq!(level(id), Autonomy::Supervised, "{id}");
+        }
     }
 }

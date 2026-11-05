@@ -202,6 +202,8 @@ class _AgentSheetState extends State<AgentSheet> {
       final name = _name.text.trim().isEmpty ? 'this agent' : _name.text.trim();
       _persona.text = t.persona.replaceAll('{name}', name);
       _memory = t.memory;
+      // The starter's ceiling, pre-selected in the picker below; changeable.
+      _autonomy = t.autonomyLevel?.wire;
       _tools = t.tools ?? _narrow();
       _routine = t.routine;
       if (t.avatar case final a?) {
@@ -337,7 +339,9 @@ class _AgentSheetState extends State<AgentSheet> {
           children: [
             for (final t in shown.where((t) => t.category == category))
               Tooltip(
-                message: t.description,
+                message: t.autonomyLevel == null
+                    ? t.description
+                    : '${t.description}\n${t.autonomyLevel!.label} ceiling',
                 child: ChoiceChip(
                   key: Key('starter-${t.id}'),
                   label: Text(t.name.isEmpty ? 'Blank' : t.name),
@@ -348,6 +352,16 @@ class _AgentSheetState extends State<AgentSheet> {
           ],
         ),
       ],
+      if (_templates.where((t) => t.id == _template).firstOrNull?.autonomyLevel
+          case final level?)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+            'Ceiling: ${level.label}. ${level.line}',
+            key: const Key('starter-ceiling'),
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
     ];
   }
 

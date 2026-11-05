@@ -52,10 +52,13 @@ void main() {
       'category': 'Everyday',
       'tools': null,
       'memory': 'private',
+      'autonomy': 'supervised',
       'routine': ['0 8 * * 1-5', 'Check my inbox.'],
       'avatar': ['■', 'amber'],
     });
     expect(t.category, 'Everyday');
+    expect(t.autonomy, 'supervised');
+    expect(t.autonomyLevel, AutonomyLevel.supervised);
     expect(t.searchText, contains('everyday'));
     expect(t.routine?.prompt, 'Check my inbox.');
     expect(t.avatar?.color, 'amber');

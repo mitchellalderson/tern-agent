@@ -315,7 +315,9 @@ async fn an_agent_is_held_to_its_tool_and_memory_scope() {
     let (_, a) = post(
         &s,
         "/v1/agents",
-        json!({ "name": "Research", "template": "research" }),
+        // The starter is readonly, which refuses memory_save too; this test is
+        // about scopes, so the agent asks for the usual supervised level.
+        json!({ "name": "Research", "template": "research", "autonomy": "supervised" }),
     )
     .await;
     let dm = a["main_channel_id"].as_str().unwrap().to_owned();

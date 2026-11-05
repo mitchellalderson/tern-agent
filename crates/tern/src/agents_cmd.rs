@@ -171,7 +171,8 @@ fn templates() {
     for category in seen {
         println!("{category}");
         for t in all.iter().filter(|t| t.category == category) {
-            println!("  {:<18} {}", t.id, t.description);
+            let cap = t.autonomy.map_or("", |a| a.as_str());
+            println!("  {:<18} {:<11} {}", t.id, cap, t.description);
         }
     }
     println!("\ntern agents new <name> --template <id>");
