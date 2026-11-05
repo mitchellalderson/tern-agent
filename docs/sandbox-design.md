@@ -11,14 +11,14 @@ Every command runs as `sh -c <command>` in the workspace, with the scrubbed envi
 | | macOS (Seatbelt, `sandbox-exec`) | Linux (Landlock + seccomp, kernel 5.13+) |
 | --- | --- | --- |
 | Write | workspace, temp dirs, `write_paths`, `/dev/null` and ttys | workspace, `/tmp`, `/var/tmp`, `write_paths`, `/dev/null` and ttys |
-| Read | everything except your home directory; in home only the workspace, `read_paths` and `PATH` entries | only system dirs (`/usr`, `/bin`, `/lib*`, `/etc`, `/opt`, `/proc`, `/sys`, `/dev`, `/run`, `/nix`, `/snap`), the workspace, `read_paths`, `write_paths` and `PATH` entries |
+| Read | everything **except** `/Users`, `/Volumes` and `$HOME`; inside those only the workspace (with its `.tern/` state dir), temp dirs, `read_paths` and the workspace's read-only folders, `write_paths`, and the detected toolchain installs (below). Sensitive home locations stay denied after every grant | only system dirs (`/usr`, `/bin`, `/lib*`, `/opt`, `/proc`, `/sys`, `/dev`, `/run`, `/nix`, `/snap`), a short list of `/etc` files (passwd, hosts, resolv.conf, ssl, ld.so.cache, localtime, alternatives, ...), the workspace, `read_paths`, `write_paths` and the detected toolchain installs |
 | Never | tern's data dir (`~/.tern`), read or write, whatever else allows it | tern's data dir: any grant that contains it is dropped, with a warning |
 | Network off (`network = false`) | IP sockets denied (Unix sockets still work) | `socket(AF_INET/AF_INET6)` and `io_uring_setup` fail (seccomp), plus Landlock's TCP rules on 6.7+ |
 | Signals | only to processes in the same sandbox | only inside the sandbox on 6.12+ (Landlock scopes) |
 | Other | no Keychain (`securityd` lookups denied); setuid binaries can't run | `no_new_privs`; can't ptrace or read `/proc/<pid>/environ` of processes outside the sandbox |
 
-Reading the home directory is the line on macOS because that is where the secrets are (`~/.ssh`, `~/.aws`, browser
-profiles, `~/.tern`). Linux uses an allowlist because Landlock can only grant, never carve out. The defaults for
+Reading `/Users` and `/Volumes` is denied on macOS because that is where the secrets and other people's files are
+(`~/.ssh`, `~/.aws`, browser profiles, `~/.tern`, other users' homes, mounted disks); nothing outside them is hidden. Linux uses an allowlist because Landlock can only grant, never carve out. The defaults for
 `read_paths` are `~/.gitconfig` and `~/.config/git`, because git refuses to run when it can't read its config.
 
 On Linux the command is started through the `tern` binary itself (`tern __sandbox-exec …`), which applies Landlock
@@ -43,9 +43,37 @@ Each command gets its own process group. On timeout or cancel tern kills the who
 it. A process that leaves the group on purpose (`setsid`, double-fork daemons) can still outlive the command. When a
 command exits normally, background processes it started keep running (on purpose: `npm run dev &` is a common ask).
 
+### Toolchains and caches
+
+A language toolchain installed under `$HOME` needs read access to its install, so detection is a table
+(`crates/tern-sandbox/src/toolchain.rs`: tool, the environment variable that relocates it, the default directory, and
+what to allow). Present today: rustup (`~/.rustup`, `RUSTUP_HOME`), Cargo's `bin` only, Volta, nvm, fnm, pyenv, rbenv,
+asdf, mise (`installs`, `shims`, and its binary), uv (pythons and binary), SDKMAN `candidates`, Bun and Deno `bin`, a
+Homebrew prefix under `$HOME`, `DEVELOPER_DIR`, and Linuxbrew and `/usr/local/go` on Linux. A row grants nothing unless
+the directory exists, is read-only, and is dropped if it would contain or lie inside a sensitive location (so
+`RUSTUP_HOME=$HOME` or `NVM_DIR=~/.ssh` grants nothing). System Homebrew (`/opt/homebrew`, `/usr/local`), the Xcode
+command line tools and system Python are outside `/Users` and need no grant.
+
+Never granted, even inside an allowed prefix or when `$HOME` itself is a read-only folder (macOS denies them again after
+the allows; Linux drops any grant that contains one): `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config`, `~/.kube`,
+`~/.docker`, `~/.azure`, `.netrc`, `.npmrc`, `.pypirc`, stored VCS credentials, `~/.cargo/credentials*`, shell and
+database history files, `~/.tern`, browser and mail profiles, `~/Library/Keychains`, `Application Support`, `Cookies`,
+`Containers`, `Mail`, `Messages`, `Safari`. A folder the user adds on purpose inside one of them (the default
+`~/.config/<vcs>`) is allowed again. `PATH` entries under a private area are no longer granted on their own: put the
+tool in a read-only folder, or install it under a detected toolchain.
+
+Caches are per workspace, not shared: `CARGO_HOME` (so the registry download cache), `CARGO_TARGET_DIR`, `TMPDIR`,
+`npm_config_cache`, `PIP_CACHE_DIR`, `XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`, `UV_CACHE_DIR`, `YARN_CACHE_FOLDER`,
+`PNPM_HOME`, `DENO_DIR`, `BUN_INSTALL_CACHE_DIR`, `COREPACK_HOME`, `PYTHONPYCACHEPREFIX` all point at
+`<workspace>/.tern/{tmp,cache}`. The first build in a workspace therefore downloads its dependencies and needs
+`network: true`; `cargo build --offline` of a crate with no dependencies works with no network. When a command fails
+with the network off and its output looks like a download failure, or a path outside the workspace was denied, the
+`shell` result ends with a `[hint]` line saying so (for a denied path: "add it as a read-only folder in Settings >
+Folders"). These are heuristics over the command's output; the OS does not say which rule denied an access.
+
 ### Not covered
 
-- Reading outside home on macOS (`/etc`, `/Applications`, other users' world-readable files).
+- Reading system paths outside `/Users` and `/Volumes` on macOS (`/etc`, `/Applications`, `/Library`, `/private/var`).
 - Network egress filtering by host: `network` is all or nothing.
 - Resource limits (CPU, memory, process count) on the host backend; use Docker for that.
 - Unix sockets, including Docker's. If your user can reach the Docker socket, a command can too. Turning `network`

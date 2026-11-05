@@ -1607,3 +1607,34 @@ defaults were applied (and are the shipped behaviour):
 **Not done:** provenance-gated approval of fetched values and hosts (ladder rung 5), the memory `unverified` rule for notes that
 contain a fetched value, a fetcher run view in the inspector (raw page in the app), JSON-LD, DB-backed cache, helper-process
 isolation, and F3/F4 (MCP and connector quarantine, TUI `/settings` rows beyond what the generic settings view shows).
+
+## Sandbox reads and toolchains: W3 (2026-11-05)
+
+Owner decision: deny reads of sensitive and other users' locations by default.
+
+- **macOS Seatbelt denies `file-read*` under `/Users`, `/Volumes` and `$HOME`**, then allows the workspace (with `.tern/`),
+  temp and writable dirs, `read_paths` plus the workspace's read-only folders (`ExecOpts.read_roots`), and the detected
+  toolchain installs. Before, only `$HOME` was denied. Paths outside those roots (`/etc`, `/Library`, `/Applications`,
+  `/opt/homebrew`, `/private/var`) stay readable; SECURITY.md and sandbox-design "Not covered" say so.
+- **Detection is a table** (`tern-sandbox/src/toolchain.rs`), unit-tested: tool, relocation variable, default dir, what to
+  allow. Read-only installs only; caches and registries are not granted because they live per workspace. Cargo grants
+  `~/.cargo/bin` only (the shims), never its registry or `credentials*`. A grant that contains or lies inside a sensitive
+  location is dropped.
+- **Sensitive home locations are denied again after every allow** (`~/.ssh`, `.aws`, `.gnupg`, `.config`, `.kube`,
+  `.docker`, `.azure`, `.netrc`, `.npmrc`, history files, `~/.tern`, browser/mail profiles, Keychains, Application
+  Support), even if `$HOME` itself is a read-only folder. A folder the user adds on purpose inside one (default
+  `~/.config/<vcs>`) is allowed again; a toolchain is not. The deny-list (`deny_paths`) still comes last.
+- **`PATH` entries under a private area are no longer granted by themselves** (they were, inside `$HOME`). A tool in
+  `~/.local/bin` now needs a read-only folder or a toolchain row. This is the accepted breakage.
+- **Linux (unverified here, no Linux host):** the helper gets the same toolchain read grants; `/etc` is a list of files
+  instead of the whole directory; a read grant containing a sensitive home path is dropped. `/proc` is unchanged: narrowing
+  it to `/proc/self` would break `/proc/cpuinfo`, `/proc/meminfo` and each child's own `/proc/<pid>`, and other processes'
+  environments are already blocked by the ptrace check and seccomp. The seccomp rules and their tests are untouched.
+- **Hints, not parsing:** a failed `shell` result gets a `[hint]` when its output looks like an offline download failure
+  (first build needs `network: true`) or a denied absolute path outside the workspace (add a read-only folder in Settings
+  > Folders). The OS doesn't report which rule denied an access, so these are output heuristics, never a verdict.
+- **More per-workspace cache variables:** `GOMODCACHE`, `DENO_DIR`, `BUN_INSTALL_CACHE_DIR`, `COREPACK_HOME`,
+  `PYTHONPYCACHEPREFIX`, beside the existing set. `RUSTUP_HOME` is left alone: toolchains are read-only and shared.
+- **Not done:** sandboxing stdio MCP servers; per-workspace Docker containers; a `tern doctor` listing of detected
+  toolchains (exported as `tern_sandbox::detect_toolchains`); a toolchain shim that must write under its own home
+  (Volta works today because its directories exist).

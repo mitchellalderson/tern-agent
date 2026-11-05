@@ -75,9 +75,12 @@ accounts paired with a one-time code, and an approval button counts only in the 
 you, with a scrubbed environment, inside an OS sandbox: Seatbelt (`sandbox-exec`) on macOS, Landlock (plus seccomp
 when networking is off) on Linux 5.13+. On both, a command can write only to the workspace, the temp directories and
 the `sandbox.write_paths` you list, and can never read or write tern's data directory (`~/.tern`). Reads differ: on
-macOS everything outside your home directory is readable and, inside it, only the workspace, `sandbox.read_paths`
-(default `~/.gitconfig` and `~/.config/git`) and `PATH` entries; on Linux only system directories (`/usr`, `/etc`,
-`/proc`, …) and those same paths are readable, so `~/.ssh`, `~/.aws` and the like are out of reach on both.
+macOS everything outside `/Users` and `/Volumes` is readable and, inside them, only the workspace and its `.tern/`
+state, the workspace's read-only folders, `sandbox.read_paths` (default `~/.gitconfig` and `~/.config/git`) and the
+read-only installs of detected toolchains (rustup, Cargo's `bin`, Volta, nvm, pyenv, ...); on Linux only system
+directories (`/usr`, `/proc`, a short list of `/etc` files, …) and those same paths are readable. `~/.ssh`, `~/.aws`,
+`~/.gnupg`, `~/.config`, browser profiles, the Keychain folders and other users' homes are out of reach on both, and
+stay denied even if a granted folder contains them (see [docs/sandbox-design.md](docs/sandbox-design.md)).
 IP networking is off by default (Seatbelt rules on macOS; seccomp, and Landlock on 6.7+, on Linux): a command gets
 it only when it asks (`network: true`), which you approve every time; `sandbox.network = true` turns it on for all.
 macOS also denies Keychain lookups and signals to processes outside the sandbox; Linux sets `no_new_privs`, stops
@@ -151,7 +154,11 @@ script grants.
   if it asked for it (or `sandbox.network = true`). Network access is all or nothing (no per-host egress rules). The host backend
   has no CPU, memory or process limits, can reach Unix sockets your user can (including Docker's, if you have
   access), and can leave background processes running after a command exits normally or by calling `setsid`. On
-  Linux, `/proc` shows other processes' command lines.
+  Linux, `/proc` shows other processes' command lines. On macOS, files outside `/Users` and `/Volumes` remain
+  readable, including `/etc`, `/Library`, `/Applications` and `/private/var`; keep secrets under your home folder. A
+  toolchain's read-only install is readable, so a secret stored inside one (a token written under `~/.rustup`) would be
+  too. The sensitive-path and toolchain rules are by path: a link the user makes inside the workspace to a denied file
+  is denied on macOS by path and on Linux by inode.
 - **MCP servers.** stdio servers run on the host as you, unsandboxed, with a scrubbed environment plus their declared
   secrets. Their tools don't ask unless you set `requires_approval`. Only add servers you trust.
 - **Connectors you install by hand.** Files you copy into `~/.tern/connectors/` load without an approval record. A
