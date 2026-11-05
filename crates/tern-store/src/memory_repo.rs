@@ -370,7 +370,7 @@ impl Store {
         let Some(run) = self
             .runs_for_session(session_id)?
             .into_iter()
-            .rfind(|r| r.trigger == "cron" && r.status == "completed")
+            .rfind(|r| r.trigger == "cron" && r.status == "completed" && !r.quiet)
         else {
             return Ok(None);
         };

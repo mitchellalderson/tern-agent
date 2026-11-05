@@ -917,10 +917,43 @@ impl Manager {
         s: &tern_store::ScheduleRow,
     ) -> anyhow::Result<crate::runtime::StartedRun> {
         self.stop_session(&s.session_id, true).await;
-        let started = self
-            .rt
-            .start_run(Some(&s.session_id), None, &s.prompt, "cron", "cron")?;
+        let (text, taint) = self.with_carryover(s, s.prompt.clone());
+        let started =
+            self.rt
+                .start_run_tainted(Some(&s.session_id), None, &text, "cron", "cron", taint)?;
         self.drive_routine_run(s, started)
+    }
+
+    /// `text` with the routine's previous report after it, as data (the
+    /// `[memory] routine_carryover_chars` setting), so a run can say what
+    /// changed since the last one without relying on notes the model
+    /// chose to save. If that run had read untrusted content the new one
+    /// starts tainted.
+    fn with_carryover(
+        &self,
+        s: &tern_store::ScheduleRow,
+        text: String,
+    ) -> (String, Option<&'static str>) {
+        let max = self.rt.live().memory.routine_carryover_chars;
+        let report = match self.rt.store.last_routine_report(&s.session_id) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(schedule = %s.id, error = %e, "reading the previous report");
+                None
+            }
+        };
+        let Some((run, report)) = report else {
+            return (text, None);
+        };
+        let tainted = run.taint.is_some();
+        let finished = run.finished_at.unwrap_or(run.updated_at);
+        match tern_core::memory::routine_carryover(&report, finished, tainted, max) {
+            Some(block) => (
+                format!("{text}\n\n{block}"),
+                tainted.then_some(tern_core::memory::TAINTED_CARRYOVER),
+            ),
+            None => (text, None),
+        }
     }
 
     /// Start a run of watch routine `s` for `events` (one, or a batch).
@@ -944,6 +977,7 @@ impl Manager {
                 format!("started by watch {watch}"),
             )
         };
+        let (text, _) = self.with_carryover(s, text);
         let started = self.rt.start_run_tainted(
             Some(&s.session_id),
             None,
