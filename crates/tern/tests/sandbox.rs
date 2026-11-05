@@ -15,10 +15,30 @@ fn tern_bin() -> PathBuf {
     std::env::var_os("TERN_TEST_BIN").map_or_else(|| env!("CARGO_BIN_EXE_tern").into(), Into::into)
 }
 
-/// A scratch dir outside the temp dirs (which commands may write) and, in a
-/// normal checkout, inside `$HOME`.
+/// A scratch dir outside the temp dirs (which the sandbox lets commands
+/// write) and, normally, inside `$HOME`. The checkout's target dir is used
+/// unless the checkout itself lives under a temp dir (e.g. a scratch
+/// worktree in `/private/tmp`), where it would be writable by design; then
+/// `$HOME` is used instead.
 fn outside() -> tempfile::TempDir {
-    tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut temps = vec![canon(Path::new("/tmp")), canon(Path::new("/var/tmp"))];
+    temps.extend(
+        std::env::var_os("TMPDIR")
+            .filter(|t| !t.is_empty())
+            .map(|t| canon(Path::new(&t))),
+    );
+    temps.push(canon(&std::env::temp_dir()));
+    let target = canon(Path::new(env!("CARGO_TARGET_TMPDIR")));
+    if temps.iter().any(|t| target.starts_with(t)) {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+        tempfile::Builder::new()
+            .prefix(".tern-sandbox-test-")
+            .tempdir_in(home)
+            .unwrap()
+    } else {
+        tempfile::tempdir_in(target).unwrap()
+    }
 }
 
 fn backend(policy: HostPolicy) -> Option<HostBackend> {
