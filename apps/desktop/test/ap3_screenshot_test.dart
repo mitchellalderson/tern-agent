@@ -64,6 +64,205 @@ const _tern = Agent(
   isDefault: true,
 );
 
+/// 25 starters in categories, like the core's catalog.
+final _starters = <AgentTemplate>[
+  const AgentTemplate(
+    id: 'blank',
+    name: '',
+    category: 'General',
+    description: 'Start blank.',
+    persona: 'You are {name}.',
+  ),
+  for (final (id, name, category, description, ceiling) in const [
+    (
+      'research',
+      'Research',
+      'Research',
+      'Looks things up on the web and in your files.',
+      'readonly',
+    ),
+    (
+      'analyst',
+      'Analyst',
+      'Research',
+      'Reads reports and spreadsheets, explains what changed.',
+      'readonly',
+    ),
+    (
+      'librarian',
+      'Librarian',
+      'Research',
+      'Files, tags and finds your notes and PDFs.',
+      'supervised',
+    ),
+    (
+      'reviewer',
+      'Code reviewer',
+      'Coding',
+      'Reads a diff and reports real bugs, ranked.',
+      'readonly',
+    ),
+    (
+      'coder',
+      'Coder',
+      'Coding',
+      'Writes and fixes code in your repo, with tests.',
+      'supervised',
+    ),
+    (
+      'devops',
+      'DevOps',
+      'Coding',
+      'Watches deploys and logs, proposes the fix.',
+      'supervised',
+    ),
+    (
+      'docs',
+      'Docs writer',
+      'Coding',
+      'Keeps READMEs and changelogs current.',
+      'supervised',
+    ),
+    (
+      'inbox',
+      'Inbox',
+      'Everyday',
+      'Sweeps your mail every morning.',
+      'supervised',
+    ),
+    (
+      'calendar',
+      'Scheduler',
+      'Everyday',
+      'Finds times and drafts the invite.',
+      'supervised',
+    ),
+    (
+      'travel',
+      'Travel',
+      'Everyday',
+      'Plans trips and watches prices.',
+      'readonly',
+    ),
+    (
+      'budget',
+      'Bookkeeper',
+      'Everyday',
+      'Categorizes spending and flags odd charges.',
+      'readonly',
+    ),
+    (
+      'marketing',
+      'Marketing',
+      'Business',
+      'Drafts posts in your voice.',
+      'supervised',
+    ),
+    (
+      'sales',
+      'Sales prep',
+      'Business',
+      'Briefs you on a company before the call.',
+      'readonly',
+    ),
+    (
+      'support',
+      'Support',
+      'Business',
+      'Triages tickets and drafts replies.',
+      'supervised',
+    ),
+    (
+      'recruiter',
+      'Recruiter',
+      'Business',
+      'Screens applications against your bar.',
+      'readonly',
+    ),
+    (
+      'ops',
+      'Ops',
+      'Business',
+      'Runs your checklists and chases what is late.',
+      'autonomous',
+    ),
+    (
+      'writer',
+      'Writer',
+      'Writing',
+      'Drafts and edits long-form in your voice.',
+      'supervised',
+    ),
+    (
+      'editor',
+      'Editor',
+      'Writing',
+      'Tightens prose and checks facts.',
+      'readonly',
+    ),
+    (
+      'translator',
+      'Translator',
+      'Writing',
+      'Translates and keeps terminology consistent.',
+      'readonly',
+    ),
+    (
+      'news',
+      'News brief',
+      'Monitoring',
+      'A morning digest of what you follow.',
+      'readonly',
+    ),
+    (
+      'price',
+      'Price watch',
+      'Monitoring',
+      'Tells you when a price or listing changes.',
+      'readonly',
+    ),
+    (
+      'uptime',
+      'Uptime',
+      'Monitoring',
+      'Checks your sites and pages you if one is down.',
+      'readonly',
+    ),
+    (
+      'tutor',
+      'Tutor',
+      'Learning',
+      'Teaches a topic with questions, not lectures.',
+      'readonly',
+    ),
+    (
+      'coach',
+      'Coach',
+      'Learning',
+      'Keeps you to the plan you set.',
+      'readonly',
+    ),
+    (
+      'home',
+      'Household',
+      'Everyday',
+      'Keeps lists, chores and reminders.',
+      'supervised',
+    ),
+  ])
+    AgentTemplate(
+      id: id,
+      name: name,
+      category: category,
+      description: description,
+      persona:
+          'You are $name, the user\'s $name agent.\n\n- Your job: '
+          '$description\n- Lead with the answer, then the evidence.',
+      autonomy: ceiling,
+      avatar: const AvatarSpec(glyph: '★', color: 'blue'),
+    ),
+];
+
 class _Client extends TernClient {
   _Client() : super(const Endpoint.unix('/nonexistent'));
 
@@ -86,6 +285,9 @@ class _Client extends TernClient {
   ];
 
   @override
+  Future<List<AgentTemplate>> agentTemplates() async => _starters;
+
+  @override
   Future<Persona> persona(String id) async => const Persona(
     persona: "You are Research, the user's research agent.",
     systemSections: '## Untrusted content',
@@ -101,11 +303,9 @@ class _Client extends TernClient {
   Future<BundlePreview> previewBundle(String source, {String? sha256}) async =>
       BundlePreview.fromJson(
         jsonDecode(
-              File(
-                'packages/tern_client/test/fixtures/bundle_preview_agents.json',
-              ).readAsStringSync(),
-            )
-            as Json,
+          File('packages/tern_client/test/fixtures/bundle_preview_agents.json')
+              .readAsStringSync(),
+        ) as Json,
       );
 }
 
@@ -169,36 +369,37 @@ TernStore _store() {
     ..streamChannel = 'dm:research'
     ..selected = 'dm:research-main'
     ..draft = false;
-  store.transcripts[TernStore.streamKeyOf('dm:research')] =
-      Transcript.fromStream([
-        StreamMessage(
-          sessionId: 'dm:research-main',
-          messageId: 1,
-          message: SessionMessage(
-            role: 'user',
-            runId: 'r1',
-            content: [TextBlock('Delete the old exports.')],
-            summary: false,
+  store.transcripts[TernStore.streamKeyOf(
+    'dm:research',
+  )] = Transcript.fromStream([
+    StreamMessage(
+      sessionId: 'dm:research-main',
+      messageId: 1,
+      message: SessionMessage(
+        role: 'user',
+        runId: 'r1',
+        content: [TextBlock('Delete the old exports.')],
+        summary: false,
+      ),
+      createdAt: _now,
+    ),
+    StreamMessage(
+      sessionId: 'dm:research-main',
+      messageId: 2,
+      message: SessionMessage(
+        role: 'assistant',
+        runId: 'r1',
+        content: [
+          TextBlock(
+            'That needs approval, and I am capped at supervised, so I '
+            'will ask first.',
           ),
-          createdAt: _now,
-        ),
-        StreamMessage(
-          sessionId: 'dm:research-main',
-          messageId: 2,
-          message: SessionMessage(
-            role: 'assistant',
-            runId: 'r1',
-            content: [
-              TextBlock(
-                'That needs approval, and I am capped at supervised, so I '
-                'will ask first.',
-              ),
-            ],
-            summary: false,
-          ),
-          createdAt: _now,
-        ),
-      ]);
+        ],
+        summary: false,
+      ),
+      createdAt: _now,
+    ),
+  ]);
   return store;
 }
 
@@ -273,6 +474,8 @@ void main() {
             matching: find.byType(Scrollable),
           )
           .first;
+      await tester.tap(find.text('Advanced'));
+      await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
         find.byKey(const Key('autonomy-explainer')),
         200,
@@ -325,5 +528,61 @@ void main() {
       expect(tester.takeException(), isNull);
       debugDefaultTargetPlatformOverride = null;
     });
+  }
+
+  // The create sheet at a roomy and a small window: blank, the starter
+  // select open, typing to filter, a starter picked, Advanced opened.
+  for (final dark in [false, true]) {
+    for (final (w, h) in [(1280, 900), (1100, 680)]) {
+      final mode = dark ? 'dark' : 'light';
+      testWidgets('create sheet $mode ${w}x$h', (tester) async {
+        tester.view.physicalSize = Size(w * 2.0, h * 2.0);
+        tester.view.devicePixelRatio = 2;
+        addTearDown(tester.view.reset);
+        debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+        final c = dark ? TernColors.dark : TernColors.light;
+        final theme = ternTheme(c, dark ? Brightness.dark : Brightness.light);
+        final key = GlobalKey();
+        final store = _store();
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: key,
+            child: MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: theme.copyWith(
+                textTheme: theme.textTheme.apply(
+                  fontFamily: '.AppleSystemUIFont',
+                ),
+              ),
+              home: Home(store: store),
+            ),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+        // Home's own header overflows below ~1200px; that is not the sheet.
+        tester.takeException();
+        final name = '${mode}_${w}x$h';
+        await tester.tap(find.byTooltip('New agent'));
+        await tester.pumpAndSettle();
+        await _shot(tester, key, 'sheet_create_blank_$name');
+        await tester.tap(find.byKey(const Key('starter-select')));
+        await tester.pumpAndSettle();
+        await _shot(tester, key, 'sheet_starters_$name');
+        await tester.enterText(find.byKey(const Key('starter-search')), 'mail');
+        await tester.pumpAndSettle();
+        await _shot(tester, key, 'sheet_starters_filtered_$name');
+        await tester.enterText(find.byKey(const Key('starter-search')), '');
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('starter-research')));
+        await tester.pumpAndSettle();
+        await _shot(tester, key, 'sheet_create_picked_$name');
+        await tester.ensureVisible(find.text('Advanced'));
+        await tester.tap(find.text('Advanced'));
+        await tester.pumpAndSettle();
+        await _shot(tester, key, 'sheet_create_advanced_$name');
+        expect(tester.takeException(), isNull);
+        debugDefaultTargetPlatformOverride = null;
+      });
+    }
   }
 }

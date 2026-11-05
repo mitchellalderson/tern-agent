@@ -6,6 +6,7 @@ import 'package:tern_client/tern_client.dart';
 import '../state/store.dart';
 import '../theme.dart';
 import 'agent_ap3.dart';
+import 'agent_starters.dart';
 import 'channel_view.dart' show slugFor;
 import 'manage.dart';
 import 'model_picker.dart' show ModelList;
@@ -90,7 +91,6 @@ class _AgentSheetState extends State<AgentSheet> {
   String? _system;
   List<AgentTemplate> _templates = [];
   String? _template;
-  var _starterFilter = '';
   ({String cron, String prompt})? _routine;
   var _addRoutine = true;
   late String _glyph =
@@ -297,78 +297,35 @@ class _AgentSheetState extends State<AgentSheet> {
     }
   }
 
-  /// The starter picker: chips grouped by category, with a search box once
-  /// the catalog is long enough to need one.
-  List<Widget> _starters(InputDecoration input) {
-    final q = _starterFilter.trim().toLowerCase();
-    final shown = [
-      for (final t in _templates)
-        if (q.isEmpty || t.searchText.contains(q) || t.id == _template) t,
-    ];
-    final categories = <String>[];
-    for (final t in shown) {
-      if (!categories.contains(t.category)) categories.add(t.category);
-    }
-    return [
-      if (_templates.length > 8)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 4),
-          child: TextField(
-            key: const Key('starter-search'),
-            onChanged: (v) => setState(() => _starterFilter = v),
-            decoration: input.copyWith(
-              hintText: 'Search ${_templates.length} starters',
-              prefixIcon: const Icon(Icons.search, size: 18),
-              isDense: true,
-            ),
-          ),
-        ),
-      for (final category in categories) ...[
-        if (category.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 8, bottom: 4),
-            child: Text(
-              category,
-              key: Key('starter-category-$category'),
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
-            for (final t in shown.where((t) => t.category == category))
-              Tooltip(
-                message: t.autonomyLevel == null
-                    ? t.description
-                    : '${t.description}\n${t.autonomyLevel!.label} ceiling',
-                child: ChoiceChip(
-                  key: Key('starter-${t.id}'),
-                  label: Text(t.name.isEmpty ? 'Blank' : t.name),
-                  selected: _template == t.id,
-                  onSelected: (_) => _apply(t),
-                ),
-              ),
-          ],
-        ),
-      ],
-      if (_templates.where((t) => t.id == _template).firstOrNull?.autonomyLevel
-          case final level?)
-        Padding(
-          padding: const EdgeInsets.only(top: 8),
-          child: Text(
-            'Ceiling: ${level.label}. ${level.line}',
-            key: const Key('starter-ceiling'),
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-        ),
-    ];
-  }
-
   Widget _section(String label) => Padding(
-    padding: const EdgeInsets.only(top: 16, bottom: 6),
+    padding: const EdgeInsets.only(top: 14, bottom: 4),
     child: Text(label, style: Theme.of(context).textTheme.labelSmall),
   );
+
+  /// One line saying what Advanced holds right now, so a collapsed section
+  /// still shows what will be saved.
+  String get _advancedSummary {
+    final tools = _tools;
+    final n = tools == null
+        ? 0
+        : _builtins
+              .where(
+                (t) => tools.builtins.all || tools.builtins.names.contains(t),
+              )
+              .length;
+    final toolsText = tools == null
+        ? 'all tools'
+        : tools.builtins.readOnly
+        ? 'read-only tools'
+        : '$n built-in ${n == 1 ? 'tool' : 'tools'}';
+    final ceiling = AutonomyLevel.parse(_autonomy)?.label.toLowerCase();
+    return [
+      toolsText,
+      '$_memory memory',
+      ceiling == null ? 'no ceiling' : '$ceiling ceiling',
+      if (_bot != null) 'own bot',
+    ].join(' · ');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -384,25 +341,28 @@ class _AgentSheetState extends State<AgentSheet> {
       isDense: true,
       border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
     );
+    final small = Theme.of(context).textTheme.bodySmall;
+    final flat = Theme.of(context).copyWith(dividerColor: Colors.transparent);
     return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 760),
+        constraints: const BoxConstraints(maxWidth: 520, maxHeight: 720),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(22, 20, 22, 0),
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
               child: Row(
                 children: [
                   AgentAvatar(
                     name: editing?.id ?? slug,
-                    size: 34,
+                    size: 30,
                     glyph: _glyph,
                     color: _color,
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -412,16 +372,17 @@ class _AgentSheetState extends State<AgentSheet> {
                               ? 'New agent'
                               : 'Edit ${editing.name}',
                           style: const TextStyle(
-                            fontSize: 17,
+                            fontSize: 16,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                         Text(
                           _isDefault
                               ? 'Your default agent. Home is its chat.'
-                              : 'Its own job, chat and memory. Changes apply '
-                                    'from its next run.',
-                          style: Theme.of(context).textTheme.bodySmall,
+                              : editing == null
+                              ? 'Pick a starter or start blank, name it, create.'
+                              : 'Changes apply from its next run.',
+                          style: small,
                         ),
                       ],
                     ),
@@ -431,66 +392,83 @@ class _AgentSheetState extends State<AgentSheet> {
             ),
             Flexible(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+                padding: const EdgeInsets.fromLTRB(20, 6, 20, 8),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     if (_creating && _templates.isNotEmpty) ...[
-                      _section('START FROM'),
-                      ..._starters(input),
-                    ],
-                    _section('NAME'),
-                    TextField(
-                      key: const Key('agent-name'),
-                      controller: _name,
-                      autofocus: _creating,
-                      decoration: input.copyWith(
-                        hintText: 'Research',
-                        helperText: slug.isEmpty || editing != null
-                            ? null
-                            : '@$slug',
+                      StarterField(
+                        templates: _templates,
+                        current: _template,
+                        onPicked: _apply,
                       ),
+                      const SizedBox(height: 12),
+                    ],
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          flex: 5,
+                          child: TextField(
+                            key: const Key('agent-name'),
+                            controller: _name,
+                            autofocus: _creating,
+                            decoration: input.copyWith(
+                              labelText: 'Name',
+                              hintText: 'Research',
+                              suffixText: slug.isEmpty || editing != null
+                                  ? null
+                                  : '@$slug',
+                            ),
+                          ),
+                        ),
+                        if (editing != null && !_isDefault) ...[
+                          const SizedBox(width: 10),
+                          Expanded(
+                            flex: 4,
+                            child: TextField(
+                              key: const Key('agent-slug'),
+                              controller: _slugCtl,
+                              decoration: input.copyWith(
+                                labelText: '@name',
+                                prefixText: '@',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
-                    if (editing != null && !_isDefault) ...[
-                      _section('@NAME'),
-                      TextField(
-                        key: const Key('agent-slug'),
-                        controller: _slugCtl,
-                        decoration: input.copyWith(
-                          prefixText: '@',
-                          helperText:
-                              'For @mentions and its chat (#dm-$slug). Its '
-                              'history keeps pointing at it.',
+                    if (editing != null && !_isDefault)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4, left: 2),
+                        child: Text(
+                          'The @name is for @mentions and its chat '
+                          '(#dm-$slug). Its history keeps pointing at it.',
+                          style: small,
                         ),
                       ),
-                    ],
-                    _section('AVATAR'),
-                    _AvatarPicker(
-                      glyph: _glyph,
-                      color: _color,
-                      onGlyph: (g) => setState(() => _glyph = g),
-                      onColor: (v) => setState(() => _color = v),
-                    ),
-                    _section('PERSONA'),
+                    const SizedBox(height: 12),
                     TextField(
                       key: const Key('agent-persona'),
                       controller: _persona,
-                      minLines: 6,
-                      maxLines: 12,
+                      minLines: 4,
+                      maxLines: 8,
                       style: const TextStyle(fontSize: 13),
                       decoration: input.copyWith(
+                        labelText: 'Persona',
+                        alignLabelWithHint: true,
                         hintText: 'Who it is, its job, its tone.',
                       ),
                     ),
                     Theme(
-                      data: Theme.of(context)
-                          .copyWith(dividerColor: Colors.transparent),
+                      data: flat,
                       child: ExpansionTile(
                         tilePadding: EdgeInsets.zero,
                         dense: true,
+                        visualDensity: VisualDensity.compact,
                         title: Text(
                           'tern adds these to every agent',
-                          style: TextStyle(fontSize: 12.5, color: c.muted),
+                          style: TextStyle(fontSize: 12, color: c.muted),
                         ),
                         children: [
                           Container(
@@ -519,9 +497,9 @@ class _AgentSheetState extends State<AgentSheet> {
                         ],
                       ),
                     ),
-                    _section('MODEL'),
                     AgentModelField(
                       key: const Key('agent-model'),
+                      label: 'Model',
                       store: widget.store,
                       chain: _model,
                       allowDefault: !_isDefault,
@@ -534,108 +512,15 @@ class _AgentSheetState extends State<AgentSheet> {
                         child: Text(
                           'Your default model: other agents without a model '
                           'of their own use it too.',
-                          style: Theme.of(context).textTheme.bodySmall,
+                          style: small,
                         ),
                       ),
-                    _section('SUB-AGENT MODEL'),
-                    AgentModelField(
-                      key: const Key('agent-subagent-model'),
-                      store: widget.store,
-                      chain: _subagentModel,
-                      allowDefault: true,
-                      defaultLabel: 'Default for sub-agents',
-                      defaultDetail:
-                          "sub-agents' configured model, else this "
-                          "agent's",
-                      onChanged: (v) => setState(() => _subagentModel = v),
-                    ),
-                    _section('TOOLS'),
-                    _ToolScopeEditor(
-                      scope: _tools,
-                      builtins: _builtins,
-                      connectors: _connectors,
-                      mcp: widget.store.mcpServers,
-                      onChanged: (t) => setState(() => _tools = t),
-                    ),
-                    _section('MEMORY'),
-                    RadioGroup<String>(
-                      groupValue: _memory,
-                      onChanged: (v) {
-                        if (v != null && !_isDefault) {
-                          setState(() => _memory = v);
-                        }
-                      },
-                      child: Column(
-                        children: [
-                          _MemoryChoice(
-                            value: 'private',
-                            title: 'Private',
-                            line:
-                                'Its own notes and memories. What it knows '
-                                'about you (user.md) is shared.',
-                            enabled: !_isDefault,
-                          ),
-                          _MemoryChoice(
-                            value: 'shared',
-                            title: 'Shared',
-                            line: 'Reads and writes the memory tern uses.',
-                            enabled: !_isDefault,
-                          ),
-                        ],
-                      ),
-                    ),
-                    _section('BROWSING'),
-                    CheckboxListTile(
-                      contentPadding: EdgeInsets.zero,
-                      dense: true,
-                      value: _browse,
-                      onChanged: (v) => setState(() => _browse = v ?? false),
-                      title: const Text('Read any site without asking'),
-                      subtitle: const Text(
-                        'For research agents. Otherwise, once it has read a web '
-                        'page or an email, each new site asks first, so injected '
-                        'text can\'t send what it knows somewhere new.',
-                      ),
-                    ),
-                    _section('AUTONOMY CEILING'),
-                    AutonomyPicker(
-                      value: _autonomy,
-                      onChanged: (v) => setState(() => _autonomy = v),
-                    ),
-                    if (widget.editing case final a?
-                        when widget.store.agents.any(
-                          (o) => o.id != a.id && !o.archived,
-                        )) ...[
-                      _section('CAN HAND WORK TO'),
-                      _DelegatesPicker(
-                        agent: a,
-                        agents: [
-                          for (final o in widget.store.agents)
-                            if (o.id != a.id && !o.archived) o,
-                        ],
-                        chosen: _delegates,
-                        onChanged: (v) => setState(() => _delegates = v),
-                      ),
-                    ],
-                    if (widget.editing case final a? when !a.isDefault) ...[
-                      _section('TELEGRAM BOT'),
-                      TelegramBotField(
-                        agent: a,
-                        agents: widget.store.agents,
-                        secrets: _secrets,
-                        loadError: _secretsError,
-                        value: _bot,
-                        onChanged: (v) => setState(() => _bot = v),
-                        onSetSecret: () async {
-                          await showSecretsDialog(context, widget.store);
-                          if (mounted) _loadSecrets();
-                        },
-                      ),
-                    ],
                     if (_routine case final r? when _creating)
                       CheckboxListTile(
                         contentPadding: EdgeInsets.zero,
                         dense: true,
+                        visualDensity: VisualDensity.compact,
+                        controlAffinity: ListTileControlAffinity.leading,
                         value: _addRoutine,
                         onChanged: (v) =>
                             setState(() => _addRoutine = v ?? false),
@@ -648,17 +533,162 @@ class _AgentSheetState extends State<AgentSheet> {
                           style: mono.copyWith(fontSize: 11.5),
                         ),
                       ),
-                    if (_error case final e?) ...[
-                      const SizedBox(height: 10),
-                      Text(e, style: TextStyle(color: c.error, fontSize: 12.5)),
-                    ],
+                    Theme(
+                      data: flat,
+                      child: ExpansionTile(
+                        key: const Key('advanced-toggle'),
+                        tilePadding: EdgeInsets.zero,
+                        childrenPadding: EdgeInsets.zero,
+                        dense: true,
+                        visualDensity: VisualDensity.compact,
+                        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+                        title: const Text(
+                          'Advanced',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        subtitle: Text(
+                          _advancedSummary,
+                          key: const Key('advanced-summary'),
+                          style: TextStyle(fontSize: 11.5, color: c.muted),
+                        ),
+                        children: [
+                          _section('AVATAR'),
+                          _AvatarPicker(
+                            glyph: _glyph,
+                            color: _color,
+                            onGlyph: (g) => setState(() => _glyph = g),
+                            onColor: (v) => setState(() => _color = v),
+                          ),
+                          _section('SUB-AGENT MODEL'),
+                          AgentModelField(
+                            key: const Key('agent-subagent-model'),
+                            store: widget.store,
+                            chain: _subagentModel,
+                            allowDefault: true,
+                            defaultLabel: 'Default for sub-agents',
+                            defaultDetail:
+                                "sub-agents' configured model, else this "
+                                "agent's",
+                            onChanged: (v) =>
+                                setState(() => _subagentModel = v),
+                          ),
+                          _section('TOOLS'),
+                          _ToolScopeEditor(
+                            scope: _tools,
+                            builtins: _builtins,
+                            connectors: _connectors,
+                            mcp: widget.store.mcpServers,
+                            onChanged: (t) => setState(() => _tools = t),
+                          ),
+                          _section('MEMORY'),
+                          RadioGroup<String>(
+                            groupValue: _memory,
+                            onChanged: (v) {
+                              if (v != null && !_isDefault) {
+                                setState(() => _memory = v);
+                              }
+                            },
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: _MemoryChoice(
+                                    value: 'private',
+                                    title: 'Private',
+                                    line:
+                                        'Its own notes and memories. What it '
+                                        'knows about you (user.md) is shared.',
+                                    enabled: !_isDefault,
+                                  ),
+                                ),
+                                Expanded(
+                                  child: _MemoryChoice(
+                                    value: 'shared',
+                                    title: 'Shared',
+                                    line:
+                                        'Reads and writes the memory tern '
+                                        'uses.',
+                                    enabled: !_isDefault,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          _section('BROWSING'),
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            dense: true,
+                            controlAffinity: ListTileControlAffinity.leading,
+                            value: _browse,
+                            onChanged: (v) =>
+                                setState(() => _browse = v ?? false),
+                            title: const Text('Read any site without asking'),
+                            subtitle: const Text(
+                              'For research agents. Otherwise, once it has '
+                              'read a web page or an email, each new site asks '
+                              "first, so injected text can't send what it "
+                              'knows somewhere new.',
+                            ),
+                          ),
+                          _section('AUTONOMY CEILING'),
+                          AutonomyPicker(
+                            value: _autonomy,
+                            onChanged: (v) => setState(() => _autonomy = v),
+                          ),
+                          if (widget.editing case final a?
+                              when widget.store.agents.any(
+                                (o) => o.id != a.id && !o.archived,
+                              )) ...[
+                            _section('CAN HAND WORK TO'),
+                            _DelegatesPicker(
+                              agent: a,
+                              agents: [
+                                for (final o in widget.store.agents)
+                                  if (o.id != a.id && !o.archived) o,
+                              ],
+                              chosen: _delegates,
+                              onChanged: (v) => setState(() => _delegates = v),
+                            ),
+                          ],
+                          if (widget.editing case final a?
+                              when !a.isDefault) ...[
+                            _section('TELEGRAM BOT'),
+                            TelegramBotField(
+                              agent: a,
+                              agents: widget.store.agents,
+                              secrets: _secrets,
+                              loadError: _secretsError,
+                              value: _bot,
+                              onChanged: (v) => setState(() => _bot = v),
+                              onSetSecret: () async {
+                                await showSecretsDialog(context, widget.store);
+                                if (mounted) _loadSecrets();
+                              },
+                            ),
+                          ],
+                          const SizedBox(height: 8),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
               ),
             ),
             const Hairline(),
+            if (_error case final e?)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                child: Text(
+                  e,
+                  key: const Key('agent-sheet-error'),
+                  style: TextStyle(color: c.error, fontSize: 12.5),
+                ),
+              ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(22, 10, 22, 14),
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
               child: Row(
                 children: [
                   if (editing != null && !_isDefault)
@@ -1088,9 +1118,13 @@ class AgentModelField extends StatelessWidget {
     this.allowDefault = true,
     this.defaultLabel = 'Default',
     this.defaultDetail,
+    this.label,
   });
 
   final TernStore store;
+
+  /// A floating label for the field; none = unlabelled.
+  final String? label;
 
   /// Empty: the default.
   final List<String> chain;
@@ -1148,6 +1182,7 @@ class AgentModelField extends StatelessWidget {
             child: InputDecorator(
               isEmpty: false,
               decoration: InputDecoration(
+                labelText: label,
                 isDense: true,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
@@ -1187,6 +1222,8 @@ class AgentModelField extends StatelessWidget {
                               ],
                             ),
                             style: const TextStyle(fontSize: 13),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           )
                         : Text(
                             primary,

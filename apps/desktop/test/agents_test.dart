@@ -3,6 +3,7 @@
 // and edit sheet, the per-agent side panel, and approvals mirrored in a DM.
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tern_client/tern_client.dart';
 import 'package:tern_desktop/state/store.dart';
@@ -88,24 +89,14 @@ class _FakeClient extends TernClient {
       inEnv: false,
       usedBy: ['telegram'],
     ),
-    const SecretStatus(
-      name: 'OPS_BOT',
-      inFile: true,
-      inEnv: false,
-      usedBy: [],
-    ),
+    const SecretStatus(name: 'OPS_BOT', inFile: true, inEnv: false, usedBy: []),
     const SecretStatus(
       name: 'RESEARCH_BOT',
       inFile: true,
       inEnv: false,
       usedBy: [],
     ),
-    const SecretStatus(
-      name: 'NEW_BOT',
-      inFile: true,
-      inEnv: false,
-      usedBy: [],
-    ),
+    const SecretStatus(name: 'NEW_BOT', inFile: true, inEnv: false, usedBy: []),
     const SecretStatus(
       name: 'GHOST_BOT',
       inFile: false,
@@ -373,6 +364,28 @@ Future<(TernStore, _FakeClient)> _store() async {
   return (store, client);
 }
 
+/// Opens the agent sheet's collapsed Advanced section.
+Future<void> openAdvanced(WidgetTester tester) async {
+  final toggle = find.text('Advanced');
+  await tester.ensureVisible(toggle);
+  await tester.pumpAndSettle();
+  await tester.tap(toggle);
+  await tester.pumpAndSettle();
+}
+
+/// Opens the create sheet's starter select and picks starter `id`.
+Future<void> pickStarter(WidgetTester tester, String id) async {
+  await tester.ensureVisible(find.byKey(const Key('starter-select')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('starter-select')));
+  await tester.pumpAndSettle();
+  final row = find.byKey(Key('starter-$id'));
+  await tester.ensureVisible(row);
+  await tester.pumpAndSettle();
+  await tester.tap(row);
+  await tester.pumpAndSettle();
+}
+
 Future<void> _pump(WidgetTester tester, TernStore store) async {
   tester.view.physicalSize = const Size(1500, 1000);
   tester.view.devicePixelRatio = 1;
@@ -521,8 +534,7 @@ void main() {
     expect(find.text('New agent'), findsOneWidget);
     // Never a blank page: the Blank template's persona.
     expect(find.text('tern adds these to every agent'), findsOneWidget);
-    await tester.tap(find.widgetWithText(ChoiceChip, 'Inbox'));
-    await tester.pumpAndSettle();
+    await pickStarter(tester, 'inbox');
     expect(find.text('You are Inbox.'), findsOneWidget);
     expect(find.textContaining('Add its routine'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, 'Create'));
@@ -576,18 +588,76 @@ void main() {
     await _pump(tester, store);
     await tester.tap(find.byTooltip('New agent'));
     await tester.pumpAndSettle();
+    // One slim select; the starters are in its list, not on the sheet.
+    expect(find.byKey(const Key('starter-code-3')), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(AgentSheet),
+        matching: find.byType(ChoiceChip),
+      ),
+      findsNothing,
+    );
+    await tester.tap(find.byKey(const Key('starter-select')));
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('starter-category-Coding')), findsOneWidget);
     expect(find.byKey(const Key('starter-category-Everyday')), findsOneWidget);
     expect(find.byKey(const Key('starter-code-3')), findsOneWidget);
+    // Blank is always there, a clear option.
+    expect(find.byKey(const Key('starter-blank')), findsOneWidget);
     await tester.enterText(find.byKey(const Key('starter-search')), 'mail');
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('starter-category-Coding')), findsNothing);
     expect(find.byKey(const Key('starter-mail-1')), findsOneWidget);
     await tester.enterText(find.byKey(const Key('starter-search')), 'zzz');
     await tester.pumpAndSettle();
-    // The picked starter stays visible; nothing else matches.
+    // Nothing matches; Blank stays.
     expect(find.byKey(const Key('starter-mail-1')), findsNothing);
     expect(find.byKey(const Key('starter-blank')), findsOneWidget);
+    expect(find.textContaining('No starter matches'), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('the starter select works from the keyboard', (tester) async {
+    final (store, client) = await _store();
+    client.extraTemplates = [
+      for (var i = 0; i < 3; i++)
+        AgentTemplate(
+          id: 'mail-$i',
+          name: 'Mailer $i',
+          category: 'Everyday',
+          description: 'Sorts the mail.',
+          persona: 'You are {name}.',
+        ),
+      const AgentTemplate(
+        id: 'blank',
+        name: '',
+        category: 'General',
+        description: 'Start blank.',
+        persona: 'You are {name}.',
+      ),
+    ];
+    await _pump(tester, store);
+    await tester.tap(find.byTooltip('New agent'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('starter-select')));
+    await tester.pumpAndSettle();
+    // The search box has focus: type, arrow down twice, Enter.
+    await tester.enterText(find.byKey(const Key('starter-search')), 'mailer');
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pump();
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    // The chooser closed and the third match filled the sheet.
+    expect(find.byKey(const Key('starter-search')), findsNothing);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('agent-name')))
+          .controller!
+          .text,
+      'Mailer 2',
+    );
     debugDefaultTargetPlatformOverride = null;
   });
 
@@ -607,6 +677,7 @@ void main() {
       find.byKey(const Key('agent-persona')),
       'You are Research. Cite everything.',
     );
+    await openAdvanced(tester);
     final shared = find.widgetWithText(RadioListTile<String>, 'Shared');
     // The sheet's own scroll view (its text fields scroll too).
     final sheet = find
@@ -654,6 +725,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Your default agent. Home is its chat.'), findsOneWidget);
     expect(find.text('Archive'), findsNothing);
+    await openAdvanced(tester);
     final private = tester.widget<RadioListTile<String>>(
       find.widgetWithText(RadioListTile<String>, 'Private'),
     );
@@ -695,6 +767,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await openAdvanced(tester);
     final chip = find.widgetWithText(FilterChip, 'Research');
     final sheet = find
         .descendant(
@@ -812,6 +885,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      await openAdvanced(tester);
       return (store, client);
     }
 
@@ -1115,6 +1189,7 @@ void main() {
       await _pump(tester, store);
       await tester.tap(find.byTooltip('Edit ${agent.name}'));
       await tester.pumpAndSettle();
+      await openAdvanced(tester);
       return (store, client);
     }
 
@@ -1172,13 +1247,19 @@ void main() {
       await _pump(tester, store);
       await tester.tap(find.byTooltip('New agent'));
       await tester.pumpAndSettle();
+      // Blank has no ceiling to show.
       expect(find.byKey(const Key('starter-ceiling')), findsNothing);
-      await tester.tap(find.byKey(const Key('starter-research')));
-      await tester.pumpAndSettle();
+      await pickStarter(tester, 'research');
       expect(
         tester.widget<Text>(find.byKey(const Key('starter-ceiling'))).data,
-        startsWith('Ceiling: Read-only.'),
+        'Read-only ceiling',
       );
+      // Pre-selected in Advanced, and the collapsed header says so.
+      expect(
+        tester.widget<Text>(find.byKey(const Key('advanced-summary'))).data,
+        contains('read-only ceiling'),
+      );
+      await openAdvanced(tester);
       await show(tester, find.byKey(const Key('autonomy-readonly')));
       String? picked() => tester
           .widget<RadioGroup<String>>(
@@ -1192,17 +1273,14 @@ void main() {
       await tester.tap(find.byKey(const Key('autonomy-supervised')));
       await tester.pump();
       expect(picked(), 'supervised');
-      await tester.ensureVisible(find.byKey(const Key('starter-inbox')));
+      // Another starter brings its own ceiling.
+      await tester.ensureVisible(find.byKey(const Key('starter-select')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('starter-inbox')));
-      await tester.pumpAndSettle();
+      await pickStarter(tester, 'inbox');
       await tester.ensureVisible(find.byKey(const Key('autonomy-readonly')));
       await tester.pumpAndSettle();
       expect(picked(), 'supervised');
-      await tester.ensureVisible(find.byKey(const Key('starter-research')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('starter-research')));
-      await tester.pumpAndSettle();
+      await pickStarter(tester, 'research');
       await tester.tap(find.widgetWithText(FilledButton, 'Create'));
       await tester.pumpAndSettle();
       expect(client.created.single['autonomy'], 'readonly');
@@ -1233,6 +1311,7 @@ void main() {
       await tester.pumpAndSettle();
       // No bot field until the agent exists.
       expect(find.text('TELEGRAM BOT'), findsNothing);
+      await openAdvanced(tester);
       await show(tester, find.byKey(const Key('autonomy-autonomous')));
       await tester.tap(find.byKey(const Key('autonomy-autonomous')));
       await tester.pump();
@@ -1258,6 +1337,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      await openAdvanced(tester);
       await show(tester, find.byKey(const Key('autonomy-none')));
       expect(find.text('AUTONOMY CEILING'), findsOneWidget);
       expect(find.text('TELEGRAM BOT'), findsNothing);
@@ -1378,6 +1458,7 @@ void main() {
       await _pump(tester, store);
       await tester.tap(find.byTooltip('Edit Research'));
       await tester.pumpAndSettle();
+      await openAdvanced(tester);
       await show(tester, find.byKey(const Key('agent-bot-set-secret')));
       expect(find.textContaining("Couldn't list your secrets"), findsOneWidget);
     });

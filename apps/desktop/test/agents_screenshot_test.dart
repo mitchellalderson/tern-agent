@@ -393,12 +393,9 @@ void main() {
 
       await tester.tap(find.byTooltip('New agent'));
       await tester.pumpAndSettle();
-      await tester.tap(
-        find.descendant(
-          of: find.byType(Dialog),
-          matching: find.widgetWithText(ChoiceChip, 'Research'),
-        ),
-      );
+      await tester.tap(find.byKey(const Key('starter-select')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('starter-research')));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       await _shot(tester, key, 'agent_sheet_${dark ? 'dark' : 'light'}');
