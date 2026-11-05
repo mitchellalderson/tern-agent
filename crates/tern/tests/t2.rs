@@ -184,10 +184,13 @@ async fn a_send_into_a_topic_channel_posts_and_the_answer_replies_to_it() {
     let channel_id = posts[0]["channel_id"].as_str().unwrap().to_owned();
     let evs = events
         .until(10, |evs| {
+            // The stream merges agent events and changes in no fixed order,
+            // so wait for the run's start as well as both posts.
             evs.iter()
                 .filter(|e| e.get("post_created").is_some())
                 .count()
                 >= 2
+                && evs.iter().any(|e| e["type"] == "run_started")
         })
         .await;
     let started = evs.iter().find(|e| e["type"] == "run_started").unwrap();

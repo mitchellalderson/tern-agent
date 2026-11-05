@@ -517,7 +517,15 @@ mod tests {
             network: false,
             ..tern_sandbox::HostPolicy::confined()
         };
-        let shell = Shell::new(Arc::new(HostBackend::new(offline)), Duration::from_secs(10));
+        let backend = Arc::new(HostBackend::new(offline));
+        if backend.network_reachable() {
+            // No OS sandbox here (a Linux unit-test binary is not the
+            // `tern` helper), so "network: false" is not enforced and the
+            // call is not a network request worth asking about.
+            eprintln!("skipping: no enforcing sandbox on this host");
+            return;
+        }
+        let shell = Shell::new(backend, Duration::from_secs(10));
         let ask = json!({"command": "echo hi", "network": true});
         assert_eq!(
             shell.summary(&ask).as_deref(),
@@ -691,11 +699,40 @@ mod script_grant_tests {
         reg.grant_key(&env.ctx.run_id, c)
     }
 
+    /// A usable `python3`: present, and one the script-grant inspection
+    /// accepts. Some hosts (Debian and Ubuntu, with `zope.interface`'s
+    /// `-nspkg.pth`) ship an `import` line in a startup `.pth` file, which
+    /// the inspection refuses on purpose; the tests that need a covered
+    /// interpreter skip there instead of failing.
     fn have_python() -> bool {
-        std::process::Command::new("python3")
+        let runs = std::process::Command::new("python3")
             .arg("--version")
             .output()
-            .is_ok_and(|o| o.status.success())
+            .is_ok_and(|o| o.status.success());
+        if !runs {
+            return false;
+        }
+        let e = env();
+        std::fs::write(e.ws.join("a.py"), "x").unwrap();
+        let claim = Claim::plain(verified(), roots(&e));
+        let parsed = shell_script::Parsed {
+            interpreter: "python3".into(),
+            script: "a.py".into(),
+            args: vec![],
+        };
+        match shell_script::resolve(
+            &parsed,
+            &e.ws,
+            &roots(&e),
+            std::env::var_os("PATH"),
+            &Confined(&claim, 0),
+        ) {
+            Ok(_) => true,
+            Err(why) => {
+                eprintln!("skipping: this host's python3 isn't coverable: {why}");
+                false
+            }
+        }
     }
 
     fn roots(e: &Env) -> Vec<PathBuf> {
@@ -716,6 +753,9 @@ mod script_grant_tests {
 
     #[test]
     fn the_key_names_script_bytes_arguments_interpreter_path_and_workspace() {
+        if !have_python() {
+            return;
+        }
         let e = env();
         std::fs::write(e.ws.join("a.py"), "print(1)").unwrap();
         std::fs::write(e.ws.join("b.py"), "print(1)").unwrap();
@@ -772,6 +812,9 @@ mod script_grant_tests {
 
     #[test]
     fn only_the_covered_shape_gets_a_key_and_python_commands_say_why() {
+        if !have_python() {
+            return;
+        }
         let e = env();
         std::fs::write(e.ws.join("a.py"), "print(1)").unwrap();
         let (reg, _) = registry(Claim::new(verified(), roots(&e)));
@@ -828,6 +871,9 @@ mod script_grant_tests {
 
     #[test]
     fn no_key_unless_the_sandbox_is_verified_and_offline() {
+        if !have_python() {
+            return;
+        }
         let e = env();
         std::fs::write(e.ws.join("a.py"), "print(1)").unwrap();
         let c = call("1", "python3 a.py");
@@ -1050,6 +1096,9 @@ mod script_grant_tests {
 
     #[test]
     fn plans_of_calls_that_do_not_run_and_of_ended_runs_are_dropped() {
+        if !have_python() {
+            return;
+        }
         let e = env();
         std::fs::write(e.ws.join("a.py"), "x").unwrap();
         let (reg, shell) = registry(Claim::new(verified(), roots(&e)));
