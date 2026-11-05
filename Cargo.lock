@@ -4818,7 +4818,7 @@ dependencies = [
 
 [[package]]
 name = "tern"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4876,7 +4876,7 @@ dependencies = [
 
 [[package]]
 name = "tern-auth"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -4896,7 +4896,7 @@ dependencies = [
 
 [[package]]
 name = "tern-bundle"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "aws-lc-rs",
  "blake2",
@@ -4923,7 +4923,7 @@ dependencies = [
 
 [[package]]
 name = "tern-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "blake3",
@@ -4947,7 +4947,7 @@ dependencies = [
 
 [[package]]
 name = "tern-gateway"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -4966,7 +4966,7 @@ dependencies = [
 
 [[package]]
 name = "tern-lua"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "blake3",
@@ -4989,7 +4989,7 @@ dependencies = [
 
 [[package]]
 name = "tern-mcp"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5009,7 +5009,7 @@ dependencies = [
 
 [[package]]
 name = "tern-providers"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -5026,7 +5026,7 @@ dependencies = [
 
 [[package]]
 name = "tern-python"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "monty",
@@ -5046,7 +5046,7 @@ dependencies = [
 
 [[package]]
 name = "tern-sandbox"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "landlock",
@@ -5062,7 +5062,7 @@ dependencies = [
 
 [[package]]
 name = "tern-store"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "rusqlite",
  "serde_json",
@@ -5073,7 +5073,7 @@ dependencies = [
 
 [[package]]
 name = "tern-tools"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5098,7 +5098,7 @@ dependencies = [
 
 [[package]]
 name = "tern-tui"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6182,7 +6182,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "yaml-rust2"
