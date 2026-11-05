@@ -10,6 +10,7 @@ mod manage_repo;
 #[cfg(test)]
 mod manage_tests;
 mod members_repo;
+mod memory_repo;
 mod migrations;
 mod outbox_repo;
 mod repo;
@@ -30,6 +31,9 @@ pub use ledger_repo::{
 };
 pub use manage_repo::{AgentUse, ChannelUse, RoutineFate};
 pub use members_repo::{ChannelWakes, Member, mention_slugs};
+pub use memory_repo::{
+    Forgot, MemoryLimits, MemoryRefusal, NewMemory, SOURCE_AGENT, SOURCE_UNVERIFIED, SOURCE_USER,
+};
 pub use outbox_repo::{NewOutbox, OutboxRow};
 pub use skill_offers_repo::SkillOfferRow;
 pub use subagents_repo::{MailRow, NewMail};

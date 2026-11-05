@@ -32,6 +32,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0022_agent_autonomy.sql"),
     include_str!("../migrations/0023_let_agents_decide.sql"),
     include_str!("../migrations/0024_agent_tombstones.sql"),
+    include_str!("../migrations/0026_memory_provenance.sql"),
 ];
 
 pub const LATEST_VERSION: u32 = MIGRATIONS.len() as u32;

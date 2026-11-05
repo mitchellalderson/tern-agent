@@ -463,7 +463,7 @@ impl Store {
         };
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT m.id, m.content, COALESCE(m.tags, ''), m.created_at, m.agent_id
+            "SELECT m.id, m.content, COALESCE(m.tags, ''), m.created_at, m.agent_id, m.source, m.run_id
              FROM memories_fts f JOIN memories m ON m.id = f.rowid
              WHERE memories_fts MATCH ?1 AND (m.agent_id IS NULL OR m.agent_id = ?3)
              ORDER BY bm25(memories_fts) LIMIT ?2",
@@ -485,7 +485,7 @@ impl Store {
         let rows = match query.and_then(fts_query) {
             Some(q) => {
                 let mut stmt = conn.prepare(&format!(
-                    "SELECT m.id, m.content, COALESCE(m.tags, ''), m.created_at, m.agent_id
+                    "SELECT m.id, m.content, COALESCE(m.tags, ''), m.created_at, m.agent_id, m.source, m.run_id
                      FROM memories_fts f JOIN memories m ON m.id = f.rowid
                      WHERE memories_fts MATCH ?2 AND {filter}
                      ORDER BY bm25(memories_fts) LIMIT ?3"
@@ -495,7 +495,7 @@ impl Store {
             }
             None => {
                 let mut stmt = conn.prepare(&format!(
-                    "SELECT m.id, m.content, COALESCE(m.tags, ''), m.created_at, m.agent_id
+                    "SELECT m.id, m.content, COALESCE(m.tags, ''), m.created_at, m.agent_id, m.source, m.run_id
                      FROM memories m WHERE {filter} ORDER BY m.id DESC LIMIT ?2"
                 ))?;
                 stmt.query_map(params![scope, limit as i64], memory_row)?
@@ -542,13 +542,15 @@ impl Store {
     }
 }
 
-fn memory_row(r: &Row<'_>) -> rusqlite::Result<MemoryRow> {
+pub(crate) fn memory_row(r: &Row<'_>) -> rusqlite::Result<MemoryRow> {
     Ok(MemoryRow {
         id: r.get(0)?,
         content: r.get(1)?,
         tags: r.get(2)?,
         created_at: r.get(3)?,
         agent_id: r.get(4)?,
+        source: r.get(5)?,
+        run_id: r.get(6)?,
     })
 }
 
