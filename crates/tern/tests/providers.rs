@@ -638,3 +638,92 @@ async fn the_command_line_goes_through_a_running_daemon() {
         "--keep-key kept it: {secrets}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn presets_and_address_mistakes() {
+    let fake = fake_provider().await;
+    let root = fake.uri();
+    let d = daemon();
+    let api = Api::new(&d);
+
+    let presets = api.ok(Method::GET, "/v1/providers/presets", None).await;
+    let ids: Vec<&str> = presets
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(&ids[..3], ["anthropic", "openai", "openrouter"]);
+    assert_eq!(*ids.last().unwrap(), "other");
+    let or = &presets[2];
+    assert_eq!(or["base_url"], "https://openrouter.ai/api/v1");
+    assert_eq!(or["kind"], "openai_compat");
+    assert_eq!(or["needs_key"], true);
+
+    // A pasted `/chat/completions` URL is tidied, and the user is told.
+    let v = api
+        .ok(
+            Method::POST,
+            "/v1/providers/verify",
+            Some(json!({
+                "preset": "other",
+                "base_url": format!("{root}/v1/chat/completions"),
+                "key": "sk-good",
+            })),
+        )
+        .await;
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(
+        v["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains(&format!("{root}/v1")),
+        "{v}"
+    );
+
+    // An address with no API behind it is an error, not a saved provider
+    // that fails on the first message.
+    let v = api
+        .ok(
+            Method::POST,
+            "/v1/providers/verify",
+            Some(json!({ "kind": "openai_compat", "base_url": format!("{root}/nope/v1"), "key": "sk-good" })),
+        )
+        .await;
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["error"]["kind"], "not_found");
+    assert!(v["message"].as_str().unwrap().contains("didn't recognise"));
+    let (status, _) = api
+        .call(
+            Method::POST,
+            "/v1/providers",
+            Some(json!({ "kind": "openai_compat", "name": "bad", "base_url": format!("{root}/nope/v1"), "key": "sk-good" })),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(!d.tern_home().join("config.toml").exists());
+
+    // An unknown preset id is a clear error.
+    let (status, text) = api
+        .call(
+            Method::POST,
+            "/v1/providers/verify",
+            Some(json!({ "preset": "nope" })),
+        )
+        .await;
+    assert_eq!(status, 400, "{text}");
+
+    // A preset fills in the name, so the saved provider is a plain table.
+    let added = api
+        .ok(
+            Method::POST,
+            "/v1/providers",
+            Some(json!({ "preset": "other", "name": "fake", "base_url": &root, "key": "sk-good", "default_model": "gpt-new" })),
+        )
+        .await;
+    assert_eq!(added["provider"]["name"], "fake");
+    let cfg = std::fs::read_to_string(d.tern_home().join("config.toml")).unwrap();
+    assert!(cfg.contains("[providers.fake]"), "{cfg}");
+    assert!(!cfg.contains("preset"), "{cfg}");
+    assert!(cfg.contains("fake:gpt-new"), "{cfg}");
+}

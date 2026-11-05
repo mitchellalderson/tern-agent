@@ -15,17 +15,28 @@ use crate::{http, sse};
 
 pub struct OpenAiCompat {
     id: String,
-    base_url: String,
+    pub(crate) base_url: String,
     api_key: Option<String>,
+    /// OpenRouter asks apps to identify themselves with two headers.
+    pub(crate) attribution: bool,
     client: reqwest::Client,
 }
 
+/// Sent to OpenRouter so the app shows up by name on its dashboards.
+const OPENROUTER_REFERER: &str = "https://github.com/mitchellalderson/tern-agent";
+const OPENROUTER_TITLE: &str = "tern";
+
 impl OpenAiCompat {
     pub fn new(id: &str, base_url: &str, api_key: Option<String>) -> Result<Self, ProviderError> {
+        // Tidy a base URL pasted wrong (a missing `/api/v1`, a pasted
+        // `/chat/completions`), so a mistake in config doesn't 404 every call.
+        let base_url = tern_core::presets::normalize_base_url(base_url);
+        let attribution = tern_core::models::host_of(&base_url) == "openrouter.ai";
         Ok(Self {
             id: id.to_owned(),
-            base_url: base_url.trim_end_matches('/').to_owned(),
+            base_url,
             api_key,
+            attribution,
             client: http::client()?,
         })
     }
@@ -248,6 +259,11 @@ impl Provider for OpenAiCompat {
             .json(&request_body(&req));
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
+        }
+        if self.attribution {
+            builder = builder
+                .header("HTTP-Referer", OPENROUTER_REFERER)
+                .header("X-Title", OPENROUTER_TITLE);
         }
         let resp = tokio::select! {
             r = builder.send() => r.map_err(http::network)?,

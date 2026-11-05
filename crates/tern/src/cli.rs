@@ -231,12 +231,15 @@ pub enum ProvidersCommand {
     /// Add a provider. The key is read from stdin when it isn't a terminal
     /// (`pbpaste | tern providers add anthropic`), else asked for hidden.
     Add {
-        /// `anthropic` or `openai-compat`.
+        /// `anthropic`, a service (`openai`, `openrouter`, `gemini`, `groq`,
+        /// `together`, `ollama`, `lmstudio`), or `openai-compat` for any
+        /// other OpenAI-compatible server.
         kind: ProviderKindArg,
-        /// Base URL, required for openai-compat (e.g. http://localhost:11434/v1).
+        /// Base URL: required for openai-compat (e.g. http://localhost:11434/v1),
+        /// optional for a service (it has a default).
         #[arg(long)]
         url: Option<String>,
-        /// Name to refer to it by (default: anthropic, or one from the URL).
+        /// Name to refer to it by (default: the service's name, or one from the URL).
         #[arg(long)]
         name: Option<String>,
         /// Model to make the default (default: the first listed, when there
@@ -339,7 +342,33 @@ pub enum McpCommand {
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum ProviderKindArg {
     Anthropic,
+    /// Any OpenAI-compatible server; needs --url.
     OpenaiCompat,
+    // Friendly presets: the URL is filled in.
+    Openai,
+    Openrouter,
+    Gemini,
+    Groq,
+    Together,
+    Ollama,
+    Lmstudio,
+}
+
+impl ProviderKindArg {
+    /// The preset this names (`tern_core::presets`), if it is one.
+    pub fn preset_id(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenaiCompat => return None,
+            Self::Openai => "openai",
+            Self::Openrouter => "openrouter",
+            Self::Gemini => "gemini",
+            Self::Groq => "groq",
+            Self::Together => "together",
+            Self::Ollama => "ollama",
+            Self::Lmstudio => "lmstudio",
+        })
+    }
 }
 
 #[derive(Debug, Subcommand)]

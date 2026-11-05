@@ -598,7 +598,7 @@ async fn probe(
         }
         Err(e) => {
             let status = match e {
-                ListError::RateLimited | ListError::NotFound | ListError::Forbidden => Status::Warn,
+                ListError::RateLimited | ListError::Forbidden => Status::Warn,
                 _ => Status::Fail,
             };
             (

@@ -1894,10 +1894,11 @@ impl App {
                 RunStatus::Interrupted => {
                     self.notice(format!("interrupted — /resume {run_id} to continue"))
                 }
-                RunStatus::Failed | RunStatus::Running => self.error(format!(
-                    "run failed: {} — /resume {run_id} to retry",
-                    o.error.as_deref().unwrap_or("unknown error")
-                )),
+                RunStatus::Failed | RunStatus::Running => {
+                    let raw = o.error.as_deref().unwrap_or("unknown error");
+                    let text = self.explain_failure(raw);
+                    self.error(format!("run failed: {text} — /resume {run_id} to retry"))
+                }
             },
         }
         // What else was said in the channel meanwhile (other agents,
@@ -2055,6 +2056,30 @@ impl App {
 
     fn notice(&mut self, s: impl Into<String>) {
         self.entries.push(Entry::Notice(s.into()));
+    }
+
+    /// A model-call error in plain words (a 404 from OpenRouter becomes
+    /// "OpenRouter couldn't find that endpoint or model..."), with the raw
+    /// text kept after it and `/setup` named when the fix is there.
+    fn explain_failure(&self, raw: &str) -> String {
+        let provider = self
+            .model
+            .as_deref()
+            .and_then(|m| m.split_once(':'))
+            .map_or("", |(p, _)| p);
+        let label = self
+            .backend
+            .providers()
+            .ok()
+            .and_then(|ps| ps.into_iter().find(|p| p.name == provider))
+            .map_or_else(|| provider.to_owned(), |p| p.label);
+        match tern_core::models::friendly_call_error(raw, &label) {
+            Some(f) if f.fix_in_models => {
+                format!("{} Run /setup to fix. (details: {raw})", f.message)
+            }
+            Some(f) => format!("{} (details: {raw})", f.message),
+            None => raw.to_owned(),
+        }
     }
 
     fn error(&mut self, s: impl Into<String>) {

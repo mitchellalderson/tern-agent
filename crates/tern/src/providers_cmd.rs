@@ -12,7 +12,7 @@ use tern_core::config::ProviderKind;
 use tern_core::models::ProviderDraft;
 use tern_tui::Backend;
 
-use crate::cli::{ProviderKindArg, ProvidersCommand};
+use crate::cli::ProvidersCommand;
 
 pub(crate) fn with_backend<T>(
     home: &TernHome,
@@ -46,20 +46,21 @@ pub fn run(home: &TernHome, command: Option<ProvidersCommand>) -> anyhow::Result
             env_key,
             no_key,
         } => {
-            let kind = match kind {
-                ProviderKindArg::Anthropic => ProviderKind::Anthropic,
-                ProviderKindArg::OpenaiCompat => ProviderKind::OpenaiCompat,
-            };
-            if kind == ProviderKind::OpenaiCompat && url.is_none() {
+            let preset = kind.preset_id().and_then(tern_core::presets::find);
+            let kind = preset.map_or(ProviderKind::OpenaiCompat, |p| p.kind);
+            if preset.is_none() && url.is_none() {
                 bail!("openai-compat needs --url, e.g. --url http://localhost:11434/v1");
             }
-            if kind == ProviderKind::Anthropic && no_key {
-                bail!("Anthropic needs an API key");
+            if let Some(p) = preset
+                && p.needs_key
+                && no_key
+            {
+                bail!("{} needs an API key", p.label);
             }
             let key = if env_key || no_key {
                 None
             } else {
-                Some(read_key(kind)?)
+                Some(read_key(preset.map(|p| (p.label, p.needs_key)))?)
             };
             let draft = ProviderDraft {
                 kind: Some(kind),
@@ -67,6 +68,7 @@ pub fn run(home: &TernHome, command: Option<ProvidersCommand>) -> anyhow::Result
                 base_url: url,
                 key: key.filter(|k| !k.trim().is_empty()),
                 use_env_key: env_key,
+                preset: preset.map(|p| p.id.to_owned()),
             };
             add(home, draft, default_model)
         }
@@ -157,18 +159,18 @@ fn add(
 }
 
 /// The key from stdin when it's piped, else typed or pasted without echo.
-fn read_key(kind: ProviderKind) -> anyhow::Result<String> {
+fn read_key(preset: Option<(&str, bool)>) -> anyhow::Result<String> {
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
         let mut key = String::new();
         stdin.lock().read_to_string(&mut key)?;
         return Ok(key);
     }
-    let prompt = match kind {
-        ProviderKind::Anthropic => "Paste your Anthropic API key (hidden): ",
-        ProviderKind::OpenaiCompat => "API key, or Enter for none (hidden): ",
+    let prompt = match preset {
+        Some((label, true)) => format!("Paste your {label} API key (hidden): "),
+        _ => "API key, or Enter for none (hidden): ".to_owned(),
     };
-    read_hidden(prompt)
+    read_hidden(&prompt)
 }
 
 pub(crate) fn read_hidden(prompt: &str) -> anyhow::Result<String> {

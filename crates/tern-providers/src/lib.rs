@@ -6,6 +6,8 @@ mod http;
 pub mod mock;
 pub mod models;
 pub mod openai_compat;
+#[cfg(test)]
+mod openrouter_tests;
 mod sse;
 
 use std::sync::Arc;

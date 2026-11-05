@@ -97,12 +97,27 @@ impl ModelList {
             if models.is_empty() && !filter.is_empty() {
                 continue;
             }
+            // With no list, offer the preset's few suggestions, labelled.
+            let suggested: Vec<&String> = if g.models.is_empty() {
+                g.suggested
+                    .iter()
+                    .filter(|id| filter.is_empty() || subsequence(filter, id))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let note = match (&g.message, g.models.is_empty()) {
                 (Some(m), true) => Some(format!("couldn't list models: {m}")),
                 (Some(m), false) => Some(format!("showing the last list: {m}")),
+                (None, true) if !g.suggested.is_empty() => {
+                    Some("no list available; suggestions below, or type a model id".into())
+                }
                 (None, true) => Some("no models listed; type a model id".into()),
                 (None, false) => None,
             };
+            if models.is_empty() && suggested.is_empty() && !filter.is_empty() {
+                continue;
+            }
             rows.push(Row::Header {
                 title: g.provider.clone(),
                 note,
@@ -111,6 +126,11 @@ impl ModelList {
                 let full = format!("{}:{}", g.provider, m.id);
                 let current = self.current.as_deref() == Some(full.as_str());
                 rows.push(model_row(&g.provider, &m.id, Some(m), current));
+            }
+            for id in suggested {
+                let full = format!("{}:{id}", g.provider);
+                let current = self.current.as_deref() == Some(full.as_str());
+                rows.push(model_row(&g.provider, id, None, current));
             }
         }
         if !filter.is_empty() {
@@ -281,6 +301,7 @@ mod tests {
             error: None,
             message: None,
             fetched_at: Some(0),
+            suggested: vec![],
             models: ids
                 .iter()
                 .map(|id| ModelInfo {

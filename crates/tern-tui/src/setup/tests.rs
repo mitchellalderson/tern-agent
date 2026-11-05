@@ -47,6 +47,8 @@ fn status(name: &str, kind: ProviderKind) -> ProviderStatus {
         secret: Some("X_API_KEY".into()),
         key_source: "file".into(),
         key_hint: Some("sk-ant…good".into()),
+        preset: None,
+        label: name.into(),
         error: None,
         message: None,
         is_default: false,
@@ -126,6 +128,7 @@ impl Backend for Fake {
             message: None,
             fetched_at: Some(0),
             models: models(),
+            suggested: vec![],
         }])
     }
     async fn verify_provider(
@@ -246,6 +249,7 @@ fn adds_anthropic_after_a_rejected_key() {
                 base_url: None,
                 key: Some("sk-good".into()),
                 use_env_key: false,
+                preset: Some("anthropic".into()),
             },
             existing: None,
             default_model: Some("anthropic:m2".into()),
@@ -262,8 +266,8 @@ fn adds_anthropic_after_a_rejected_key() {
 fn adds_an_openai_compatible_server_without_a_key() {
     let b = Fake::default();
     let mut p = SetupPanel::open(&b).unwrap();
-    p.on_key(press(KeyCode::Down), &b);
-    p.on_key(press(KeyCode::Enter), &b);
+    // "Other (OpenAI-compatible URL)" is the last choice.
+    p.on_key(press(KeyCode::Char('9')), &b);
     assert!(matches!(p.step, Step::Endpoint { .. }));
     p.on_key(press(KeyCode::Enter), &b);
     assert!(p.message.as_ref().unwrap().1.contains("base URL"));
@@ -409,4 +413,78 @@ fn model_picker_lists_and_sets() {
     // Without the provider, resolved by the backend.
     app.on_key_command("/model m1");
     assert_eq!(app.model.as_deref(), Some("anthropic:m1"));
+}
+
+#[test]
+fn a_preset_asks_only_for_the_key() {
+    let b = Fake::default();
+    let mut p = SetupPanel::open(&b).unwrap();
+    // OpenRouter is the third choice.
+    p.on_key(press(KeyCode::Char('3')), &b);
+    let Step::Key(form) = &p.step else {
+        panic!("expected the key step, got {:?}", p.step);
+    };
+    assert_eq!(form.base_url, "https://openrouter.ai/api/v1");
+    assert_eq!(form.name, "openrouter");
+    assert_eq!(form.label(), "OpenRouter");
+    // OpenRouter needs a key, unlike a local server.
+    assert_eq!(p.on_key(press(KeyCode::Enter), &b), SetupAction::None);
+    assert!(p.message.as_ref().unwrap().1.contains("Paste your API key"));
+
+    p.on_paste("sk-or-test");
+    let action = p.on_key(press(KeyCode::Enter), &b);
+    finish(&mut p, &b, action);
+    assert!(matches!(p.step, Step::Model { .. }));
+    let draft = b.verified.lock().unwrap()[0].clone();
+    assert_eq!(draft.preset.as_deref(), Some("openrouter"));
+    assert_eq!(
+        draft.base_url.as_deref(),
+        Some("https://openrouter.ai/api/v1")
+    );
+    assert_eq!(draft.name.as_deref(), Some("openrouter"));
+
+    // Choosing a model never needs `openrouter:` typed by hand.
+    let Step::Model { list, .. } = &p.step else {
+        unreachable!()
+    };
+    assert_eq!(list.chosen().as_deref(), Some("openrouter:m1"));
+}
+
+#[test]
+fn a_local_preset_needs_no_key_and_a_second_one_gets_a_new_name() {
+    let b = Fake::default();
+    b.providers
+        .lock()
+        .unwrap()
+        .push(status("ollama", ProviderKind::OpenaiCompat));
+    let mut p = SetupPanel::open(&b).unwrap();
+    p.on_key(press(KeyCode::Char('a')), &b);
+    // Ollama is the seventh choice.
+    p.on_key(press(KeyCode::Char('7')), &b);
+    let Step::Key(form) = &p.step else {
+        panic!("{:?}", p.step);
+    };
+    assert_eq!(form.name, "ollama-2");
+    assert!(form.key_optional());
+    let action = p.on_key(press(KeyCode::Enter), &b);
+    assert!(matches!(action, SetupAction::Run(Task::Verify { .. })));
+}
+
+#[test]
+fn suggestions_fill_in_when_the_list_is_empty() {
+    use crate::models::{ModelList, Row};
+    let mut l = ModelList::new(None);
+    l.set_groups(vec![ProviderModels {
+        provider: "openrouter".into(),
+        error: None,
+        message: None,
+        fetched_at: None,
+        models: vec![],
+        suggested: vec!["openai/gpt-4o-mini".into()],
+    }]);
+    let rows = l.rows();
+    assert!(
+        matches!(&rows[0], Row::Header { note: Some(n), .. } if n.contains("suggestions"))
+    );
+    assert_eq!(l.chosen().as_deref(), Some("openrouter:openai/gpt-4o-mini"));
 }
