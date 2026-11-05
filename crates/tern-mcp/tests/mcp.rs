@@ -151,7 +151,9 @@ async fn crashed_servers_restart_with_backoff() {
         "fixture",
         stdio_cfg(vec![]),
         secrets,
-        Duration::from_millis(200),
+        // Long enough that a stalled CI box can't outlast it before the
+        // "in backoff" check below.
+        Duration::from_secs(2),
     );
     let set = McpServers::new(vec![server]);
     set.prepare().await;
@@ -164,8 +166,15 @@ async fn crashed_servers_restart_with_backoff() {
         "{}",
         during.content
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let after = call(&set, "mcp__fixture__echo", json!({"text": "back"})).await;
+    // Retry until the backoff has run out.
+    let end = std::time::Instant::now() + Duration::from_secs(20);
+    let after = loop {
+        let r = call(&set, "mcp__fixture__echo", json!({"text": "back"})).await;
+        if !r.is_error || std::time::Instant::now() > end {
+            break r;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
     assert_eq!((after.content.as_str(), after.is_error), ("back", false));
 }
 

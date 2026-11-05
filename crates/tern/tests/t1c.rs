@@ -651,12 +651,26 @@ async fn connections_past_the_cap_are_refused_and_deliveries_resume() {
     };
     // Under the cap, deliveries work (each client closes its connection).
     assert_eq!(deliver(1).await.0, StatusCode::ACCEPTED);
-    tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // Two idle connections fill it; a third is refused at once with 503.
-    let a = raw(env.hooks_port).await;
-    let _b = raw(env.hooks_port).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Two idle connections fill it. A connection counts as held once the
+    // server leaves it open (a slot the last delivery hadn't yet released
+    // would refuse it and close it at once), so no timing is assumed.
+    let idle = || async {
+        let end = Instant::now() + Duration::from_secs(10);
+        loop {
+            let mut s = raw(env.hooks_port).await;
+            if !read_until_closed(&mut s, Duration::from_millis(300))
+                .await
+                .1
+            {
+                return s;
+            }
+            assert!(Instant::now() < end, "no free connection slot");
+        }
+    };
+    let a = idle().await;
+    let _b = idle().await;
+    // A third is refused at once with 503.
     let mut c = raw(env.hooks_port).await;
     let (resp, closed) = read_until_closed(&mut c, Duration::from_secs(3)).await;
     assert!(resp.starts_with("HTTP/1.1 503"), "{resp}");
@@ -668,6 +682,18 @@ async fn connections_past_the_cap_are_refused_and_deliveries_resume() {
 
     // One closes; its slot frees and a delivery lands again.
     drop(a);
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(deliver(2).await.0, StatusCode::ACCEPTED);
+    let end = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = deliver(2).await.0;
+        if status == StatusCode::ACCEPTED {
+            break;
+        }
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not yet freed"
+        );
+        assert!(Instant::now() < end, "the freed slot never opened");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }

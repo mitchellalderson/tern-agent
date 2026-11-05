@@ -234,26 +234,45 @@ async fn status_dry_run_and_shutdown_then_resume() {
 async fn shutdown_over_tcp_needs_owner_scope() {
     let env = Env::new();
     env.script(json!({ "turns": [] }));
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    std::fs::write(
-        env.tern_home.join("config.toml"),
-        format!("[api]\nlisten = [\"unix\", \"tcp://127.0.0.1:{port}\"]\ntls = \"auto\"\n"),
-    )
-    .unwrap();
-    let _daemon = env.daemon();
-    let end = Instant::now() + Duration::from_secs(10);
-    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(Instant::now() < end, "tcp listener did not start");
-        std::thread::sleep(Duration::from_millis(50));
-    }
     let http = reqwest::Client::builder()
         .tls_danger_accept_invalid_certs(true)
         .build()
         .unwrap();
+    // A port picked by binding and dropping can be taken before the daemon
+    // binds it (another test's listener). Then the daemon exits, or the port
+    // answers but isn't ours; try another port. Ready means *our* daemon
+    // answers over TLS (401: no token), not just that something accepts.
+    let (port, _daemon) = 'start: {
+        for _ in 0..5 {
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            std::fs::write(
+                env.tern_home.join("config.toml"),
+                format!("[api]\nlisten = [\"unix\", \"tcp://127.0.0.1:{port}\"]\ntls = \"auto\"\n"),
+            )
+            .unwrap();
+            let mut daemon = env.daemon();
+            let end = Instant::now() + Duration::from_secs(10);
+            loop {
+                if daemon.0.try_wait().unwrap().is_some() {
+                    break; // could not bind; pick another port
+                }
+                let r = http
+                    .post(format!("https://127.0.0.1:{port}/v1/shutdown"))
+                    .send()
+                    .await;
+                if matches!(&r, Ok(r) if r.status() == 401) {
+                    break 'start (port, daemon);
+                }
+                assert!(Instant::now() < end, "tcp listener did not start");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        panic!("no free port after 5 tries");
+    };
     let url = |p: &str| format!("https://127.0.0.1:{port}{p}");
     let stdout = |args: &[&str]| {
         let out = env.cmd(args).output().unwrap();
