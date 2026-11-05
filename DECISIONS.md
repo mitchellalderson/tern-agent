@@ -1406,3 +1406,53 @@ Two remaining desktop items (docs/gui-spec.md §7.5). Dart/Flutter only; no Rust
 
 - **The inspection runs inside the sandbox.** Round 3 asked the interpreter what it loads by running it unsandboxed, but the stdlib it imports at startup is only known after that run. Now `SandboxBackend::probe_blocking` (host backend: `HostBackend::probe_confined`: Seatbelt/Landlock, network off, no extra write paths) runs the fixed `-I -S` program; with no OS sandbox it errors and no grant is offered ("couldn't inspect ..."; when the sandbox itself isn't confirmed, that is the reason shown). Before any run, a writable root inside the canonical interpreter's prefix (grandparent of the binary, unless that is `/`) is refused. Results are cached per (shell tool, interpreter file, mtime), failures not cached. Cost: one blocking sandboxed run of a few tens of ms on the first script call per interpreter.
 - **`.pth` read statically.** Granted runs use `-I` without `-S`, so site-packages `.pth` files run. Each reported site dir's `*.pth` is read at plan time (and again at call, since `resolve` reruns): a path line (relative to the site dir) under a writable root is refused, and any `import` line except the setuptools distutils shim is refused.
+
+## Memory for read-only agents (2026-11-05)
+
+The owner decided that agents whose autonomy ceiling is `readonly` (research, SEO, fact-checker, meeting prep) should
+be able to read and write their own memory, even though they can't touch files or run commands: memory is not a
+system or file write.
+
+- **A class, not a write.** `approval::MEMORY_TOOLS` (`memory_save`, `memory_forget`) are allowed by `check` before
+  autonomy or taint are looked at, so a read-only run can use them and no run is asked. The alternative, making
+  `memory_save` an `Effect::Read`, would have lied about the tool in lists and the ledger and let a tainted run's
+  `Read` fall under the host-limit logic. `profile_edit` is deliberately outside the class: `memory.md` is part of
+  every system prompt, so writing it is a persistent instruction channel and stays a refused write for read-only runs.
+  Not asking replaces approval with bounds, because asking about every note made read-only agents' memory useless
+  and a tainted run's `ask` was a poor defence (the user can't judge a memory in a card, and an unattended run's goes
+  to the outbox unread).
+- **Own namespace.** `MemScope::of` derives the namespace from the run's frozen agent, memory scope, autonomy and
+  taint: a private agent's own rows; the default agent's the shared pool; a read-only or tainted run of any
+  non-default agent its own rows even if its memory is `shared`. `shared: true` is refused to those runs. A sub-agent
+  already inherits its parent's agent (so the parent's namespace, by design: the sub-agent prompt says it saves "to
+  your memory") and a delegate runs as its own agent, so no path writes another agent's memory. `memory_forget` takes
+  an id and checks the namespace in the same statement as the delete, so another agent's ids aren't revealed.
+- **Caps.** `[memory]`: `entry_max_chars` 2000, `run_max_writes` 20, `max_entries` 500, `max_chars` 200000. Counting
+  a run's writes uses the ledger (`memory.save` and `memory.forget`), not the rows, so delete-and-save loops don't
+  escape the cap; one transaction checks, writes and records. Chosen over a token cap: a character count is exact and
+  needs no tokenizer. Defaults are generous for a note-keeping agent and small enough that a flood stops in one run.
+- **Provenance.** `memories.source` (`agent` | `unverified` | `user`) and `run_id` (migration 0026; numbered after the
+  starter seed's 0025, renumber on merge). Taint is read from `runs.taint` at call time, which includes the run's
+  starting taint. Recall wraps entries in `<memory_recall>` with a note, indents entry text so it can't forge a
+  header, defuses a closing tag, and sets `ToolResult.untrusted` when any entry is unverified: the loop then wraps it
+  as `<untrusted>` and taints the reader, so a persistent injection that is recalled costs the next run its writes
+  until the user says otherwise. A user edit sets `source = user`. Older rows default to `agent`: they were saved in
+  clean runs or with the user's approval. A tainted run may forget only unverified notes, so injected text can't wipe
+  trusted ones (costs: it can't clean up a clean note it finds wrong; it says so in its report).
+- **Audit.** The ledger already recorded every non-read call that ran as `effect`; the memory tools add `memory.*`
+  entries written inside the store transaction (with the source and namespace), plus `memory.refused` for refusals, and
+  the user's own edits (`memory.edit|delete|clear`, actor `owner`). Both exist for a model write: the generic one
+  says a write ran, the specific one says what it was.
+- **Routine carry-over.** Routine runs share a session, so earlier turns can be in context, but compaction and
+  `NO_REPLY` make that unreliable, and the starter's "what changed" can't rely on the model's own notes. Each run of a
+  routine now gets the newest finished, non-quiet report of the previous run appended to its input
+  (`Manager::with_carryover`), framed `<previous_run_report>`, capped at `routine_carryover_chars`. If that run was
+  tainted the block is wrapped as untrusted and the run starts tainted, because the report may carry what a page said.
+  This changes existing routines slightly: a routine that read the web last time starts tainted this time (writes ask
+  from the first call, not only after the first fetch). Chosen over a new table: the message is already journaled, so
+  replay is exact and nothing needs migrating.
+- **UI.** The desktop side panel's existing Memory section gains edit (click), delete, clear and an `unverified`
+  marker; `tern agents memory <agent>` is the terminal's (the TUI has no agent management; its `/agents` lists
+  sub-agents). The API gained `PATCH` and `DELETE` on `/v1/memories`, in the `chat` scope with the rest of memories.
+- **Not done.** No automatic expiry of old or unverified notes, no per-note "verify" action beyond rewriting, no
+  separate cap for unverified notes, and the starters' prompts were not changed to mention memory.

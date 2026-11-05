@@ -82,6 +82,18 @@ script grants.
   be chained, and a read from a site you already allowed can carry data out in a URL. Taint is tracked from the
   sources tern knows about: an MCP server or connector that returns third-party text without being marked untrusted
   isn't caught. See [docs/reference.md](docs/reference.md) (Taint, Outbox).
+- **Persistent injection through memory.** A page can tell an agent to "remember" an instruction, and a later run
+  would read it back. Agent memory is a class of its own: no approval, so even a read-only agent has it, and bounded
+  instead. Notes go only to the agent's own namespace (a read-only or tainted run never writes the shared pool, and a
+  sub-agent writes only as the agent it runs as), with caps on size, count and writes per run, each change a ledger
+  entry in the same transaction. A note saved after untrusted content is stored `unverified`; recall frames notes as
+  data with their source, and recalling an unverified one taints the run, so what follows asks first. A tainted run
+  can forget only unverified notes. What remains: a clean-looking note saved from a run tern did not know was
+  tainted (an MCP server or connector not marked untrusted), a model that follows a recalled "lead" in its own
+  words, and a routine's previous report, which reaches the next run as data (wrapped as untrusted, and starting it
+  tainted, if the run that wrote it was tainted). `memory.md` (in every system prompt) is not part of this class and
+  stays a write that read-only runs can't make. The user can read, rewrite and clear memory in the app or with
+  `tern agents memory`. See [docs/reference.md](docs/reference.md) (Memory for every agent).
 - **What you approve, inside the sandbox.** Once a shell command or an "always" pattern is approved, tern limits it
   only by the sandbox: it can change anything in the workspace, read what the sandbox allows, and use the network
   if it asked for it (or `sandbox.network = true`). Network access is all or nothing (no per-host egress rules). The host backend
