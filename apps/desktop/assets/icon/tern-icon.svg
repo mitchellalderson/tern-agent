@@ -17,7 +17,7 @@
   <circle id="field" cx="256" cy="256" r="256" fill="#F07A2B"/>
 
   <g id="bird-group" transform="translate(258 244) rotate(35) scale(0.98)">
-    <path id="bird" fill="#FFFFFF" d="
+    <path id="bird" fill="#FCF7EB" d="
       M 0 -140
       L 7 -108
       C 14 -100 16 -80 15 -65
@@ -38,7 +38,7 @@
       C -16 -80 -14 -100 -7 -108
       Z"/>
     <!-- Black cap: the tern's signature marking. -->
-    <path id="cap" fill="#1C1C1A" d="
+    <path id="cap" fill="#2B2118" d="
       M 6 -104
       C 11 -98 13 -90 13 -84
       C 6 -81 -6 -81 -13 -84

@@ -58,9 +58,25 @@ Three bars, hard-edged, no gaps, always in this order: orange, yellow, teal (top
 | Vertical  | 12px          | Side tab or divider |
 
 - At most one stripe element per view, plus the logo lockup.
-- The logo lockup is the lowercase wordmark with a slanted stripe running off to its right.
+- The logo lockup is the lowercase wordmark with the bird mark (section 3) to its right. The stripe is a page and hero motif, not part of the lockup.
 
-## 3. Typography
+## 3. The mark
+
+A tern in flight, seen from below, on an `orange` circle. Source: `apps/desktop/assets/icon/tern-icon.svg`; the macOS app icons are generated from it with `apps/desktop/tool/make_app_icons.sh`.
+
+| Part   | Token   | Value (both modes) |
+|--------|---------|--------------------|
+| Field  | `orange` | `#F07A2B` |
+| Bird   | `paper` | `#FCF7EB` |
+| Cap    | `ink`   | `#2B2118` |
+
+- The mark is one color set in light and dark; it does not change with the theme.
+- The bird is `paper`, never pure white, and the cap is `ink`, never pure black.
+- Minimum size 24px. Below that, use the bird alone as a one-color silhouette (drop the cap).
+- Keep clear space of at least a third of the circle's width. No stripe, shadow or outline on the mark.
+- In the lockup the mark sits to the right of the wordmark, centered on its x-height, at about 1.3 times the wordmark's cap height.
+
+## 4. Typography
 
 | Role    | Family               | Notes |
 |---------|----------------------|-------|
@@ -80,7 +96,7 @@ The wordmark is always lowercase: `tern`, Archivo 900 italic, width 125%, letter
 
 Flutter note: the three families must be bundled as app assets, not fetched at runtime.
 
-## 4. Shape and components
+## 5. Shape and components
 
 - **Radius:** 8 for controls, 12 for cards and bubbles, full only for pills.
 - **Borders:** 1px `hairline` at rest. 1.5 to 2px `ink` for anything interactive or active.
@@ -94,11 +110,11 @@ Flutter note: the three families must be bundled as app assets, not fetched at r
 - **Bubbles:** user is `sand`. Agent is `paper` with a 1px `hairline` border. Max width 80%.
 - **Composer:** `paper` fill, 1.5px `ink` border, 10px radius, orange Send button with `ink` text.
 
-## 5. Voice
+## 6. Voice
 
 Plain, short, calm. Sentence case. Say what happened and what is needed next. No exclamation marks, no hype.
 
-## 6. Do and don't
+## 7. Do and don't
 
 **Do**
 - Keep the background cream and let the stripes be the only loud thing.
@@ -111,7 +127,7 @@ Plain, short, calm. Sentence case. Say what happened and what is needed next. No
 - Use pure white or neutral gray.
 - Reorder, recolor, or space out the stripes.
 
-## 7. Mapping to the desktop app
+## 8. Mapping to the desktop app
 
 `apps/desktop/lib/theme.dart` holds `TernColors`. Planned mapping from the current fields:
 
