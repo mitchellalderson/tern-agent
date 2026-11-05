@@ -2,22 +2,23 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tern_core::config::McpTransport;
 use tern_core::mcp::{McpErrorKind, McpState, McpStatus};
 
 use crate::mcp::{Form, McpPanel, Mode, Step, describe_state};
+use crate::theme;
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 fn dim() -> Style {
-    Style::new().fg(Color::DarkGray)
+    theme::muted()
 }
 
 fn key() -> Style {
-    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    theme::accent().add_modifier(Modifier::BOLD)
 }
 
 fn bold() -> Style {
@@ -34,10 +35,10 @@ fn spinner() -> char {
 
 fn dot(s: &McpStatus) -> Span<'static> {
     match s.state {
-        McpState::Running { .. } => Span::styled("● ", Style::new().fg(Color::Green)),
+        McpState::Running { .. } => Span::styled("● ", theme::ok()),
         McpState::Disabled => Span::styled("○ ", dim()),
-        McpState::Unavailable { .. } => Span::styled("✕ ", Style::new().fg(Color::Red)),
-        McpState::Connecting => Span::styled("◌ ", Style::new().fg(Color::Yellow)),
+        McpState::Unavailable { .. } => Span::styled("✕ ", theme::err()),
+        McpState::Connecting => Span::styled("◌ ", theme::warn()),
         McpState::NotStarted => Span::styled("· ", dim()),
     }
 }
@@ -106,7 +107,7 @@ pub fn draw_mcp(frame: &mut Frame<'_>, panel: &McpPanel, area: Rect) {
                     body.push(Line::default());
                     body.push(Line::from(Span::styled(
                         format!("Remove {name}?"),
-                        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        theme::warn().add_modifier(Modifier::BOLD),
                     )));
                     vec![
                         ("y", "remove"),
@@ -173,14 +174,8 @@ pub fn draw_mcp(frame: &mut Frame<'_>, panel: &McpPanel, area: Rect) {
 
     body.push(Line::default());
     body.push(match &panel.message {
-        Some((true, m)) => Line::from(Span::styled(
-            truncate(m, inner_width * 2),
-            Style::new().fg(Color::Red),
-        )),
-        Some((false, m)) => Line::from(Span::styled(
-            truncate(m, inner_width * 2),
-            Style::new().fg(Color::Green),
-        )),
+        Some((true, m)) => Line::from(Span::styled(truncate(m, inner_width * 2), theme::err())),
+        Some((false, m)) => Line::from(Span::styled(truncate(m, inner_width * 2), theme::ok())),
         None => Line::default(),
     });
     let mut keys = Vec::new();
@@ -200,7 +195,7 @@ pub fn draw_mcp(frame: &mut Frame<'_>, panel: &McpPanel, area: Rect) {
     let block = Block::new()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(theme::accent());
     let inner = block.inner(popup).inner(ratatui::layout::Margin::new(1, 0));
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
@@ -430,7 +425,7 @@ fn form_view(
             };
             body.push(Line::from(Span::styled(
                 what,
-                Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+                theme::err().add_modifier(Modifier::BOLD),
             )));
             body.push(Line::from(e.message.clone()));
             if !e.stderr_tail.is_empty() {
@@ -462,7 +457,7 @@ fn form_view(
                             .unwrap_or_default(),
                         v.tools.len()
                     ),
-                    Style::new().fg(Color::Green),
+                    theme::ok(),
                 )));
             }
             body.push(Line::default());

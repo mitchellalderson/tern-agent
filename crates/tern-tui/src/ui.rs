@@ -2,13 +2,14 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::{AgentLine, AgentState, App, Entry, Overlay, ToolState};
 use crate::secret_prompt::SecretPrompt;
 use crate::secrets::{Mode, SecretsPanel};
+use crate::theme;
 use crate::wrap::wrap;
 
 const MAX_INPUT_ROWS: usize = 8;
@@ -58,13 +59,13 @@ fn draw_overlay(frame: &mut Frame<'_>, o: &mut Overlay, expanded: bool, area: Re
     let block = Block::new()
         .borders(Borders::ALL)
         .title(o.title.clone())
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(theme::accent());
     let inner = block.inner(area).inner(ratatui::layout::Margin::new(1, 0));
     let width = inner.width.max(1) as usize;
     let mut lines = Vec::new();
     entry_lines(&o.entries, expanded, width, &mut lines);
     if lines.is_empty() {
-        lines.push(Line::from("(no messages yet)".dark_gray()));
+        lines.push(Line::from(Span::styled("(no messages yet)", theme::note())));
     }
     let height = inner.height as usize;
     o.scroll = o.scroll.min(lines.len().saturating_sub(height));
@@ -77,8 +78,8 @@ fn draw_overlay(frame: &mut Frame<'_>, o: &mut Overlay, expanded: bool, area: Re
 
 /// The `/secrets` panel, centred over `area`.
 fn draw_secrets(frame: &mut Frame<'_>, panel: &SecretsPanel, area: Rect) {
-    let dim = Style::new().fg(Color::DarkGray);
-    let key = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let dim = theme::muted();
+    let key = theme::accent().add_modifier(Modifier::BOLD);
     let width = area.width.saturating_sub(4).min(80);
     let inner_width = width.saturating_sub(4) as usize;
     let name_width = panel
@@ -109,10 +110,10 @@ fn draw_secrets(frame: &mut Frame<'_>, panel: &SecretsPanel, area: Rect) {
     for (i, s) in panel.items.iter().enumerate().skip(first).take(room) {
         let selected = i == panel.selected && panel.mode == Mode::List;
         let (state, color) = match (s.in_env, s.in_file) {
-            (true, true) => ("env (overrides file)", Color::Yellow),
-            (true, false) => ("env", Color::Green),
-            (false, true) => ("set", Color::Green),
-            (false, false) => ("missing", Color::Red),
+            (true, true) => ("env (overrides file)", theme::warn()),
+            (true, false) => ("env", theme::ok()),
+            (false, true) => ("set", theme::ok()),
+            (false, false) => ("missing", theme::err()),
         };
         let used = if s.used_by.is_empty() {
             "unused".to_owned()
@@ -131,7 +132,7 @@ fn draw_secrets(frame: &mut Frame<'_>, panel: &SecretsPanel, area: Rect) {
                 },
             ),
             Span::raw("  "),
-            Span::styled(format!("{state:8}"), Style::new().fg(color)),
+            Span::styled(format!("{state:8}"), color),
             Span::raw("  "),
             Span::styled(used, dim),
         ]);
@@ -190,15 +191,15 @@ fn draw_secrets(frame: &mut Frame<'_>, panel: &SecretsPanel, area: Rect) {
         Mode::ConfirmRemove(name) => (
             Line::from(Span::styled(
                 format!("Remove {name} from secrets.toml?"),
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                theme::warn().add_modifier(Modifier::BOLD),
             )),
             vec![("y", "remove"), ("any other key", "cancel")],
         ),
     };
     body.push(prompt);
     body.push(match &panel.message {
-        Some((true, m)) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Red))),
-        Some((false, m)) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Green))),
+        Some((true, m)) => Line::from(Span::styled(m.clone(), theme::err())),
+        Some((false, m)) => Line::from(Span::styled(m.clone(), theme::ok())),
         None => Line::default(),
     });
     let mut keys = Vec::new();
@@ -218,7 +219,7 @@ fn draw_secrets(frame: &mut Frame<'_>, panel: &SecretsPanel, area: Rect) {
     let block = Block::new()
         .borders(Borders::ALL)
         .title(" secrets ")
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(theme::accent());
     let inner = block.inner(popup).inner(ratatui::layout::Margin::new(1, 0));
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
@@ -228,9 +229,9 @@ fn draw_secrets(frame: &mut Frame<'_>, panel: &SecretsPanel, area: Rect) {
 /// The `/outbox` panel, centred over `area`.
 fn draw_outbox(frame: &mut Frame<'_>, panel: &crate::outbox::OutboxPanel, area: Rect) {
     use crate::outbox::Mode;
-    let dim = Style::new().fg(Color::DarkGray);
-    let key = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let warn = Style::new().fg(Color::Yellow);
+    let dim = theme::muted();
+    let key = theme::accent().add_modifier(Modifier::BOLD);
+    let warn = theme::warn();
     let width = area.width.saturating_sub(4).min(100);
     let inner_width = width.saturating_sub(4) as usize;
     let mut body: Vec<Line<'static>> = vec![
@@ -310,8 +311,8 @@ fn draw_outbox(frame: &mut Frame<'_>, panel: &crate::outbox::OutboxPanel, area: 
     };
     body.push(prompt);
     body.push(match &panel.message {
-        Some((true, m)) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Red))),
-        Some((false, m)) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Green))),
+        Some((true, m)) => Line::from(Span::styled(m.clone(), theme::err())),
+        Some((false, m)) => Line::from(Span::styled(m.clone(), theme::ok())),
         None => Line::default(),
     });
     let mut keys = Vec::new();
@@ -331,7 +332,7 @@ fn draw_outbox(frame: &mut Frame<'_>, panel: &crate::outbox::OutboxPanel, area: 
     let block = Block::new()
         .borders(Borders::ALL)
         .title(" outbox ")
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(theme::accent());
     let inner = block.inner(popup).inner(ratatui::layout::Margin::new(1, 0));
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
@@ -357,14 +358,15 @@ fn draw_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     if app.entries.is_empty() {
-        out.push(Line::from(
-            "tern — type a message and press Enter. /help for commands.".dark_gray(),
-        ));
+        out.push(Line::from(Span::styled(
+            "tern — type a message and press Enter. /help for commands.",
+            theme::note(),
+        )));
     }
     entry_lines(&app.entries, app.expanded, width, &mut out);
     if let Some(p) = &app.approval {
         out.push(Line::default());
-        let warn = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        let warn = theme::warn().add_modifier(Modifier::BOLD);
         let who = p
             .request
             .agent_label
@@ -376,12 +378,12 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         }
         if let Some(note) = p.request.taint_note() {
             for l in wrap(&format!("⚠ {note}"), width) {
-                out.push(Line::from(Span::styled(l, Style::new().fg(Color::Yellow))));
+                out.push(Line::from(Span::styled(l, theme::warn())));
             }
         }
         if let Some(note) = &p.request.notice {
             for l in wrap(note, width) {
-                out.push(Line::from(Span::styled(l, Style::new().fg(Color::Cyan))));
+                out.push(Line::from(Span::styled(l, theme::accent())));
             }
         }
         let mut options = vec![Span::styled("[y]", warn), Span::raw(" yes once   ")];
@@ -427,9 +429,9 @@ fn auth_lines(
     out: &mut Vec<Line<'static>>,
 ) {
     use tern_core::approval::AuthCard;
-    let head = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let key = Style::new().fg(Color::Cyan);
-    let dim = Style::new().fg(Color::DarkGray);
+    let head = theme::accent().add_modifier(Modifier::BOLD);
+    let key = theme::accent();
+    let dim = theme::muted();
     out.push(Line::default());
     let notes = match &req.card {
         AuthCard::Choose {
@@ -512,9 +514,9 @@ fn auth_lines(
 /// words, marked as such), what would read each secret, and masked fields.
 fn secret_prompt_lines(p: &SecretPrompt, width: usize, out: &mut Vec<Line<'static>>) {
     let req = &p.pending.request;
-    let head = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let key = Style::new().fg(Color::Cyan);
-    let dim = Style::new().fg(Color::DarkGray);
+    let head = theme::accent().add_modifier(Modifier::BOLD);
+    let key = theme::accent();
+    let dim = theme::muted();
     out.push(Line::default());
     let who = match &req.agent_label {
         Some(l) => format!("Sub-agent {l} is"),
@@ -604,13 +606,13 @@ fn clock(d: std::time::Duration) -> String {
 /// `✓ research-1  1:12 · 9 tools · 48k tok → first line of the report`.
 fn agent_line(a: &AgentLine, width: usize) -> Line<'static> {
     let (icon, color) = match a.state {
-        AgentState::Queued => ("⏸", Color::DarkGray),
-        AgentState::Running => ("⑂", Color::Cyan),
-        AgentState::Question => ("?", Color::Yellow),
-        AgentState::Approval => ("!", Color::Yellow),
-        AgentState::Completed => ("✓", Color::Green),
-        AgentState::Failed => ("✗", Color::Red),
-        AgentState::Cancelled => ("⊘", Color::DarkGray),
+        AgentState::Queued => ("⏸", theme::muted()),
+        AgentState::Running => ("⑂", theme::accent()),
+        AgentState::Question => ("?", theme::warn()),
+        AgentState::Approval => ("!", theme::warn()),
+        AgentState::Completed => ("✓", theme::ok()),
+        AgentState::Failed => ("✗", theme::err()),
+        AgentState::Cancelled => ("⊘", theme::muted()),
     };
     let tools = match a.tools {
         1 => "1 tool".to_owned(),
@@ -644,17 +646,14 @@ fn agent_line(a: &AgentLine, width: usize) -> Line<'static> {
     let label_end = icon.len() + 1 + a.label.len();
     let (head, tail) = text.split_at(label_end.min(text.len()));
     Line::from(vec![
-        Span::styled(
-            head.to_owned(),
-            Style::new().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(tail.to_owned(), Style::new().fg(Color::DarkGray)),
+        Span::styled(head.to_owned(), color.add_modifier(Modifier::BOLD)),
+        Span::styled(tail.to_owned(), theme::muted()),
     ])
 }
 
 /// The lines of `entries` at `width`, appended to `out`.
 fn entry_lines(entries: &[Entry], expanded: bool, width: usize, out: &mut Vec<Line<'static>>) {
-    let dim = Style::new().fg(Color::DarkGray);
+    let dim = theme::note();
     let mut prev_agent = false;
     for entry in entries {
         // Consecutive agent lines stay together, like a list.
@@ -668,10 +667,7 @@ fn entry_lines(entries: &[Entry], expanded: bool, width: usize, out: &mut Vec<Li
                 for (i, l) in wrap(text, width.saturating_sub(2)).into_iter().enumerate() {
                     let prefix = if i == 0 { "› " } else { "  " };
                     out.push(Line::from(vec![
-                        Span::styled(
-                            prefix,
-                            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                        ),
+                        Span::styled(prefix, theme::accent().add_modifier(Modifier::BOLD)),
                         Span::styled(l, Style::new().add_modifier(Modifier::BOLD)),
                     ]));
                 }
@@ -681,7 +677,7 @@ fn entry_lines(entries: &[Entry], expanded: bool, width: usize, out: &mut Vec<Li
                 if *streaming && let Some(last) = lines.last_mut() {
                     last.push('▌');
                 }
-                out.extend(lines.into_iter().map(Line::from));
+                out.extend(crate::markdown::style_lines(lines));
             }
             Entry::Tool {
                 summary,
@@ -690,11 +686,11 @@ fn entry_lines(entries: &[Entry], expanded: bool, width: usize, out: &mut Vec<Li
                 ..
             } => {
                 let (icon, color) = match state {
-                    ToolState::Running => ("⋯", Color::Yellow),
-                    ToolState::Ok => ("✓", Color::Green),
-                    ToolState::Failed => ("✗", Color::Red),
-                    ToolState::Denied => ("⊘", Color::Red),
-                    ToolState::Interrupted => ("!", Color::Yellow),
+                    ToolState::Running => ("⋯", theme::warn()),
+                    ToolState::Ok => ("✓", theme::ok()),
+                    ToolState::Failed => ("✗", theme::err()),
+                    ToolState::Denied => ("⊘", theme::err()),
+                    ToolState::Interrupted => ("!", theme::warn()),
                 };
                 let first = output.lines().next().unwrap_or_default();
                 let mut head = format!("{icon} {summary}");
@@ -703,7 +699,7 @@ fn entry_lines(entries: &[Entry], expanded: bool, width: usize, out: &mut Vec<Li
                     head.push_str(first);
                 }
                 let head: String = head.chars().take(width.max(4)).collect();
-                out.push(Line::from(Span::styled(head, Style::new().fg(color))));
+                out.push(Line::from(Span::styled(head, color)));
                 if expanded && !output.is_empty() {
                     for (n, l) in wrap(output, width.saturating_sub(4))
                         .into_iter()
@@ -738,7 +734,7 @@ fn entry_lines(entries: &[Entry], expanded: bool, width: usize, out: &mut Vec<Li
             Entry::Error(text) => out.extend(
                 wrap(text, width)
                     .into_iter()
-                    .map(|l| Line::from(Span::styled(l, Style::new().fg(Color::Red)))),
+                    .map(|l| Line::from(Span::styled(l, theme::err()))),
             ),
             Entry::Agent(a) => out.push(agent_line(a, width)),
         }
@@ -767,7 +763,8 @@ fn draw_input(
     let block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)
         .title(title)
-        .dark_gray();
+        .border_style(theme::muted())
+        .title_style(Style::new().add_modifier(Modifier::BOLD));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     // Keep the cursor row visible.
@@ -864,6 +861,6 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Span::raw(right),
         Span::raw(" "),
     ])
-    .style(Style::new().bg(Color::DarkGray).fg(Color::White));
+    .style(theme::status_bar());
     frame.render_widget(Paragraph::new(line), area);
 }

@@ -2,23 +2,24 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tern_core::config::ProviderKind;
 
 use crate::models::{ModelList, ModelPicker, Row};
 use crate::setup::{Form, MANAGE, SetupPanel, Step};
+use crate::theme;
 use tern_core::presets::PRESETS;
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 fn dim() -> Style {
-    Style::new().fg(Color::DarkGray)
+    theme::muted()
 }
 
 fn key() -> Style {
-    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    theme::accent().add_modifier(Modifier::BOLD)
 }
 
 fn bold() -> Style {
@@ -68,8 +69,8 @@ fn help(keys: &[(&str, &str)]) -> Line<'static> {
 
 fn message(m: &Option<(bool, String)>) -> Line<'static> {
     match m {
-        Some((true, m)) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Yellow))),
-        Some((false, m)) => Line::from(Span::styled(m.clone(), Style::new().fg(Color::Green))),
+        Some((true, m)) => Line::from(Span::styled(m.clone(), theme::warn())),
+        Some((false, m)) => Line::from(Span::styled(m.clone(), theme::ok())),
         None => Line::default(),
     }
 }
@@ -87,7 +88,7 @@ fn popup(frame: &mut Frame<'_>, area: Rect, title: &str, body: Vec<Line<'static>
     let block = Block::new()
         .borders(Borders::ALL)
         .title(format!(" {title} "))
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(theme::accent());
     let inner = block.inner(rect).inner(ratatui::layout::Margin::new(1, 0));
     frame.render_widget(Clear, rect);
     frame.render_widget(block, rect);
@@ -117,10 +118,7 @@ fn model_rows(list: &ModelList, room: usize) -> Vec<Line<'static>> {
                     dim().add_modifier(Modifier::BOLD),
                 )];
                 if let Some(n) = note {
-                    spans.push(Span::styled(
-                        format!("  {n}"),
-                        Style::new().fg(Color::Yellow),
-                    ));
+                    spans.push(Span::styled(format!("  {n}"), theme::warn()));
                 }
                 lines.push(Line::from(spans));
             }
@@ -257,7 +255,7 @@ pub fn draw_setup(frame: &mut Frame<'_>, panel: &SetupPanel, area: Rect) {
         Step::ConfirmRemove(name) => {
             body.push(Line::from(Span::styled(
                 format!("Remove {name}?"),
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                theme::warn().add_modifier(Modifier::BOLD),
             )));
             body.push(Line::from(Span::styled(
                 "Its API key is removed too, unless something else uses it.",
@@ -390,7 +388,7 @@ fn key_step(body: &mut Vec<Line<'static>>, form: &Form, verifying: bool) {
                 if let Some(url) = p.key_url {
                     body.push(Line::from(vec![
                         Span::styled("Get one at ", dim()),
-                        Span::styled(url, Style::new().fg(Color::Blue)),
+                        Span::styled(url, theme::link()),
                     ]));
                 }
                 body.push(Line::from(Span::styled(
