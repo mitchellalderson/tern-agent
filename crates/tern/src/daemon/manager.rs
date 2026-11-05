@@ -69,6 +69,10 @@ pub struct ApiApproval {
     /// `always` (for good), each only for exactly this key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant: Option<tern_core::approval::GrantOffer>,
+    /// A plain-words line from tern for the card: what a grant here does not
+    /// cover, or why none is offered ("Not auto-approved: ...").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
     /// How many identical simultaneous requests this one card answers
     /// (1 when alone). A card whose count grows is sent again, same `id`.
     #[serde(default = "one", skip_serializing_if = "is_one")]
@@ -115,6 +119,7 @@ fn same_request(req: &ApprovalRequest) -> String {
         req.effect.as_str(),
         req.pattern,
         req.grant,
+        req.notice,
         req.taint,
         req.egress_host,
         req.script,
@@ -160,6 +165,7 @@ impl ApiApprovals {
             egress_host: req.egress_host.clone(),
             script: req.script.clone(),
             grant: req.grant.clone(),
+            notice: req.notice.clone(),
             count: 1,
             local_only: req.local_only,
             channel_id: at.0,

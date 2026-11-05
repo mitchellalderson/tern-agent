@@ -194,6 +194,7 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                         egress_host: a.egress_host,
                         script: a.script,
                         grant: a.grant,
+                        notice: a.notice,
                         local_only: a.local_only,
                     };
                     if prompts

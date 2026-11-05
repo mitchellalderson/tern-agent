@@ -341,6 +341,10 @@ pub struct ApprovalRequest {
     /// [`Decision::AlwaysAllow`]). Never set in a tainted run or for a
     /// `destructive` call.
     pub grant: Option<GrantOffer>,
+    /// A plain-words line for the card: what a grant here does not cover, or
+    /// why none is offered ("Not auto-approved: ..."). Shown as the host's
+    /// own words, never the agent's.
+    pub notice: Option<String>,
 }
 
 /// What a scoped grant would cover ([`crate::tool::GrantKey`]).

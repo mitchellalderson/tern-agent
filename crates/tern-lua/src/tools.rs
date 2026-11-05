@@ -314,6 +314,7 @@ impl ConnectorTest {
         Some(GrantKey {
             key: format!("draft {name}.{tool}#{}", &digest[..24]),
             label: format!("draft {name}.{tool}"),
+            ..GrantKey::default()
         })
     }
 

@@ -158,6 +158,7 @@ impl Tool for Keyed {
         Some(GrantKey {
             key: format!("target {t}#abc"),
             label: format!("target {t}"),
+            ..GrantKey::default()
         })
     }
     async fn call(&self, _: &ToolCtx, _: Value) -> ToolResult {
@@ -346,4 +347,155 @@ async fn an_unforbidden_untainted_grant_is_released_through_check_not_around_it(
     agent.drive(&run, CancellationToken::new()).await.unwrap();
     assert_eq!(tool.calls.load(Ordering::SeqCst), 0);
     assert!(asks.asked().is_empty());
+}
+
+/// A stand-in for `shell` running a covered script: destructive, forced to
+/// ask, with a grant key that carries a note and an audit record.
+struct ScriptLike {
+    calls: AtomicU32,
+    /// `Some` when no grant may be offered, and why.
+    unavailable: Option<&'static str>,
+}
+
+#[async_trait]
+impl Tool for ScriptLike {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "shell".into(),
+            description: "shell".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+    fn effect(&self) -> Effect {
+        Effect::Destructive
+    }
+    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+        ToolPolicy::new(Effect::Destructive, false).forced(true)
+    }
+    fn grant_key(&self, args: &Value) -> Option<GrantKey> {
+        let c = args["command"].as_str()?;
+        self.unavailable.is_none().then(|| GrantKey {
+            key: format!("python script {c}#h1"),
+            label: format!("python3 {c} (version 3fa9c1d2)"),
+            note: Some("Imports from other files aren't covered".into()),
+            audit: Some(json!({"sha256": "3fa9c1d2", "sandbox": "verified: test"}).to_string()),
+        })
+    }
+    fn grant_unavailable(&self, _: &Value) -> Option<String> {
+        self.unavailable.map(Into::into)
+    }
+    async fn call(&self, _: &ToolCtx, _: Value) -> ToolResult {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        ToolResult::ok("done")
+    }
+}
+
+fn script_like(unavailable: Option<&'static str>) -> Arc<ScriptLike> {
+    Arc::new(ScriptLike {
+        calls: AtomicU32::new(0),
+        unavailable,
+    })
+}
+
+fn run_script(cmd: &str) -> Reply {
+    Reply::Tool("shell", json!({ "command": cmd }))
+}
+
+#[tokio::test]
+async fn a_shell_script_grant_is_offered_with_its_note_and_covers_only_that_command() {
+    let h = Harness::new();
+    let tool = script_like(None);
+    let asks = Answer::new(Decision::AllowRun);
+    let script = Arc::new(Script::new(vec![
+        run_script("a.py x"),
+        run_script("a.py x"),
+        run_script("a.py y"),
+        Reply::Text("ok"),
+    ]));
+    let agent = h.agent(script, vec![tool.clone()], asks.clone());
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let asked = asks.asked();
+    assert_eq!(asked.len(), 2, "the identical repeat is covered: {asked:?}");
+    assert_eq!(asked[0].effect, Effect::Destructive);
+    assert!(asked[0].grant.is_some());
+    assert_eq!(
+        asked[0].notice.as_deref(),
+        Some("Imports from other files aren't covered")
+    );
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 3);
+    // The auto-run is in the ledger as approved by that grant.
+    let rows = h
+        .store
+        .ledger(&tern_store::LedgerFilter {
+            kind: Some("approval".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let used: Vec<_> = rows
+        .iter()
+        .filter(|r| r.entry.detail.as_ref().unwrap()["decision"] == "approved_by_grant")
+        .collect();
+    assert_eq!(used.len(), 1, "{rows:?}");
+    let d = used[0].entry.detail.as_ref().unwrap();
+    assert_eq!(d["grant"]["key"], "python script a.py x#h1");
+    assert_eq!(d["audit"]["sha256"], "3fa9c1d2");
+    assert_eq!(d["audit"]["sandbox"], "verified: test");
+    assert_eq!(d["tainted"], false);
+}
+
+#[tokio::test]
+async fn a_shell_script_grant_is_ignored_when_tainted_or_read_only() {
+    // Tainted: it asks, no grant is offered, and a stored grant is ignored.
+    let h = Harness::new();
+    let tool = script_like(None);
+    let asks = Answer::new(Decision::AllowOnce);
+    h.store
+        .add_allowlist("shell", &approval::key_pattern("python script a.py#h1"))
+        .unwrap();
+    let script = Arc::new(Script::new(vec![run_script("a.py"), Reply::Text("ok")]));
+    let agent = h.agent(script, vec![tool.clone()], asks.clone());
+    let run = tainted_run(&h);
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let asked = asks.asked();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].grant.is_none() && asked[0].notice.is_none(), "{asked:?}");
+
+    // Read-only: refused without asking, whatever grants exist.
+    let h = Harness::new();
+    let tool = script_like(None);
+    let asks = Answer::new(Decision::AllowOnce);
+    h.store
+        .add_allowlist("shell", &approval::key_pattern("python script a.py#h1"))
+        .unwrap();
+    let script = Arc::new(Script::new(vec![run_script("a.py"), Reply::Text("ok")]));
+    let agent = h.agent(script, vec![tool.clone()], asks.clone());
+    let run = h.start(&agent, "go");
+    h.store.set_run_autonomy(&run, "readonly").unwrap();
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert!(asks.asked().is_empty());
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn without_a_key_the_card_says_why_and_every_call_asks() {
+    let h = Harness::new();
+    let why = "Not auto-approved: the sandbox isn't confirmed active (test).";
+    let tool = script_like(Some(why));
+    let asks = Answer::new(Decision::AllowRun);
+    let script = Arc::new(Script::new(vec![
+        run_script("a.py"),
+        run_script("a.py"),
+        Reply::Text("ok"),
+    ]));
+    let agent = h.agent(script, vec![tool.clone()], asks.clone());
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let asked = asks.asked();
+    assert_eq!(asked.len(), 2, "no grant could be given, so both ask");
+    for a in &asked {
+        assert!(a.grant.is_none());
+        assert_eq!(a.notice.as_deref(), Some(why));
+    }
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 2);
 }

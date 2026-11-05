@@ -90,6 +90,38 @@ impl Agent {
         Ok(())
     }
 
+    /// A call ran because a scoped grant covered it: nobody was asked. Records
+    /// the grant's key and what it was judged on (`GrantKey::audit`: a shell
+    /// script's hash and the sandbox's state).
+    pub(super) fn ledger_grant_use(
+        &self,
+        run: &RunRow,
+        call: &ToolCall,
+        key: &crate::tool::GrantKey,
+        tainted: bool,
+    ) -> Result<(), StepError> {
+        let audit: Option<serde_json::Value> = key
+            .audit
+            .as_deref()
+            .and_then(|a| serde_json::from_str(a).ok());
+        let e = self
+            .ledger_entry(
+                "approval",
+                run,
+                &call.clone(),
+                format!("approved by grant: {}", key.label),
+            )
+            .detail(json!({
+                "decision": "approved_by_grant",
+                "grant": { "key": key.key, "label": key.label },
+                "audit": audit,
+                "tainted": tainted,
+                "agent": run.label,
+            }));
+        self.store.ledger_append(&e)?;
+        Ok(())
+    }
+
     /// A call refused without asking (`money_movement`, `trade`).
     pub(super) fn ledger_refused(
         &self,

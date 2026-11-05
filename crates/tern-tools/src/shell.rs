@@ -1,20 +1,50 @@
 //! The `shell` tool, run through a `SandboxBackend`.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tern_core::tool::{Effect, Tool, ToolCtx, ToolPolicy, ToolResult, progress_sink};
+use tern_core::tool::{
+    Effect, GrantKey, Tool, ToolCtx, ToolPolicy, ToolResult, current_call_id, planning_scope,
+    progress_sink,
+};
 use tern_core::types::ToolSpec;
 use tern_sandbox::{ExecOpts, OutputSink, SandboxBackend};
 
+use crate::shell_script::{self, Resolved};
 use crate::{args, spec};
 
 pub struct Shell {
     backend: Arc<dyn SandboxBackend>,
     default_timeout: Duration,
+    /// What `policy` decided for each call that may be covered by a script
+    /// grant, by (run id, call id). `call` uses up exactly its own.
+    plans: Mutex<HashMap<String, Entry>>,
+    /// The `PATH` interpreters are looked up on (the process's own).
+    path: Option<OsString>,
+}
+
+/// What `policy` saw of one call. Kept per call so a grant is offered for,
+/// and `call` runs, exactly the script that was hashed then.
+#[derive(Clone)]
+struct Entry {
+    /// The command text the plan is for.
+    command: String,
+    /// Set for a `python3 file.py args` call that resolved: the snapshot
+    /// `call` will run and re-check.
+    plan: Option<Resolved>,
+    /// Offered only when the sandbox is confirmed active and offline.
+    key: Option<GrantKey>,
+    /// Why a python command isn't auto-approvable, for the card.
+    notice: Option<String>,
+}
+
+fn plan_key(run: &str, call: &str) -> String {
+    format!("{run}\0{call}")
 }
 
 impl Shell {
@@ -22,7 +52,126 @@ impl Shell {
         Self {
             backend,
             default_timeout,
+            plans: Mutex::new(HashMap::new()),
+            path: std::env::var_os("PATH"),
         }
+    }
+
+    /// Look interpreters up on `path` instead of the process's `PATH`.
+    pub fn with_path(mut self, path: Option<OsString>) -> Self {
+        self.path = path;
+        self
+    }
+
+    /// How many plans are held (tests).
+    pub fn plans_held(&self) -> usize {
+        self.plans.lock().map_or(0, |m| m.len())
+    }
+
+    fn planning_id() -> String {
+        let (run, call) = planning_scope().unwrap_or_default();
+        plan_key(&run, &call)
+    }
+
+    fn take_entry(&self, ctx: &ToolCtx) -> Option<Entry> {
+        let id = plan_key(&ctx.run_id, &current_call_id().unwrap_or_default());
+        self.plans.lock().ok().and_then(|mut m| m.remove(&id))
+    }
+
+    /// Judge one call: is it a covered script run, and may a grant be
+    /// offered for it? Never fails the call: anything unusual is just "not
+    /// covered" and the command asks as before.
+    fn judge(&self, ctx: &ToolCtx, args: &Value) -> Entry {
+        let command = args["command"].as_str().unwrap_or_default().trim().to_owned();
+        let none = |notice: Option<String>| Entry {
+            command: command.clone(),
+            plan: None,
+            key: None,
+            notice,
+        };
+        let parsed = match shell_script::parse(&command) {
+            Ok(p) => p,
+            Err(rej) => return none(rej.notice()),
+        };
+        if !shell_script::offline(args) {
+            return none(Some(
+                "Not auto-approved: the command asked for network access.".into(),
+            ));
+        }
+        let writable = self.backend.writable_roots(&ctx.workspace);
+        let resolved =
+            match shell_script::resolve(&parsed, &ctx.workspace, &writable, self.path.clone()) {
+                Ok(r) => r,
+                Err(why) => return none(Some(format!("Not auto-approved: {why}."))),
+            };
+        let verification = self.backend.verify(&ctx.workspace);
+        let why_not = if let Some(why) = verification.reason() {
+            Some(format!(
+                "Not auto-approved: the sandbox isn't confirmed active ({why})."
+            ))
+        } else if self.backend.network_reachable() {
+            Some(
+                "Not auto-approved: the sandbox allows network access, so a script could send data out."
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
+        let key = why_not.is_none().then(|| grant_key(&resolved, &verification));
+        Entry {
+            command,
+            plan: Some(resolved),
+            key,
+            notice: why_not,
+        }
+    }
+}
+
+/// What a script grant covers: this interpreter, this exact file (path and
+/// bytes), these arguments, in this workspace, offline in a verified sandbox.
+/// Anything else (an edited script, other arguments) is a different key.
+fn grant_key(r: &Resolved, verification: &tern_sandbox::Verification) -> GrantKey {
+    let material = json!({
+        "v": 1,
+        "interpreter": r.interpreter_canonical,
+        "interpreter_as_found": r.interpreter,
+        "script": r.script_canonical,
+        "sha256": r.hash,
+        "args": r.args,
+        "workspace": r.workspace,
+    });
+    let digest = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(material.to_string().as_bytes())
+            .iter()
+            .take(12)
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let short = &r.hash[..8];
+    let args = if r.args.is_empty() {
+        "no arguments".to_owned()
+    } else {
+        format!("arguments {}", r.args.join(" "))
+    };
+    GrantKey {
+        key: format!("python script {}#{digest}", r.script_rel),
+        label: format!("python3 {} (version {short}, {args})", r.script_rel),
+        note: Some(
+            "Covers this file as it is now, with these arguments, in the sandbox with no network. Imports from other files aren't covered, and the script can still change files in the workspace."
+                .into(),
+        ),
+        audit: Some(
+            json!({
+                "script": r.script_rel,
+                "script_path": r.script_canonical,
+                "sha256": r.hash,
+                "interpreter": r.interpreter_canonical,
+                "args": r.args,
+                "sandbox": verification.describe(),
+            })
+            .to_string(),
+        ),
     }
 }
 
@@ -57,7 +206,7 @@ impl Tool for Shell {
     fn spec(&self) -> ToolSpec {
         spec(
             "shell",
-            "Run a shell command (sh -c) in the workspace directory. Returns the exit code, stdout, and stderr. The environment is minimal; no secrets are available. Commands have no network access unless you pass network: true, which the user must approve every time; use it only for things like git push/pull or installing packages, never to call a service's API (use its tool).",
+            "Run a shell command (sh -c) in the workspace directory. Returns the exit code, stdout, and stderr. The environment is minimal; no secrets are available. Commands have no network access unless you pass network: true, which the user must approve every time; use it only for things like git push/pull or installing packages, never to call a service's API (use its tool). To run Python, write the code to a .py file in the workspace (write_file) and run it as `python3 file.py args` with no pipes, redirects, quotes, `-c` or heredocs: output is already captured and capped, and that exact form can be approved once for the whole run. Batch the work into one script per question.",
             json!({
                 "type": "object",
                 "properties": {
@@ -73,11 +222,51 @@ impl Tool for Shell {
         )
     }
 
-    fn policy(&self, _ctx: &ToolCtx, _args: &Value) -> ToolPolicy {
+    fn policy(&self, ctx: &ToolCtx, args: &Value) -> ToolPolicy {
+        // The call's own plan (by run and call id): the script, its hash and
+        // whether a grant may be offered, decided once, here.
+        let entry = self.judge(ctx, args);
+        if let Ok(mut plans) = self.plans.lock() {
+            let id = Self::planning_id();
+            if entry.plan.is_some() || entry.notice.is_some() {
+                plans.insert(id, entry);
+            } else {
+                plans.remove(&id);
+            }
+        }
         // Destructive outside the allowlist, a granted write inside it
         // (`approval::check`). A call asking for network is never covered
         // by the allowlist (`approval::allowed_by`).
         ToolPolicy::new(Effect::Destructive, false).forced(true)
+    }
+
+    /// Only for `python3 file.py args` in a verified, offline sandbox, and
+    /// only the key this very call planned (none without a plan).
+    fn grant_key(&self, args: &Value) -> Option<GrantKey> {
+        let command = args["command"].as_str()?.trim();
+        let plans = self.plans.lock().ok()?;
+        let entry = plans.get(&Self::planning_id())?;
+        (entry.command == command).then(|| entry.key.clone()).flatten()
+    }
+
+    fn grant_unavailable(&self, args: &Value) -> Option<String> {
+        let command = args["command"].as_str()?.trim();
+        let plans = self.plans.lock().ok()?;
+        let entry = plans.get(&Self::planning_id())?;
+        (entry.command == command)
+            .then(|| entry.notice.clone())
+            .flatten()
+    }
+
+    fn forget_plans(&self, run_id: &str, call_id: Option<&str>) {
+        if let Ok(mut m) = self.plans.lock() {
+            match call_id {
+                Some(c) => {
+                    m.remove(&plan_key(run_id, c));
+                }
+                None => m.retain(|k, _| !k.starts_with(&format!("{run_id}\0"))),
+            }
+        }
     }
 
     fn summary(&self, args: &Value) -> Option<String> {
@@ -95,6 +284,52 @@ impl Tool for Shell {
         if let Err(e) = tokio::fs::create_dir_all(&ctx.workspace).await {
             return ToolResult::error(format!("creating workspace: {e}"));
         }
+        // A planned script run: the file must still be what was approved, and
+        // what runs is the interpreter and file that were hashed.
+        let mut command = a.command.clone();
+        if let Some(entry) = self.take_entry(ctx)
+            && let Some(plan) = entry.plan
+        {
+            if entry.command != a.command.trim() {
+                return ToolResult::error(
+                    "the command changed since its approval was decided; nothing was run",
+                );
+            }
+            match shell_script::read_script(&plan.workspace, &plan.script_canonical) {
+                Ok((path, hash)) if path == plan.script_canonical && hash == plan.hash => {}
+                Ok(_) | Err(_) => {
+                    return ToolResult::error(format!(
+                        "{} changed since it was approved (its contents differ from version {}); nothing was run. Ask again to run the new version.",
+                        plan.script_rel,
+                        &plan.hash[..8]
+                    ));
+                }
+            }
+            let writable = self.backend.writable_roots(&ctx.workspace);
+            let interpreter = plan
+                .interpreter
+                .file_name()
+                .map_or_else(|| "python3".to_owned(), |n| n.to_string_lossy().into_owned());
+            let again = shell_script::resolve(
+                &shell_script::Parsed {
+                    interpreter,
+                    script: plan.script_rel.clone(),
+                    args: plan.args.clone(),
+                },
+                &ctx.workspace,
+                &writable,
+                self.path.clone(),
+            );
+            if !again.is_ok_and(|r| {
+                r.interpreter_canonical == plan.interpreter_canonical && r.hash == plan.hash
+            }) {
+                return ToolResult::error(format!(
+                    "the interpreter or {} changed since it was approved; nothing was run",
+                    plan.script_rel
+                ));
+            }
+            command = shell_script::command_line(&plan);
+        }
         let timeout = a
             .timeout_secs
             .map(Duration::from_secs)
@@ -108,7 +343,7 @@ impl Tool for Shell {
         };
         let out = match self
             .backend
-            .exec(&a.command, opts, ctx.cancel.clone())
+            .exec(&command, opts, ctx.cancel.clone())
             .await
         {
             Ok(o) => o,
@@ -236,5 +471,400 @@ mod tests {
         policy.network = false;
         let host = Shell::new(Arc::new(HostBackend::new(policy)), Duration::from_secs(1));
         assert!(host.untrusted());
+    }
+}
+
+/// Script grants: the key, the sandbox gate, and the plan that makes
+/// "approved" and "run" the same file.
+#[cfg(all(test, unix))]
+mod script_grant_tests {
+    use std::path::{Path, PathBuf};
+
+    use tern_core::tool::{ToolRegistry, with_call};
+    use tern_core::types::ToolCall;
+    use tern_sandbox::{ExecOutput, HostBackend, Verification};
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+
+    /// A backend that runs commands unconfined but claims whatever a test
+    /// wants about its sandbox.
+    struct Claim {
+        inner: HostBackend,
+        verification: Verification,
+        network: bool,
+        roots: Vec<PathBuf>,
+    }
+
+    impl Claim {
+        fn new(verification: Verification, roots: Vec<PathBuf>) -> Arc<Self> {
+            Arc::new(Self::plain(verification, roots))
+        }
+
+        fn plain(verification: Verification, roots: Vec<PathBuf>) -> Self {
+            Self {
+                inner: HostBackend::unconfined(),
+                verification,
+                network: false,
+                roots,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SandboxBackend for Claim {
+        async fn exec(
+            &self,
+            cmd: &str,
+            opts: ExecOpts,
+            cancel: CancellationToken,
+        ) -> Result<ExecOutput, tern_sandbox::SandboxError> {
+            self.inner.exec(cmd, opts, cancel).await
+        }
+        fn network_reachable(&self) -> bool {
+            self.network
+        }
+        fn verify(&self, _: &Path) -> Verification {
+            self.verification.clone()
+        }
+        fn writable_roots(&self, _: &Path) -> Vec<PathBuf> {
+            self.roots.clone()
+        }
+    }
+
+    /// Like docker: runs commands, can't be probed.
+    struct NoProbe;
+
+    #[async_trait]
+    impl SandboxBackend for NoProbe {
+        async fn exec(
+            &self,
+            _: &str,
+            _: ExecOpts,
+            _: CancellationToken,
+        ) -> Result<ExecOutput, tern_sandbox::SandboxError> {
+            Ok(ExecOutput::default())
+        }
+        fn network_reachable(&self) -> bool {
+            false
+        }
+    }
+
+    fn verified() -> Verification {
+        Verification::Verified("test sandbox".into())
+    }
+
+    struct Env {
+        _dir: tempfile::TempDir,
+        ws: PathBuf,
+        ctx: ToolCtx,
+    }
+
+    fn env() -> Env {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap();
+        let ctx = ToolCtx {
+            workspace: ws.clone(),
+            run_id: "run".into(),
+            session_id: "s".into(),
+            cancel: CancellationToken::new(),
+        };
+        Env { _dir: dir, ws, ctx }
+    }
+
+    fn registry(backend: Arc<dyn SandboxBackend>) -> (ToolRegistry, Arc<Shell>) {
+        let shell = Arc::new(Shell::new(backend, Duration::from_secs(20)));
+        let mut reg = ToolRegistry::new();
+        reg.register(shell.clone());
+        (reg, shell)
+    }
+
+    fn call(id: &str, command: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: "shell".into(),
+            input: json!({ "command": command }),
+        }
+    }
+
+    /// Plan `c` as the loop does, and return its key.
+    fn key(env: &Env, reg: &ToolRegistry, c: &ToolCall) -> Option<GrantKey> {
+        reg.policy(&env.ctx, c);
+        reg.grant_key(&env.ctx.run_id, c)
+    }
+
+    fn have_python() -> bool {
+        std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    fn roots(e: &Env) -> Vec<PathBuf> {
+        vec![e.ws.clone()]
+    }
+
+    fn fake_python(dir: &Path) {
+        let fake = dir.join("python3");
+        std::fs::write(&fake, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+    }
+
+    #[test]
+    fn the_key_names_script_bytes_arguments_interpreter_path_and_workspace() {
+        let e = env();
+        std::fs::write(e.ws.join("a.py"), "print(1)").unwrap();
+        std::fs::write(e.ws.join("b.py"), "print(1)").unwrap();
+        let (reg, _) = registry(Claim::new(verified(), roots(&e)));
+        let k = |c: &str| key(&e, &reg, &call("1", c));
+        let base = k("python3 a.py x").expect("offered");
+        assert!(
+            base.label.contains("a.py") && base.label.contains("arguments x"),
+            "{}",
+            base.label
+        );
+        assert!(
+            base.note
+                .as_deref()
+                .unwrap()
+                .contains("Imports from other files aren't covered")
+        );
+        assert_eq!(k("python3 a.py x").unwrap(), base, "stable");
+        assert_eq!(k("  python3   a.py   x ").unwrap(), base, "spacing");
+        assert_ne!(k("python3 a.py y").unwrap().key, base.key, "args");
+        assert_ne!(k("python3 a.py x y").unwrap().key, base.key, "more args");
+        assert_ne!(k("python3 b.py x").unwrap().key, base.key, "path, same bytes");
+        std::fs::write(e.ws.join("a.py"), "print(2)").unwrap();
+        assert_ne!(k("python3 a.py x").unwrap().key, base.key, "bytes");
+        std::fs::write(e.ws.join("a.py"), "print(1)").unwrap();
+        assert_eq!(k("python3 a.py x").unwrap().key, base.key, "same bytes again");
+        // Another interpreter file on PATH; another workspace.
+        let bins = tempfile::tempdir().unwrap();
+        fake_python(bins.path());
+        let shell = Shell::new(Claim::new(verified(), roots(&e)), Duration::from_secs(5))
+            .with_path(Some(bins.path().into()));
+        let mut reg2 = ToolRegistry::new();
+        reg2.register(Arc::new(shell));
+        let other = key(&e, &reg2, &call("1", "python3 a.py x")).unwrap();
+        assert_ne!(other.key, base.key, "interpreter");
+        let e2 = env();
+        std::fs::write(e2.ws.join("a.py"), "print(1)").unwrap();
+        let (reg3, _) = registry(Claim::new(verified(), roots(&e2)));
+        let in_other = key(&e2, &reg3, &call("1", "python3 a.py x")).unwrap();
+        assert_ne!(in_other.key, base.key, "workspace");
+        let audit: Value = serde_json::from_str(base.audit.as_deref().unwrap()).unwrap();
+        assert_eq!(audit["sha256"].as_str().unwrap().len(), 64);
+        assert!(audit["sandbox"].as_str().unwrap().starts_with("verified"));
+        assert_eq!(audit["script"], "a.py");
+    }
+
+    #[test]
+    fn only_the_covered_shape_gets_a_key_and_python_commands_say_why() {
+        let e = env();
+        std::fs::write(e.ws.join("a.py"), "print(1)").unwrap();
+        let (reg, _) = registry(Claim::new(verified(), roots(&e)));
+        for cmd in [
+            "python3 -c 'print(1)'",
+            "python3 a.py | head",
+            "python3 a.py 2>&1",
+            "python3 a.py; id",
+            "python3 - <<'EOF'\nprint(1)\nEOF",
+            "python3 -m http.server",
+            "FOO=1 python3 a.py",
+            "env python3 a.py",
+            "python3 missing.py",
+            "ls",
+            "echo hi",
+        ] {
+            let c = call("1", cmd);
+            assert_eq!(key(&e, &reg, &c), None, "{cmd:?}");
+            let why = reg.grant_unavailable(&e.ctx.run_id, &c);
+            let python_first = cmd.starts_with("python3");
+            assert_eq!(why.is_some(), python_first, "{cmd:?}: {why:?}");
+        }
+        let c = call("1", "python3 -c 'x'");
+        reg.policy(&e.ctx, &c);
+        let why = reg.grant_unavailable("run", &c).unwrap();
+        assert!(why.contains("inline script") && why.contains(".py file"), "{why}");
+        let c = call("1", "python3 a.py | head -5");
+        reg.policy(&e.ctx, &c);
+        let why = reg.grant_unavailable("run", &c).unwrap();
+        assert!(why.contains("pipe, redirect"), "{why}");
+        // Network asked for: no key, even for a covered shape.
+        let mut net = call("2", "python3 a.py");
+        net.input["network"] = true.into();
+        assert_eq!(key(&e, &reg, &net), None);
+        assert!(reg.grant_unavailable("run", &net).unwrap().contains("network"));
+        // A script that is a symlink to a file outside the workspace.
+        let out = tempfile::tempdir().unwrap();
+        std::fs::write(out.path().join("o.py"), "x").unwrap();
+        std::os::unix::fs::symlink(out.path().join("o.py"), e.ws.join("o.py")).unwrap();
+        let c = call("3", "python3 o.py");
+        assert_eq!(key(&e, &reg, &c), None);
+        let why = reg.grant_unavailable("run", &c).unwrap();
+        assert!(why.contains("outside the workspace"), "{why}");
+        // A call nothing planned has no key to match.
+        assert_eq!(reg.grant_key("run", &call("never", "python3 a.py")), None);
+    }
+
+    #[test]
+    fn no_key_unless_the_sandbox_is_verified_and_offline() {
+        let e = env();
+        std::fs::write(e.ws.join("a.py"), "print(1)").unwrap();
+        let c = call("1", "python3 a.py");
+        // A failing probe.
+        let down = Verification::not_verified("it may be nested inside another sandbox");
+        let (reg, _) = registry(Claim::new(down, roots(&e)));
+        assert_eq!(key(&e, &reg, &c), None);
+        let why = reg.grant_unavailable("run", &c).unwrap();
+        assert!(
+            why.starts_with("Not auto-approved: the sandbox isn't confirmed active"),
+            "{why}"
+        );
+        assert!(why.contains("nested"), "{why}");
+        // Verified: offered.
+        let (reg, _) = registry(Claim::new(verified(), roots(&e)));
+        assert!(key(&e, &reg, &c).is_some());
+        assert_eq!(reg.grant_unavailable("run", &c), None);
+        // Verified but the network is reachable: not offered.
+        let mut online = Claim::plain(verified(), roots(&e));
+        online.network = true;
+        let (reg, _) = registry(Arc::new(online));
+        assert_eq!(key(&e, &reg, &c), None);
+        assert!(reg.grant_unavailable("run", &c).unwrap().contains("network access"));
+        // A backend that can't be probed (docker) never verifies.
+        let (reg, _) = registry(Arc::new(NoProbe));
+        assert_eq!(key(&e, &reg, &c), None);
+    }
+
+    #[test]
+    fn an_interpreter_in_a_writable_place_is_never_covered() {
+        let e = env();
+        std::fs::write(e.ws.join("a.py"), "x").unwrap();
+        let bin = e.ws.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        fake_python(&bin);
+        let shell = Shell::new(Claim::new(verified(), roots(&e)), Duration::from_secs(5))
+            .with_path(Some(bin.into()));
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(shell));
+        assert_eq!(key(&e, &reg, &call("1", "python3 a.py")), None);
+    }
+
+    #[tokio::test]
+    async fn a_script_edited_between_approval_and_run_is_refused_and_nothing_runs() {
+        if !have_python() {
+            return;
+        }
+        let e = env();
+        std::fs::write(e.ws.join("a.py"), "print('approved')").unwrap();
+        let (reg, shell) = registry(Claim::new(verified(), roots(&e)));
+        let c = call("1", "python3 a.py");
+        let k = key(&e, &reg, &c).unwrap();
+        // The agent rewrites the script while the card is open.
+        std::fs::write(
+            e.ws.join("a.py"),
+            "open('pwned','w').write('x'); print('edited')",
+        )
+        .unwrap();
+        let r = with_call("1", reg.call(&e.ctx, &c)).await.0;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("changed since it was approved"), "{}", r.content);
+        assert!(r.content.contains("nothing was run"));
+        assert!(!e.ws.join("pwned").exists());
+        assert_eq!(shell.plans_held(), 0);
+        // Asked again: the new plan has a different key.
+        let k2 = key(&e, &reg, &c).unwrap();
+        assert_ne!(k.key, k2.key);
+        // A deleted script is refused too.
+        std::fs::remove_file(e.ws.join("a.py")).unwrap();
+        let r = with_call("1", reg.call(&e.ctx, &c)).await.0;
+        assert!(r.is_error && r.content.contains("nothing was run"), "{}", r.content);
+        assert!(!e.ws.join("pwned").exists());
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_script_runs_exactly_the_planned_file_with_its_arguments() {
+        if !have_python() {
+            return;
+        }
+        let e = env();
+        std::fs::write(
+            e.ws.join("a.py"),
+            "import sys; print('args', sys.argv[1:]); print(__file__)",
+        )
+        .unwrap();
+        let (reg, shell) = registry(Claim::new(verified(), roots(&e)));
+        let c = call("1", "python3 a.py -n 5 x");
+        key(&e, &reg, &c).unwrap();
+        assert_eq!(shell.plans_held(), 1);
+        let r = with_call("1", reg.call(&e.ctx, &c)).await.0;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("args ['-n', '5', 'x']"), "{}", r.content);
+        let file = e.ws.join("a.py").display().to_string();
+        assert!(r.content.contains(&file), "{}", r.content);
+        assert_eq!(shell.plans_held(), 0, "a call uses up its plan");
+    }
+
+    #[tokio::test]
+    async fn concurrent_identical_calls_each_use_their_own_plan() {
+        if !have_python() {
+            return;
+        }
+        let e = env();
+        std::fs::write(e.ws.join("a.py"), "print('ok')").unwrap();
+        let (reg, shell) = registry(Claim::new(verified(), roots(&e)));
+        let calls: Vec<ToolCall> = (0..4)
+            .map(|i| call(&format!("c{i}"), "python3 a.py"))
+            .collect();
+        for c in &calls {
+            key(&e, &reg, c).unwrap();
+        }
+        assert_eq!(shell.plans_held(), 4);
+        let runs = calls.iter().map(|c| {
+            let reg = &reg;
+            let ctx = &e.ctx;
+            async move { with_call(&c.id, reg.call(ctx, c)).await.0 }
+        });
+        let results = futures::future::join_all(runs).await;
+        assert!(
+            results
+                .iter()
+                .all(|r| !r.is_error && r.content.contains("ok")),
+            "{results:?}"
+        );
+        assert_eq!(shell.plans_held(), 0);
+        // A spent call id has no plan, so no key.
+        assert_eq!(reg.grant_key("run", &calls[0]), None);
+    }
+
+    #[test]
+    fn plans_of_calls_that_do_not_run_and_of_ended_runs_are_dropped() {
+        let e = env();
+        std::fs::write(e.ws.join("a.py"), "x").unwrap();
+        let (reg, shell) = registry(Claim::new(verified(), roots(&e)));
+        for id in ["1", "2", "3"] {
+            key(&e, &reg, &call(id, "python3 a.py")).unwrap();
+        }
+        assert_eq!(shell.plans_held(), 3);
+        reg.forget_plans("run", Some("2"));
+        assert_eq!(shell.plans_held(), 2);
+        reg.forget_plans("other-run", None);
+        assert_eq!(shell.plans_held(), 2);
+        reg.forget_plans("run", None);
+        assert_eq!(shell.plans_held(), 0);
+    }
+
+    #[tokio::test]
+    async fn ordinary_commands_are_untouched() {
+        let e = env();
+        let (reg, shell) = registry(Claim::new(verified(), roots(&e)));
+        let c = call("1", "echo hello | tr a-z A-Z");
+        let p = reg.policy(&e.ctx, &c);
+        assert!(p.requires_approval && p.effect == Effect::Destructive);
+        assert_eq!(shell.plans_held(), 0);
+        let r = with_call("1", reg.call(&e.ctx, &c)).await.0;
+        assert!(r.content.contains("HELLO"), "{}", r.content);
     }
 }

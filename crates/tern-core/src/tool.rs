@@ -266,16 +266,29 @@ pub trait Tool: Send + Sync {
     /// (every call of the run when `None`): the call is not going to run,
     /// or the run is over. Tools that keep nothing per call ignore it.
     fn forget_plans(&self, _run_id: &str, _call_id: Option<&str>) {}
+    /// Why no scoped grant is offered for this call although the tool
+    /// has them for others, in plain words for the card ("Not auto-approved:
+    /// ..."). `None` when there is nothing to say.
+    fn grant_unavailable(&self, _args: &Value) -> Option<String> {
+        None
+    }
 }
 
 /// The precise thing a scoped grant covers ([`Tool::grant_key`]).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct GrantKey {
     /// Compared exactly; stored for "always" as `key:<key>` on the tool's
     /// allowlist. Includes a digest of everything the user saw.
     pub key: String,
     /// Short, for cards and grouping: `draft maricopa_assessor.city_stats`.
     pub label: String,
+    /// One plain-words line the card shows with the choices, for what the
+    /// grant does not cover.
+    pub note: Option<String>,
+    /// What the ledger records when a call runs on this grant, beyond the
+    /// key itself (the script's hash, the sandbox's state), as a JSON object
+    /// rendered to text so the key stays hashable.
+    pub audit: Option<String>,
 }
 
 /// Tools that come from somewhere that has to be started first (an MCP
@@ -375,6 +388,12 @@ impl ToolRegistry {
     pub fn grant_key(&self, run_id: &str, call: &ToolCall) -> Option<GrantKey> {
         self.get(&call.name)
             .and_then(|t| planning(run_id, &call.id, || t.grant_key(&call.input)))
+    }
+
+    /// Why `call` gets no grant offer ([`Tool::grant_unavailable`]).
+    pub fn grant_unavailable(&self, run_id: &str, call: &ToolCall) -> Option<String> {
+        self.get(&call.name)
+            .and_then(|t| planning(run_id, &call.id, || t.grant_unavailable(&call.input)))
     }
 
     /// A call won't run (refused, denied, cancelled) or its run ended: tools

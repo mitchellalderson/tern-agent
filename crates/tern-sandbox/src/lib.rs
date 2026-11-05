@@ -4,10 +4,12 @@
 mod docker;
 mod helper;
 mod policy;
+mod verify;
 
 pub use docker::{DockerBackend, DockerSettings};
 pub use helper::{HELPER_ARG, run_if_requested as run_helper_if_requested};
 pub use policy::{Confine, HostPolicy};
+pub use verify::Verification;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -85,6 +87,19 @@ pub trait SandboxBackend: Send + Sync {
     /// third-party text (tooling spec §5.3).
     fn network_reachable(&self) -> bool {
         true
+    }
+
+    /// Whether the OS sandbox is confirmed active for commands run in
+    /// `workspace` (see [`HostBackend::verify`]). A backend that can't be
+    /// probed says so: nothing may waive an approval on its account.
+    fn verify(&self, _workspace: &Path) -> Verification {
+        Verification::not_verified("this backend's confinement can't be probed")
+    }
+
+    /// Where a command can write, as canonical paths: an interpreter or
+    /// other program found there could be replaced by the command itself.
+    fn writable_roots(&self, workspace: &Path) -> Vec<PathBuf> {
+        vec![workspace.to_path_buf()]
     }
 }
 
@@ -336,6 +351,14 @@ fn detect_os(_policy: &HostPolicy) -> Confinement {
 
 #[async_trait]
 impl SandboxBackend for HostBackend {
+    fn verify(&self, workspace: &Path) -> Verification {
+        HostBackend::verify(self, workspace)
+    }
+
+    fn writable_roots(&self, workspace: &Path) -> Vec<PathBuf> {
+        policy::writable_roots(&self.policy, workspace)
+    }
+
     /// `network = false` only holds where an OS sandbox enforces it.
     fn network_reachable(&self) -> bool {
         self.policy.network

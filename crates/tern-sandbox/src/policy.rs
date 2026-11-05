@@ -75,6 +75,22 @@ fn path_dirs(home: Option<&Path>) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Where a sandboxed command can write: the workspace, the temp dirs and
+/// `write_paths` (canonical, so they compare with canonical paths).
+pub(crate) fn writable_roots(policy: &HostPolicy, workspace: &Path) -> Vec<PathBuf> {
+    let mut w = vec![
+        canonical(workspace),
+        canonical(Path::new("/tmp")),
+        canonical(Path::new("/var/tmp")),
+        canonical(Path::new("/dev/shm")),
+    ];
+    if let Some(t) = std::env::var_os("TMPDIR").filter(|t| !t.is_empty()) {
+        w.push(canonical(Path::new(&t)));
+    }
+    w.extend(policy.write_paths.iter().map(|p| canonical(p)));
+    w
+}
+
 // Each platform uses half of what follows; both halves are unit-tested everywhere.
 /// Paths a command may read and write on Linux, where Landlock can only
 /// grant. A grant that would expose a denied path is dropped.

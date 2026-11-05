@@ -29,6 +29,7 @@ fn req(id: &str, run: &str, session: &str, target: &str, n: u32, grant: bool) ->
             key: format!("draft {target}.t#1"),
             label: format!("draft {target}.t"),
         }),
+        notice: None,
     }
 }
 

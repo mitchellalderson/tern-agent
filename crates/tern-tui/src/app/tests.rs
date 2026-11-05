@@ -610,6 +610,7 @@ fn approvals_are_answered_inline() {
             egress_host: None,
             script: None,
             grant: None,
+            notice: None,
         },
         reply: tx,
     });
@@ -659,6 +660,7 @@ fn a_scoped_grant_prompt_offers_run_conversation_and_always() {
                     key: "draft net.a#1".into(),
                     label: "draft net.a".into(),
                 }),
+                notice: None,
             },
             reply: tx,
         });
@@ -693,6 +695,7 @@ fn a_scoped_grant_prompt_offers_run_conversation_and_always() {
             egress_host: None,
             script: None,
             grant: None,
+            notice: None,
         },
         reply: tx,
     });
@@ -748,6 +751,7 @@ fn ctrl_c_denies_a_pending_approval() {
             egress_host: None,
             script: None,
             grant: None,
+            notice: None,
         },
         reply: tx,
     });
@@ -1299,6 +1303,7 @@ fn approval(
                 egress_host: None,
                 script: None,
                 grant: None,
+                notice: None,
             },
             reply: tx,
         },

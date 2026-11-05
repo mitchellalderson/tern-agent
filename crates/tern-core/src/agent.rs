@@ -990,6 +990,10 @@ impl Agent {
             .tools
             .grant_key(&run.id, call)
             .filter(|_| policy.forbidden.is_none());
+        let no_grant = match &grant_key {
+            Some(_) => None,
+            None => self.tools.grant_unavailable(&run.id, call),
+        };
         let key_granted = match &grant_key {
             Some(k) => self.key_granted(run, &call.name, k)?,
             None => false,
@@ -999,7 +1003,14 @@ impl Agent {
                 || always_ok && approval::allowed_by(&self.store.allowlist(&call.name)?, call));
         let (effect, always, offer_grant) = match approval::check(&call.name, policy, granted, gate)
         {
-            approval::Check::Allow => return Ok((ApprovalOutcome::Approved, String::new())),
+            approval::Check::Allow => {
+                // Ran on a scoped grant nobody was asked about this time:
+                // the ledger says which grant, and what it was judged on.
+                if key_granted && let Some(k) = &grant_key {
+                    self.ledger_grant_use(run, call, k, gate.tainted)?;
+                }
+                return Ok((ApprovalOutcome::Approved, String::new()));
+            }
             approval::Check::Forbid(flag) => {
                 tracing::warn!(run = %run.id, tool = %call.name, flag, "refused a forbidden tool");
                 self.ledger_refused(run, call, flag)?;
@@ -1048,6 +1059,12 @@ impl Agent {
             local_only: policy.local_approval,
             egress_host: egress.map(Into::into),
             script,
+            notice: if offer_grant {
+                grant_key.as_ref().and_then(|k| k.note.clone())
+            } else {
+                None
+            }
+            .or_else(|| no_grant.filter(|_| !gate.tainted)),
             grant: grant_key
                 .filter(|_| offer_grant)
                 .map(|k| approval::GrantOffer {

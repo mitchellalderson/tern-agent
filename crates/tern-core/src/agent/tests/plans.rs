@@ -56,6 +56,7 @@ impl Tool for Planner {
         Some(GrantKey {
             key: "planner#1".into(),
             label: "planner".into(),
+            ..GrantKey::default()
         })
     }
     fn forget_plans(&self, run_id: &str, call_id: Option<&str>) {

@@ -209,6 +209,7 @@ fn request(pattern: Option<&str>) -> ApprovalRequest {
         egress_host: None,
         script: None,
         grant: None,
+        notice: None,
     }
 }
 
