@@ -23,4 +23,6 @@ grep -q 'viewBox="-48' "$tmp/padded.svg" || { echo "unexpected viewBox in $svg" 
 for px in 16 32 64 128 256 512 1024; do
   swift tool/render_svg.swift "$tmp/padded.svg" "$out/app_icon_$px.png" "$px"
 done
-echo "wrote $out"
+# The sidebar logo uses the unpadded mark.
+swift tool/render_svg.swift "$svg" assets/icon/tern-mark.png 128
+echo "wrote $out and assets/icon/tern-mark.png"

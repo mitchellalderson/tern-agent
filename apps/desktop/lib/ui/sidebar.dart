@@ -69,12 +69,16 @@ class _SidebarState extends State<Sidebar> {
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
               children: [
                 Text('tern', style: wordmarkStyle(22, context.colors.text)),
-                const SizedBox(height: 6),
-                const Stripes(thickness: 3, width: 64, slant: true),
+                const SizedBox(width: 10),
+                Image.asset(
+                  'assets/icon/tern-mark.png',
+                  width: 26,
+                  height: 26,
+                  filterQuality: FilterQuality.medium,
+                ),
               ],
             ),
           ),
