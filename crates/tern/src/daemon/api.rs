@@ -115,15 +115,10 @@ pub async fn serve(
     if bind != socket {
         prepare_private_dir(bind.parent().unwrap_or(Path::new("/tmp")))?;
     }
-    let listener = tokio::net::UnixListener::bind(bind)
-        .map_err(|e| anyhow::anyhow!("binding {}: {e}", bind.display()))?;
+    let listener = bind_listening(bind)?;
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(bind, std::fs::Permissions::from_mode(0o600))?;
-        if bind != socket {
-            std::os::unix::fs::symlink(bind, socket)?;
-        }
+    if bind != socket {
+        std::os::unix::fs::symlink(bind, socket)?;
     }
     let app = router(manager);
     Ok(tokio::spawn(async move {
@@ -134,6 +129,38 @@ pub async fn serve(
             tracing::error!(error = %e, "API server stopped");
         }
     }))
+}
+
+/// Bind a unix socket so the path only exists once it is listening. A plain
+/// `bind` creates the file before `listen`, so a client that waits for the
+/// file and connects at once can be refused. Bind a sibling name, set the
+/// mode, then rename it into place.
+fn bind_listening(path: &Path) -> anyhow::Result<tokio::net::UnixListener> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".new");
+        let tmp = std::path::PathBuf::from(tmp);
+        // The extra suffix could push a path at the length limit over it.
+        let staged = tmp.as_os_str().len() <= tern_core::home::MAX_SOCKET_PATH;
+        let at = if staged { tmp.as_path() } else { path };
+        if staged && at.symlink_metadata().is_ok() {
+            std::fs::remove_file(at)?;
+        }
+        let listener = tokio::net::UnixListener::bind(at)
+            .map_err(|e| anyhow::anyhow!("binding {}: {e}", at.display()))?;
+        std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o600))?;
+        if staged {
+            std::fs::rename(at, path)?;
+        }
+        Ok(listener)
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::net::UnixListener::bind(path)
+            .map_err(|e| anyhow::anyhow!("binding {}: {e}", path.display()))
+    }
 }
 
 /// Create (or check) a directory only we can use: mode 0700, owned by us.
@@ -906,6 +933,28 @@ async fn approve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client that connects the moment the socket path appears is never
+    /// refused: the path only shows up once the socket is listening.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_socket_path_appears_only_when_listening() {
+        for i in 0..200 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("t.sock");
+            let p = path.clone();
+            let client = std::thread::spawn(move || {
+                let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while !p.exists() {
+                    assert!(std::time::Instant::now() < end, "socket never appeared");
+                }
+                std::os::unix::net::UnixStream::connect(&p)
+            });
+            let _listener = bind_listening(&path).unwrap();
+            let r = client.join().unwrap();
+            assert!(r.is_ok(), "round {i}: {:?}", r.err());
+        }
+    }
 
     #[test]
     fn a_lagging_client_is_told_to_resync() {

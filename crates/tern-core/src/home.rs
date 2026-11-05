@@ -145,7 +145,7 @@ impl TernHome {
 }
 
 /// Longest socket path we bind directly (below both platforms' limits).
-const MAX_SOCKET_PATH: usize = 100;
+pub const MAX_SOCKET_PATH: usize = 100;
 
 /// A private directory for the socket when the data directory's path is too
 /// long: the per-user runtime dir (Linux), the per-user `$TMPDIR` (macOS),
