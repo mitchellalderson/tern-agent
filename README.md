@@ -48,7 +48,7 @@ tern doctor                             # check everything and say what's missin
 - **Compute without `shell`.** The `python` tool runs scripts in a sandboxed Python subset (Monty) that call tern's tools as functions. Every call is checked and journaled, a call that needs approval pauses the script and asks you, `gather` runs calls in parallel, and writes from scripts are off unless you turn them on.
 - **Connectors and MCP.** The agent writes Luau connectors that run sandboxed with credentials injected by the host, can build one from an OpenAPI document, and signs in with OAuth where a service offers it. MCP servers are managed from chat, the CLI, the TUI and the desktop app (platform-wide settings are all in one place too: Settings in the app, `/settings` in the terminal), and `tern mcp serve` offers tern's tools to other agents.
 - **Keeping watch.** A hash-chained activity ledger, a Tasks view of everything running or waiting on you (`tern tasks`), and `tern security audit`.
-- **Stays out of the way.** `tern start` and `tern service install` run it in the background, with a menu-bar icon on macOS and a tray icon on Linux.
+- **Stays out of the way.** `tern start` and `tern service install` run it in the background, with a menu-bar icon on macOS and a tray icon on Linux. Schedules run while tern is running: a sleeping laptop pauses them, and a missed one runs once on wake. For round-the-clock routines, run it on an always-on machine or server.
 
 What it doesn't do (no built-in browser, no Windows build, no hosted version, no desktop app on Linux yet) is spelled out in the [FAQ](docs/faq.md) and the [roadmap](ROADMAP.md).
 
