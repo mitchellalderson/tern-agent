@@ -13,6 +13,11 @@ on:
     types: [opened, synchronize, reopened, labeled]
   # Run it by hand (Actions > ci > Run workflow) to get a desktop DMG from any branch.
   workflow_dispatch:
+    inputs:
+      macos:
+        description: Run the macOS job (and the DMG). Untick for a Linux-only run.
+        type: boolean
+        default: true
   # Nightly DMG from main, skipped when main has no commits in the last day.
   schedule:
     - cron: "17 6 * * *"
@@ -78,6 +83,7 @@ jobs:
           BEFORE: ${{ github.event.before }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           ACTION: ${{ github.event.action }}
+          DISPATCH_MACOS: ${{ github.event.inputs.macos }}
           LABEL_NAME: ${{ github.event.label.name }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
@@ -95,6 +101,7 @@ jobs:
               # Nightly: only when main moved in the last day.
               [ -n "$(git log --since='24 hours ago' --format=%h -1)" ] || code=false ;;
           esac
+          if [ "$EVENT" = workflow_dispatch ] && [ "$DISPATCH_MACOS" = false ]; then macos=false; fi
           if [ "$EVENT" = pull_request ]; then
             case ",$PR_LABELS," in *,ci-macos,*) ;; *) macos=false ;; esac
             # Adding some unrelated label must not re-run everything.
