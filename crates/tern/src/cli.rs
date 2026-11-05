@@ -471,6 +471,15 @@ pub enum AgentsCommand {
     },
     /// Open an agent's persona in $EDITOR.
     Edit { agent: String },
+    /// What an agent remembers: list it, rewrite or delete one memory, or
+    /// clear them all. `tern` (or `shared`) is the shared memories. A note
+    /// marked `unverified` was saved after the agent read untrusted content;
+    /// rewriting one makes it yours. Changes are in `tern ledger`.
+    Memory {
+        agent: String,
+        #[command(subcommand)]
+        action: Option<MemoryAction>,
+    },
     /// Rename an agent: its display name, and with --slug its @name (its
     /// DM follows; its id and history don't change).
     Rename {
@@ -502,6 +511,22 @@ pub enum AgentsCommand {
         /// Unarchive it instead.
         #[arg(long)]
         undo: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MemoryAction {
+    /// List its memories, newest first (the default).
+    List,
+    /// Rewrite memory <id>; it becomes yours (no longer unverified).
+    Edit { id: i64, text: String },
+    /// Delete memory <id>.
+    Rm { id: i64 },
+    /// Delete every memory of this agent.
+    Clear {
+        /// Don't ask for confirmation.
+        #[arg(long, short)]
+        yes: bool,
     },
 }
 
