@@ -159,6 +159,25 @@ pub async fn with_call<F: std::future::Future>(id: &str, fut: F) -> (F::Output, 
     (out, consumes)
 }
 
+thread_local! {
+    static PLANNING: std::cell::RefCell<Option<(String, String)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// While the registry asks a tool for the policy or grant key of a call:
+/// that call's (run id, call id), so a tool that plans something for the
+/// call it will later run ([`current_call_id`]) can key the plan by call.
+pub fn planning_scope() -> Option<(String, String)> {
+    PLANNING.with(|p| p.borrow().clone())
+}
+
+fn planning<R>(run_id: &str, call_id: &str, f: impl FnOnce() -> R) -> R {
+    let prev = PLANNING.with(|p| p.replace(Some((run_id.to_owned(), call_id.to_owned()))));
+    let out = f();
+    PLANNING.with(|p| *p.borrow_mut() = prev);
+    out
+}
+
 /// The id of the tool call being run (the model's `tool_use` id).
 pub fn current_call_id() -> Option<String> {
     CALL.try_with(|c| c.id.clone()).ok()
@@ -349,8 +368,9 @@ impl ToolRegistry {
     }
 
     /// The scoped-grant key of `call` ([`Tool::grant_key`]).
-    pub fn grant_key(&self, call: &ToolCall) -> Option<GrantKey> {
-        self.get(&call.name).and_then(|t| t.grant_key(&call.input))
+    pub fn grant_key(&self, run_id: &str, call: &ToolCall) -> Option<GrantKey> {
+        self.get(&call.name)
+            .and_then(|t| planning(run_id, &call.id, || t.grant_key(&call.input)))
     }
 
     pub fn allow_always(&self, call: &ToolCall) -> bool {
@@ -385,7 +405,7 @@ impl ToolRegistry {
     /// Unknown tools need no approval: calling them just returns an error.
     pub fn policy(&self, ctx: &ToolCtx, call: &ToolCall) -> ToolPolicy {
         match self.get(&call.name) {
-            Some(t) => t.policy(ctx, &call.input),
+            Some(t) => planning(&ctx.run_id, &call.id, || t.policy(ctx, &call.input)),
             None => ToolPolicy::new(Effect::Read, true),
         }
     }

@@ -982,7 +982,7 @@ impl Agent {
         // A tool that opts out ignores old allowlist entries too.
         let grant_key = self
             .tools
-            .grant_key(call)
+            .grant_key(&run.id, call)
             .filter(|_| policy.forbidden.is_none());
         let key_granted = match &grant_key {
             Some(k) => self.key_granted(run, &call.name, k)?,

@@ -384,7 +384,14 @@ async fn draft_write_test_activate_flow() {
         ok.content
     );
     // No network or secrets: testing needs no approval.
-    assert!(!test.policy(&c, &json!({"name": "greet"})).requires_approval);
+    assert!(
+        !test
+            .policy(
+                &c,
+                &json!({"name": "greet", "tool": "hello", "args": {"who": "sam"}})
+            )
+            .requires_approval
+    );
     let r = test
         .call(
             &c,
@@ -477,7 +484,10 @@ fn a_networked_drafts_test_names_a_grant_key_for_exactly_what_was_shown() {
         dirs: dirs.clone(),
         inspected: Default::default(),
     };
-    let key = |args: Value| test.grant_key(&args).map(|k| k.key);
+    let key = |args: Value| {
+        test.policy(&ctx(), &args);
+        test.grant_key(&args).map(|k| k.key)
+    };
 
     let t1 = key(json!({"name": "net", "tool": "t", "args": {"id": 1}})).unwrap();
     // Different arguments, same key: they can only reach what was shown.
@@ -632,6 +642,181 @@ async fn the_grant_key_names_the_account_not_just_the_name_asked_for() {
     assert_eq!(key(None), Some(h));
     // An account that doesn't exist gets no key at all.
     assert_eq!(key(Some("nope")), None);
+}
+
+/// Concurrent identical test calls each get their own plan: with a fixture
+/// present and no approval needed, none of them may ever go live, and a
+/// call nobody planned never does either.
+#[tokio::test]
+async fn concurrent_identical_tests_each_replay_and_an_unplanned_one_never_goes_live() {
+    use tern_core::tool::{ToolRegistry, with_call};
+    use tern_core::types::ToolCall;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/stats"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("live"))
+        .mount(&server)
+        .await;
+    let (host, tmp) = host_with(&[]);
+    let dirs = Dirs {
+        active: tmp.path().join("c"),
+        drafts: tmp.path().join("c/drafts"),
+    };
+    std::fs::create_dir_all(&dirs.drafts).unwrap();
+    std::fs::write(
+        dirs.draft_path("net"),
+        connector(
+            "net",
+            r#"http = { "127.0.0.1" }"#,
+            &format!(
+                r#"t = {{ description = "d", effect = "read", run = function(ctx)
+                     return ctx.http.get("{}/stats").body end }}"#,
+                server.uri()
+            ),
+        ),
+    )
+    .unwrap();
+    let mut reg = ToolRegistry::new();
+    reg.register(Arc::new(ConnectorTest {
+        host,
+        dirs,
+        inspected: Default::default(),
+    }));
+    let reg = Arc::new(reg);
+    let c = ctx();
+    let call = |id: &str, mode: &str| ToolCall {
+        id: id.into(),
+        name: "connector_test".into(),
+        input: json!({"name": "net", "tool": "t", "mode": mode}),
+    };
+    let requests = || async { server.received_requests().await.unwrap().len() };
+
+    // Record the fixture with one approved live call.
+    let live = call("rec", "live");
+    assert!(reg.policy(&c, &live).requires_approval);
+    let (r, _) = with_call("rec", reg.call_in(None, &c, &live)).await;
+    assert!(!r.is_error, "{}", r.content);
+    assert_eq!(requests().await, 1);
+
+    // Two identical auto-mode calls, both planned while the fixture exists.
+    let (a, b) = (call("a", "auto"), call("b", "auto"));
+    assert!(
+        !reg.policy(&c, &a).requires_approval,
+        "offline: nothing to ask"
+    );
+    assert!(!reg.policy(&c, &b).requires_approval);
+    let (ra, rb) = tokio::join!(
+        with_call("a", reg.call_in(None, &c, &a)),
+        with_call("b", reg.call_in(None, &c, &b)),
+    );
+    for (r, _) in [ra, rb] {
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("replayed offline"), "{}", r.content);
+    }
+    assert_eq!(requests().await, 1, "neither went live");
+
+    // A call nobody planned, in auto mode, is refused; it can't go live.
+    let stray = call("stray", "auto");
+    let (r, _) = with_call("stray", reg.call_in(None, &c, &stray)).await;
+    assert!(
+        r.is_error && r.content.contains("no approval was decided"),
+        "{}",
+        r.content
+    );
+    // Using up its plan, a second run of the same call id is refused too.
+    let (r, _) = with_call("a", reg.call_in(None, &c, &a)).await;
+    assert!(r.is_error, "{}", r.content);
+    assert_eq!(requests().await, 1);
+}
+
+/// The account is the one the approval named: a default that changes
+/// between the policy and the call stops the call.
+#[tokio::test]
+async fn a_default_account_that_changes_after_approval_stops_the_call() {
+    use tern_core::tool::{ToolRegistry, with_call};
+    use tern_core::types::ToolCall;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("live"))
+        .mount(&server)
+        .await;
+    let (mut host, tmp) = host_with(&[]);
+    let tokens = Arc::new(tern_auth::Tokens::new(
+        (*host.secrets).clone(),
+        tern_auth::Guard::new(&[server.uri()]),
+    ));
+    let conns = Arc::new(tern_auth::Connections::new(host.store.clone(), tokens, 10));
+    let auth = tern_auth::ConnAuth::Key { names: vec![] };
+    let work = conns
+        .add(
+            tern_auth::Kind::Connector,
+            "mail",
+            "work",
+            None,
+            None,
+            &auth,
+        )
+        .unwrap();
+    let home = conns
+        .add(
+            tern_auth::Kind::Connector,
+            "mail",
+            "home",
+            None,
+            None,
+            &auth,
+        )
+        .unwrap();
+    conns.set_default(&work).unwrap();
+    host.connections = Some(conns.clone());
+    let dirs = Dirs {
+        active: tmp.path().join("c"),
+        drafts: tmp.path().join("c/drafts"),
+    };
+    std::fs::create_dir_all(&dirs.drafts).unwrap();
+    std::fs::write(
+        dirs.draft_path("mail"),
+        connector(
+            "mail",
+            r#"http = { "127.0.0.1" }"#,
+            &format!(
+                r#"t = {{ description = "d", effect = "read", run = function(ctx)
+                     return ctx.connection.slug .. ctx.http.get("{}/x").body end }}"#,
+                server.uri()
+            ),
+        ),
+    )
+    .unwrap();
+    let mut reg = ToolRegistry::new();
+    reg.register(Arc::new(ConnectorTest {
+        host,
+        dirs,
+        inspected: Default::default(),
+    }));
+    let c = ctx();
+    let call = ToolCall {
+        id: "x".into(),
+        name: "connector_test".into(),
+        input: json!({"name": "mail", "tool": "t", "mode": "live"}),
+    };
+    let key_work = {
+        reg.policy(&c, &call);
+        reg.grant_key(&c.run_id, &call).unwrap().key
+    };
+    // The default moves to another account after the approval was decided.
+    conns.set_default(&home).unwrap();
+    let (r, _) = with_call("x", reg.call_in(None, &c, &call)).await;
+    assert!(r.is_error && r.content.contains("account"), "{}", r.content);
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+    // Asked afresh, it is a different key, and the call runs under home.
+    reg.policy(&c, &call);
+    assert_ne!(reg.grant_key(&c.run_id, &call).unwrap().key, key_work);
+    let (r, _) = with_call("x", reg.call_in(None, &c, &call)).await;
+    assert!(
+        !r.is_error && r.content.starts_with("home"),
+        "{}",
+        r.content
+    );
 }
 
 #[test]

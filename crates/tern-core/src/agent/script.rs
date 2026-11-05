@@ -369,7 +369,7 @@ impl Agent {
         let only_limit = limited && !approval::needs_check(&name, &policy, gate);
         let prompt_host = host.clone().filter(|_| only_limit);
         let policy = if limited { policy.forced(true) } else { policy };
-        let key_granted = match self.tools.grant_key(&call) {
+        let key_granted = match self.tools.grant_key(&s.run.id, &call) {
             Some(k) if policy.forbidden.is_none() => self.key_granted(s.run, &name, &k)?,
             _ => false,
         };
