@@ -9,7 +9,7 @@
 # was built elsewhere; it only has to look like one (tern_desktop, lib/,
 # data/), which is how the packaging is tested on a Mac.
 #
-# Output, in <out-dir> (unversioned names, so releases/latest/download/ works):
+# Output, in <out-dir> (unversioned names: releases/download/<tag>/<name>):
 #   tern-desktop-linux-<arch>.tar.gz   unpack anywhere; run ./tern_desktop
 #   tern-desktop-linux-<arch>.deb      Debian, Ubuntu and friends
 #   each with a .sha256

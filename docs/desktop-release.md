@@ -14,7 +14,9 @@ packed, and what has to be done once with Apple credentials. Design context:
 | `tern-desktop-linux-x86_64.tar.gz`, `.deb` (+ `.sha256`) | Linux, x86_64 | `scripts/package-linux-app.sh` |
 | `tern-desktop-linux-aarch64.tar.gz`, `.deb` (+ `.sha256`) | Linux, arm64 | same |
 
-Names carry no version, so `releases/latest/download/<name>` always works.
+Names carry no version, so the same name works for every release: `releases/download/<tag>/<name>`. GitHub's
+`releases/latest/download/<name>` only resolves to a *stable* release; while every release is a pre-release
+(`v0.1.0-alpha.N`), always link with the tag.
 Every build has its own `tern` inside, matched to the app.
 
 ## macOS
@@ -38,6 +40,31 @@ unpacks the zip and verifies that, and writes the checksums. The
 `scripts/package-macos-app.sh <tern> <out>` is the old entry point; it now just
 calls `release-macos.sh`, so `release.yml` keeps working (and gains the zip and
 the stricter signing).
+
+### Version numbers on macOS
+
+Apple's `CFBundleShortVersionString` is up to three integers and `CFBundleVersion` is integers and dots, so
+`0.1.0-alpha.1` is not valid in either. `scripts/release-macos.sh` passes Flutter `--build-name` and `--build-number`
+derived from `Cargo.toml`: the marketing version is the core `X.Y.Z`, and the build number comes from the pre-release
+counter so builds still sort and the final release sorts last.
+
+| `Cargo.toml` | Short version | Build number |
+|---|---|---|
+| `0.1.0-alpha.N` | `0.1.0` | `N` |
+| `0.1.0-beta.N` | `0.1.0` | `100 + N` |
+| `0.1.0-rc.N` | `0.1.0` | `200 + N` |
+| `0.1.0` | `0.1.0` | `1000` |
+
+The full string (`0.1.0-alpha.1`) is still what `TERN_APP_VERSION` carries, so Settings > About and the version banner
+compare it with the core exactly. Linux `.deb` packages use `0.1.0~alpha.1` so a pre-release sorts before its release.
+Any other pre-release label makes the script stop.
+
+### What is signed
+
+Without the Apple secrets the workflow still succeeds: the DMG and zip are **ad-hoc signed** (not notarized; users
+allow the app once in System Settings > Privacy & Security > Open Anyway), and the `tern` CLI tarballs are **not
+signed** at all (they carry a `.sha256` and a GitHub build attestation). Signing and notarization are skipped unless
+`MACOS_SIGN_IDENTITY` (and the notary credentials) exist as repository secrets.
 
 ### Modes
 

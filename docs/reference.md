@@ -20,13 +20,13 @@ Everything tern does, command by command. For installing and a first chat, see t
 
 ## Install
 
-No release is published yet ([release-checklist.md](release-checklist.md)), so until the first tagged release build from source (below). From the first release:
+The first release, v0.1.0-alpha.1, is a GitHub pre-release ([release-checklist.md](release-checklist.md)); if it isn't published yet, build from source (below). To install a release:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mitchellalderson/tern-agent/main/install.sh | sh
 ```
 
-If there is no release, the script says so and points at the source build. The script picks the right build (Linux x86_64/aarch64, static musl; macOS Apple Silicon/Intel), verifies its SHA-256 checksum, and installs to `~/.local/bin` (`TERN_INSTALL_DIR` to change; `TERN_VERSION=v0.1.0` pins a release, `TERN_REPO=owner/name` installs from a fork). Or build from source with Rust 1.89+:
+If there is no release, the script says so and points at the source build. The script picks the right build (Linux x86_64/aarch64, static musl; macOS Apple Silicon/Intel), verifies its SHA-256 checksum, and installs to `~/.local/bin` (`TERN_INSTALL_DIR` to change; with no version it installs the newest release including pre-releases (GitHub's own `releases/latest` skips them); `--version v0.1.0-alpha.1` or `TERN_VERSION=v0.1.0-alpha.1` pins a release and `--stable` picks the newest non-pre-release; `TERN_REPO=owner/name` installs from a fork). Or build from source with Rust 1.89+:
 
 ```sh
 cargo build --profile dist -p tern    # → target/dist/tern
@@ -34,7 +34,7 @@ cargo build --profile dist -p tern    # → target/dist/tern
 
 ### Desktop app
 
-macOS 12+ (Apple Silicon and Intel): from the first release, download `tern-desktop-macos.dmg` from the [releases page](https://github.com/mitchellalderson/tern-agent/releases/latest) (until then build it: [desktop-release.md](desktop-release.md)) and drag tern to Applications. The app carries its own `tern`, so you don't need the CLI. On first launch it asks where tern should run: **On this Mac** (with **Start tern when I log in**, which starts tern and its menu-bar icon at login; both appear in System Settings › General › Login Items), or **On a tern server**: paste the pairing link from `tern devices pair` on that server. You can switch later in Settings. Then add a model. To also use that binary from a terminal:
+macOS 12+ (Apple Silicon and Intel): from the first release, download [`tern-desktop-macos.dmg`](https://github.com/mitchellalderson/tern-agent/releases/download/v0.1.0-alpha.1/tern-desktop-macos.dmg) from the release (the [releases page](https://github.com/mitchellalderson/tern-agent/releases) lists the others; `releases/latest` does not work for pre-releases; to build it yourself: [desktop-release.md](desktop-release.md)) and drag tern to Applications. The app carries its own `tern`, so you don't need the CLI. On first launch it asks where tern should run: **On this Mac** (with **Start tern when I log in**, which starts tern and its menu-bar icon at login; both appear in System Settings › General › Login Items), or **On a tern server**: paste the pairing link from `tern devices pair` on that server. You can switch later in Settings. Then add a model. To also use that binary from a terminal:
 
 ```sh
 ln -s "/Applications/tern.app/Contents/Library/LoginItems/tern Tray.app/Contents/MacOS/tern-tray" ~/.local/bin/tern
