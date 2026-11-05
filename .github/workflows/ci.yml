@@ -83,6 +83,18 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test -p tern-sandbox -- --ignored real_docker
 
+  # Exploratory: does the workspace compile on Windows, tests included? Not
+  # blocking until Windows is a supported platform; read the log for the gaps.
+  check-windows:
+    name: cargo check (windows, exploratory)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+      - run: cargo check --workspace --all-targets --locked
+
   build-linux:
     name: build ${{ matrix.target }}
     if: ${{ !inputs.skip_builds }}
