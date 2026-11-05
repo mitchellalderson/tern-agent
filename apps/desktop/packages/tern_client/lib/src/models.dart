@@ -56,6 +56,10 @@ class Health {
   /// e.g. `devices`, `uploads`.
   final Set<String> features;
 
+  /// The core has workspaces (`/v1/workspaces`): older cores don't, so hide
+  /// the folder picker.
+  bool get hasWorkspaces => features.contains('workspaces');
+
   bool get isLocal => deployment == 'local';
   bool get isOwner => scope == 'owner';
   bool get canChat => scope != 'read';
