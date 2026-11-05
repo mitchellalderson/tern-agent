@@ -83,7 +83,9 @@ impl Env {
             .spawn()
             .unwrap();
         let end = Instant::now() + Duration::from_secs(10);
-        while !self.socket().exists() {
+        // The socket file appears at bind(), a moment before listen(), so
+        // "exists" can still mean "connection refused". Wait for a connect.
+        while std::os::unix::net::UnixStream::connect(self.socket()).is_err() {
             assert!(Instant::now() < end, "daemon did not start");
             std::thread::sleep(Duration::from_millis(50));
         }
