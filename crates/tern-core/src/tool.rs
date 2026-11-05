@@ -538,16 +538,11 @@ impl ToolRegistry {
         self.get(&call.name).is_none_or(|t| t.allow_always())
     }
 
-    /// Declared effect and untrusted flag of every tool, by name.
+    /// Declared effect and whether the tool brings in outside content, by name.
     pub fn effects(&self) -> BTreeMap<String, (Effect, bool)> {
         self.all()
             .into_iter()
-            .map(|(name, t)| {
-                (
-                    name,
-                    (t.effect(), t.ingestion().floor() == Trust::Untrusted),
-                )
-            })
+            .map(|(name, t)| (name, (t.effect(), t.ingestion() != Ingestion::None)))
             .collect()
     }
 

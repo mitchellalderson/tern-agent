@@ -90,3 +90,36 @@ pub(crate) fn spec(name: &str, description: &str, input_schema: Value) -> ToolSp
 pub(crate) fn args<T: DeserializeOwned>(raw: Value) -> Result<T, ToolResult> {
     serde_json::from_value(raw).map_err(|e| ToolResult::error(format!("invalid arguments: {e}")))
 }
+
+#[cfg(test)]
+mod ingestion_tests {
+    use super::*;
+    use tern_core::tool::Ingestion;
+
+    /// Every built-in that reaches the network or returns outside content
+    /// declares an ingestion kind (quarantined-fetch design F0): a new path
+    /// must choose a trust level.
+    #[test]
+    fn network_and_outside_content_tools_declare_an_ingestion_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = ToolRegistry::new();
+        register_builtins(
+            &mut registry,
+            BuiltinOptions {
+                store: tern_store::Store::open_in_memory().unwrap(),
+                guard: paths::Guard::for_data_dir(dir.path()),
+                skills_dir: dir.path().join("skills"),
+                sandbox: Arc::new(tern_sandbox::HostBackend::default()),
+                shell_timeout: Duration::from_secs(5),
+            },
+        )
+        .unwrap();
+        assert_eq!(registry.ingestion("http_fetch"), Ingestion::Web);
+        // The default host backend has no network sandbox guarantee here, so
+        // the shell counts as network-reachable and says so.
+        assert_eq!(registry.ingestion("shell"), Ingestion::Network);
+        for quiet in ["read_file", "list_dir", "write_file", "memory_save"] {
+            assert_eq!(registry.ingestion(quiet), Ingestion::None, "{quiet}");
+        }
+    }
+}
