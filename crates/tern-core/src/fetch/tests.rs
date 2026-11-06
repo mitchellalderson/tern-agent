@@ -177,8 +177,26 @@ fn hostile_chars_absent(s: &str) {
     );
 }
 
+#[test]
+fn the_default_want_is_data_only_in_extract_and_free_text_in_ask_is_unchanged() {
+    let b = parse_brief(json!({"url": "https://ex.test/"})).unwrap();
+    assert_eq!(b.mode, Mode::Extract);
+    assert!(b.want.structured && b.want.links);
+    assert!(!b.want.text && !b.want.answer && !b.want.facts);
+    // With only selectors it is still data only.
+    let b = parse_brief(json!({"url": "https://ex.test/", "selectors": ["h1"]})).unwrap();
+    assert!(!b.want.text && !b.want.answer);
+    // Text is returned only when asked for by name.
+    let b = parse_brief(json!({"url": "https://ex.test/", "want": ["text"]})).unwrap();
+    assert!(b.want.text);
+    // Ask mode: facts, answer and links, as before.
+    let b = parse_brief(json!({"url": "https://ex.test/", "question": "price?"})).unwrap();
+    assert_eq!(b.mode, Mode::Ask);
+    assert!(b.want.facts && b.want.answer && b.want.links && !b.want.text);
+}
+
 #[tokio::test]
-async fn extract_mode_makes_no_model_call_and_a_url_alone_taints_as_before() {
+async fn a_url_alone_returns_data_without_text_and_makes_no_model_call() {
     let server = serve("/", HOSTILE, "text/html").await;
     let p = ScriptedProvider::new(vec![T::Text("{}".into())]);
     let g = gateway(FetchConfig::default(), Some(p.clone()));
@@ -191,12 +209,35 @@ async fn extract_mode_makes_no_model_call_and_a_url_alone_taints_as_before() {
         "no model in extract mode"
     );
     assert!(
+        v.get("text").is_none_or(Value::is_null),
+        "no free text by default"
+    );
+    assert!(
+        !r.content.contains("The Pro plan costs $29/mo"),
+        "page prose is absent: {}",
+        r.content
+    );
+    assert!(!r.untrusted(), "the taint flag stays clear: {:?}", r.trust);
+    assert_eq!(r.trust, Trust::Data);
+    hostile_chars_absent(&r.content);
+}
+
+#[tokio::test]
+async fn asking_for_text_returns_it_and_taints() {
+    let server = serve("/", HOSTILE, "text/html").await;
+    let g = gateway(FetchConfig::default(), None);
+    let r = g
+        .fetch(&ctx("r"), json!({"url": server.uri(), "want": ["text"]}))
+        .await;
+    let v = parsed(&r);
+    assert!(
         v["text"]
             .as_str()
             .unwrap()
             .contains("The Pro plan costs $29/mo")
     );
     assert_eq!(r.trust, Trust::Untrusted, "text is free text");
+    assert!(r.untrusted());
     hostile_chars_absent(&r.content);
 }
 

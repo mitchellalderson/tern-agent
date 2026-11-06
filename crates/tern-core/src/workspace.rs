@@ -770,6 +770,68 @@ impl WorkspaceScope {
         ScopeError::Io(format!("{raw}: {}", strip_os_code(&e)))
     }
 
+    /// Whether a write to `raw` lands inside this scope's own folder by every
+    /// check we can make before running it: the folder is live, the path is
+    /// in the folder (not a read-only root), has no `..`, and neither it nor
+    /// any folder on the way is a symlink, and the resolved path is not
+    /// protected. Used only to decide whether a tainted run must ask; it
+    /// never widens what the write itself may do (the handle still decides).
+    /// Any doubt answers `false`, which asks.
+    pub fn confined_write_target(&self, raw: &str) -> bool {
+        if self.live().is_err() {
+            return false;
+        }
+        let Ok((Place::Root, rel)) = self.locate(raw) else {
+            return false;
+        };
+        if rel.as_os_str().is_empty()
+            || !rel
+                .components()
+                .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+        {
+            return false;
+        }
+        let mut walk = self.cwd.clone();
+        for part in rel.components() {
+            walk.push(part);
+            match std::fs::symlink_metadata(&walk) {
+                Ok(m) if m.file_type().is_symlink() => return false,
+                Ok(_) => {}
+                // The rest doesn't exist yet: nothing more to be a link.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                Err(_) => return false,
+            }
+        }
+        let resolved = canonicalize_lenient(&self.cwd.join(&rel));
+        resolved.starts_with(&self.cwd) && !self.deny.protects_path(&resolved)
+    }
+
+    /// Whether a read of `raw` (a path as a command would name it: relative to
+    /// the folder, or absolute) stays inside this scope's folder once symlinks
+    /// are resolved, is not under a read-only root, and is not protected. Used
+    /// to decide that a read-only command needs no question; it opens nothing
+    /// and never widens what a tool may read. Any doubt answers `false`.
+    pub fn read_target_inside(&self, raw: &str) -> bool {
+        if self.live().is_err() || raw.contains('\0') {
+            return false;
+        }
+        let given = Path::new(raw);
+        if given
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+            || raw.starts_with('~')
+        {
+            return false;
+        }
+        let joined = if given.is_absolute() {
+            given.to_path_buf()
+        } else {
+            self.cwd.join(given)
+        };
+        let resolved = canonicalize_lenient(&joined);
+        resolved.starts_with(&self.cwd) && !self.deny.protects_path(&resolved)
+    }
+
     // ---- reading ----
 
     /// Open `raw` for reading through the handle: a regular file (not

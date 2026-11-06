@@ -29,9 +29,17 @@ fn read_policy() -> ToolPolicy {
     ToolPolicy::new(Effect::Read, true).reaching(Reach::Workspace)
 }
 
-/// Writes inside the folder are granted by the host.
-fn write_policy() -> ToolPolicy {
-    ToolPolicy::granted_write(false).reaching(Reach::Workspace)
+/// Writes inside the folder are granted by the host. A target the scope has
+/// verified lies inside its own folder is also marked `taint_safe`, so a
+/// tainted run needn't ask about it (`[taint] workspace_writes`).
+fn write_policy(ctx: &ToolCtx, args: &Value) -> ToolPolicy {
+    let confined = args
+        .get("path")
+        .and_then(Value::as_str)
+        .is_some_and(|p| ctx.scope.confined_write_target(p));
+    ToolPolicy::granted_write(false)
+        .reaching(Reach::Workspace)
+        .taint_safe(confined)
 }
 
 /// Run a blocking scope operation off the async threads.
@@ -299,8 +307,8 @@ impl Tool for WriteFile {
         )
     }
 
-    fn policy(&self, _ctx: &ToolCtx, _args: &Value) -> ToolPolicy {
-        write_policy()
+    fn policy(&self, ctx: &ToolCtx, args: &Value) -> ToolPolicy {
+        write_policy(ctx, args)
     }
 
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
@@ -352,8 +360,8 @@ impl Tool for EditFile {
         )
     }
 
-    fn policy(&self, _ctx: &ToolCtx, _args: &Value) -> ToolPolicy {
-        write_policy()
+    fn policy(&self, ctx: &ToolCtx, args: &Value) -> ToolPolicy {
+        write_policy(ctx, args)
     }
 
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
@@ -567,5 +575,42 @@ mod tests {
         assert!(!r.content.contains("config"), "{}", r.content);
         assert!(!r.content.contains("ignored.txt"), "{}", r.content);
         assert!(!r.content.contains("out.txt"), "{}", r.content);
+    }
+
+    #[test]
+    fn only_confined_workspace_writes_are_safe_under_taint() {
+        use tern_core::approval::{Check, Gate, check};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (ws, other, data) = (root.join("ws"), root.join("other"), root.join("ws/data"));
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&other, ws.join("link")).unwrap();
+        let c = ToolCtx {
+            scope: WorkspaceScope::for_dir_guarded(
+                ws.clone(),
+                Arc::new(tern_core::workspace::DenySet::for_data_dir(&data)),
+            ),
+            run_id: "r".into(),
+            session_id: "s".into(),
+            cancel: CancellationToken::new(),
+        };
+        let ask = |tool: &dyn Tool, path: &str| {
+            let p = tool.policy(&c, &json!({"path": path}));
+            check(&tool.spec().name, &p, false, Gate::TAINTED) != Check::Allow
+        };
+        for t in [&WriteFile as &dyn Tool, &EditFile as &dyn Tool] {
+            assert!(!ask(t, "outline.md"), "inside the workspace");
+            assert!(!ask(t, "sub/dir/new.md"), "a new folder inside it");
+            assert!(ask(t, "../other/x.md"), "dotdot");
+            assert!(ask(t, other.join("x.md").to_str().unwrap()), "outside");
+            assert!(ask(t, "data/secret.md"), "protected");
+            #[cfg(unix)]
+            assert!(ask(t, "link/x.md"), "symlink out");
+        }
+        // Reads are never asked about; a clean run asks about nothing here.
+        let p = WriteFile.policy(&c, &json!({"path": "../other/x.md"}));
+        assert_eq!(check("write_file", &p, false, Gate::CLEAN), Check::Allow);
     }
 }

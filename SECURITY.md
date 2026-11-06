@@ -139,10 +139,26 @@ script grants.
   and `..` are resolved before anything is compared, and every write, shell, network and connector call still asks.
   Residual risk: a tainted run can read (not change or send) anything in the workspace and in a folder you allowed for
   the run; that is bounded because egress is gated separately (new sites ask) and the run's writes ask.
+  *Tainted writes in the workspace.* The last clause above is loosened for one case (`[taint] workspace_writes`, on by
+  default): `write_file` and `edit_file` whose target resolves inside the agent's own workspace do not ask just because
+  the run is tainted (one ledger row per write, reason `tainted-write-in-workspace`, with the run's taint). The target is
+  checked before the call: the folder is still the one the run started in, the path has no `..` and no symlink on the
+  way, it is not under a read-only folder, and it is not a protected file (secrets, the database, tern's data
+  directory); any doubt asks. Shell, `python` writes, channel posts, connector and MCP writes, memory, sub-agent
+  coordination, network reads of new sites and every write outside the workspace still ask, tainted or not. Residual
+  risk: injected text can make a tainted run create, overwrite or edit files in its own folder with content it
+  chose, so a file there that you or a later run trusts (a script, a Makefile, a config, a README an agent follows)
+  can be poisoned; git, the checkpoints of code auto mode and the ledger make it visible and reversible, and a command
+  built on such a file still asks (shell) or runs in the sandbox. A `shell` command that is only a pipeline of plain reading
+  programs (`cat`, `head`, `tail`, `od`, `grep` without `-r`, `ls`, ...) with every operand inside the workspace is treated as a read
+  in a verified sandbox and doesn't ask, tainted or not; redirects, `$()`, variables, globs, chaining, network tools, writers (`sed`,
+  `tee`, `find`) and paths outside the workspace still ask. It is a filter in front of the sandbox: a tainted run can read, not change
+  or send, workspace files this way. Set `workspace_writes = false` for agents that read
+  untrusted content and keep files you rely on in the same folder.
 - **Persistent injection through memory.** A page can tell an agent to "remember" an instruction, and a later run
 - **Web pages and the quarantined fetcher.** `http_fetch` runs the page through a separate fetcher agent (docs/quarantined-fetch-design.md); the
   caller sees typed, capped fields (title, headings, tables, links, facts that carry an exact quote from the page) and, only when it asks for
-  `answer` or `text`, free text. With `[fetch] taint = "strict"` (the default) a result of checked fields only does not taint
+  `answer` or `text` by name, free text (a bare `http_fetch(url)` returns data only, so it leaves the run clean). With `[fetch] taint = "strict"` (the default) a result of checked fields only does not taint
   the caller, free text does; `legacy` taints on every fetch. What remains: a checked field is still attacker-chosen text (a 200-character
   quoted value can say "ignore previous instructions"), the fetcher's `answer` can itself carry an injection (the known limit of
   quarantine designs), a page can lie, and a result of checked fields can steer an untainted run into writes it is allowed to make without

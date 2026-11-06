@@ -93,13 +93,28 @@ pub struct BundlesConfig {
 }
 
 /// Taint settings (tooling spec §5.3).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TaintConfig {
     /// In a tainted run, ask before a network read reaches a host the run
     /// hasn't contacted (`ask`), or don't (`allow`). An agent can set its
     /// own.
     pub egress: crate::approval::Egress,
+    /// `write_file` and `edit_file` whose target resolves inside the run's
+    /// own workspace don't ask *only because the run is tainted* (default
+    /// on). Shell, channel posts, connector and MCP writes, http egress,
+    /// and writes outside the workspace still ask. Off: every write asks
+    /// in a tainted run.
+    pub workspace_writes: bool,
+}
+
+impl Default for TaintConfig {
+    fn default() -> Self {
+        Self {
+            egress: crate::approval::Egress::default(),
+            workspace_writes: true,
+        }
+    }
 }
 
 /// Whether a fetch result taints the caller (quarantined-fetch design §3).

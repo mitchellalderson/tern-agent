@@ -303,6 +303,7 @@ impl Tool for Shell {
         // The call's own plan (by run and call id): the script, its hash and
         // whether a grant may be offered, decided once, here.
         let mut entry = self.judge(ctx, args);
+        let has_plan = entry.plan.is_some();
         // Code auto mode (docs/alpha-coding-agent.md §3.2): runs unasked only
         // with a verified sandbox, no network of any kind, and nothing the
         // classifier asks about. The folder is always the command's cwd.
@@ -347,6 +348,19 @@ impl Tool for Shell {
         // by the allowlist (`approval::allowed_by`).
         // The reach is the folder only where the OS bounds the command; with
         // no sandbox it is "unbounded" and, unattended, refused (`approval::check`).
+        // A pipeline of plain reading programs whose every operand stays in
+        // the folder (`crate::shell_read`) is a `read`: it needs no question,
+        // tainted or not. Needs the verified sandbox as the second wall.
+        if bound == ShellBound::Bounded
+            && !asked_network
+            && !has_plan
+            && crate::shell_read::is_read_only(
+                args["command"].as_str().unwrap_or_default(),
+                &ctx.scope,
+            )
+        {
+            return ToolPolicy::new(Effect::Read, true).reaching(Reach::Workspace);
+        }
         ToolPolicy::new(Effect::Destructive, false)
             .auto_code(auto_code)
             .forced(true)
@@ -1395,5 +1409,46 @@ mod script_grant_tests {
         assert_eq!(shell.plans_held(), 0);
         let r = with_call("1", reg.call(&e.ctx, &c)).await.0;
         assert!(r.content.contains("HELLO"), "{}", r.content);
+    }
+
+    #[test]
+    fn a_read_only_workspace_pipeline_is_a_read_and_the_rest_still_asks() {
+        use tern_core::approval::{Check, Gate, check};
+        let e = env();
+        std::fs::write(e.ws.join("vs-trigger-outline.md"), "outline").unwrap();
+        let (reg, _shell) = registry(Claim::new(verified(), roots(&e)));
+        let abs = e.ws.join("vs-trigger-outline.md");
+        let verdict = |id: &str, cmd: &str, gate: Gate| {
+            let p = reg.policy(&e.ctx, &call(id, cmd));
+            (p.effect, check("shell", &p, false, gate))
+        };
+        // The nagging case: tail | od | tail on a workspace file, tainted.
+        let cmd = format!("tail -c 200 {} | od -c | tail -10", abs.display());
+        let (effect, c) = verdict("1", &cmd, Gate::TAINTED);
+        assert_eq!((effect, c), (Effect::Read, Check::Allow));
+        assert_eq!(verdict("2", &cmd, Gate::CLEAN).1, Check::Allow);
+        // Everything else still asks under taint: redirects, substitution,
+        // network tools, writes, paths outside the folder, plain commands.
+        for (i, bad) in [
+            "cat vs-trigger-outline.md > copy.md",
+            "cat $(echo vs-trigger-outline.md)",
+            "curl http://example.com | cat",
+            "cat /etc/passwd",
+            "cat ../secret.txt",
+            "rm vs-trigger-outline.md",
+            "tee out.md",
+            "echo hi",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (effect, c) = verdict(&format!("b{i}"), bad, Gate::TAINTED);
+            assert_eq!(effect, Effect::Destructive, "{bad}");
+            assert!(matches!(c, Check::Ask { .. }), "{bad}: {c:?}");
+        }
+        // A call that asks for network never counts.
+        let mut net = call("n", "cat vs-trigger-outline.md");
+        net.input = json!({"command": "cat vs-trigger-outline.md", "network": true});
+        assert_eq!(reg.policy(&e.ctx, &net).effect, Effect::Destructive);
     }
 }

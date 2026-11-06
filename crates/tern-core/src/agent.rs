@@ -890,11 +890,22 @@ impl Agent {
                     && gate.autonomy != Autonomy::Yolo
                     && in_scope
                     && policy.effect == crate::tool::Effect::Read
-                    && approval::READ_FS_TOOLS.contains(&call.name.as_str())
+                    && (approval::READ_FS_TOOLS.contains(&call.name.as_str())
+                        || call.name == "shell")
                 {
-                    // A tainted run's read of the workspace: no prompt, one
+                    // A tainted run's read of the workspace (a read-only shell
+                    // pipeline the tool classified as a read included): no prompt, one
                     // ledger row per run.
                     self.note_tainted_reads(run, &call)?;
+                } else if gate.tainted
+                    && gate.autonomy != Autonomy::Yolo
+                    && runs
+                    && policy.taint_safe
+                    && policy.effect == crate::tool::Effect::Write
+                {
+                    // A tainted run's write inside its own workspace: no
+                    // prompt, but every one is recorded with the taint.
+                    self.ledger_tainted_write(run, &call, taint.reason())?;
                 } else if runs && code_mode::by_code_mode(&call.name, &policy, gate) {
                     // Code auto mode let it through: snapshot (once per run),
                     // then one ledger row per call.

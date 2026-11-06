@@ -158,8 +158,10 @@ impl Gate {
 ///   covers it;
 /// - `money_movement` / `trade` tools are refused outright;
 /// - in a `tainted` run (tooling spec §5.3) every `write` and `destructive`
-///   call asks, whatever grants say, and nothing offers "always" (W7),
-///   except the [`TAINT_CONTAINED`] tools;
+///   call asks, whatever grants or autonomy say, and nothing offers "always"
+///   (W7), except the [`TAINT_CONTAINED`] tools and a `write_file` or
+///   `edit_file` the tool confined to the workspace ([`ToolPolicy::taint_safe`]):
+///   those get the verdict of an untainted run at the same autonomy;
 /// - the run's autonomy (§5.4): `readonly` refuses anything but `read`,
 ///   `autonomous` lets an untainted `write` through unless
 ///   `requires_approval` forces a prompt, and `yolo` asks nothing.
@@ -210,6 +212,27 @@ pub fn check(tool: &str, policy: &ToolPolicy, granted: bool, gate: Gate) -> Chec
         };
         return match effect {
             _ if contained => check(tool, policy, own_grant, Gate::CLEAN),
+            // A file write the tool confined to the run's own workspace:
+            // taint alone doesn't ask. Anything else that would ask (a
+            // forced prompt, a read-only folder) still does, as in an
+            // untainted run; and no "always" is ever offered here.
+            Effect::Write if policy.taint_safe && matches!(tool, "write_file" | "edit_file") => {
+                match check(
+                    tool,
+                    policy,
+                    own_grant,
+                    Gate {
+                        tainted: false,
+                        autonomy: gate.autonomy,
+                    },
+                ) {
+                    Check::Ask { effect, .. } => Check::Ask {
+                        effect,
+                        always: false,
+                    },
+                    other => other,
+                }
+            }
             Effect::Read if policy.requires_approval => never,
             Effect::Read => Check::Allow,
             _ => never,
@@ -271,6 +294,10 @@ pub const READ_FS_TOOLS: &[&str] = &["read_file", "list_dir", "search_files"];
 
 /// Why a tainted run's workspace read went through unasked (ledger).
 pub const TAINTED_READ_REASON: &str = "tainted-read-in-workspace";
+
+/// Why a tainted run's `write_file` or `edit_file` inside its own workspace
+/// went through unasked (ledger; `[taint] workspace_writes`).
+pub const TAINTED_WRITE_REASON: &str = "tainted-write-in-workspace";
 
 const READ_SCOPE_PREFIX: &str = "readscope:";
 
@@ -1216,6 +1243,42 @@ mod tests {
         assert_eq!(Autonomy::of_run(None), Autonomy::Supervised);
         assert_eq!(Autonomy::of_run(Some("yolo")), Autonomy::Yolo);
         assert_eq!(Autonomy::parse("readonly"), Some(Autonomy::ReadOnly));
+    }
+
+    #[test]
+    fn taint_safe_writes_skip_only_the_taint_ask() {
+        let safe = ToolPolicy::granted_write(false).taint_safe(true);
+        let plain = ToolPolicy::granted_write(false);
+        let auto = |p: ToolPolicy, t: &str, g: Gate| check(t, &p, false, g);
+        // Tainted: a confined file write goes through; others still ask.
+        assert_eq!(auto(safe, "write_file", Gate::TAINTED), Check::Allow);
+        assert_eq!(auto(safe, "edit_file", Gate::TAINTED), Check::Allow);
+        let never = Check::Ask {
+            effect: Effect::Write,
+            always: false,
+        };
+        assert_eq!(auto(plain, "write_file", Gate::TAINTED), never);
+        // The flag on any other tool name is ignored (shell, connectors...).
+        assert_eq!(auto(safe, "shell", Gate::TAINTED), never);
+        assert_eq!(auto(safe, "connector_write", Gate::TAINTED), never);
+        // Anything else that would ask in a clean run still asks, with no
+        // "always".
+        assert_eq!(auto(safe.forced(true), "write_file", Gate::TAINTED), never);
+        // Destructive stays asking.
+        let destructive = ToolPolicy::new(Effect::Destructive, false).taint_safe(true);
+        assert_eq!(
+            auto(destructive, "write_file", Gate::TAINTED),
+            Check::Ask {
+                effect: Effect::Destructive,
+                always: false
+            }
+        );
+        // A read-only run refuses it, tainted or not.
+        let ro = Gate {
+            tainted: true,
+            autonomy: Autonomy::ReadOnly,
+        };
+        assert_eq!(auto(safe, "write_file", ro), Check::ReadOnly);
     }
 
     #[test]

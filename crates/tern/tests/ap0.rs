@@ -611,7 +611,7 @@ async fn a_dm_runs_write_waits_in_the_outbox_marked_with_its_agent() {
                 { "text": "Waiting for you." }
             ]}
         ]}),
-        "",
+        "[taint]\nworkspace_writes = false\n",
     );
     let _d = env.daemon_with(None);
     let s = env.socket();
