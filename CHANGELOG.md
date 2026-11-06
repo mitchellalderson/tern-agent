@@ -7,7 +7,7 @@ All notable changes to tern are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0-alpha.1] - TBD
+## [0.1.0-alpha.1] - 2026-11-06
 
 The first pre-release. Expect rough edges; the macOS app is ad-hoc signed and not notarized (first open needs
 System Settings > Privacy & Security > **Open Anyway**), and the CLI tarballs are unsigned (each has a `.sha256` and a
