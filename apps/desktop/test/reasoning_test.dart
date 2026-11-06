@@ -217,11 +217,14 @@ void main() {
       await tester.pump();
       final box = tester.getSize(find.byKey(_box));
       expect(box.height, ReasoningBox.maxHeight);
+      // The box's own scroller (the selectable text has one inside).
       final scroll = tester.state<ScrollableState>(
-        find.descendant(
-          of: find.byKey(_box),
-          matching: find.byType(Scrollable),
-        ),
+        find
+            .descendant(
+              of: find.byKey(_box),
+              matching: find.byType(Scrollable),
+            )
+            .first,
       );
       expect(scroll.position.pixels, scroll.position.maxScrollExtent);
 
@@ -237,10 +240,9 @@ void main() {
       await tester.tap(find.byKey(_toggle));
       await tester.pump();
       await tester.pump();
-      final scrollable = find.descendant(
-        of: find.byKey(_box),
-        matching: find.byType(Scrollable),
-      );
+      final scrollable = find
+          .descendant(of: find.byKey(_box), matching: find.byType(Scrollable))
+          .first;
       await tester.drag(scrollable, const Offset(0, 300));
       await tester.pump();
       final before = tester.state<ScrollableState>(scrollable).position.pixels;
