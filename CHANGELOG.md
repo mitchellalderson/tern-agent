@@ -5,6 +5,8 @@ All notable changes to tern are recorded here. The format follows
 [Semantic Versioning](https://semver.org/). Versions with a hyphen (`-alpha.N`,
 `-beta.N`, `-rc.N`) are GitHub pre-releases.
 
+Entries go in `changelog.d/` (see its README); the release gathers them here.
+
 ## [Unreleased]
 
 ### Changed
