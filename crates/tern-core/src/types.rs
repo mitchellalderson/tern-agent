@@ -42,6 +42,35 @@ pub enum ContentBlock {
         #[serde(default)]
         is_error: bool,
     },
+    /// The model's reasoning for a turn. Shown to the user and kept with
+    /// the step, but left out of the context sent on later turns, except
+    /// where a provider needs signed blocks echoed back
+    /// ([`Message::echoable_thinking`]).
+    Thinking {
+        thinking: String,
+        /// Anthropic's signature over `thinking`; only a signed block may
+        /// be sent back to it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+        /// How long the model reasoned, when measured.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+    },
+    /// Reasoning the provider returned encrypted. Opaque: shown as hidden,
+    /// and echoed back verbatim where thinking blocks are echoed.
+    RedactedThinking {
+        data: String,
+    },
+}
+
+impl ContentBlock {
+    /// A reasoning block (readable or redacted).
+    pub fn is_thinking(&self) -> bool {
+        matches!(
+            self,
+            ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,13 +103,27 @@ impl Message {
         let parts: Vec<String> = self
             .content
             .iter()
-            .map(|b| match b {
-                ContentBlock::Text { text } => text.clone(),
-                ContentBlock::ToolUse { name, input, .. } => format!("{name} {input}"),
-                ContentBlock::ToolResult { content, .. } => content.clone(),
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                ContentBlock::ToolUse { name, input, .. } => Some(format!("{name} {input}")),
+                ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                // Reasoning stays out of search.
+                ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => None,
             })
             .collect();
         parts.join("\n")
+    }
+
+    /// The thinking blocks that must go back to Anthropic with this
+    /// assistant message: signed ones and redacted ones. Anything unsigned
+    /// (another provider's reasoning, reached through a fallback chain)
+    /// would be rejected, so it is dropped.
+    pub fn echoable_thinking(&self) -> impl Iterator<Item = &ContentBlock> + '_ {
+        self.content.iter().filter(|b| match b {
+            ContentBlock::Thinking { signature, .. } => signature.is_some(),
+            ContentBlock::RedactedThinking { .. } => true,
+            _ => false,
+        })
     }
 
     pub fn tool_uses(&self) -> impl Iterator<Item = ToolCall> + '_ {
@@ -146,6 +189,12 @@ pub enum StopReason {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamEvent {
     TextDelta(String),
+    /// Part of the model's reasoning, ahead of (or between) its answer.
+    ReasoningDelta(String),
+    /// The signature that closes the reasoning block being streamed.
+    ReasoningSignature(String),
+    /// Reasoning the provider withheld (encrypted), as it sent it.
+    ReasoningRedacted(String),
     ToolUseStart {
         id: String,
         name: String,

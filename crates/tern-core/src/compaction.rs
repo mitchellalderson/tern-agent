@@ -134,6 +134,8 @@ pub fn transcript(messages: &[Message]) -> String {
                     };
                     out.push_str(&format!("[{tag}: {}]", clip(content)));
                 }
+                // Reasoning isn't part of what happened.
+                ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => continue,
             }
             out.push('\n');
         }
