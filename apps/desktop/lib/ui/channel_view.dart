@@ -667,13 +667,13 @@ class TimelinePost extends StatelessWidget {
       _ => null,
     };
     final session = post.sessionId;
-    return Row(
+    final row = Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         post.mine
             ? CircleAvatar(
                 radius: 13,
-                backgroundColor: c.userBubble,
+                backgroundColor: c.background,
                 child: Icon(Icons.person, size: 15, color: c.muted),
               )
             : authorAvatar(
@@ -710,7 +710,11 @@ class TimelinePost extends StatelessWidget {
                   const SizedBox(width: 8),
                   Text(
                     relativeTime(post.createdAt),
-                    style: TextStyle(fontSize: 11.5, color: c.muted),
+                    // `muted` misses 4.5:1 on the user surface.
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: post.mine ? c.text : c.muted,
+                    ),
                   ),
                   if (post.needsYou) ...[
                     const SizedBox(width: 8),
@@ -778,6 +782,19 @@ class TimelinePost extends StatelessWidget {
           ),
         ),
       ],
+    );
+    // The user's posts get the same flat full-width tint as a conversation's
+    // user messages (brand guide 5); agent posts stay on the page.
+    if (!post.mine) return row;
+    return Container(
+      key: const Key('user-post'),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: BoxDecoration(
+        color: c.userBubble,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: row,
     );
   }
 }

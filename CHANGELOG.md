@@ -7,6 +7,10 @@ All notable changes to tern are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Your posts in Home and channels sit on the same soft `sand-deep` tint as your messages in a conversation, so a thread is easy to scan.
+
 ## [0.1.0-alpha.1] - 2026-11-06
 
 The first pre-release. Expect rough edges; the macOS app is ad-hoc signed and not notarized (first open needs
