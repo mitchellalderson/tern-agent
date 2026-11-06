@@ -19,7 +19,8 @@ From a clean checkout of the commit to release (on `main`, after the branch is m
    `shellcheck`, and prints what the tag publishes. Add `--build` to also build the CLI with `--profile dist` (slow).
 2. CI is green on that commit (`fmt`, `clippy -D warnings`, tests, `flutter analyze` and `flutter test`, `shellcheck`).
    `release.yml` runs the same checks again through `ci.yml` before it builds anything.
-3. Replace `TBD` in the CHANGELOG heading with today's date and commit that, if not already done.
+3. Run `cargo xtask changelog X.Y.Z` (add `--dry-run` to preview). It gathers `changelog.d/` into a dated
+   `CHANGELOG.md` section and deletes the fragments. Review the result and commit. Replace a leftover `TBD` date too.
 4. Decide notarization (section 4). Without the Apple secrets the release still works: the DMG is ad-hoc signed.
 5. Tag and push (this is the step that publishes; nothing else does):
 
