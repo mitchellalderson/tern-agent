@@ -39,6 +39,7 @@ same list and a new config field appears in both without UI changes.
 |---|---|---|---|---|---|---|---|
 | `workspace` | text | `~/tern-workspace` | config, desktop | yes | no | general | user |
 | `max_iterations` | int | 40 | config, desktop | yes | no | limits | user |
+| `show_reasoning` | bool | true | config, desktop | yes | no | general | user |
 | `secret_request_timeout_secs` | int | 900 | config, desktop | yes | no | advanced | adv |
 | `autonomy` | choice readonly/supervised/autonomous/yolo | supervised | config, desktop (shown as text) | yes | no | permissions | user |
 | `default_model` | model chain | unset | `/model`, `/setup`, desktop providers + config | no (live) | no | models | user |

@@ -43,6 +43,10 @@ pub struct Config {
     pub default_model: Option<ModelChain>,
     pub workspace: String,
     pub max_iterations: u32,
+    /// Show the model's reasoning (Anthropic thinking, `reasoning_content`
+    /// and the like) in the apps while it streams, and keep it with each
+    /// message. Never sent to channels.
+    pub show_reasoning: bool,
     /// Context window in tokens for every model, unless a provider sets its
     /// own. Unset (the default): each model's own window, from the
     /// provider's list or tern's catalogue, else 200 000 (32 768 for a
@@ -367,6 +371,7 @@ impl Default for Config {
             default_model: None,
             workspace: "~/tern-workspace".into(),
             max_iterations: 40,
+            show_reasoning: true,
             context_window: None,
             max_tokens: None,
             secret_request_timeout_secs: 900,

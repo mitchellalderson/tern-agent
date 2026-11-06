@@ -22,6 +22,7 @@ pub fn entries(messages: &[HistoryMessage]) -> Vec<Entry> {
         }
         for b in &m.content {
             match (m.role, b) {
+                (_, ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }) => {}
                 (_, ContentBlock::Text { text }) if text.trim().is_empty() => {}
                 (Role::User, ContentBlock::Text { text }) => out.push(Entry::User(text.clone())),
                 (Role::Assistant, ContentBlock::Text { text }) => {

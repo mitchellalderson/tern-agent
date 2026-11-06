@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{Value, json};
 use tern_core::types::{
-    ChatRequest, ContentBlock, EventStream, Provider, ProviderError, StopReason, StreamEvent, Usage,
+    ChatRequest, ContentBlock, EventStream, Provider, ProviderError, Role, StopReason, StreamEvent,
+    Usage,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -35,16 +36,37 @@ impl Anthropic {
 /// Build the request body. The system prompt and the tool list each carry a
 /// cache breakpoint so both are reused across turns.
 pub fn request_body(req: &ChatRequest) -> Value {
+    // Thinking blocks go back only inside the turn in progress: after the
+    // last user message that isn't tool results. Anthropic needs those
+    // (signed) to continue a tool-use turn, and drops older ones itself, so
+    // they are never sent.
+    let turn_start = req
+        .messages
+        .iter()
+        .rposition(|m| {
+            m.role == Role::User
+                && !m
+                    .content
+                    .iter()
+                    .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
+        })
+        .unwrap_or(0);
     let messages: Vec<Value> = req
         .messages
         .iter()
-        .map(|m| {
-            let content: Vec<ContentBlock> = m
-                .content
-                .iter()
-                .filter(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()))
-                .map(wire_ids)
-                .collect();
+        .enumerate()
+        .map(|(i, m)| {
+            let mut content: Vec<Value> = Vec::new();
+            if m.role == Role::Assistant && i > turn_start {
+                content.extend(m.echoable_thinking().map(thinking_wire));
+            }
+            content.extend(
+                m.content
+                    .iter()
+                    .filter(|b| !b.is_thinking())
+                    .filter(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()))
+                    .map(|b| serde_json::to_value(wire_ids(b)).unwrap_or(Value::Null)),
+            );
             json!({ "role": m.role.as_str(), "content": content })
         })
         .collect();
@@ -76,6 +98,22 @@ pub fn request_body(req: &ChatRequest) -> Value {
         }
     }
     body
+}
+
+/// A thinking block as Anthropic takes it back: exactly the text and
+/// signature it sent (a changed block is rejected), without our own fields.
+fn thinking_wire(b: &ContentBlock) -> Value {
+    match b {
+        ContentBlock::Thinking {
+            thinking,
+            signature,
+            ..
+        } => json!({ "type": "thinking", "thinking": thinking, "signature": signature }),
+        ContentBlock::RedactedThinking { data } => {
+            json!({ "type": "redacted_thinking", "data": data })
+        }
+        _ => Value::Null,
+    }
 }
 
 /// Anthropic only takes tool-use ids of letters, digits, `_` and `-`. Ids
@@ -147,6 +185,17 @@ impl Decoder {
                         }
                         vec![Ok(StreamEvent::ToolUseStart { id, name })]
                     }
+                    Some("redacted_thinking") => {
+                        vec![Ok(StreamEvent::ReasoningRedacted(
+                            block["data"].as_str().unwrap_or_default().to_owned(),
+                        ))]
+                    }
+                    Some("thinking") => match block["thinking"].as_str() {
+                        Some(t) if !t.is_empty() => {
+                            vec![Ok(StreamEvent::ReasoningDelta(t.to_owned()))]
+                        }
+                        _ => vec![],
+                    },
                     Some("text") => match block["text"].as_str() {
                         Some(t) if !t.is_empty() => vec![Ok(StreamEvent::TextDelta(t.to_owned()))],
                         _ => vec![],
@@ -160,6 +209,17 @@ impl Decoder {
                     Some("text_delta") => {
                         vec![Ok(StreamEvent::TextDelta(
                             d["text"].as_str().unwrap_or_default().to_owned(),
+                        ))]
+                    }
+                    Some("thinking_delta") => match d["thinking"].as_str() {
+                        Some(t) if !t.is_empty() => {
+                            vec![Ok(StreamEvent::ReasoningDelta(t.to_owned()))]
+                        }
+                        _ => vec![],
+                    },
+                    Some("signature_delta") => {
+                        vec![Ok(StreamEvent::ReasoningSignature(
+                            d["signature"].as_str().unwrap_or_default().to_owned(),
                         ))]
                     }
                     Some("input_json_delta") => {
@@ -392,6 +452,130 @@ mod tests {
                     },
                     stop_reason: StopReason::ToolUse,
                 },
+            ]
+        );
+    }
+
+    fn thinking_turn() -> Vec<Message> {
+        let asst = |blocks: Vec<ContentBlock>| Message {
+            role: Role::Assistant,
+            content: blocks,
+        };
+        let think = |t: &str, sig: Option<&str>| ContentBlock::Thinking {
+            thinking: t.into(),
+            signature: sig.map(Into::into),
+            duration_ms: Some(1200),
+        };
+        vec![
+            Message::user_text("first question"),
+            asst(vec![
+                think("old reasoning", Some("sig-old")),
+                ContentBlock::Text {
+                    text: "first answer".into(),
+                },
+            ]),
+            Message::user_text("second question"),
+            asst(vec![
+                think("signed reasoning", Some("sig-1")),
+                ContentBlock::RedactedThinking { data: "enc".into() },
+                think("unsigned reasoning", None),
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "read_file".into(),
+                    input: json!({}),
+                },
+            ]),
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                }],
+            },
+        ]
+    }
+
+    #[test]
+    fn tool_use_turn_echoes_signed_thinking_exactly() {
+        let mut r = req();
+        r.messages = thinking_turn();
+        let b = request_body(&r);
+        let content = b["messages"][3]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[0]["thinking"], "signed reasoning");
+        assert_eq!(content[0]["signature"], "sig-1");
+        // Only the wire fields go back.
+        assert!(content[0].get("duration_ms").is_none());
+        assert_eq!(content[1]["type"], "redacted_thinking");
+        assert_eq!(content[1]["data"], "enc");
+        // Unsigned reasoning (another provider's) would be rejected.
+        assert_eq!(content[2]["type"], "tool_use");
+        assert_eq!(content.len(), 3);
+    }
+
+    #[test]
+    fn earlier_turns_do_not_carry_thinking() {
+        let mut r = req();
+        r.messages = thinking_turn();
+        let b = request_body(&r);
+        let first = b["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0]["type"], "text");
+    }
+
+    #[test]
+    fn thinking_is_not_echoed_when_the_turn_closed() {
+        let mut r = req();
+        r.messages = thinking_turn();
+        // A new question starts a new turn: nothing before it is echoed.
+        r.messages.push(Message::user_text("third question"));
+        let b = request_body(&r);
+        let s = b.to_string();
+        assert!(!s.contains("signed reasoning") && !s.contains("redacted_thinking"));
+    }
+
+    const THINKING_STREAM: &str = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"First, \"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"check.\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"EqQB\"}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"opaque\"}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi.\"}}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":9}}\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
+
+    #[tokio::test]
+    async fn streams_thinking_signature_and_redacted_blocks() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(THINKING_STREAM, "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let p = Anthropic::new("anthropic", &server.uri(), "k".into()).unwrap();
+        let events: Vec<_> = p
+            .stream(req(), CancellationToken::new())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            &events[..5],
+            [
+                StreamEvent::ReasoningDelta("First, ".into()),
+                StreamEvent::ReasoningDelta("check.".into()),
+                StreamEvent::ReasoningSignature("EqQB".into()),
+                StreamEvent::ReasoningRedacted("opaque".into()),
+                StreamEvent::TextDelta("Hi.".into()),
             ]
         );
     }

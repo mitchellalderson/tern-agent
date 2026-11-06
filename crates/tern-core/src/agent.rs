@@ -92,6 +92,9 @@ pub struct AgentConfig {
     pub reported_window: Option<ReportedWindow>,
     /// Flush durable facts to memory before compacting (`[memory].flush`).
     pub memory_flush: bool,
+    /// Stream the model's reasoning to front ends (`show_reasoning`). It is
+    /// kept with the step either way: a provider may need it echoed back.
+    pub show_reasoning: bool,
     /// How long a `write`/`destructive` approval waits before it goes to
     /// the outbox, where the approval handler can defer (`[outbox]`).
     pub approval_wait: Duration,
@@ -118,6 +121,7 @@ impl Default for AgentConfig {
             local_providers: std::collections::BTreeSet::new(),
             reported_window: None,
             memory_flush: false,
+            show_reasoning: true,
             approval_wait: Duration::from_secs(120),
             outbox_expiry: Duration::from_secs(72 * 60 * 60),
             script: crate::script::ScriptLimits::default(),
@@ -1523,11 +1527,24 @@ impl Agent {
                 None => break,
                 Some(Err(e)) => return Err(e),
                 Some(Ok(ev)) => {
-                    if let (true, StreamEvent::TextDelta(t)) = (emit_text, &ev) {
-                        self.emit(AgentEvent::TextDelta {
-                            run_id: run_id.into(),
-                            text: t.clone(),
-                        });
+                    if emit_text {
+                        match &ev {
+                            StreamEvent::TextDelta(t) => self.emit(AgentEvent::TextDelta {
+                                run_id: run_id.into(),
+                                text: t.clone(),
+                            }),
+                            StreamEvent::ReasoningDelta(t) if self.cfg.show_reasoning => {
+                                self.emit(AgentEvent::ReasoningDelta {
+                                    run_id: run_id.into(),
+                                    text: t.clone(),
+                                })
+                            }
+                            StreamEvent::ReasoningRedacted(_) if self.cfg.show_reasoning => self
+                                .emit(AgentEvent::ReasoningHidden {
+                                    run_id: run_id.into(),
+                                }),
+                            _ => {}
+                        }
                     }
                     if asm.push(ev) {
                         break;
@@ -1977,6 +1994,9 @@ pub fn preview(s: &str) -> String {
 struct Assembler {
     blocks: Vec<ContentBlock>,
     text: String,
+    /// Reasoning streamed since the last block, and when it began.
+    thinking: String,
+    thinking_since: Option<std::time::Instant>,
     tool_json: HashMap<String, String>,
     stop: Option<(Usage, crate::types::StopReason)>,
     fallback: Option<crate::types::Fallback>,
@@ -1986,8 +2006,28 @@ impl Assembler {
     /// Returns true once the message is complete.
     fn push(&mut self, ev: StreamEvent) -> bool {
         match ev {
-            StreamEvent::TextDelta(t) => self.text.push_str(&t),
+            StreamEvent::TextDelta(t) => {
+                self.flush_thinking(None);
+                self.text.push_str(&t);
+            }
+            StreamEvent::ReasoningDelta(t) => {
+                self.flush_text();
+                self.thinking_since
+                    .get_or_insert_with(std::time::Instant::now);
+                self.thinking.push_str(&t);
+            }
+            StreamEvent::ReasoningSignature(sig) => {
+                self.thinking_since
+                    .get_or_insert_with(std::time::Instant::now);
+                self.flush_thinking(Some(sig));
+            }
+            StreamEvent::ReasoningRedacted(data) => {
+                self.flush_thinking(None);
+                self.flush_text();
+                self.blocks.push(ContentBlock::RedactedThinking { data });
+            }
             StreamEvent::ToolUseStart { id, name } => {
+                self.flush_thinking(None);
                 self.flush_text();
                 self.tool_json.insert(id.clone(), String::new());
                 self.blocks.push(ContentBlock::ToolUse {
@@ -2011,6 +2051,19 @@ impl Assembler {
         false
     }
 
+    /// Close the reasoning streamed so far as one block.
+    fn flush_thinking(&mut self, signature: Option<String>) {
+        let since = self.thinking_since.take();
+        if self.thinking.is_empty() && signature.is_none() {
+            return;
+        }
+        self.blocks.push(ContentBlock::Thinking {
+            thinking: std::mem::take(&mut self.thinking),
+            signature,
+            duration_ms: since.map(|t| t.elapsed().as_millis() as u64),
+        });
+    }
+
     fn flush_text(&mut self) {
         if !self.text.is_empty() {
             self.blocks.push(ContentBlock::Text {
@@ -2026,6 +2079,7 @@ impl Assembler {
                 retryable: true,
             });
         };
+        self.flush_thinking(None);
         self.flush_text();
         for b in &mut self.blocks {
             if let ContentBlock::ToolUse { id, input, .. } = b {

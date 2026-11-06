@@ -14,6 +14,7 @@ import 'fleet_status.dart';
 import 'routines.dart';
 import 'items.dart';
 import 'manage.dart';
+import 'reasoning.dart';
 import 'widgets.dart';
 import 'workspace_ui.dart';
 
@@ -206,33 +207,81 @@ extension on ChannelView {
 }
 
 /// "research-1 · Running http_fetch": a member working in the channel.
-class MemberLine extends StatelessWidget {
+/// When the model is reasoning, a chevron beside the words opens a quiet
+/// box that streams it.
+class MemberLine extends StatefulWidget {
   const MemberLine({super.key, required this.line, required this.store});
 
   final ({String runId, String author, String doing}) line;
   final TernStore store;
 
   @override
+  State<MemberLine> createState() => _MemberLineState();
+}
+
+class _MemberLineState extends State<MemberLine> {
+  var _open = false;
+
+  @override
   Widget build(BuildContext context) {
     final c = context.colors;
-    return Row(
+    final line = widget.line;
+    final store = widget.store;
+    final reasoning = store.reasoningOfRun(line.runId);
+    final words = Text(
+      '${store.authorName(line.author, line.author)} · ${line.doing}',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(fontSize: 12.5, color: c.muted),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        authorAvatar(store, authorId: line.author, name: line.author, size: 18),
-        const SizedBox(width: 8),
-        SizedBox(
-          width: 10,
-          height: 10,
-          child: CircularProgressIndicator(strokeWidth: 1.5, color: c.muted),
+        Row(
+          children: [
+            authorAvatar(
+              store,
+              authorId: line.author,
+              name: line.author,
+              size: 18,
+            ),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 10,
+              height: 10,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.5,
+                color: c.muted,
+              ),
+            ),
+            const SizedBox(width: 8),
+            if (reasoning == null)
+              Flexible(child: words)
+            else
+              Flexible(
+                child: InkWell(
+                  key: const ValueKey('reasoning-toggle'),
+                  onTap: () => setState(() => _open = !_open),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(child: words),
+                      const SizedBox(width: 2),
+                      ReasoningChevron(open: _open),
+                    ],
+                  ),
+                ),
+              ),
+          ],
         ),
-        const SizedBox(width: 8),
-        Flexible(
-          child: Text(
-            '${store.authorName(line.author, line.author)} · ${line.doing}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12.5, color: c.muted),
+        if (reasoning != null && _open) ...[
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.only(left: 26),
+            child: ReasoningBox(reasoning: reasoning),
           ),
-        ),
+        ],
       ],
     );
   }
@@ -721,6 +770,10 @@ class TimelinePost extends StatelessWidget {
               if (quote case final q?) ...[
                 const SizedBox(height: 2),
                 QuoteLine(post: q, store: store),
+              ],
+              if (store.reasoningOfPost(post) case final r?) ...[
+                const SizedBox(height: 2),
+                ReasoningNote(reasoning: r),
               ],
               const SizedBox(height: 3),
               MarkdownBody(

@@ -10,6 +10,8 @@
 
 workspace = "~/tern-workspace"   # where the agent works; shell commands start here
 max_iterations = 40              # model calls per run before it stops
+# Show reasoning in the apps when the model returns it. Never sent to channels.
+show_reasoning = true
 # Context window in tokens. Unset: the model's own, else 200000 (32768 for
 # local servers). Older messages are summarized past 80%. Set per provider
 # in its [providers.*] table.

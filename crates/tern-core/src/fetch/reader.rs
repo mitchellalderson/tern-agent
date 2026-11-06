@@ -134,7 +134,10 @@ async fn turn(model: &FetcherModel, req: ChatRequest, ctx: &ToolCtx) -> Result<T
                 t.usage = usage;
                 t.stop = Some(stop_reason);
             }
-            StreamEvent::Fallback(_) => {}
+            StreamEvent::Fallback(_)
+            | StreamEvent::ReasoningDelta(_)
+            | StreamEvent::ReasoningSignature(_)
+            | StreamEvent::ReasoningRedacted(_) => {}
         }
     }
     for (id, name, json) in partial {

@@ -305,8 +305,26 @@ sealed class ContentBlock {
       content: j['content'] as String,
       isError: j['is_error'] as bool? ?? false,
     ),
+    'thinking' => ReasoningBlock(
+      text: j['thinking'] as String? ?? '',
+      durationMs: j['duration_ms'] as int?,
+    ),
+    'redacted_thinking' => const ReasoningBlock(text: '', hidden: true),
     _ => const TextBlock(''),
   };
+}
+
+/// The model's reasoning for one turn, as stored with the message. A
+/// redacted block (the provider withheld it) has no text.
+class ReasoningBlock extends ContentBlock {
+  const ReasoningBlock({
+    required this.text,
+    this.hidden = false,
+    this.durationMs,
+  });
+  final String text;
+  final bool hidden;
+  final int? durationMs;
 }
 
 class TextBlock extends ContentBlock {
@@ -696,6 +714,11 @@ sealed class TernEvent {
         text: j['text'] as String? ?? '',
       ),
       'text_delta' => TextDelta(runId: run, text: j['text'] as String),
+      'reasoning_delta' => ReasoningDelta(
+        runId: run,
+        text: j['text'] as String? ?? '',
+      ),
+      'reasoning_hidden' => ReasoningHidden(runId: run),
       'assistant_message' => AssistantMessage(
         runId: run,
         text: j['text'] as String,
@@ -845,6 +868,18 @@ class SubagentMessage extends RunEvent {
 class TextDelta extends RunEvent {
   const TextDelta({required String runId, required this.text}) : super(runId);
   final String text;
+}
+
+/// Streaming reasoning from a live model call, apart from the answer.
+class ReasoningDelta extends RunEvent {
+  const ReasoningDelta({required String runId, required this.text})
+    : super(runId);
+  final String text;
+}
+
+/// The provider withheld this turn's reasoning.
+class ReasoningHidden extends RunEvent {
+  const ReasoningHidden({required String runId}) : super(runId);
 }
 
 class AssistantMessage extends RunEvent {

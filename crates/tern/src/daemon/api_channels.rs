@@ -718,12 +718,12 @@ fn parse_cursor(s: &str) -> Option<(i64, u8, i64)> {
 fn segment_items(
     store: &tern_store::Store,
     s: &tern_store::SessionRow,
+    show_reasoning: bool,
 ) -> anyhow::Result<Vec<StreamItem>> {
     let mut carry = None;
     let mut items = Vec::new();
     for m in store.session_messages(&s.id)? {
-        let mut content: Vec<tern_core::types::ContentBlock> =
-            serde_json::from_str(&m.content_json).unwrap_or_default();
+        let mut content = super::api::shown_blocks(&m.content_json, show_reasoning);
         let mut queued = false;
         if m.role == "user"
             && m.step_idx.is_some()
@@ -794,6 +794,7 @@ async fn stream(
         Some(b) => parse_cursor(b).ok_or_else(|| bad("before: not a cursor from this endpoint"))?,
         None => (i64::MAX, u8::MAX, i64::MAX),
     };
+    let show_reasoning = m.rt.live().show_reasoning;
     let mut items = Vec::new();
     let mut seg = c.main_session_id.clone();
     let mut seen = std::collections::HashSet::new();
@@ -805,7 +806,7 @@ async fn stream(
         let Some(s) = store.session(&sid).map_err(internal)? else {
             break;
         };
-        let older: Vec<StreamItem> = segment_items(store, &s)
+        let older: Vec<StreamItem> = segment_items(store, &s, show_reasoning)
             .map_err(internal)?
             .into_iter()
             .filter(|i| i.key() < before)

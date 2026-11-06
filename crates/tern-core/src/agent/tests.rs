@@ -17,6 +17,8 @@ enum Reply {
     Tool(&'static str, Value),
     /// A tool call whose arguments the output limit cut off.
     CutOff(&'static str, &'static str),
+    /// Reasoning (with a signature) streamed ahead of a text answer.
+    Reasoned(&'static str, &'static str),
 }
 
 /// Replies by number of assistant turns so far; can fail the first N calls.
@@ -165,6 +167,14 @@ impl Provider for Script {
                     partial_json: input.to_string(),
                 }));
                 StopReason::ToolUse
+            }
+            Reply::Reasoned(thinking, text) => {
+                let (a, b) = thinking.split_at(thinking.len() / 2);
+                evs.push(Ok(StreamEvent::ReasoningDelta(a.into())));
+                evs.push(Ok(StreamEvent::ReasoningDelta(b.into())));
+                evs.push(Ok(StreamEvent::ReasoningSignature("sig".into())));
+                evs.push(Ok(StreamEvent::TextDelta(text.into())));
+                StopReason::EndTurn
             }
             Reply::CutOff(name, partial) => {
                 let id = format!("call_{n}");
@@ -346,6 +356,22 @@ impl Harness {
                 retry_base: Duration::from_millis(1),
                 max_iterations: 10,
                 default_context_window: Some(window),
+                ..AgentConfig::default()
+            },
+        )
+    }
+
+    fn agent_showing_reasoning(&self, provider: Arc<Script>, show: bool) -> Agent {
+        let p: Arc<dyn Provider> = provider;
+        Agent::new(
+            Journal::new(self.store.clone()),
+            Arc::new(move |_| Ok(p.clone())),
+            Arc::new(ToolRegistry::new()),
+            Arc::new(AutoApprove),
+            AgentConfig {
+                retry_base: Duration::from_millis(1),
+                max_iterations: 10,
+                show_reasoning: show,
                 ..AgentConfig::default()
             },
         )
@@ -3443,3 +3469,4 @@ fn limits_resolve_user_then_reported_then_model_then_fallback() {
     assert_eq!(cfg.limits(&m("ollama", "llama3.1:8b")).0, 16_000);
     assert_eq!(cfg.limits(&m("anthropic", "claude-opus-5-5")).0, 64_000);
 }
+mod reasoning;

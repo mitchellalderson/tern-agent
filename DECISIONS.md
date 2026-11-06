@@ -1725,3 +1725,12 @@ An explicit `max_tokens` is never cut. Compaction starts at 80% of the window (w
 never lets input plus output pass the window. Summaries get 4096 tokens (was 2048) and each transcript block 8000
 characters (was 4000). `context_window` is now `Option`, unset by default, so "the user set it" is knowable. Left
 alone: tool-result cap (32 KiB), sub-agent budget (400k), fetch reader budget, memory-flush size.
+
+## Reasoning view (2026-11-06)
+
+- **Reasoning is a content block and its own event.** `ContentBlock::Thinking { thinking, signature?, duration_ms? }` and `RedactedThinking { data }` are stored with the assistant message, so a reload shows it; the stream carries `ReasoningDelta` / `ReasoningHidden` next to `TextDelta`. Anthropic `thinking_delta` / `signature_delta` / `redacted_thinking` and OpenAI-compatible `reasoning_content` / `reasoning` are parsed.
+- **Echo rule.** Only the Anthropic request puts thinking back, and only signed (or redacted) blocks inside the turn in progress (after the last user message that isn't tool results); older turns and unsigned reasoning from another provider are dropped. Every other provider, search, compaction and channel delivery ignore it (`Message::text()` is text blocks only).
+- **`show_reasoning` (default true) gates display, not storage.** Off: no events, and the sessions and stream APIs strip the blocks. The journal still keeps them, since a signed block must be echoed unchanged. Applies on restart.
+- **We don't turn thinking on.** The Anthropic request sets no `thinking` parameter; the view shows reasoning when the model or endpoint returns it. Opting a model into extended thinking is a separate setting.
+- **App: one `ReasoningItem` per model call**, hidden while it streams (the activity line owns it) and a "Thought for Ns" note after. Agent posts in a topic channel find theirs through the run id, reading the stored session once.
+
