@@ -21,10 +21,10 @@ pub fn excerpt(text: &str, max: usize) -> String {
     }
     let mut cut: String = text.chars().take(max).collect();
     // Back up to a word end unless the cut already sits on one.
-    if !text[cut.len()..].starts_with(char::is_whitespace) {
-        if let Some(i) = cut.rfind(char::is_whitespace) {
-            cut.truncate(i);
-        }
+    if !text[cut.len()..].starts_with(char::is_whitespace)
+        && let Some(i) = cut.rfind(char::is_whitespace)
+    {
+        cut.truncate(i);
     }
     // A tag cut in half ("</p", "<div cla") goes.
     if let Some(i) = cut.rfind('<') {
