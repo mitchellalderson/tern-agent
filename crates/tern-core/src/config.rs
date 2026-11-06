@@ -43,6 +43,10 @@ pub struct Config {
     pub default_model: Option<ModelChain>,
     pub workspace: String,
     pub max_iterations: u32,
+    /// Show the model's reasoning (Anthropic thinking, `reasoning_content`
+    /// and the like) in the apps while it streams, and keep it with each
+    /// message. Never sent to channels.
+    pub show_reasoning: bool,
     /// Default model context window in tokens; providers can override it.
     pub context_window: u64,
     /// How long a `secret_request` prompt waits for the user.
@@ -346,6 +350,7 @@ impl Default for Config {
             default_model: None,
             workspace: "~/tern-workspace".into(),
             max_iterations: 40,
+            show_reasoning: true,
             context_window: 128_000,
             secret_request_timeout_secs: 900,
             providers: BTreeMap::new(),

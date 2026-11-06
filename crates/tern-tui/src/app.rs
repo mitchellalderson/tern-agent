@@ -1826,6 +1826,8 @@ impl App {
             return;
         }
         match ev {
+            // The terminal doesn't show reasoning.
+            AgentEvent::ReasoningDelta { .. } | AgentEvent::ReasoningHidden { .. } => {}
             AgentEvent::TextDelta { text, .. } => match self.entries.last_mut() {
                 Some(Entry::Assistant {
                     text: t,
@@ -2021,6 +2023,7 @@ impl App {
             AgentEvent::RunStarted { .. } => {
                 self.set_agent_state(&run_id, AgentState::Running, Some("Thinking".into()));
             }
+            AgentEvent::ReasoningDelta { .. } | AgentEvent::ReasoningHidden { .. } => {}
             AgentEvent::TextDelta { .. } => {
                 if let Some(a) = self.agent_mut(&run_id)
                     && a.state == AgentState::Running

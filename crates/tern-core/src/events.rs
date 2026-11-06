@@ -50,6 +50,16 @@ pub enum AgentEvent {
         run_id: String,
         text: String,
     },
+    /// Streaming reasoning from a live model call, shown apart from the
+    /// answer. Live only here; the finished text is kept with the step.
+    ReasoningDelta {
+        run_id: String,
+        text: String,
+    },
+    /// The provider withheld this turn's reasoning (it came encrypted).
+    ReasoningHidden {
+        run_id: String,
+    },
     /// A completed assistant message. `replayed` is true when it came from
     /// the journal (already shown before a crash), so it wasn't streamed.
     AssistantMessage {
@@ -144,6 +154,8 @@ impl AgentEvent {
             | Self::SubagentSpawned { run_id, .. }
             | Self::SubagentMessage { run_id, .. }
             | Self::TextDelta { run_id, .. }
+            | Self::ReasoningDelta { run_id, .. }
+            | Self::ReasoningHidden { run_id, .. }
             | Self::AssistantMessage { run_id, .. }
             | Self::ToolStarted { run_id, .. }
             | Self::ToolOutput { run_id, .. }

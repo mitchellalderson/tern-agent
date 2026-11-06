@@ -429,7 +429,9 @@ pub fn sessions_show(home: &TernHome, id: &str) -> anyhow::Result<()> {
                     let mark = if is_error { "✗" } else { "✓" };
                     println!("    {mark} {}", one_line(&content, 100));
                 }
-                ContentBlock::Text { .. } => {}
+                ContentBlock::Text { .. }
+                | ContentBlock::Thinking { .. }
+                | ContentBlock::RedactedThinking { .. } => {}
             }
         }
     }

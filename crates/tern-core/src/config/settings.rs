@@ -426,6 +426,7 @@ pub const GROUPS: &[(&str, &str)] = &[
 fn placement(key: &str) -> (&'static str, bool) {
     match key {
         "workspace"
+        | "show_reasoning"
         | "home.idle_hours"
         | "home.day_starts"
         | "schedules.quiet_hours"
