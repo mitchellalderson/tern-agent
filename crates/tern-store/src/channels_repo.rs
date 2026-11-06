@@ -941,7 +941,10 @@ mod tests {
 
     #[test]
     fn excerpt_never_ends_in_half_a_tag() {
-        assert_eq!(excerpt("see <div class=\"x\">hi there everyone", 12), "see…");
+        assert_eq!(
+            excerpt("see <div class=\"x\">hi there everyone", 12),
+            "see…"
+        );
     }
 
     use super::*;
