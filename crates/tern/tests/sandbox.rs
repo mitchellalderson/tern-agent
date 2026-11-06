@@ -565,13 +565,15 @@ async fn cargo_builds_a_tiny_crate_offline_in_the_sandbox() {
         eprintln!("skipping: no cargo on PATH");
         return;
     }
-    let base = outside();
+    // Not `outside()`: that is this checkout's target dir, and cargo walks
+    // up from the crate reading every `.cargo/config.toml` and `Cargo.toml`
+    // above it, which the sandbox (rightly) won't let it read in the repo.
+    let base = tempfile::tempdir().unwrap();
     let ws = base.path().join("crate");
     std::fs::create_dir_all(ws.join("src")).unwrap();
     std::fs::write(
         ws.join("Cargo.toml"),
-        // Its own workspace: under target/tmp, cargo would otherwise find
-        // this repo's Cargo.toml above it and refuse to build.
+        // Its own workspace root, wherever it lands.
         "[package]\nname = \"tiny\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
     )
     .unwrap();
