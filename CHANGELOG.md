@@ -7,6 +7,10 @@ All notable changes to tern are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The first-launch screen is a calm welcome: **Start on this Mac** first, **Connect to a remote server** second, and the socket path and OS error sit behind **Details**.
+
 ## [0.1.0-alpha.1] - 2026-11-06
 
 The first pre-release. Expect rough edges; the macOS app is ad-hoc signed and not notarized (first open needs
