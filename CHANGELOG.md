@@ -7,6 +7,11 @@ All notable changes to tern are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Agent messages no longer show literal markup such as `**$ </p`: HTML tags are dropped, a bold or code span cut by a
+  preview is closed, and Home pointers are cut at a word instead of mid-tag.
+
 ## [0.1.0-alpha.1] - 2026-11-06
 
 The first pre-release. Expect rough edges; the macOS app is ad-hoc signed and not notarized (first open needs

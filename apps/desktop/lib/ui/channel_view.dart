@@ -11,6 +11,7 @@ import 'channel_items.dart' show SuggestionActions;
 import 'conversation.dart';
 import 'feed.dart';
 import 'fleet_status.dart';
+import 'markdown_text.dart';
 import 'routines.dart';
 import 'items.dart';
 import 'manage.dart';
@@ -724,7 +725,7 @@ class TimelinePost extends StatelessWidget {
               ],
               const SizedBox(height: 3),
               MarkdownBody(
-                data: markMentions(post.text, slugs),
+                data: markMentions(tidyMarkdown(post.text), slugs),
                 selectable: true,
                 onTapLink: (_, href, _) => openTernLink(context, store, href),
                 styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(

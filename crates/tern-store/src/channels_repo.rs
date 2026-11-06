@@ -11,6 +11,47 @@ pub const HOME: &str = "home";
 /// Most characters of a post a Home pointer repeats.
 pub const POINTER_CHARS: usize = 280;
 
+/// The start of `text`, at most `max` chars, for a preview that is shown as
+/// Markdown: cut at a word, never inside an HTML tag, with an open `**` or
+/// backtick closed (or dropped when nothing follows it), then an ellipsis.
+/// Text that fits is returned whole.
+pub fn excerpt(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(max).collect();
+    // Back up to a word end unless the cut already sits on one.
+    if !text[cut.len()..].starts_with(char::is_whitespace) {
+        if let Some(i) = cut.rfind(char::is_whitespace) {
+            cut.truncate(i);
+        }
+    }
+    // A tag cut in half ("</p", "<div cla") goes.
+    if let Some(i) = cut.rfind('<') {
+        let rest = &cut[i + 1..];
+        let tag_like = rest
+            .trim_start_matches('/')
+            .chars()
+            .next()
+            .into_iter()
+            .all(|c| c.is_ascii_alphabetic());
+        if tag_like && !rest.contains('>') {
+            cut.truncate(i);
+        }
+    }
+    let mut cut = cut.trim_end().to_owned();
+    if cut.matches('`').count() % 2 == 1 {
+        cut.push('`');
+    }
+    if cut.matches("**").count() % 2 == 1 {
+        match cut.rfind("**") {
+            Some(i) if cut[i + 2..].trim().is_empty() => cut.truncate(i),
+            _ => cut.push_str("**"),
+        }
+    }
+    format!("{}…", cut.trim_end())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ChannelRow {
     pub id: String,
@@ -484,7 +525,7 @@ impl Store {
                 params![p.channel_id, now],
             )?;
             if p.kind == "needs_you" && p.channel_id != HOME {
-                let text: String = p.text.chars().take(POINTER_CHARS).collect();
+                let text = excerpt(p.text, POINTER_CHARS);
                 let key = format!("pointer:{}", row.id);
                 insert(
                     &tx,
@@ -877,6 +918,32 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn excerpt_keeps_short_text_whole() {
+        assert_eq!(excerpt("Pro is **$20**", 280), "Pro is **$20**");
+    }
+
+    #[test]
+    fn excerpt_closes_a_cut_bold_span() {
+        assert_eq!(
+            excerpt("Inngest starts at **$20 a month for teams", 30),
+            "Inngest starts at **$20 a**…"
+        );
+    }
+
+    #[test]
+    fn excerpt_drops_a_bold_marker_with_nothing_after() {
+        assert_eq!(
+            excerpt("Inngest starts at **$ is the price", 20),
+            "Inngest starts at…"
+        );
+    }
+
+    #[test]
+    fn excerpt_never_ends_in_half_a_tag() {
+        assert_eq!(excerpt("see <div class=\"x\">hi there everyone", 12), "see…");
+    }
+
     use super::*;
     use crate::{NewMessage, NewRun};
 
