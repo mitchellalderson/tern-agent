@@ -104,7 +104,7 @@ pub fn request_body(req: &ChatRequest) -> Value {
     }
     let mut body = json!({
         "model": req.model,
-        "max_tokens": req.max_tokens,
+        "max_tokens": tern_core::limits::clamp_output(&req.model, req.max_tokens),
         "stream": true,
         "stream_options": { "include_usage": true },
         "messages": messages,
@@ -173,6 +173,14 @@ impl Decoder {
             return out;
         };
         let delta = &choice["delta"];
+        // Reasoning rides beside `content` under a few names: DeepSeek and
+        // Gemini's endpoint say `reasoning_content`, OpenRouter `reasoning`.
+        if let Some(t) = ["reasoning_content", "reasoning"]
+            .iter()
+            .find_map(|k| delta[*k].as_str().filter(|t| !t.is_empty()))
+        {
+            out.push(Ok(StreamEvent::ReasoningDelta(t.to_owned())));
+        }
         if let Some(t) = delta["content"].as_str().filter(|t| !t.is_empty()) {
             out.push(Ok(StreamEvent::TextDelta(t.to_owned())));
         }
@@ -404,6 +412,48 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn parses_reasoning_under_either_field_name() {
+        // DeepSeek / Gemini's endpoint: `reasoning_content`. OpenRouter: `reasoning`.
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hmm \"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"ok.\",\"content\":null}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"\",\"content\":\"Hi\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let ev = collect(body).await;
+        assert_eq!(
+            &ev[..3],
+            [
+                StreamEvent::ReasoningDelta("hmm ".into()),
+                StreamEvent::ReasoningDelta("ok.".into()),
+                StreamEvent::TextDelta("Hi".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn reasoning_is_never_sent_back() {
+        let mut r = req();
+        r.messages.push(tern_core::types::Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "private".into(),
+                    signature: Some("sig".into()),
+                    duration_ms: None,
+                },
+                ContentBlock::RedactedThinking { data: "enc".into() },
+                ContentBlock::Text {
+                    text: "answer".into(),
+                },
+            ],
+        });
+        let s = request_body(&r).to_string();
+        assert!(!s.contains("private") && !s.contains("enc\"") && s.contains("answer"));
     }
 
     #[tokio::test]

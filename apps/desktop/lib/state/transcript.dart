@@ -29,6 +29,67 @@ class AssistantItem extends Item {
   final int? messageId;
 }
 
+/// What the model reasoned during one run, as the Thinking line and the
+/// message's "Thought for…" note show it. Streams in live; kept from the
+/// stored blocks after a reload.
+class Reasoning {
+  Reasoning({this.text = '', this.hidden = false, Duration? elapsed})
+    : _elapsed = elapsed ?? Duration.zero;
+
+  String text;
+
+  /// The provider withheld it: there is nothing to read.
+  bool hidden;
+
+  /// Still streaming.
+  bool get live => _since != null;
+
+  Duration _elapsed;
+  DateTime? _since;
+
+  /// There is something to open.
+  bool get present => hidden || text.isNotEmpty;
+
+  /// How long the model reasoned: finished stretches plus the current one.
+  Duration duration([DateTime? now]) {
+    final since = _since;
+    if (since == null) return _elapsed;
+    return _elapsed + (now ?? DateTime.now()).difference(since);
+  }
+
+  /// More reasoning arrived.
+  void add(String delta, DateTime now) {
+    _since ??= now;
+    text += delta;
+    // Long runs keep the latest; the box is a window, not an archive.
+    if (text.length > _cap) text = text.substring(text.length - _cap);
+  }
+
+  void hide(DateTime now) {
+    _since ??= now;
+    hidden = true;
+  }
+
+  /// The reasoning stretch ended (the answer or a tool call began).
+  void end(DateTime now) {
+    final since = _since;
+    if (since == null) return;
+    _elapsed += now.difference(since);
+    _since = null;
+  }
+
+  static const _cap = 200 * 1024;
+}
+
+/// One model call's reasoning, in the conversation just before the
+/// message it led to. While it streams the activity line shows it; after,
+/// it is a quiet "Thought for 12s" the reader can open.
+class ReasoningItem extends Item {
+  ReasoningItem(this.runId, this.reasoning);
+  final String runId;
+  final Reasoning reasoning;
+}
+
 /// Where Home's stream was cut into a new session (docs/channels-design.md
 /// §2.6), with what was carried over.
 class CutItem extends Item {
@@ -476,6 +537,36 @@ const _agentTools = {
 class Transcript {
   final items = <Item>[];
 
+  /// The reasoning streaming now, by run, until the answer or a tool call
+  /// ends it.
+  final _openReasoning = <String, ReasoningItem>{};
+
+  ReasoningItem _reasoningItem(String run) => _openReasoning.putIfAbsent(run, () {
+    final item = ReasoningItem(run, Reasoning());
+    items.add(item);
+    return item;
+  });
+
+  void _endReasoning(String run, DateTime now) =>
+      _openReasoning.remove(run)?.reasoning.end(now);
+
+  /// All the reasoning of [run], one block per model call joined, for the
+  /// message it led to. Null when there was none.
+  Reasoning? reasoningFor(String run) {
+    final all = [
+      for (final i in items)
+        if (i is ReasoningItem && i.runId == run && i.reasoning.present)
+          i.reasoning,
+    ];
+    if (all.isEmpty) return null;
+    if (all.length == 1) return all.first;
+    return Reasoning(
+      text: all.map((r) => r.text).where((t) => t.isNotEmpty).join('\n\n'),
+      hidden: all.any((r) => r.hidden),
+      elapsed: all.fold<Duration>(Duration.zero, (a, r) => a + r.duration()),
+    );
+  }
+
   /// The run in progress here, if any. A run that already finished here
   /// can't become it again (a send's reply or an active-runs list can
   /// arrive after its `run_finished`); [resumeRun] says it really did.
@@ -580,7 +671,12 @@ class Transcript {
       case RunStarted(:final runId):
         // A sub-agent's start never takes over its parent's run here.
         if (e.parentRunId == null || activeRun == null) resumeRun(runId);
+      case ReasoningDelta(:final runId, :final text):
+        _reasoningItem(runId).reasoning.add(text, now);
+      case ReasoningHidden(:final runId):
+        _reasoningItem(runId).reasoning.hide(now);
       case TextDelta(:final text):
+        _endReasoning(e.runId, now);
         final last = items.lastOrNull;
         if (last is AssistantItem && last.streaming) {
           last.text += text;
@@ -588,6 +684,7 @@ class Transcript {
           items.add(AssistantItem(text, streaming: true));
         }
       case AssistantMessage(:final text, :final replayed):
+        _endReasoning(e.runId, now);
         final last = items.lastOrNull;
         if (last is AssistantItem && last.streaming) {
           last
@@ -604,6 +701,7 @@ class Transcript {
         }
       case ToolStarted(:final id, :final name, :final summary)
           when _agentTools.contains(name):
+        _endReasoning(e.runId, now);
         if (_agentCalls.containsKey(id)) return false;
         _agentCalls[id] = name;
         if (name == 'agent_spawn' && _child(id) == null) {
@@ -650,6 +748,7 @@ class Transcript {
           ..status = 'question'
           ..question = text;
       case ToolStarted(:final id, :final name, :final summary):
+        _endReasoning(e.runId, now);
         if (_step(id) != null) return false;
         final work = _work(e.runId);
         work.started ??= now;
@@ -735,6 +834,7 @@ class Transcript {
       case Compacted():
         items.add(PillItem(PillKind.compacted, 'Earlier messages summarized'));
       case RunFinished(:final runId, :final status, :final error):
+        _endReasoning(runId, now);
         endRun(runId);
         _agentCalls.clear();
         expireApprovals(runId);
@@ -1022,6 +1122,17 @@ class _Builder {
           );
         case TextBlock():
           break;
+        case ReasoningBlock(:final text, :final hidden, :final durationMs):
+          t.items.add(
+            ReasoningItem(
+              m.runId ?? '',
+              Reasoning(
+                text: text,
+                hidden: hidden,
+                elapsed: Duration(milliseconds: durationMs ?? 0),
+              ),
+            ),
+          );
         case ToolUseBlock(:final id, :final name, :final input)
             when _agentTools.contains(name):
           agentCalls[id] = name;

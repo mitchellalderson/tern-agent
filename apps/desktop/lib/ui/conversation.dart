@@ -151,6 +151,10 @@ class _ConversationViewState extends State<ConversationView> {
                                 ? ActivityLine(
                                     phase: phase!,
                                     since: t!.runSince,
+                                    reasoning: switch (t.activeRun) {
+                                      final String run => t.reasoningFor(run),
+                                      _ => null,
+                                    },
                                   )
                                 : ItemView(item: item, store: store),
                           ),

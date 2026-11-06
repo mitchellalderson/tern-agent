@@ -667,6 +667,7 @@ async fn session(
     let total = messages.len();
     let end = page.before.map_or(total, |b| b.min(total));
     let offset = page.limit.map_or(0, |l| end.saturating_sub(l.max(1)));
+    let show_reasoning = m.rt.live().show_reasoning;
     let messages = messages
         .into_iter()
         .skip(offset)
@@ -674,7 +675,7 @@ async fn session(
         .map(|row| SessionMessage {
             role: row.role,
             run_id: row.run_id,
-            content: serde_json::from_str(&row.content_json).unwrap_or_default(),
+            content: shown_blocks(&row.content_json, show_reasoning),
             summary: row.summary_of.is_some(),
         })
         .collect();
@@ -686,6 +687,16 @@ async fn session(
         total,
         offset,
     }))
+}
+
+/// A stored message's blocks for a front end: reasoning only when
+/// `show_reasoning` is on (the journal keeps it either way, for echoing).
+pub(super) fn shown_blocks(content_json: &str, show_reasoning: bool) -> Vec<ContentBlock> {
+    let mut blocks: Vec<ContentBlock> = serde_json::from_str(content_json).unwrap_or_default();
+    if !show_reasoning {
+        blocks.retain(|b| !b.is_thinking());
+    }
+    blocks
 }
 
 async fn set_model(
@@ -746,7 +757,7 @@ async fn usage(
     let window = context
         .as_ref()
         .and_then(|(model, _)| model.as_deref()?.parse::<ModelRef>().ok())
-        .map(|model| m.rt.agent.context_window(&model.provider));
+        .map(|model| m.rt.agent.context_window(&model));
     Ok(Json(SessionUsage {
         usage: Usage {
             input_tokens,

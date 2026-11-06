@@ -73,16 +73,28 @@ pub struct AgentConfig {
     /// What file tools must never touch (tern's data directory).
     pub deny: Arc<crate::workspace::DenySet>,
     pub max_iterations: u32,
-    pub max_tokens: u32,
+    /// The user's `max_tokens`; `None` sizes output per model
+    /// ([`crate::limits`]).
+    pub max_tokens: Option<u32>,
     pub approval_timeout: Duration,
     /// Base delay for LLM retry backoff (doubles per attempt, with jitter).
     pub retry_base: Duration,
-    /// Context window in tokens, by provider name.
+    /// The user's context window in tokens, by provider name.
     pub context_windows: std::collections::BTreeMap<String, u64>,
-    /// Context window for providers not in `context_windows`.
-    pub default_context_window: u64,
+    /// The user's top-level `context_window`; `None` takes each model's own
+    /// ([`crate::limits`]).
+    pub default_context_window: Option<u64>,
+    /// Providers that run on this computer or its network, whose unknown
+    /// windows stay conservative.
+    pub local_providers: std::collections::BTreeSet<String>,
+    /// The window a provider's model list reported for a model, when the
+    /// host has one cached.
+    pub reported_window: Option<ReportedWindow>,
     /// Flush durable facts to memory before compacting (`[memory].flush`).
     pub memory_flush: bool,
+    /// Stream the model's reasoning to front ends (`show_reasoning`). It is
+    /// kept with the step either way: a provider may need it echoed back.
+    pub show_reasoning: bool,
     /// How long a `write`/`destructive` approval waits before it goes to
     /// the outbox, where the approval handler can defer (`[outbox]`).
     pub approval_wait: Duration,
@@ -101,12 +113,15 @@ impl Default for AgentConfig {
             workspace: PathBuf::from("."),
             deny: Arc::default(),
             max_iterations: 40,
-            max_tokens: 8192,
+            max_tokens: None,
             approval_timeout: Duration::from_secs(600),
             retry_base: Duration::from_secs(1),
             context_windows: std::collections::BTreeMap::new(),
-            default_context_window: 128_000,
+            default_context_window: None,
+            local_providers: std::collections::BTreeSet::new(),
+            reported_window: None,
             memory_flush: false,
+            show_reasoning: true,
             approval_wait: Duration::from_secs(120),
             outbox_expiry: Duration::from_secs(72 * 60 * 60),
             script: crate::script::ScriptLimits::default(),
@@ -115,12 +130,40 @@ impl Default for AgentConfig {
     }
 }
 
+/// Looks up the window a provider's model list gave for a model.
+pub type WindowLookup = dyn Fn(&ModelRef) -> Option<u64> + Send + Sync;
+
+#[derive(Clone)]
+pub struct ReportedWindow(pub Arc<WindowLookup>);
+
+impl std::fmt::Debug for ReportedWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReportedWindow")
+    }
+}
+
 impl AgentConfig {
-    pub fn context_window(&self, provider: &str) -> u64 {
-        self.context_windows
-            .get(provider)
-            .copied()
-            .unwrap_or(self.default_context_window)
+    /// Context window and output budget for `model`: the user's settings,
+    /// then what the provider reported, then documented limits, then a
+    /// fallback ([`crate::limits::resolve`]).
+    pub fn limits(&self, model: &ModelRef) -> (u64, u32) {
+        crate::limits::resolve(
+            &model.model,
+            crate::limits::Inputs {
+                user_window: self
+                    .context_windows
+                    .get(&model.provider)
+                    .copied()
+                    .or(self.default_context_window),
+                user_max_tokens: self.max_tokens,
+                reported_window: self.reported_window.as_ref().and_then(|f| (f.0)(model)),
+                local: self.local_providers.contains(&model.provider),
+            },
+        )
+    }
+
+    pub fn context_window(&self, model: &ModelRef) -> u64 {
+        self.limits(model).0
     }
 }
 
@@ -454,9 +497,9 @@ impl Agent {
         &self.tools
     }
 
-    /// Context window for `provider`, the one compaction measures against.
-    pub fn context_window(&self, provider: &str) -> u64 {
-        self.cfg.context_window(provider)
+    /// Context window for `model`, the one compaction measures against.
+    pub fn context_window(&self, model: &ModelRef) -> u64 {
+        self.cfg.context_window(model)
     }
 
     fn emit(&self, ev: AgentEvent) {
@@ -658,8 +701,10 @@ impl Agent {
         let scope = scope.as_deref();
         let tools = self.tools.specs_for(scope);
         let max_iterations = run.max_iterations.unwrap_or(self.cfg.max_iterations);
-        let window = self.cfg.context_window(&model.provider);
-        let max_tokens = provider.max_output_tokens().unwrap_or(self.cfg.max_tokens);
+        let (window, max_tokens) = self.cfg.limits(&model);
+        let max_tokens = provider
+            .max_output_tokens()
+            .map_or(max_tokens, |cap| max_tokens.min(cap));
         let mut idx: u32 = 0;
         let mut iterations: u32 = 0;
         // Provider-reported tokens / our estimate for the last request; used
@@ -1482,11 +1527,24 @@ impl Agent {
                 None => break,
                 Some(Err(e)) => return Err(e),
                 Some(Ok(ev)) => {
-                    if let (true, StreamEvent::TextDelta(t)) = (emit_text, &ev) {
-                        self.emit(AgentEvent::TextDelta {
-                            run_id: run_id.into(),
-                            text: t.clone(),
-                        });
+                    if emit_text {
+                        match &ev {
+                            StreamEvent::TextDelta(t) => self.emit(AgentEvent::TextDelta {
+                                run_id: run_id.into(),
+                                text: t.clone(),
+                            }),
+                            StreamEvent::ReasoningDelta(t) if self.cfg.show_reasoning => {
+                                self.emit(AgentEvent::ReasoningDelta {
+                                    run_id: run_id.into(),
+                                    text: t.clone(),
+                                })
+                            }
+                            StreamEvent::ReasoningRedacted(_) if self.cfg.show_reasoning => self
+                                .emit(AgentEvent::ReasoningHidden {
+                                    run_id: run_id.into(),
+                                }),
+                            _ => {}
+                        }
                     }
                     if asm.push(ev) {
                         break;
@@ -1936,6 +1994,9 @@ pub fn preview(s: &str) -> String {
 struct Assembler {
     blocks: Vec<ContentBlock>,
     text: String,
+    /// Reasoning streamed since the last block, and when it began.
+    thinking: String,
+    thinking_since: Option<std::time::Instant>,
     tool_json: HashMap<String, String>,
     stop: Option<(Usage, crate::types::StopReason)>,
     fallback: Option<crate::types::Fallback>,
@@ -1945,8 +2006,28 @@ impl Assembler {
     /// Returns true once the message is complete.
     fn push(&mut self, ev: StreamEvent) -> bool {
         match ev {
-            StreamEvent::TextDelta(t) => self.text.push_str(&t),
+            StreamEvent::TextDelta(t) => {
+                self.flush_thinking(None);
+                self.text.push_str(&t);
+            }
+            StreamEvent::ReasoningDelta(t) => {
+                self.flush_text();
+                self.thinking_since
+                    .get_or_insert_with(std::time::Instant::now);
+                self.thinking.push_str(&t);
+            }
+            StreamEvent::ReasoningSignature(sig) => {
+                self.thinking_since
+                    .get_or_insert_with(std::time::Instant::now);
+                self.flush_thinking(Some(sig));
+            }
+            StreamEvent::ReasoningRedacted(data) => {
+                self.flush_thinking(None);
+                self.flush_text();
+                self.blocks.push(ContentBlock::RedactedThinking { data });
+            }
             StreamEvent::ToolUseStart { id, name } => {
+                self.flush_thinking(None);
                 self.flush_text();
                 self.tool_json.insert(id.clone(), String::new());
                 self.blocks.push(ContentBlock::ToolUse {
@@ -1970,6 +2051,19 @@ impl Assembler {
         false
     }
 
+    /// Close the reasoning streamed so far as one block.
+    fn flush_thinking(&mut self, signature: Option<String>) {
+        let since = self.thinking_since.take();
+        if self.thinking.is_empty() && signature.is_none() {
+            return;
+        }
+        self.blocks.push(ContentBlock::Thinking {
+            thinking: std::mem::take(&mut self.thinking),
+            signature,
+            duration_ms: since.map(|t| t.elapsed().as_millis() as u64),
+        });
+    }
+
     fn flush_text(&mut self) {
         if !self.text.is_empty() {
             self.blocks.push(ContentBlock::Text {
@@ -1985,6 +2079,7 @@ impl Assembler {
                 retryable: true,
             });
         };
+        self.flush_thinking(None);
         self.flush_text();
         for b in &mut self.blocks {
             if let ContentBlock::ToolUse { id, input, .. } = b {

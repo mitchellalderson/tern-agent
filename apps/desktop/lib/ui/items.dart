@@ -15,8 +15,10 @@ import 'channel_items.dart';
 import 'channel_view.dart';
 import 'collapse.dart';
 import 'inspector.dart';
+import 'markdown_text.dart';
 import 'move_dialog.dart';
 import 'preferences.dart';
+import 'reasoning.dart';
 import 'routines.dart';
 
 /// One transcript item.
@@ -61,6 +63,11 @@ class ItemView extends StatelessWidget {
       },
     ),
     final AgentsItem a => AgentsCard(agents: a, store: store),
+    // While it streams the activity line owns it; after, a quiet note.
+    ReasoningItem(:final reasoning) =>
+      reasoning.live || !reasoning.present
+          ? const SizedBox.shrink()
+          : ReasoningNote(reasoning: reasoning),
     final PillItem p => _Pill(p),
     final ApprovalItem a => ApprovalCard(item: a, store: store),
     final PendingApprovalGroupItem g => PendingApprovalGroupCard(
@@ -209,7 +216,7 @@ class _AssistantMessage extends StatelessWidget {
     final theme = Theme.of(context);
     final body = theme.textTheme.bodyMedium!;
     return MarkdownBody(
-      data: streaming ? '$shown ▍' : shown,
+      data: streaming ? '${tidyMarkdown(shown)} ▍' : tidyMarkdown(shown),
       selectable: true,
       onTapLink: (_, href, _) => openTernLink(context, store, href),
       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
@@ -1377,10 +1384,19 @@ class _RunEndState extends State<_RunEnd> {
 /// The line under the newest item while a run is going: what it's doing
 /// and for how long, so a quiet stretch doesn't look like a hang.
 class ActivityLine extends StatefulWidget {
-  const ActivityLine({super.key, required this.phase, this.since});
+  const ActivityLine({
+    super.key,
+    required this.phase,
+    this.since,
+    this.reasoning,
+  });
 
   final RunPhase phase;
   final DateTime? since;
+
+  /// What the model has reasoned so far: the line gets a chevron that
+  /// opens it. Null when there is none (no chevron).
+  final Reasoning? reasoning;
 
   @override
   State<ActivityLine> createState() => _ActivityLineState();
@@ -1393,6 +1409,7 @@ class _ActivityLineState extends State<ActivityLine>
     duration: const Duration(milliseconds: 1100),
   )..repeat(reverse: true);
   late final Timer _tick;
+  var _open = false;
 
   @override
   void initState() {
@@ -1412,31 +1429,48 @@ class _ActivityLineState extends State<ActivityLine>
     final c = context.colors;
     final since = widget.since;
     final elapsed = since == null ? null : DateTime.now().difference(since);
-    return Padding(
-      padding: const EdgeInsets.only(left: 2),
-      child: Row(
-        children: [
-          FadeTransition(
-            opacity: Tween(begin: 0.25, end: 1.0).animate(_pulse),
-            child: Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: c.accent,
-                shape: BoxShape.circle,
-              ),
-            ),
+    final reasoning = widget.reasoning;
+    final line = Row(
+      children: [
+        FadeTransition(
+          opacity: Tween(begin: 0.25, end: 1.0).animate(_pulse),
+          child: Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: c.accent, shape: BoxShape.circle),
           ),
-          const SizedBox(width: 10),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          '${widget.phase.label}…',
+          style: TextStyle(fontSize: 12.5, color: c.muted),
+        ),
+        if (elapsed != null && elapsed.inSeconds >= 1)
           Text(
-            '${widget.phase.label}…',
+            ' · ${formatDuration(elapsed)}',
             style: TextStyle(fontSize: 12.5, color: c.muted),
           ),
-          if (elapsed != null && elapsed.inSeconds >= 1)
-            Text(
-              ' · ${formatDuration(elapsed)}',
-              style: TextStyle(fontSize: 12.5, color: c.muted),
+        if (reasoning != null) ReasoningChevron(open: _open),
+      ],
+    );
+    return Padding(
+      padding: const EdgeInsets.only(left: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (reasoning == null)
+            line
+          else
+            InkWell(
+              key: const ValueKey('reasoning-toggle'),
+              onTap: () => setState(() => _open = !_open),
+              borderRadius: BorderRadius.circular(6),
+              child: line,
             ),
+          if (reasoning != null && _open) ...[
+            const SizedBox(height: 8),
+            ReasoningBox(reasoning: reasoning),
+          ],
         ],
       ),
     );

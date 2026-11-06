@@ -892,6 +892,49 @@ class TernStore extends ChangeNotifier {
     }
   }
 
+  /// The reasoning of [run] so far (streaming or kept), for its activity
+  /// line. Null when the model gave none.
+  Reasoning? reasoningOfRun(String run) {
+    final session = _runSession[run];
+    return session == null ? null : transcripts[session]?.reasoningFor(run);
+  }
+
+  /// Reasoning read back from stored history, by session, for posts whose
+  /// conversation isn't open.
+  final _reasoningHistory = <String, Transcript>{};
+  final _reasoningLoading = <String>{};
+
+  /// The reasoning behind an agent's post, so it can be reopened collapsed
+  /// under it. Reads the stored session once when this app has not seen the
+  /// run live.
+  Reasoning? reasoningOfPost(Post post) {
+    final session = post.sessionId;
+    final run = post.runId;
+    if (session == null || run == null || post.mine) return null;
+    final found =
+        transcripts[session]?.reasoningFor(run) ??
+        _reasoningHistory[session]?.reasoningFor(run);
+    if (found == null &&
+        !_reasoningHistory.containsKey(session) &&
+        _reasoningLoading.add(session)) {
+      unawaited(_loadReasoning(session));
+    }
+    return found;
+  }
+
+  Future<void> _loadReasoning(String session) async {
+    try {
+      final detail = await client.session(session, limit: threadPage);
+      _reasoningHistory[session] = Transcript.fromSession(detail);
+    } on Exception {
+      // Nothing to show is the same as nothing stored.
+      _reasoningHistory[session] = Transcript();
+    } finally {
+      _reasoningLoading.remove(session);
+    }
+    notifyListeners();
+  }
+
   /// Where a run's approvals and secret requests wait: the conversation
   /// its tree is in, by the root session's channel (DECISIONS.md
   /// "Approvals land where the work is"). Home and DMs show the cards in

@@ -487,7 +487,8 @@ It prints what is left for you to remove by hand: the `tern` binary, `~/.tern` (
 | `default_model` | none | `provider:model` used when `--model` / `/model` isn't given, or a [fallback chain](#fallback-chains) `["anthropic:…", "openrouter:…"]`. |
 | `workspace` | `~/tern-workspace` | The default workspace: the folder file tools and commands work in unless a conversation, channel or agent has its own ([Workspaces](#workspaces)). |
 | `max_iterations` | `40` | Model calls per run before it stops. |
-| `context_window` | `128000` | Tokens; older messages are summarized past 75%. |
+| `context_window` | unset | Tokens. Unset: the model's own window, else `200000` (`32768` for local servers). Older messages are summarized past 80%. |
+| `max_tokens` | unset | Output tokens per call. Unset: `32000`, capped by the model. |
 | `providers.<name>.kind` | | `anthropic` or `openai_compat`. |
 | `providers.<name>.base_url` | | Required for `openai_compat`; defaults to `https://api.anthropic.com` for `anthropic`. |
 | `providers.<name>.api_key_secret` | | Name of the secret holding the key (omit for keyless local servers). |

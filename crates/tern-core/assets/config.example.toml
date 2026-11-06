@@ -10,9 +10,15 @@
 
 workspace = "~/tern-workspace"   # where the agent works; shell commands start here
 max_iterations = 40              # model calls per run before it stops
-# Model context window in tokens; old messages are summarized past 75%.
-# Override per provider with `context_window` in its [providers.*] table.
-context_window = 128000
+# Show reasoning in the apps when the model returns it. Never sent to channels.
+show_reasoning = true
+# Context window in tokens. Unset: the model's own, else 200000 (32768 for
+# local servers). Older messages are summarized past 80%. Set per provider
+# in its [providers.*] table.
+# context_window = 200000
+
+# Output tokens per model call. Unset: 32000, capped by the model.
+# max_tokens = 32000
 
 # Secrets (API keys, tokens) are read from environment variables first,
 # then from secrets.toml next to this file (which must be mode 0600).

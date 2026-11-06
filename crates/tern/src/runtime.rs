@@ -274,12 +274,27 @@ impl Runtime {
                 deny: deny.clone(),
                 max_iterations: config.max_iterations,
                 default_context_window: config.context_window,
+                max_tokens: config.max_tokens,
+                local_providers: config
+                    .providers
+                    .iter()
+                    .filter(|(_, p)| {
+                        p.effective_base_url()
+                            .is_some_and(tern_core::limits::is_local_url)
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect(),
+                reported_window: Some(tern_core::agent::ReportedWindow({
+                    let models = models.clone();
+                    Arc::new(move |m| models.context_window(&m.provider, &m.model))
+                })),
                 context_windows: config
                     .providers
                     .iter()
                     .filter_map(|(name, p)| p.context_window.map(|w| (name.clone(), w)))
                     .collect(),
                 memory_flush: config.memory.flush,
+                show_reasoning: config.show_reasoning,
                 approval_wait: std::time::Duration::from_secs(config.outbox.wait_secs),
                 outbox_expiry: std::time::Duration::from_secs(
                     config.outbox.expire_hours.saturating_mul(3600),

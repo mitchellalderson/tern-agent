@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme.dart';
+import 'markdown_text.dart';
 
 /// A message longer than this many lines or characters shows its first
 /// [previewLines] lines, and the rest on "Show more".
@@ -27,9 +28,7 @@ const previewLines = 12;
     // A few enormous lines: cut the last one.
     kept[kept.length - 1] = kept.last.substring(0, collapseChars ~/ 2);
   }
-  var preview = kept.join('\n').trimRight();
-  final fences = RegExp(r'^\s*```', multiLine: true).allMatches(preview);
-  if (fences.length.isOdd) preview = '$preview\n```';
+  final preview = closeOpenSpans(kept.join('\n'));
   return (text: preview, hiddenLines: lines.length - kept.length);
 }
 

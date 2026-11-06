@@ -20,6 +20,7 @@ import 'offline.dart';
 import 'preferences.dart';
 import 'quit.dart';
 import 'routines.dart';
+import 'servers.dart';
 import 'side_panel.dart';
 import 'sidebar.dart';
 import 'tasks.dart';
@@ -152,7 +153,16 @@ class _HomeState extends State<Home> {
               listenable: store,
               builder: (context, _) {
                 if (store.health == null) {
-                  return OfflineView(store: store, onSettings: _settings);
+                  return OfflineView(
+                    store: store,
+                    onSettings: _settings,
+                    onConnectRemote: widget.connections == null
+                        ? null
+                        : () => showServersDialog(
+                            context,
+                            widget.connections!,
+                          ),
+                  );
                 }
                 final content = LayoutBuilder(
                   builder: (context, box) {
