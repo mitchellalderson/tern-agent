@@ -1708,3 +1708,14 @@ nightly, or PRs labelled `ci-macos`. The universal DMG is built only on dispatch
 pushes cancel older runs on the same ref, but never tag (release) runs. Docs-only changes skip everything except
 gitleaks. Every job has a timeout (macOS 30). A release tag still requires the full Linux suite and the macOS job to
 pass. Details and expected minutes: docs/ci-cost.md.
+
+## Stale outbox edits (2026-11-06)
+
+A queued `write_file`/`edit_file` runs against whatever the file is when approved, so a queue made while the agent kept editing failed item by item ("old_string not found"), out of order, one message each. Decisions:
+
+- **State at queue time**: `outbox.file_path` (resolved, absolute) and `file_hash` (blake3 of the bytes, or `absent`), both nullable (migration 0029). Only `write_file` and `edit_file` set them; there is no `apply_patch`. Other tools are untouched.
+- **Check at three points**: when listing (`OutboxItem.stale`, computed, nothing stored), at approval (the daemon marks the item `stale` instead of starting a run) and at execution (inside the journaled `outbox_exec` step, so a replay after a crash stays stale). Edited, deleted and created all count as changed.
+- **`stale` is a state**, not a failure: no ledger `effect`, no tool call. Discard is the existing reject, now allowed from `stale`. Approve and Edit are hidden for stale items. A stale item keeps showing in the list until discarded.
+- **Same-file order**: an exec run waits (50 ms poll, cancellable) while a lower-id item for the same path is `approved` and unfinished. So a cascade resolves in id order, and the later items re-check the hash after the earlier ones. A lower-id item still `pending` doesn't block a later approval: the user chose that order.
+- **One message per batch**: stale items gather for 700 ms, then one post per file ("4 queued edits to a.md were skipped: the file changed."), also sent to the chat. Per-item detail stays in the item's result ("See work"). Failures that aren't stale still post one message each.
+- **Not done**: the hash covers content, not the user's intent (an unrelated edit elsewhere in the file also makes it stale); no 3-way merge.

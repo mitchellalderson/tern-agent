@@ -3412,3 +3412,178 @@ mod tainted_writes;
 mod fetch_e2e;
 
 mod code_mode;
+
+fn edit_tool() -> Arc<Counter> {
+    Arc::new(Counter::with_policy(
+        "edit_file",
+        ToolPolicy::new(Effect::Write, false),
+    ))
+}
+
+/// Queue `n` edits to `file`, as a run nobody answered. Returns the agent,
+/// the tool and the item ids in queue order.
+async fn queue_edits(
+    h: &Harness,
+    file: &std::path::Path,
+    n: usize,
+) -> (Agent, Arc<Counter>, Vec<i64>) {
+    let tool = edit_tool();
+    let mut replies: Vec<Reply> = (0..n)
+        .map(|_| {
+            Reply::Tool(
+                "edit_file",
+                json!({ "path": file.to_str().unwrap(), "old_string": "a", "new_string": "b" }),
+            )
+        })
+        .collect();
+    replies.push(Reply::Text("queued"));
+    let agent = agent_with(
+        h,
+        Arc::new(Script::new(replies)),
+        vec![tool.clone()],
+        Nobody::new(false),
+    );
+    let run = h.start(&agent, "edit");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let ids = h
+        .store
+        .pending_outbox_for_run(&run)
+        .unwrap()
+        .iter()
+        .map(|o| o.id)
+        .collect();
+    (agent, tool, ids)
+}
+
+#[tokio::test]
+async fn a_queued_file_edit_remembers_the_file_it_was_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.md");
+    std::fs::write(&file, "a").unwrap();
+    let h = Harness::new();
+    let (_, _, ids) = queue_edits(&h, &file, 1).await;
+    let item = h.store.outbox_item(ids[0]).unwrap().unwrap();
+    assert!(item.file_path.as_deref().unwrap().ends_with("a.md"));
+    assert_eq!(
+        item.file_hash.as_deref(),
+        Some(crate::outbox::file_hash(&file).as_str())
+    );
+
+    // A file that doesn't exist yet is `absent`.
+    let h = Harness::new();
+    let (_, _, ids) = queue_edits(&h, &dir.path().join("new.md"), 1).await;
+    let item = h.store.outbox_item(ids[0]).unwrap().unwrap();
+    assert_eq!(item.file_hash.as_deref(), Some(crate::outbox::ABSENT));
+
+    // Other tools keep no file state.
+    let h = Harness::new();
+    let send = sender();
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("send", json!({ "path": "a.md" })),
+        Reply::Text("q"),
+    ]));
+    let agent = agent_with(&h, script, vec![send], Nobody::new(false));
+    let run = h.start(&agent, "go");
+    agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let item = &h.store.pending_outbox_for_run(&run).unwrap()[0];
+    assert!(item.file_path.is_none() && item.file_hash.is_none());
+}
+
+#[tokio::test]
+async fn an_unchanged_file_lets_the_edit_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.md");
+    std::fs::write(&file, "a").unwrap();
+    let h = Harness::new();
+    let (agent, tool, ids) = queue_edits(&h, &file, 1).await;
+    let exec = approve(&h, ids[0], None);
+    agent.drive(&exec, CancellationToken::new()).await.unwrap();
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(h.store.outbox_item(ids[0]).unwrap().unwrap().state, "done");
+}
+
+#[tokio::test]
+async fn an_edit_whose_file_changed_is_skipped_as_stale() {
+    // Edited, deleted, and created since it was queued.
+    for case in ["edited", "deleted", "created"] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.md");
+        if case != "created" {
+            std::fs::write(&file, "a").unwrap();
+        }
+        let h = Harness::new();
+        let (agent, tool, ids) = queue_edits(&h, &file, 1).await;
+        match case {
+            "edited" => std::fs::write(&file, "something else").unwrap(),
+            "deleted" => std::fs::remove_file(&file).unwrap(),
+            _ => std::fs::write(&file, "a").unwrap(),
+        }
+        let exec = approve(&h, ids[0], None);
+        let out = agent.drive(&exec, CancellationToken::new()).await.unwrap();
+        assert_eq!(out.status, RunStatus::Completed, "{case}");
+        assert_eq!(tool.calls.load(Ordering::SeqCst), 0, "{case}: not run");
+        let item = h.store.outbox_item(ids[0]).unwrap().unwrap();
+        assert_eq!(item.state, "stale", "{case}");
+        let r: ToolResult = serde_json::from_str(item.result_json.as_deref().unwrap()).unwrap();
+        assert_eq!(r.content, "a.md changed since this was queued.", "{case}");
+
+        // Replay (a restart): still stale, still not run.
+        h.store.set_run_status(&exec, "running", None).unwrap();
+        agent.drive(&exec, CancellationToken::new()).await.unwrap();
+        assert_eq!(tool.calls.load(Ordering::SeqCst), 0, "{case}");
+        assert_eq!(h.store.outbox_item(ids[0]).unwrap().unwrap().state, "stale");
+    }
+}
+
+#[tokio::test]
+async fn edits_to_one_file_run_in_queue_order_one_at_a_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.md");
+    std::fs::write(&file, "a").unwrap();
+    let h = Harness::new();
+    let (agent, tool, ids) = queue_edits(&h, &file, 2).await;
+    let exec_a = approve(&h, ids[0], None);
+    let exec_b = approve(&h, ids[1], None);
+    // The later item, driven first, waits for the earlier one.
+    let early = tokio::time::timeout(
+        Duration::from_millis(300),
+        agent.drive(&exec_b, CancellationToken::new()),
+    )
+    .await;
+    assert!(early.is_err(), "it waits");
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 0);
+    agent.drive(&exec_a, CancellationToken::new()).await.unwrap();
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    agent.drive(&exec_b, CancellationToken::new()).await.unwrap();
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(h.store.outbox_item(ids[0]).unwrap().unwrap().state, "done");
+    assert_eq!(h.store.outbox_item(ids[1]).unwrap().unwrap().state, "done");
+}
+
+#[tokio::test]
+async fn a_stale_edit_makes_the_later_edits_to_that_file_stale_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.md");
+    std::fs::write(&file, "a").unwrap();
+    let h = Harness::new();
+    let (agent, tool, ids) = queue_edits(&h, &file, 3).await;
+    // The agent kept editing the file after queuing.
+    std::fs::write(&file, "changed").unwrap();
+    let execs: Vec<String> = ids.iter().map(|&id| approve(&h, id, None)).collect();
+    // The later items, driven first, wait for the earlier ones.
+    for exec in execs[1..].iter().rev() {
+        let waiting = tokio::time::timeout(
+            Duration::from_millis(100),
+            agent.drive(exec, CancellationToken::new()),
+        )
+        .await;
+        assert!(waiting.is_err(), "it waits");
+    }
+    for exec in &execs {
+        agent.drive(exec, CancellationToken::new()).await.unwrap();
+    }
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 0);
+    for id in ids {
+        assert_eq!(h.store.outbox_item(id).unwrap().unwrap().state, "stale");
+    }
+}

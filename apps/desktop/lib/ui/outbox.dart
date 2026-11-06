@@ -170,7 +170,9 @@ class _OutboxCardState extends State<OutboxCard> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Waiting for you · outbox #${o.id}',
+                  o.stale
+                      ? 'Out of date · outbox #${o.id}'
+                      : 'Waiting for you · outbox #${o.id}',
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
@@ -182,7 +184,9 @@ class _OutboxCardState extends State<OutboxCard> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Nobody was here to approve this, so tern carried on without it.',
+            o.stale
+                ? o.staleNote
+                : 'Nobody was here to approve this, so tern carried on without it.',
             style: TextStyle(fontSize: 12.5, color: c.muted),
           ),
           if (o.taintNote case final note?) ...[
@@ -215,7 +219,20 @@ class _OutboxCardState extends State<OutboxCard> {
             ),
           ),
           const SizedBox(height: 10),
-          if (remoteBlocked)
+          if (o.stale)
+            Row(
+              children: [
+                FilledButton(
+                  onPressed: _busy ? null : () => _decide(approve: false),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: c.accent,
+                    foregroundColor: c.onAccent,
+                  ),
+                  child: const Text('Discard'),
+                ),
+              ],
+            )
+          else if (remoteBlocked)
             Text(
               'Decide this on the computer running tern: it runs a command there.',
               style: TextStyle(fontSize: 12.5, color: c.muted),

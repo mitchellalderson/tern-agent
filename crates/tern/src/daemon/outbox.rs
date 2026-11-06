@@ -59,11 +59,21 @@ impl std::fmt::Display for OutboxError {
     }
 }
 
+/// How long stale items gather before one message reports them.
+const STALE_WINDOW: Duration = Duration::from_millis(700);
+
 /// How often pending items are checked for expiry.
 const EXPIRY_TICK: Duration = Duration::from_secs(60);
 
 impl Manager {
-    fn pending_item(&self, id: i64, remote: bool) -> Result<OutboxRow, OutboxError> {
+    /// An item that can still be decided. `discard`: a stale item may be
+    /// rejected too, but never approved.
+    fn pending_item(
+        &self,
+        id: i64,
+        remote: bool,
+        discard: bool,
+    ) -> Result<OutboxRow, OutboxError> {
         let item = self
             .rt
             .store
@@ -72,7 +82,7 @@ impl Manager {
         if remote && item.local_only {
             return Err(OutboxError::LocalOnly);
         }
-        if item.state != "pending" {
+        if item.state != "pending" && !(discard && item.state == "stale") {
             return Err(OutboxError::NotPending(item.state));
         }
         Ok(item)
@@ -88,7 +98,12 @@ impl Manager {
         input: Option<Value>,
         remote: bool,
     ) -> Result<OutboxItem, OutboxError> {
-        let item = self.pending_item(id, remote)?;
+        let item = self.pending_item(id, remote, false)?;
+        // Its file changed since it was queued: don't run it, and say so
+        // once for the batch.
+        if outbox::file_changed(item.file_path.as_deref(), item.file_hash.as_deref()) {
+            return self.skip_stale(item);
+        }
         let edited = match input {
             Some(v @ Value::Object(_)) => Some(v.to_string()),
             Some(_) => return Err(OutboxError::Bad("input must be a JSON object".into())),
@@ -123,6 +138,80 @@ impl Manager {
         Ok(self.outbox_view(item))
     }
 
+    /// Mark a pending item stale instead of running it.
+    fn skip_stale(self: &Arc<Self>, item: OutboxRow) -> Result<OutboxItem, OutboxError> {
+        let path = item.file_path.clone().unwrap_or_default();
+        let result = serde_json::to_string(&tern_core::tool::ToolResult::error(
+            outbox::stale_message(&path),
+        ))
+        .map_err(|e| OutboxError::Internal(e.into()))?;
+        self.rt.store.mark_outbox_stale(item.id, &result)?;
+        let item = self
+            .rt
+            .store
+            .outbox_item(item.id)?
+            .ok_or(OutboxError::NotFound)?;
+        tracing::info!(outbox = item.id, tool = %item.tool, "outbox item stale: its file changed");
+        self.item_stale(&item);
+        Ok(self.outbox_view(item))
+    }
+
+    /// A stale item: tell its run, update its card, and queue its line for
+    /// the batch message.
+    fn item_stale(self: &Arc<Self>, item: &OutboxRow) {
+        if let Err(e) = tern_core::agent::tell_outbox_run(&self.rt.store, item, None) {
+            tracing::warn!(outbox = item.id, error = %e, "telling the run failed");
+        }
+        self.outbox_changed(item);
+        self.note_stale(item.clone());
+    }
+
+    /// Report stale items once per file: a cascade, or several approvals
+    /// in a row, share one message. Items gather for a moment first.
+    fn note_stale(self: &Arc<Self>, item: OutboxRow) {
+        let first = {
+            let Ok(mut b) = self.stale_batch.lock() else {
+                return;
+            };
+            b.push(item);
+            b.len() == 1
+        };
+        if first {
+            let me = self.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(STALE_WINDOW).await;
+                me.flush_stale().await;
+            });
+        }
+    }
+
+    /// Post one summary per file for the items gathered.
+    async fn flush_stale(&self) {
+        let items = self
+            .stale_batch
+            .lock()
+            .map(|mut b| std::mem::take(&mut *b))
+            .unwrap_or_default();
+        let mut by_file: Vec<(String, Vec<OutboxRow>)> = Vec::new();
+        for item in items {
+            let file = item.file_path.clone().unwrap_or_default();
+            match by_file.iter_mut().find(|(f, _)| *f == file) {
+                Some((_, v)) => v.push(item),
+                None => by_file.push((file, vec![item])),
+            }
+        }
+        for (file, items) in by_file {
+            let text = outbox::stale_summary(&file, items.len());
+            let first = &items[0];
+            self.outbox_post(first, &text, &format!("outbox-stale:{}", first.id));
+            if let Some(target) = self.outbox_target(first)
+                && let Err(e) = self.send_to(&target, None, &text).await
+            {
+                tracing::warn!(target, error = %e, "outbox summary delivery failed");
+            }
+        }
+    }
+
     /// Reject item `id`, with an optional note the run that queued it gets
     /// if it is still working.
     pub fn reject_outbox(
@@ -131,7 +220,7 @@ impl Manager {
         note: Option<&str>,
         remote: bool,
     ) -> Result<OutboxItem, OutboxError> {
-        self.pending_item(id, remote)?;
+        self.pending_item(id, remote, true)?;
         let note = note.map(str::trim).filter(|n| !n.is_empty());
         if !self.rt.store.reject_outbox(id, note)? {
             return Err(OutboxError::NotPending("decided".into()));
@@ -201,9 +290,13 @@ impl Manager {
     }
 
     /// Post an executed item's result to its channel and its chat, once.
-    async fn outbox_finished(&self, item: &OutboxRow) {
+    async fn outbox_finished(self: &Arc<Self>, item: &OutboxRow) {
         if item.state == "approved" {
             return; // interrupted; resumed later
+        }
+        if item.state == "stale" {
+            self.item_stale(item);
+            return;
         }
         let failed = item.state == "failed";
         let result: Option<tern_core::tool::ToolResult> = item
