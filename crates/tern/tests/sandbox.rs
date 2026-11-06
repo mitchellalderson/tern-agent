@@ -570,7 +570,9 @@ async fn cargo_builds_a_tiny_crate_offline_in_the_sandbox() {
     std::fs::create_dir_all(ws.join("src")).unwrap();
     std::fs::write(
         ws.join("Cargo.toml"),
-        "[package]\nname = \"tiny\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        // Its own workspace: under target/tmp, cargo would otherwise find
+        // this repo's Cargo.toml above it and refuse to build.
+        "[package]\nname = \"tiny\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
     )
     .unwrap();
     std::fs::write(
