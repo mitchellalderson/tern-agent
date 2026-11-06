@@ -37,7 +37,10 @@ void main() {
     });
 
     test('a bold marker followed by \$ and a half tag', () {
-      expect(tidyMarkdown('Inngest starts at **\$ </p'), 'Inngest starts at **\$**');
+      expect(
+        tidyMarkdown('Inngest starts at **\$ </p'),
+        'Inngest starts at **\$**',
+      );
     });
   });
 
