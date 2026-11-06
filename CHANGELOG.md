@@ -7,6 +7,11 @@ All notable changes to tern are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Uninstall from the app**: Settings › About › **Uninstall tern…** stops tern and removes its login items (and, if
+  you tick it, deletes your data), so removing tern on macOS no longer needs a terminal.
+
 ## [0.1.0-alpha.1] - 2026-11-06
 
 The first pre-release. Expect rough edges; the macOS app is ad-hoc signed and not notarized (first open needs
