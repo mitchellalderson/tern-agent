@@ -43,8 +43,14 @@ pub struct Config {
     pub default_model: Option<ModelChain>,
     pub workspace: String,
     pub max_iterations: u32,
-    /// Default model context window in tokens; providers can override it.
-    pub context_window: u64,
+    /// Context window in tokens for every model, unless a provider sets its
+    /// own. Unset (the default): each model's own window, from the
+    /// provider's list or tern's catalogue, else 200 000 (32 768 for a
+    /// local server that doesn't say).
+    pub context_window: Option<u64>,
+    /// Output tokens per model call. Unset (the default): 32 000, cut to
+    /// what the model allows and to a fifth of its window.
+    pub max_tokens: Option<u32>,
     /// How long a `secret_request` prompt waits for the user.
     pub secret_request_timeout_secs: u64,
     pub providers: BTreeMap<String, ProviderConfig>,
@@ -346,7 +352,8 @@ impl Default for Config {
             default_model: None,
             workspace: "~/tern-workspace".into(),
             max_iterations: 40,
-            context_window: 128_000,
+            context_window: None,
+            max_tokens: None,
             secret_request_timeout_secs: 900,
             providers: BTreeMap::new(),
             sandbox: SandboxConfig::default(),
@@ -602,7 +609,8 @@ pub struct ProviderConfig {
     pub kind: ProviderKind,
     pub base_url: Option<String>,
     pub api_key_secret: Option<String>,
-    /// Context window in tokens for this provider's models.
+    /// Context window in tokens for this provider's models, over the
+    /// top-level `context_window` and what the models report.
     pub context_window: Option<u64>,
     /// Prices per model id, for budgets. They win over prices the model
     /// list gives.

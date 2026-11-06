@@ -35,7 +35,7 @@ Choices made where the spec was ambiguous or silent. Newest at the bottom of eac
 - **Retries happen inside the `llm` step** (up to 5 attempts; base 1 s doubling, capped at 30 s, jitter factor 0.5–1.0; `retry-after` honored). Only the final result is journaled. A stream that ends without a stop event counts as a retryable error.
 - **Consecutive same-role messages are merged** when building requests, since each tool step appends its own `tool_result` message.
 - **Path rules**: relative paths resolve in the workspace and may not escape it via `..` or symlinks. Absolute paths are allowed; writes to them need approval.
-- **`max_tokens` defaults to 8192** per model call. Not yet configurable.
+- **`max_tokens` per model call**: 8192 here at first; see [Token and context limits](#token-and-context-limits-2026-11-06) for the current rule.
 - **`tern run` output**: final answer on stdout; run/session ids and tool progress on stderr. Exit codes: 0 completed, 1 failed, 130 interrupted. Without `--yes`, approvals prompt on the terminal, or are denied when stdin isn't a TTY.
 - **`tern resume` landed in M1** (cheap once the journal existed), with `--yes`. M2 adds daemon auto-resume and `runs show`.
 - **IDs are UUIDv7** (hex, no dashes) for sessions and runs: time-ordered and collision-free without coordination.
@@ -48,7 +48,7 @@ Choices made where the spec was ambiguous or silent. Newest at the bottom of eac
 - **Compaction summaries are messages, not deletions.** A summary is a user message with `messages.summary_of = N` (migration 3), appended by a `compaction` step. When building context, the latest summary goes first and every non-summary message with `id <= N` is dropped; full history stays in the database for `sessions show` and `session_search`. A later summary folds in the earlier one. `N` is the highest *non-summary* id being summarized; using the summary row's own id would drop kept messages that are older than the previous summary.
 - **The compaction split never orphans a tool result**: the kept tail is moved back until it doesn't start with a `tool_result` message.
 - **Token estimate** = chars/4 over system prompt, messages, and tool schemas, scaled by the ratio of provider-reported input tokens (including cache reads/writes) to our estimate for the previous request. The ratio comes from journaled usage, so replay makes the same compaction decisions.
-- **Context window is configurable**: top-level `context_window` (default 128 000), overridable per provider. There is no per-model table yet.
+- **Context window is configurable**: top-level `context_window`, overridable per provider. Superseded by the per-model resolution in [Token and context limits](#token-and-context-limits-2026-11-06).
 - **Summarization uses the run's own model** with a fixed system prompt and no tools. Its text isn't streamed as assistant output.
 - **`session_search` excludes the current session**, which is already in context and would otherwise match its own query.
 - **FTS queries are built from words only**: each word quoted and OR-ed, so user text can't inject FTS5 syntax and BM25 ranks documents matching more terms higher.
@@ -1660,3 +1660,20 @@ nightly, or PRs labelled `ci-macos`. The universal DMG is built only on dispatch
 pushes cancel older runs on the same ref, but never tag (release) runs. Docs-only changes skip everything except
 gitleaks. Every job has a timeout (macOS 30). A release tag still requires the full Linux suite and the macOS job to
 pass. Details and expected minutes: docs/ci-cost.md.
+
+## Token and context limits (2026-11-06)
+
+The 128k window and 8192 output were limiting (the desktop showed "Context 28k / 128k" on models that allow far more).
+Now each is resolved per model, most specific first: the user's `context_window` / `max_tokens` (a provider's own over
+the top level) > the window the provider's model list reported (Anthropic `max_input_tokens`, OpenRouter
+`context_length`) > `tern_core::limits`, a table of documented limits by model id prefix (Claude 4.x/5, GPT, o-series,
+Gemini; vendor prefixes and dots ignored) > a fallback. Fallbacks: 200 000 for hosted providers; **32 768 for providers
+whose base URL is loopback, `.local` or a private address** (Ollama, LM Studio), because those servers' real window is
+set when they are started and is often far below what the model supports, so 200k would overflow them instead of
+compacting. A local server that reports a window, or a user setting, still wins. Output defaults to 32 000, cut to the
+model's documented maximum and to a fifth of the window (so a small window keeps room for the conversation); providers
+also clamp each request to the model they send it to, so a fallback-chain member is never asked for more than it takes.
+An explicit `max_tokens` is never cut. Compaction starts at 80% of the window (was 75%) which, with the output share,
+never lets input plus output pass the window. Summaries get 4096 tokens (was 2048) and each transcript block 8000
+characters (was 4000). `context_window` is now `Option`, unset by default, so "the user set it" is knowable. Left
+alone: tool-result cap (32 KiB), sub-agent budget (400k), fetch reader budget, memory-flush size.

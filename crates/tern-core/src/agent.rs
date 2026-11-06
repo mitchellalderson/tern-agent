@@ -73,14 +73,23 @@ pub struct AgentConfig {
     /// What file tools must never touch (tern's data directory).
     pub deny: Arc<crate::workspace::DenySet>,
     pub max_iterations: u32,
-    pub max_tokens: u32,
+    /// The user's `max_tokens`; `None` sizes output per model
+    /// ([`crate::limits`]).
+    pub max_tokens: Option<u32>,
     pub approval_timeout: Duration,
     /// Base delay for LLM retry backoff (doubles per attempt, with jitter).
     pub retry_base: Duration,
-    /// Context window in tokens, by provider name.
+    /// The user's context window in tokens, by provider name.
     pub context_windows: std::collections::BTreeMap<String, u64>,
-    /// Context window for providers not in `context_windows`.
-    pub default_context_window: u64,
+    /// The user's top-level `context_window`; `None` takes each model's own
+    /// ([`crate::limits`]).
+    pub default_context_window: Option<u64>,
+    /// Providers that run on this computer or its network, whose unknown
+    /// windows stay conservative.
+    pub local_providers: std::collections::BTreeSet<String>,
+    /// The window a provider's model list reported for a model, when the
+    /// host has one cached.
+    pub reported_window: Option<ReportedWindow>,
     /// Flush durable facts to memory before compacting (`[memory].flush`).
     pub memory_flush: bool,
     /// How long a `write`/`destructive` approval waits before it goes to
@@ -101,11 +110,13 @@ impl Default for AgentConfig {
             workspace: PathBuf::from("."),
             deny: Arc::default(),
             max_iterations: 40,
-            max_tokens: 8192,
+            max_tokens: None,
             approval_timeout: Duration::from_secs(600),
             retry_base: Duration::from_secs(1),
             context_windows: std::collections::BTreeMap::new(),
-            default_context_window: 128_000,
+            default_context_window: None,
+            local_providers: std::collections::BTreeSet::new(),
+            reported_window: None,
             memory_flush: false,
             approval_wait: Duration::from_secs(120),
             outbox_expiry: Duration::from_secs(72 * 60 * 60),
@@ -115,12 +126,40 @@ impl Default for AgentConfig {
     }
 }
 
+/// Looks up the window a provider's model list gave for a model.
+pub type WindowLookup = dyn Fn(&ModelRef) -> Option<u64> + Send + Sync;
+
+#[derive(Clone)]
+pub struct ReportedWindow(pub Arc<WindowLookup>);
+
+impl std::fmt::Debug for ReportedWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReportedWindow")
+    }
+}
+
 impl AgentConfig {
-    pub fn context_window(&self, provider: &str) -> u64 {
-        self.context_windows
-            .get(provider)
-            .copied()
-            .unwrap_or(self.default_context_window)
+    /// Context window and output budget for `model`: the user's settings,
+    /// then what the provider reported, then documented limits, then a
+    /// fallback ([`crate::limits::resolve`]).
+    pub fn limits(&self, model: &ModelRef) -> (u64, u32) {
+        crate::limits::resolve(
+            &model.model,
+            crate::limits::Inputs {
+                user_window: self
+                    .context_windows
+                    .get(&model.provider)
+                    .copied()
+                    .or(self.default_context_window),
+                user_max_tokens: self.max_tokens,
+                reported_window: self.reported_window.as_ref().and_then(|f| (f.0)(model)),
+                local: self.local_providers.contains(&model.provider),
+            },
+        )
+    }
+
+    pub fn context_window(&self, model: &ModelRef) -> u64 {
+        self.limits(model).0
     }
 }
 
@@ -454,9 +493,9 @@ impl Agent {
         &self.tools
     }
 
-    /// Context window for `provider`, the one compaction measures against.
-    pub fn context_window(&self, provider: &str) -> u64 {
-        self.cfg.context_window(provider)
+    /// Context window for `model`, the one compaction measures against.
+    pub fn context_window(&self, model: &ModelRef) -> u64 {
+        self.cfg.context_window(model)
     }
 
     fn emit(&self, ev: AgentEvent) {
@@ -658,8 +697,10 @@ impl Agent {
         let scope = scope.as_deref();
         let tools = self.tools.specs_for(scope);
         let max_iterations = run.max_iterations.unwrap_or(self.cfg.max_iterations);
-        let window = self.cfg.context_window(&model.provider);
-        let max_tokens = provider.max_output_tokens().unwrap_or(self.cfg.max_tokens);
+        let (window, max_tokens) = self.cfg.limits(&model);
+        let max_tokens = provider
+            .max_output_tokens()
+            .map_or(max_tokens, |cap| max_tokens.min(cap));
         let mut idx: u32 = 0;
         let mut iterations: u32 = 0;
         // Provider-reported tokens / our estimate for the last request; used

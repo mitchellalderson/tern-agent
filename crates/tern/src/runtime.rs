@@ -273,6 +273,20 @@ impl Runtime {
                 deny: deny.clone(),
                 max_iterations: config.max_iterations,
                 default_context_window: config.context_window,
+                max_tokens: config.max_tokens,
+                local_providers: config
+                    .providers
+                    .iter()
+                    .filter(|(_, p)| {
+                        p.effective_base_url()
+                            .is_some_and(tern_core::limits::is_local_url)
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect(),
+                reported_window: Some(tern_core::agent::ReportedWindow({
+                    let models = models.clone();
+                    Arc::new(move |m| models.context_window(&m.provider, &m.model))
+                })),
                 context_windows: config
                     .providers
                     .iter()

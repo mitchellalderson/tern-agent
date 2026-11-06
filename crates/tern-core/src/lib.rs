@@ -13,6 +13,7 @@ pub mod fetch;
 pub mod home;
 pub mod initiative;
 pub mod journal;
+pub mod limits;
 pub mod mcp;
 pub mod memory;
 pub mod models;

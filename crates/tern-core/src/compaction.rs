@@ -14,7 +14,7 @@ use crate::types::{ContentBlock, Message, Role, ToolSpec};
 pub const KEEP_RECENT: usize = 6;
 
 /// Compact when the estimate exceeds this fraction of the context window.
-pub const THRESHOLD: f64 = 0.75;
+pub const THRESHOLD: f64 = 0.8;
 
 pub const SUMMARY_PREFIX: &str = "[Summary of the earlier conversation]";
 
@@ -22,7 +22,7 @@ pub const SUMMARY_PREFIX: &str = "[Summary of the earlier conversation]";
 /// recognize these requests.
 pub const SYSTEM_PROMPT: &str = "You summarize conversations between a user and an AI agent so the agent can continue the work without the full history. Keep: the user's goals and preferences, decisions made, facts learned, files and commands involved and their results, open questions, and what remains to do. Be concise and factual. Write in English prose and bullet points; no preamble.";
 
-pub const SUMMARY_MAX_TOKENS: u32 = 2048;
+pub const SUMMARY_MAX_TOKENS: u32 = 4096;
 
 /// Rough token count: characters / 4.
 pub fn estimate_tokens(system: &str, messages: &[Message], tools: &[ToolSpec]) -> u64 {
@@ -101,7 +101,7 @@ pub fn effective(rows: Vec<MessageRow>) -> Vec<MessageRow> {
 
 /// Render messages as a plain transcript for the summarizer.
 pub fn transcript(messages: &[Message]) -> String {
-    const MAX_BLOCK: usize = 4000;
+    const MAX_BLOCK: usize = 8000;
     let clip = |s: &str| -> String {
         if s.len() <= MAX_BLOCK {
             s.to_owned()

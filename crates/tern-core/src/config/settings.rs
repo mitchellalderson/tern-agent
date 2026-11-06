@@ -170,9 +170,17 @@ fn meta(key: &str) -> Meta {
             section: Some("models"),
             ..m
         },
+        // Unset by default (each model's own limits apply), so the type
+        // can't come from the default.
         "context_window" => Meta {
+            kind: Some(Kind::Int),
             section: Some("models"),
             ..at_least(1000.0)
+        },
+        "max_tokens" => Meta {
+            kind: Some(Kind::Int),
+            section: Some("models"),
+            ..at_least(256.0)
         },
         "max_iterations" | "secret_request_timeout_secs" => at_least(1.0),
         "sandbox.backend" => Meta {
@@ -439,7 +447,7 @@ fn placement(key: &str) -> (&'static str, bool) {
         }
         "default_model" | "subagents.default_model" => ("models", false),
         "fetch.model" => ("models", true),
-        "context_window" | "schedules.gate_model" => ("models", true),
+        "context_window" | "max_tokens" | "schedules.gate_model" => ("models", true),
         "autonomy"
         | "taint.egress"
         | "fetch.taint"
@@ -1126,6 +1134,11 @@ mod tests {
         assert_eq!(by("subagents.max_result_chars").group, "limits");
         assert_eq!(by("schedules.usd_per_day").group, "limits");
         assert_eq!(by("api.listen").group, "servers");
+        // Unset by default, but still editable numbers in the Models group.
+        for key in ["context_window", "max_tokens"] {
+            assert_eq!(by(key).group, "models", "{key}");
+            assert_eq!(by(key).kind, Kind::Int, "{key}");
+        }
         assert_eq!(by("python.max_memory_mb").group, "limits");
         assert!(by("python.max_memory_mb").advanced);
         // Nothing falls through unplaced except genuinely internal knobs.

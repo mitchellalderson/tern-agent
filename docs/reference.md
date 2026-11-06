@@ -487,11 +487,12 @@ It prints what is left for you to remove by hand: the `tern` binary, `~/.tern` (
 | `default_model` | none | `provider:model` used when `--model` / `/model` isn't given, or a [fallback chain](#fallback-chains) `["anthropic:…", "openrouter:…"]`. |
 | `workspace` | `~/tern-workspace` | The default workspace: the folder file tools and commands work in unless a conversation, channel or agent has its own ([Workspaces](#workspaces)). |
 | `max_iterations` | `40` | Model calls per run before it stops. |
-| `context_window` | `128000` | Tokens; older messages are summarized past 75%. |
+| `context_window` | unset | Tokens, for every model. Unset: each model's own window (from the provider's model list, else tern's table of documented limits), else `200000`, or `32768` for a local server (Ollama, LM Studio) that doesn't report one. Older messages are summarized past 80%. |
+| `max_tokens` | unset | Output tokens per model call. Unset: `32000`, cut to what the model allows and to a fifth of the window. |
 | `providers.<name>.kind` | | `anthropic` or `openai_compat`. |
 | `providers.<name>.base_url` | | Required for `openai_compat`; defaults to `https://api.anthropic.com` for `anthropic`. |
 | `providers.<name>.api_key_secret` | | Name of the secret holding the key (omit for keyless local servers). |
-| `providers.<name>.context_window` | | Overrides `context_window` for this provider. |
+| `providers.<name>.context_window` | | Overrides `context_window` and what the provider's models report, for this provider. |
 | `providers.<name>.prices` | `{}` | USD per million tokens per model, for `usd_per_day`: `{ "claude-sonnet-4-5" = { input = 3.0, output = 15.0, cache_read = 0.3, cache_write = 3.75 } }` (cache prices default to `input`). Wins over prices the model list gives (OpenRouter's does). |
 | `schedules.quiet_hours` | `"22:00-07:30"` | Local time; a scheduled result finishing inside waits until the window ends. `"none"` turns it off. |
 | `schedules.runs_per_day` | none | Default cap on runs per schedule per local day. |

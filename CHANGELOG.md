@@ -7,6 +7,15 @@ All notable changes to tern are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Higher token and context limits.** Each model's own context window and output limit are used when known (the
+  provider's model list, else a built-in table covering Claude, GPT, o-series and Gemini), instead of a flat 128k /
+  8192. Fallbacks are 200k context and 32k output (cut to the model's maximum and a fifth of the window); local servers
+  (Ollama, LM Studio) that don't report a window keep a conservative 32k. `context_window` is unset by default and a new
+  `max_tokens` setting overrides output; anything you set still wins. Compaction starts at 80% (was 75%), and summaries
+  get twice the room.
+
 ## [0.1.0-alpha.1] - 2026-11-06
 
 The first pre-release. Expect rough edges; the macOS app is ad-hoc signed and not notarized (first open needs
