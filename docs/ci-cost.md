@@ -16,9 +16,9 @@ started the whole matrix and was not cancelled by the next push. A green main pu
 | --- | --- |
 | gitleaks | every event, always |
 | `changes` (diff classifier) | every event; docs/markdown/image/LICENSE-only diffs set `code=false`, which skips everything below |
-| `check` (Linux): fmt, clippy, flutter analyze, shellcheck, `cargo test-all` (all Rust and Dart), dist e2e, Docker sandbox | every code change, PRs included |
-| `build-linux` (musl x2) | after `check`, unless `skip_builds` |
-| `check-macos`: clippy (cfg(macos) code), tern-sandbox/tools/tui tests (Seatbelt), `cargo test -p tern` and TUI smoke against the shipped aarch64 binary, the 4 platform-sensitive Dart test files | only after Linux `check` is green, and only on push to main, release checks (`workflow_call`), manual dispatch, nightly, or a PR labelled `ci-macos` |
+| Linux, four parallel jobs: `lint` (fmt, shellcheck, flutter analyze, clippy), `rust-tests` (`cargo test-all --rust`, Docker sandbox), `dart-tests` (`cargo test-all --dart`), `e2e-dist` (tests against the shipped `dist` binary) | every code change, PRs included |
+| `build-linux` (musl x2) | after all four Linux jobs, unless `skip_builds` |
+| `check-macos`: clippy (cfg(macos) code), tern-sandbox/tools/tui tests (Seatbelt), `cargo test -p tern` and TUI smoke against the shipped aarch64 binary, the 4 platform-sensitive Dart test files | only after all four Linux jobs are green, and only on push to main, release checks (`workflow_call`), manual dispatch, nightly, or a PR labelled `ci-macos` |
 | `desktop-macos` (universal DMG; reuses the aarch64 binary from `check-macos`, builds only x86_64) | `workflow_dispatch` and the nightly schedule (skipped if main has no commits in 24 h); release tags are built by `release.yml` |
 
 Other rules: every job has `timeout-minutes` (macOS 30); `CARGO_INCREMENTAL=0`; rust-cache only saves from main;
@@ -43,6 +43,15 @@ Before: ~45-55 macOS min per green main push, for every push in a burst. After: 
 
 `macOS-specific tests` 17.7 min (clippy 1.1, sandbox/tools/tui tests 0.4, dist build 7.9, `cargo test -p tern` + TUI
 smoke 7.3, Dart 0.2); the x86_64 build plus DMG job added ~10-12 min. Warm caches on main should be lower.
+
+## Split Linux jobs (2026-11-06)
+
+The single Linux `check` job ran lint, `cargo test-all` (~11 min) and the dist e2e run (~13.5 min) in sequence, about
+30 min, and a failing Rust suite skipped the e2e step, so its failures surfaced one run later. Split into four
+parallel jobs: lint reports in ~5 min, every suite reports on every run, and the Linux phase (and so the start of
+macOS) is bounded by the slowest job, `e2e-dist` (~15-17 min). Each job compiles on its own (own rust-cache key), so
+Linux minutes go up roughly 1.5-2x; macOS minutes are unchanged. Four Linux caches plus the musl and macOS ones share
+the repo's 10 GB Actions cache; if eviction shows up as cold builds, share a key between `rust-tests` and `dart-tests`.
 
 ## What this can miss
 

@@ -261,7 +261,7 @@ cargo test-all --dart     # only the Dart suites
 
 Agents work in a folder you choose per channel, topic or agent (`tern workspace`); file tools can't reach outside it, and shell commands are bounded by the OS sandbox or, where there is none, ask every time and never run unattended.
 
-`cargo test-all` builds `target/debug/tern`, then runs the workspace tests, a TUI smoke test in a pseudo-terminal, and the `tern_client` and desktop app tests. Their live tests run against the fresh build. Every step runs even if an earlier one fails, with a summary at the end. It needs `python3`, and Flutter 3.47+ for the Dart suites. CI runs the same command, plus `cargo fmt --check`, clippy, and `flutter analyze`. Suites that need something extra run by hand:
+`cargo test-all` builds `target/debug/tern`, then runs the workspace tests, a TUI smoke test in a pseudo-terminal, and the `tern_client` and desktop app tests. Their live tests run against the fresh build. Every step runs even if an earlier one fails, with a summary at the end. It needs `python3`, and Flutter 3.47+ for the Dart suites. CI runs the same suites in parallel jobs (`cargo test-all --rust` and `--dart`), plus `cargo fmt --check`, clippy, `flutter analyze`, and the tests against the shipped `dist` binary. Suites that need something extra run by hand:
 
 ```sh
 cargo test -p tern-sandbox -- --ignored real_docker      # needs Docker
