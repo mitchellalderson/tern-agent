@@ -225,7 +225,14 @@ async fn telegram_pairing_streaming_and_button_approvals() {
         .iter()
         .map(|b| b["text"].as_str().unwrap())
         .collect();
-    assert_eq!(labels, ["Allow once", "Always (echo *)", "Deny"]);
+    // "Always" is offered only when the OS sandbox is verified for the
+    // workspace (an unverified shell is unbounded: `approval::check`). Here
+    // the workspace sits under the temp dir, which the sandbox leaves
+    // writable, so whether it verifies depends on the host and on timing.
+    assert!(
+        labels == ["Allow once", "Always (echo *)", "Deny"] || labels == ["Allow once", "Deny"],
+        "unexpected approval buttons: {labels:?}"
+    );
     let once = buttons[0]["callback_data"].as_str().unwrap();
     tg.tap(prompt["message_id"].as_i64().unwrap(), once).await;
 
