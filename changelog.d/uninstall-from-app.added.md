@@ -1,0 +1,1 @@
+- **Uninstall from the app**: Settings › About › **Uninstall tern…** stops tern and removes its login items (and, if you tick it, deletes your data), so removing tern on macOS no longer needs a terminal.

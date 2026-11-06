@@ -13,11 +13,6 @@ Entries go in `changelog.d/` (see its README); the release gathers them here.
 
 - **Autonomy ceiling picker** in the agent sheet reads as a scale from low to high (Read only, Ask first, Code, Mostly on its own, Full), with the raw level names beside each, and "Use my global setting" set apart from the scale. Copy only: levels and config values are unchanged.
 
-### Added
-
-- **Uninstall from the app**: Settings › About › **Uninstall tern…** stops tern and removes its login items (and, if
-  you tick it, deletes your data), so removing tern on macOS no longer needs a terminal.
-
 ## [0.1.0-alpha.1] - 2026-11-06
 
 The first pre-release. Expect rough edges; the macOS app is ad-hoc signed and not notarized (first open needs
