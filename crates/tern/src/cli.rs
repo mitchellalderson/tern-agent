@@ -482,7 +482,8 @@ pub enum AgentsCommand {
     /// Set or clear an agent's autonomy ceiling.
     Autonomy {
         agent: String,
-        /// readonly, supervised, autonomous, yolo, or `none` to remove it.
+        /// From low to high: readonly, supervised, code, autonomous, yolo; or
+        /// `none` to remove it (the global setting applies).
         level: String,
     },
     /// Turn code auto mode (edits files and runs build and test commands in
