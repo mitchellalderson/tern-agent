@@ -66,7 +66,7 @@ Each has a default; I built nothing, so the defaults are the recommendation.
   `Relayed` are `Untrusted` (`tool.rs:278-309`). MCP and Luau tools only declare an ingestion kind when their server or
   connector is marked `untrusted` (`crates/tern-mcp/src/lib.rs:815-821`, `crates/tern-lua/src/lib.rs:280-285`), `shell`
   declares `Network` only when the network is reachable (`crates/tern-tools/src/shell.rs:275-281`), `http_fetch` is `Web`
-  (`crates/tern-tools/src/http.rs:51`). The loop raises every result to its tool's floor (`agent.rs:913-919, 964`).
+  (`crates/tern-tools/src/http.rs:51`). The loop raises every result to its tool's floor (`agent.rs:913-919`, `trust_floor` at `tool.rs:610-620`).
 
 ### 1.2 The proposal: `agent_spawn` gets `result_schema`
 
@@ -156,7 +156,7 @@ What the machinery already gives us, grounded:
 
 - A child's scope is frozen on its run (`tool_scope`) and enforced at call time; it can only be narrower than the parent
   (`subagents.rs:556-615`, `scope_for`). `schedule_*` and `connector_activate` are always removed
-  (`subagent.rs:60-66`, `CHILD_EXCLUDED_TOOLS`).
+  (`subagent.rs:58-64`, `CHILD_EXCLUDED_TOOLS`).
 - `subdir` narrows a child to a folder inside the parent's workspace: it can go deeper, not wider
   (`subagent.rs:124-128`, `subagents.rs:719`). That is the **scratch directory**.
 - A child's approvals use the same gate and route to the root run's owner, labelled with the child
@@ -172,7 +172,7 @@ Rules for a quarantined child (all enforced in the host, not by prompt):
 2. **Writes go to a `subdir`.** `result_schema` with any `path` field requires `subdir`; `path` values must be under it.
    Effects outside it still ask, as for any tainted run.
 3. **Its writes are gated as tainted in the child**, i.e. `approval::check` with `gate.tainted = true`
-   (`approval.rs:162-215`). Today that means every `write_file`/`edit_file` asks, and the user answers about the *child*,
+   (`approval.rs:169-215`). Today that means every `write_file`/`edit_file` asks, and the user answers about the *child*,
    not the main run. With the in-flight change (§6) a write confined to the run's own workspace stops asking and is
    recorded in the ledger instead; with `subdir` that is "write inside the scratch folder, one ledger row per write".
 4. **Budgets.** Own `max_iterations`/`budget_tokens` (`subagent.rs` `SpawnRequest`, `child_limits` at
@@ -194,7 +194,7 @@ summary}`. The parent's context gets ~1 KB of fields. If `summary` is omitted, t
 
 - `ToolResult.trust` is per tool result, journaled with the step (`tool.rs:318-336`). A file has no trust. `fs.rs`'s
   `read_file` is `Ingestion::None`; SECURITY.md says so in terms: reading a data file "does not taint the run, so injected
-  text in a data file can steer the agent's next script" (SECURITY.md, "Python tools" section).
+  text in a data file can steer the agent's next script" (SECURITY.md:121).
 - Notes in memory have provenance (`crates/tern-store/migrations/0026_memory_provenance.sql`, the `unverified` rule), and
   channel posts and routine carry-over carry taint. Files do not.
 - `ledger_effect` writes a row for every non-read effect (`agent/ledger.rs:248-280`) with `summary` and `detail`
@@ -273,10 +273,10 @@ a sub-agent starts tainted and buys nothing." Cheap, model-dependent, easy to ig
 property: it only reduces how often the parent gets tainted.
 
 **Delegate-only routing (Q3).** Tools whose `Tool::ingestion()` has an `Untrusted` floor (`Mcp`, `Connector`, plus
-`Network`/`Relayed`) are what taint a run in practice (`tool.rs:300-309`; `Web` already returns `Data` through the
+`Network`/`Relayed`) are what taint a run in practice (`tool.rs:300-310`; `Web` already returns `Data` through the
 fetcher). For a **clean top-level run**, the registry offers them as *delegate-only*:
 
-- They are removed from the main agent's tool specs (`ToolRegistry::specs_for`, `tool.rs:~560-610`) and listed in the
+- They are removed from the main agent's tool specs (`ToolRegistry::specs_for`, `tool.rs:556`) and listed in the
   `agent_spawn` description and the sub-agent prompt section as "delegate these".
 - A direct call to a hidden name returns an error that says to use `agent_spawn` with that tool in `tools`, so a
   hallucinated or injected call does not silently re-taint the run; this is the same refusal `ToolRegistry::call` already
@@ -447,7 +447,7 @@ the same.
 
 ## 8. What is not changed
 
-- Local files, user-pasted text and `memory.md` stay as today (SECURITY.md "Data files").
+- Local files, user-pasted text and `memory.md` stay as today (SECURITY.md:121 (reading a data file does not taint)).
 - The fetcher stays an in-process isolated loop. If a later phase wants the parent to see a fetcher as a child, that is
   a separate change; the two share the schema helpers and the trust rule, not the process model.
 - No attempt to detect "instruction-looking" text, and no judge model: a judge reading hostile text has the same
