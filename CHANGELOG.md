@@ -9,8 +9,7 @@ All notable changes to tern are recorded here. The format follows
 
 ### Changed
 
-- The side panel's Memory section is quieter: a collapsed "Memory · N" row like Tools, with a single scope menu
-  (Shared / per agent) instead of a row of tabs, shown only when expanded.
+- Side panel Memory is quieter: a collapsed "Memory · N" row like Tools, with one scope menu in place of tabs.
 
 ## [0.1.0-alpha.1] - 2026-11-06
 

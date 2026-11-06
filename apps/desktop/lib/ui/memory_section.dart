@@ -201,7 +201,7 @@ class _MemorySectionState extends State<MemorySection> {
               if (chips.length > 1)
                 PopupMenuButton<String>(
                   key: const Key('memory-scope'),
-                  tooltip: 'Memory scope',
+                  tooltip: 'Scope',
                   padding: EdgeInsets.zero,
                   onSelected: (id) => setState(() => _scope = id),
                   itemBuilder: (_) => [
@@ -249,9 +249,7 @@ class _MemorySectionState extends State<MemorySection> {
             Text('Loading…', style: Theme.of(context).textTheme.bodySmall)
           else if (memories.isEmpty)
             Text(
-              scope == 'shared'
-                  ? 'Nothing saved yet.'
-                  : 'Nothing of its own yet.',
+              'Nothing saved.',
               style: Theme.of(context).textTheme.bodySmall,
             )
           else
