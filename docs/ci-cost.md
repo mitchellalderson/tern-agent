@@ -15,11 +15,24 @@ started the whole matrix and was not cancelled by the next push. A green main pu
 | What | When it runs |
 | --- | --- |
 | gitleaks | every event, always |
-| `changes` (diff classifier) | every event; docs/markdown/image/LICENSE-only diffs set `code=false`, which skips everything below |
-| Linux, four parallel jobs: `lint` (fmt, shellcheck, flutter analyze, clippy), `rust-tests` (`cargo test-all --rust`, Docker sandbox), `dart-tests` (`cargo test-all --dart`), `e2e-dist` (tests against the shipped `dist` binary) | every code change, PRs included |
+| `changes` (diff classifier, `scripts/ci-classify.sh`) | every event; docs/markdown/image/LICENSE-only diffs set `code=false`, which skips everything below. On PRs it also sets `rust` and `dart` |
+| Linux, four parallel jobs: `lint` (fmt, shellcheck, flutter analyze, clippy), `rust-tests` (`cargo test-all --rust`, Docker sandbox), `dart-tests` (`cargo test-all --dart`), `e2e-dist` (tests against the shipped `dist` binary) | every code change outside PRs; on PRs, see the table below |
 | `build-linux` (musl x2) | after all four Linux jobs, unless `skip_builds` |
 | `check-macos`: clippy (cfg(macos) code), tern-sandbox/tools/tui tests (Seatbelt), `cargo test -p tern` and TUI smoke against the shipped aarch64 binary, the 4 platform-sensitive Dart test files | only after all four Linux jobs are green, and only on push to main, release checks (`workflow_call`), manual dispatch, nightly, or a PR labelled `ci-macos` |
 | `desktop-macos` (universal DMG; reuses the aarch64 binary from `check-macos`, builds only x86_64) | `workflow_dispatch` and the nightly schedule (skipped if main has no commits in 24 h); release tags are built by `release.yml` |
+
+### PRs run only what the paths need
+
+| Changed path | `lint` | `rust-tests`, `e2e-dist` | `dart-tests` |
+| --- | --- | --- | --- |
+| `crates/`, `xtask/`, `Cargo.toml`, `Cargo.lock`, `clippy.toml`, `rust-toolchain*` | shellcheck, fmt, clippy | yes | no |
+| `apps/desktop/` | shellcheck, flutter analyze | no | yes |
+| `.github/`, `scripts/`, `install.sh`, `.cargo/`, anything else | all of it | yes | yes |
+| docs, markdown, images, LICENSE only | no | no | no |
+
+A mixed PR runs the union. Skipped jobs count as passing for `check-macos` and `build-linux`. Pushes to `main`, tags,
+manual runs, the nightly and release checks always run everything. No branch protection is set today; if required
+checks are added, require only jobs that always run (`secrets`, `changes`).
 
 Other rules: every job has `timeout-minutes` (macOS 30); `CARGO_INCREMENTAL=0`; rust-cache only saves from main;
 a newer push to the same ref cancels the older run (bursts to main test only the tip), except tag runs, which are
@@ -30,8 +43,9 @@ never cancelled; unrelated PR labels do not re-trigger CI.
 | Event | Linux min | macOS min |
 | --- | --- | --- |
 | docs-only push | ~1 | 0 |
-| PR / branch, no label | ~25-35 | 0 |
-| PR with `ci-macos` | ~25-35 | ~15-20 |
+| PR, no label, Rust change | ~25-35 | 0 |
+| PR, no label, desktop-only change | ~8-12 | 0 |
+| PR with `ci-macos` | as above | ~15-20 |
 | main push (tip of a burst) | ~35 | ~15-20 |
 | red Linux main push | ~15-25 | 0 |
 | manual dispatch with DMG | ~35 | ~30 |

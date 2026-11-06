@@ -12,6 +12,7 @@ All notable changes to tern are recorded here. The format follows
 - **Higher token and context limits.** Each model's own window and output limit are used when known, instead of a flat
   128k / 8192. Fallbacks: 200k context, 32k output; local servers keep 32k context. New `max_tokens` setting. Compaction
   starts at 80% (was 75%); summaries get twice the room.
+- **Autonomy ceiling picker** in the agent sheet reads as a scale from low to high (Read only, Ask first, Code, Mostly on its own, Full), with the raw level names beside each, and "Use my global setting" set apart from the scale. Copy only: levels and config values are unchanged.
 
 ## [0.1.0-alpha.1] - 2026-11-06
 
