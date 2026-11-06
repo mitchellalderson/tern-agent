@@ -104,7 +104,7 @@ pub fn request_body(req: &ChatRequest) -> Value {
     }
     let mut body = json!({
         "model": req.model,
-        "max_tokens": req.max_tokens,
+        "max_tokens": tern_core::limits::clamp_output(&req.model, req.max_tokens),
         "stream": true,
         "stream_options": { "include_usage": true },
         "messages": messages,

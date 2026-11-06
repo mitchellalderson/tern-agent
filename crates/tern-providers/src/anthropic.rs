@@ -14,8 +14,6 @@ use tokio_util::sync::CancellationToken;
 use crate::{http, sse};
 
 const API_VERSION: &str = "2023-06-01";
-/// Every current Claude model allows at least this many output tokens.
-const MAX_OUTPUT_TOKENS: u32 = 32_000;
 
 pub struct Anthropic {
     id: String,
@@ -74,7 +72,7 @@ pub fn request_body(req: &ChatRequest) -> Value {
         .collect();
     let mut body = json!({
         "model": req.model,
-        "max_tokens": req.max_tokens,
+        "max_tokens": tern_core::limits::clamp_output(&req.model, req.max_tokens),
         "stream": true,
         "messages": messages,
     });
@@ -274,10 +272,6 @@ impl Decoder {
 impl Provider for Anthropic {
     fn id(&self) -> &str {
         &self.id
-    }
-
-    fn max_output_tokens(&self) -> Option<u32> {
-        Some(MAX_OUTPUT_TOKENS)
     }
 
     async fn stream(

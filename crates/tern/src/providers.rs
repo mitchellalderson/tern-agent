@@ -88,6 +88,17 @@ impl ModelCache {
         Some(e.models.iter().map(|m| m.id.clone()).collect())
     }
 
+    /// The context window the cached list gives for `provider:model`.
+    pub fn context_window(&self, provider: &str, model: &str) -> Option<u64> {
+        let entries = self.lock();
+        entries
+            .get(provider)?
+            .models
+            .iter()
+            .find(|m| m.id == model)?
+            .context_window
+    }
+
     /// The price the cached list gives for `provider:model`, if any.
     pub fn pricing(&self, provider: &str, model: &str) -> Option<Pricing> {
         let entries = self.lock();

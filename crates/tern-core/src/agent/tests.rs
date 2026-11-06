@@ -332,7 +332,7 @@ impl Harness {
         tools: Vec<Arc<dyn Tool>>,
         approvals: Arc<dyn ApprovalHandler>,
     ) -> Agent {
-        self.agent_with_window(provider, tools, approvals, 128_000)
+        self.agent_with_window(provider, tools, approvals, 200_000)
     }
 
     fn agent_with_window(
@@ -355,7 +355,7 @@ impl Harness {
             AgentConfig {
                 retry_base: Duration::from_millis(1),
                 max_iterations: 10,
-                default_context_window: window,
+                default_context_window: Some(window),
                 ..AgentConfig::default()
             },
         )
@@ -478,7 +478,7 @@ async fn a_call_cut_off_by_the_output_limit_is_not_run_and_the_model_is_told() {
         last_tool_result(second),
         Some((TRUNCATED_TOOL_MESSAGE.into(), true))
     );
-    assert_eq!(second.max_tokens, AgentConfig::default().max_tokens);
+    assert_eq!(second.max_tokens, crate::limits::DEFAULT_MAX_OUTPUT);
 }
 
 #[tokio::test]
@@ -955,8 +955,8 @@ fn eight_tool_turns() -> Vec<Reply> {
     r
 }
 
-/// Small enough that a few turns exceed 75% of it.
-const TINY_WINDOW: u64 = 40;
+/// Small enough that a few turns exceed 80% of it.
+const TINY_WINDOW: u64 = 30;
 
 #[tokio::test]
 async fn compaction_summarizes_old_context_and_keeps_going() {
@@ -1064,7 +1064,7 @@ async fn compaction_replays_after_resume() {
         Arc::new(AutoApprove),
         AgentConfig {
             retry_base: Duration::from_millis(1),
-            default_context_window: TINY_WINDOW,
+            default_context_window: Some(TINY_WINDOW),
             ..AgentConfig::default()
         },
     );
@@ -1663,7 +1663,7 @@ fn flushing_agent(
         AgentConfig {
             retry_base: Duration::from_millis(1),
             max_iterations: 10,
-            default_context_window: TINY_WINDOW,
+            default_context_window: Some(TINY_WINDOW),
             memory_flush: flush,
             ..AgentConfig::default()
         },
@@ -3439,4 +3439,34 @@ mod fetch_e2e;
 
 mod code_mode;
 
+#[test]
+fn limits_resolve_user_then_reported_then_model_then_fallback() {
+    let m = |p: &str, x: &str| ModelRef {
+        provider: p.into(),
+        model: x.into(),
+    };
+    let mut cfg = AgentConfig::default();
+    // Nothing set: the model's own window, 32K output.
+    assert_eq!(
+        cfg.limits(&m("anthropic", "claude-opus-5-5")),
+        (1_000_000, 32_000)
+    );
+    assert_eq!(cfg.limits(&m("x", "unheard-of")), (200_000, 32_000));
+    // A local server that reports nothing stays conservative...
+    cfg.local_providers.insert("ollama".into());
+    assert_eq!(cfg.limits(&m("ollama", "llama3.1:8b")), (32_768, 6_553));
+    // ...unless it reports a window...
+    cfg.reported_window = Some(ReportedWindow(Arc::new(|m| {
+        (m.model == "llama3.1:8b").then_some(131_072)
+    })));
+    assert_eq!(cfg.limits(&m("ollama", "llama3.1:8b")).0, 131_072);
+    // ...and the user's settings beat everything: the provider's over the
+    // top level.
+    cfg.default_context_window = Some(64_000);
+    cfg.max_tokens = Some(2_000);
+    assert_eq!(cfg.limits(&m("ollama", "llama3.1:8b")), (64_000, 2_000));
+    cfg.context_windows.insert("ollama".into(), 16_000);
+    assert_eq!(cfg.limits(&m("ollama", "llama3.1:8b")).0, 16_000);
+    assert_eq!(cfg.limits(&m("anthropic", "claude-opus-5-5")).0, 64_000);
+}
 mod reasoning;

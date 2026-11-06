@@ -757,7 +757,7 @@ async fn usage(
     let window = context
         .as_ref()
         .and_then(|(model, _)| model.as_deref()?.parse::<ModelRef>().ok())
-        .map(|model| m.rt.agent.context_window(&model.provider));
+        .map(|model| m.rt.agent.context_window(&model));
     Ok(Json(SessionUsage {
         usage: Usage {
             input_tokens,

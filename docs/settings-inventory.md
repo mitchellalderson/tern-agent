@@ -43,7 +43,8 @@ same list and a new config field appears in both without UI changes.
 | `secret_request_timeout_secs` | int | 900 | config, desktop | yes | no | advanced | adv |
 | `autonomy` | choice readonly/supervised/autonomous/yolo | supervised | config, desktop (shown as text) | yes | no | permissions | user |
 | `default_model` | model chain | unset | `/model`, `/setup`, desktop providers + config | no (live) | no | models | user |
-| `context_window` | int | 128000 | config, desktop | yes | no | models | adv |
+| `context_window` | int | unset (per model; 200000 fallback, 32768 local) | config, desktop | yes | no | models | adv |
+| `max_tokens` | int | unset (32000, cut to the model's max) | config, desktop | yes | no | models | adv |
 | `sandbox.backend` | choice host/docker | host | config, desktop | yes | no | permissions | user |
 | `sandbox.shell_timeout_secs` | int | 120 | config, desktop | yes | no | limits | user |
 | `sandbox.network` | bool | false | config, desktop | yes | no | permissions | user |
