@@ -1460,15 +1460,13 @@ impl ChatHost for Chats {
     /// A chat button: the chat is remote, so local-only items are refused.
     async fn decide_outbox(&self, id: i64, approve: bool) -> Result<String, String> {
         if approve {
-            self.0
-                .approve_outbox(id, None, true)
-                .map(|item| {
-                    if item.state == "stale" {
-                        "Skipped: the file changed".to_owned()
-                    } else {
-                        "Approved; running it".to_owned()
-                    }
-                })
+            self.0.approve_outbox(id, None, true).map(|item| {
+                if item.state == "stale" {
+                    "Skipped: the file changed".to_owned()
+                } else {
+                    "Approved; running it".to_owned()
+                }
+            })
         } else {
             self.0
                 .reject_outbox(id, None, true)

@@ -68,12 +68,7 @@ const EXPIRY_TICK: Duration = Duration::from_secs(60);
 impl Manager {
     /// An item that can still be decided. `discard`: a stale item may be
     /// rejected too, but never approved.
-    fn pending_item(
-        &self,
-        id: i64,
-        remote: bool,
-        discard: bool,
-    ) -> Result<OutboxRow, OutboxError> {
+    fn pending_item(&self, id: i64, remote: bool, discard: bool) -> Result<OutboxRow, OutboxError> {
         let item = self
             .rt
             .store

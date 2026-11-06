@@ -406,7 +406,10 @@ mod tests {
         assert!(!s.earlier_outbox_running(b.id, "/w/a.md").unwrap());
         assert!(!s.mark_outbox_stale(a.id, "{}").unwrap(), "only once");
         assert_eq!(s.outbox_item(a.id).unwrap().unwrap().state, "stale");
-        assert!(!s.approve_outbox(a.id, "x2", None).unwrap(), "no approving a stale item");
+        assert!(
+            !s.approve_outbox(a.id, "x2", None).unwrap(),
+            "no approving a stale item"
+        );
         assert!(s.reject_outbox(a.id, None).unwrap(), "discard");
         assert_eq!(s.outbox_item(a.id).unwrap().unwrap().state, "rejected");
     }

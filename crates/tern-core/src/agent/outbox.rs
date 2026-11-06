@@ -25,11 +25,7 @@ impl Agent {
     ) -> Result<i64, StepError> {
         let expires_at = tern_store::now_ms() + self.cfg.outbox_expiry.as_millis() as i64;
         // A file edit remembers the file as it is now.
-        let file = outbox::file_target(
-            &req.call.name,
-            &req.call.input,
-            self.scope_for(run).cwd(),
-        );
+        let file = outbox::file_target(&req.call.name, &req.call.input, self.scope_for(run).cwd());
         let file_path = file.as_ref().map(|p| p.to_string_lossy().into_owned());
         let file_hash = file.as_deref().map(outbox::file_hash);
         let item = self.store.add_outbox(&NewOutbox {
@@ -109,10 +105,8 @@ impl Agent {
                 in_flight,
                 || async {
                     // Nothing the user approves runs a forbidden tool.
-                    let stale = outbox::file_changed(
-                        item.file_path.as_deref(),
-                        item.file_hash.as_deref(),
-                    );
+                    let stale =
+                        outbox::file_changed(item.file_path.as_deref(), item.file_hash.as_deref());
                     let mut r = match policy.forbidden {
                         Some(flag) => ToolResult::error(crate::approval::forbidden_message(flag)),
                         // The file changed since it was queued: don't run it.
@@ -186,7 +180,9 @@ impl Agent {
 fn exec_message(id: i64, summary: &str, tool: &str, r: &ToolResult, stale: bool) -> Message {
     let content = taint::frame(tool, None, r);
     let head = if stale {
-        format!("[outbox #{id}: the user approved {summary}, but the file changed since it was queued, so it didn't run]")
+        format!(
+            "[outbox #{id}: the user approved {summary}, but the file changed since it was queued, so it didn't run]"
+        )
     } else if r.is_error {
         format!("[outbox #{id}: the user approved {summary}, and it failed]")
     } else {

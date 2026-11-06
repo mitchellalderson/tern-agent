@@ -3578,9 +3578,15 @@ async fn edits_to_one_file_run_in_queue_order_one_at_a_time() {
     .await;
     assert!(early.is_err(), "it waits");
     assert_eq!(tool.calls.load(Ordering::SeqCst), 0);
-    agent.drive(&exec_a, CancellationToken::new()).await.unwrap();
+    agent
+        .drive(&exec_a, CancellationToken::new())
+        .await
+        .unwrap();
     assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
-    agent.drive(&exec_b, CancellationToken::new()).await.unwrap();
+    agent
+        .drive(&exec_b, CancellationToken::new())
+        .await
+        .unwrap();
     assert_eq!(tool.calls.load(Ordering::SeqCst), 2);
     assert_eq!(h.store.outbox_item(ids[0]).unwrap().unwrap().state, "done");
     assert_eq!(h.store.outbox_item(ids[1]).unwrap().unwrap().state, "done");
