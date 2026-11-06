@@ -567,9 +567,16 @@ void main() {
     expect(find.text('Weekly Acme digest'), findsOneWidget);
     expect(find.text('Morning brief'), findsNothing);
     expect(find.text('Tools · 2'), findsOneWidget);
-    expect(find.text('Acme runs Postgres 16.'), findsOneWidget);
+    // Memory starts folded, with its count in the header.
+    expect(find.textContaining('Memory · '), findsOneWidget);
+    expect(find.text('Acme runs Postgres 16.'), findsNothing);
     expect(client.memoryScopes.last, 'tern:research');
-    await tester.tap(find.widgetWithText(UnderlineTab, 'Shared'));
+    await tester.tap(find.byKey(const Key('memory-header')));
+    await tester.pumpAndSettle();
+    expect(find.text('Acme runs Postgres 16.'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('memory-scope')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('memory-scope-shared')));
     await tester.pumpAndSettle();
     expect(find.text('Sam prefers email.'), findsOneWidget);
     // All agents' routines, on request.
@@ -586,6 +593,8 @@ void main() {
       client.unverifiedMemory = true;
       await _pump(tester, store);
       await tester.tap(find.text('Research').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('memory-header')));
       await tester.pumpAndSettle();
       expect(find.text('Acme runs Postgres 16.'), findsOneWidget);
       // A note saved after untrusted input says so.

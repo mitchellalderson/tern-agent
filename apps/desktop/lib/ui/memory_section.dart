@@ -3,10 +3,9 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
-import 'underline_tabs.dart';
 
 /// MEMORY in the side panel (agent profiles §1.3, gui-spec §4.3): what the
-/// open agent remembers. Scope chips pick its own memories or the shared
+/// open agent remembers. A scope menu picks its own memories or the shared
 /// ones; in Home, the shared ones or a private agent's. Tap a memory to
 /// rewrite or delete it; Clear empties the scope. A note saved after the
 /// agent read untrusted content is marked "unverified": the agent recalls it
@@ -27,6 +26,9 @@ class _MemorySectionState extends State<MemorySection> {
   List<Memory>? _memories;
   String? _error;
   bool _showAll = false;
+
+  /// Rarely needed, so it starts folded like Tools.
+  bool _open = false;
 
   /// The chips: the agent's own first when its memory is private, then
   /// Shared, and in Home one per private agent.
@@ -169,103 +171,136 @@ class _MemorySectionState extends State<MemorySection> {
     }
     final memories = _memories;
     final label = chips.firstWhere((x) => x.id == scope).label;
+    final count = memories?.length ?? 0;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Memory',
-                style: Theme.of(context).textTheme.labelSmall,
+        InkWell(
+          key: const Key('memory-header'),
+          onTap: () => setState(() => _open = !_open),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  count > 0 ? 'Memory · $count' : 'Memory',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
               ),
-            ),
-            if (memories != null && memories.isNotEmpty)
-              TextButton(
-                key: const Key('memory-clear'),
+              Icon(
+                _open ? Icons.expand_less : Icons.expand_more,
+                size: 16,
+                color: c.muted,
+              ),
+            ],
+          ),
+        ),
+        if (_open) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              if (chips.length > 1)
+                PopupMenuButton<String>(
+                  key: const Key('memory-scope'),
+                  tooltip: 'Memory scope',
+                  padding: EdgeInsets.zero,
+                  onSelected: (id) => setState(() => _scope = id),
+                  itemBuilder: (_) => [
+                    for (final chip in chips)
+                      PopupMenuItem(
+                        key: Key('memory-scope-${chip.id}'),
+                        value: chip.id,
+                        height: 36,
+                        child: Text(
+                          chip.label,
+                          style: const TextStyle(fontSize: 12.5),
+                        ),
+                      ),
+                  ],
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        label,
+                        style: TextStyle(fontSize: 12.5, color: c.muted),
+                      ),
+                      Icon(Icons.unfold_more, size: 14, color: c.muted),
+                    ],
+                  ),
+                ),
+              const Spacer(),
+              if (memories != null && memories.isNotEmpty)
+                TextButton(
+                  key: const Key('memory-clear'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: c.muted,
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    minimumSize: const Size(0, 24),
+                  ),
+                  onPressed: () => _clear(scope, label),
+                  child: const Text('Clear', style: TextStyle(fontSize: 11.5)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (_error case final e?)
+            Text(e, style: TextStyle(fontSize: 12, color: c.error))
+          else if (memories == null)
+            Text('Loading…', style: Theme.of(context).textTheme.bodySmall)
+          else if (memories.isEmpty)
+            Text(
+              scope == 'shared'
+                  ? 'Nothing saved yet.'
+                  : 'Nothing of its own yet.',
+              style: Theme.of(context).textTheme.bodySmall,
+            )
+          else
+            for (final m in memories.take(_showAll ? memories.length : 8))
+              InkWell(
+                key: Key('memory-${m.id}'),
+                onTap: () => _edit(scope, m),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Text.rich(
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    TextSpan(
+                      children: [
+                        if (m.unverified)
+                          TextSpan(
+                            text: 'unverified  ',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: c.warn,
+                            ),
+                          ),
+                        TextSpan(
+                          text: m.content,
+                          style: const TextStyle(fontSize: 12.5),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+          if (memories != null && memories.length > 8)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
                 style: TextButton.styleFrom(
-                  foregroundColor: c.muted,
                   visualDensity: VisualDensity.compact,
                   padding: const EdgeInsets.symmetric(horizontal: 6),
                   minimumSize: const Size(0, 24),
                 ),
-                onPressed: () => _clear(scope, label),
-                child: const Text('Clear', style: TextStyle(fontSize: 11.5)),
-              ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        if (chips.length > 1)
-          UnderlineTabs(
-            spacing: 12,
-            tabs: [
-              for (final chip in chips)
-                UnderlineTab(
-                  label: chip.label,
-                  fontSize: 12.5,
-                  selected: chip.id == scope,
-                  onTap: () => setState(() => _scope = chip.id),
-                ),
-            ],
-          ),
-        const SizedBox(height: 6),
-        if (_error case final e?)
-          Text(e, style: TextStyle(fontSize: 12, color: c.error))
-        else if (memories == null)
-          Text('Loading…', style: Theme.of(context).textTheme.bodySmall)
-        else if (memories.isEmpty)
-          Text(
-            scope == 'shared'
-                ? 'Nothing saved yet.'
-                : 'Nothing of its own yet.',
-            style: Theme.of(context).textTheme.bodySmall,
-          )
-        else
-          for (final m in memories.take(_showAll ? memories.length : 8))
-            InkWell(
-              key: Key('memory-${m.id}'),
-              onTap: () => _edit(scope, m),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 3),
-                child: Text.rich(
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  TextSpan(
-                    children: [
-                      if (m.unverified)
-                        TextSpan(
-                          text: 'unverified  ',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: c.warn,
-                          ),
-                        ),
-                      TextSpan(
-                        text: m.content,
-                        style: const TextStyle(fontSize: 12.5),
-                      ),
-                    ],
-                  ),
+                onPressed: () => setState(() => _showAll = !_showAll),
+                child: Text(
+                  _showAll ? 'Show fewer' : 'Show all ${memories.length}',
+                  style: const TextStyle(fontSize: 11.5),
                 ),
               ),
             ),
-        if (memories != null && memories.length > 8)
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton(
-              style: TextButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                minimumSize: const Size(0, 24),
-              ),
-              onPressed: () => setState(() => _showAll = !_showAll),
-              child: Text(
-                _showAll ? 'Show fewer' : 'Show all ${memories.length}',
-                style: const TextStyle(fontSize: 11.5),
-              ),
-            ),
-          ),
+        ],
       ],
     );
   }
