@@ -13,6 +13,30 @@ pub fn tern_bin() -> PathBuf {
     std::env::var_os("TERN_TEST_BIN").map_or_else(|| env!("CARGO_BIN_EXE_tern").into(), Into::into)
 }
 
+/// A scratch dir outside the temp dirs (which the sandbox lets commands
+/// write, so its check has nowhere to probe): the checkout's target dir,
+/// or `$HOME` when the checkout itself lives under a temp dir.
+pub fn outside_temp() -> tempfile::TempDir {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut temps = vec![canon(Path::new("/tmp")), canon(Path::new("/var/tmp"))];
+    temps.extend(
+        std::env::var_os("TMPDIR")
+            .filter(|t| !t.is_empty())
+            .map(|t| canon(Path::new(&t))),
+    );
+    temps.push(canon(&std::env::temp_dir()));
+    let target = canon(Path::new(env!("CARGO_TARGET_TMPDIR")));
+    if temps.iter().any(|t| target.starts_with(t)) {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+        tempfile::Builder::new()
+            .prefix(".tern-test-")
+            .tempdir_in(home)
+            .unwrap()
+    } else {
+        tempfile::tempdir_in(target).unwrap()
+    }
+}
+
 pub struct Killed(pub Child);
 
 impl Drop for Killed {
@@ -35,7 +59,18 @@ impl Env {
     }
 
     pub fn with_config(script: &Value, config: &str) -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        Self::in_dir(tempfile::tempdir().unwrap(), script, config)
+    }
+
+    /// Like [`Env::with_config`], but with the home outside the temp dirs
+    /// ([`outside_temp`]), so the shell's sandbox check can verify. Under a
+    /// temp dir it never can, and whether the shell then counts as unbounded
+    /// (allowlist ignored, no "always") depends on how fast the check runs.
+    pub fn with_config_sandboxable(script: &Value, config: &str) -> Self {
+        Self::in_dir(outside_temp(), script, config)
+    }
+
+    fn in_dir(tmp: tempfile::TempDir, script: &Value, config: &str) -> Self {
         let home = tmp.path().join("home");
         let tern_home = home.join(".tern");
         std::fs::create_dir_all(&tern_home).unwrap();

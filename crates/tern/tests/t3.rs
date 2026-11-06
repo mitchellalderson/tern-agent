@@ -188,7 +188,8 @@ async fn a_routine_runs_under_its_own_autonomy() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shell_output_taints_the_run_when_the_network_is_on() {
-    let env = Env::with_config(
+    // The allowlist entry below only counts for a shell the sandbox bounds.
+    let env = Env::with_config_sandboxable(
         &json!({ "conversations": [
             { "matches": "Compare", "turns": [
                 { "text": "Fetching.", "tool_calls": [{ "name": "shell", "input": { "command": "echo prices" } }] },

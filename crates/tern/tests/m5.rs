@@ -16,6 +16,9 @@ fn tern_bin() -> std::path::PathBuf {
 
 use serde_json::{Value, json};
 
+#[allow(dead_code)]
+mod subagents_env;
+
 const CHAT: i64 = 4242;
 const USER: i64 = 4242;
 
@@ -115,7 +118,8 @@ struct Env {
 
 impl Env {
     fn new(telegram: Option<&FakeTelegram>) -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        // Outside the temp dirs, so the shell's sandbox check can verify.
+        let tmp = subagents_env::outside_temp();
         let home = tmp.path().join("home");
         let tern_home = home.join(".tern");
         std::fs::create_dir_all(&tern_home).unwrap();
@@ -225,14 +229,9 @@ async fn telegram_pairing_streaming_and_button_approvals() {
         .iter()
         .map(|b| b["text"].as_str().unwrap())
         .collect();
-    // "Always" is offered only when the OS sandbox is verified for the
-    // workspace (an unverified shell is unbounded: `approval::check`). Here
-    // the workspace sits under the temp dir, which the sandbox leaves
-    // writable, so whether it verifies depends on the host and on timing.
-    assert!(
-        labels == ["Allow once", "Always (echo *)", "Deny"] || labels == ["Allow once", "Deny"],
-        "unexpected approval buttons: {labels:?}"
-    );
+    // "Always" needs a shell the sandbox bounds (`approval::check`), hence
+    // the home outside the temp dirs in `Env::new`.
+    assert_eq!(labels, ["Allow once", "Always (echo *)", "Deny"]);
     let once = buttons[0]["callback_data"].as_str().unwrap();
     tg.tap(prompt["message_id"].as_i64().unwrap(), once).await;
 
