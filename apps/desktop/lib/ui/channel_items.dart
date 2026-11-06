@@ -8,6 +8,7 @@ import '../state/store.dart';
 import '../state/transcript.dart';
 import '../theme.dart';
 import 'channel_view.dart' show NeedsYouTag;
+import 'markdown_text.dart';
 import 'routines.dart';
 import 'widgets.dart';
 
@@ -258,7 +259,7 @@ class PostCard extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           MarkdownBody(
-            data: post.text,
+            data: tidyMarkdown(post.text),
             selectable: true,
             onTapLink: (_, href, _) => openTernLink(context, store, href),
             styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))

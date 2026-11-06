@@ -15,6 +15,7 @@ import 'channel_items.dart';
 import 'channel_view.dart';
 import 'collapse.dart';
 import 'inspector.dart';
+import 'markdown_text.dart';
 import 'move_dialog.dart';
 import 'preferences.dart';
 import 'reasoning.dart';
@@ -215,7 +216,7 @@ class _AssistantMessage extends StatelessWidget {
     final theme = Theme.of(context);
     final body = theme.textTheme.bodyMedium!;
     return MarkdownBody(
-      data: streaming ? '$shown ▍' : shown,
+      data: streaming ? '${tidyMarkdown(shown)} ▍' : tidyMarkdown(shown),
       selectable: true,
       onTapLink: (_, href, _) => openTernLink(context, store, href),
       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
