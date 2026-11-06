@@ -1,0 +1,1 @@
+- The first-launch screen is a calm welcome: **Start on this Mac** first, **Connect to a remote server** second, and the socket path and OS error sit behind **Details**.

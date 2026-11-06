@@ -29,39 +29,96 @@ class AutonomyPicker extends StatelessWidget {
 
   static const _none = 'none';
 
+  /// The scale's plain-word label and one line per level, lowest first. The
+  /// wire name shows beside it so it maps to config and the CLI.
+  static const _copy = <AutonomyLevel, (String, String)>{
+    AutonomyLevel.readonly: (
+      'Read only',
+      'Looks, never changes anything.',
+    ),
+    AutonomyLevel.supervised: (
+      'Ask first',
+      'Asks before any change. The default.',
+    ),
+    AutonomyLevel.code: (
+      'Code',
+      'Edits files and runs builds and tests without asking, unless it read '
+          'untrusted content.',
+    ),
+    AutonomyLevel.autonomous: (
+      'Mostly on its own',
+      'Writes without asking, unless it read untrusted content. Destructive '
+          'actions still ask.',
+    ),
+    AutonomyLevel.yolo: (
+      'Full',
+      'Nothing asks.',
+    ),
+  };
+
   @override
   Widget build(BuildContext context) {
     final small = Theme.of(context).textTheme.bodySmall;
+    final muted = context.colors.muted;
+    Widget title(String label, String? wire) => Row(
+      children: [
+        Flexible(child: Text(label, style: const TextStyle(fontSize: 13))),
+        if (wire != null) ...[
+          const SizedBox(width: 8),
+          Text(wire, style: mono.copyWith(fontSize: 11, color: muted)),
+        ],
+      ],
+    );
+    Widget end(String label) => Text(
+      label,
+      style: small?.copyWith(color: muted, fontWeight: FontWeight.w600),
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'A cap, not a permission. Its runs get the lower of this and your '
-          'configured autonomy, so a ceiling can only hold it back; it never '
-          'lets the agent do more than you allowed. Sub-agents it starts get '
-          'the lower of its level and their own. Code is the exception: it is '
-          'a per-agent opt-in that lets this agent edit files and run build '
-          'and test commands in its folder without asking.',
-          key: const Key('autonomy-explainer'),
-          style: small,
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Text(
+                'Low asks before anything; high doesn\'t. Caps your global '
+                'setting, never raises it.',
+                key: const Key('autonomy-explainer'),
+                style: small,
+              ),
+            ),
+            Tooltip(
+              message:
+                  'Sub-agents get the lower of this level and their own. '
+                  'Untrusted content is anything from the web, MCP servers '
+                  'or connectors. Full still can\'t use forbidden tools.',
+              child: Padding(
+                padding: const EdgeInsets.only(left: 8, top: 1),
+                child: Icon(Icons.info_outline, size: 14, color: muted),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 8),
         RadioGroup<String>(
           groupValue: AutonomyLevel.parse(value)?.wire ?? _none,
           onChanged: (v) => onChanged(v == null || v == _none ? null : v),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               RadioListTile<String>(
                 key: const Key('autonomy-none'),
                 value: _none,
                 dense: true,
                 contentPadding: EdgeInsets.zero,
-                title: const Text('No ceiling', style: TextStyle(fontSize: 13)),
+                title: title('Use my global setting (default)', null),
                 subtitle: Text(
-                  'Your configured autonomy applies as it is.',
+                  'No cap for this agent.',
                   style: small,
                 ),
               ),
+              const SizedBox(height: 16),
+              end('Low'),
               for (final l in AutonomyLevel.values)
                 RadioListTile<String>(
                   key: Key('autonomy-${l.wire}'),
@@ -69,10 +126,7 @@ class AutonomyPicker extends StatelessWidget {
                   enabled: l != AutonomyLevel.code || codeEnabled,
                   dense: true,
                   contentPadding: EdgeInsets.zero,
-                  title: Text(
-                    'At most ${l.label.toLowerCase()}',
-                    style: const TextStyle(fontSize: 13),
-                  ),
+                  title: title(_copy[l]!.$1, l.wire),
                   subtitle: l == AutonomyLevel.code && !codeEnabled
                       ? Text(
                           'A read-only agent can\'t use code auto mode.',
@@ -81,17 +135,15 @@ class AutonomyPicker extends StatelessWidget {
                         )
                       : l == AutonomyLevel.code
                       ? Text(
-                          '${l.line} Not fully sandboxed: it can change or '
-                          'delete anything in its folder, and the code it '
-                          'runs runs on your computer. You confirm before it '
-                          'turns on; a snapshot is saved before each run\'s '
-                          'first change.'
+                          '${_copy[l]!.$2} Not fully sandboxed. You confirm '
+                          'before it turns on; a snapshot is saved first.'
                           '${codeAuto && value == 'code' ? ' Turned on when you save.' : ''}',
                           key: const Key('autonomy-code-copy'),
                           style: small,
                         )
-                      : Text(l.line, style: small),
+                      : Text(_copy[l]!.$2, style: small),
                 ),
+              end('High'),
             ],
           ),
         ),
