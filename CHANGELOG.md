@@ -9,7 +9,7 @@ All notable changes to tern are recorded here. The format follows
 
 ### Changed
 
-- **Autonomy ceiling picker** in the agent sheet reads as a scale from low to high (Read only, Ask first, Code, Mostly on its own, Full), with the raw level names beside each, a short explanation, and "Use my global setting" set apart from the scale. Copy only: levels and config values are unchanged.
+- **Autonomy ceiling picker** in the agent sheet reads as a scale from low to high (Read only, Ask first, Code, Mostly on its own, Full), with the raw level names beside each, and "Use my global setting" set apart from the scale. Copy only: levels and config values are unchanged.
 
 ## [0.1.0-alpha.1] - 2026-11-06
 

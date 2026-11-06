@@ -1554,7 +1554,7 @@ void main() {
             .widget<Text>(find.byKey(const Key('autonomy-code-copy')))
             .data!;
         expect(copy, contains('Not fully sandboxed'));
-        expect(copy, contains('change or delete anything in its folder'));
+        expect(copy, contains('untrusted content'));
         expect(copy, contains('You confirm before it turns on'));
         expect(copy, contains('snapshot'));
         expect(find.text('Code'), findsOneWidget);
@@ -1746,7 +1746,7 @@ void main() {
       await tester.pumpAndSettle();
       await openAdvanced(tester);
       await show(tester, find.byKey(const Key('autonomy-none')));
-      expect(find.text('How much it can do on its own'), findsOneWidget);
+      expect(find.text('How much it does on its own'), findsOneWidget);
       expect(find.text('Telegram bot'), findsNothing);
     });
 

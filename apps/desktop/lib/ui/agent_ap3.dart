@@ -38,21 +38,21 @@ class AutonomyPicker extends StatelessWidget {
     ),
     AutonomyLevel.supervised: (
       'Ask first',
-      'Asks before it changes anything. tern\'s default.',
+      'Asks before any change. The default.',
     ),
     AutonomyLevel.code: (
       'Code',
-      'Edits files and runs build and test commands in its folder without '
-          'asking.',
+      'Edits files and runs builds and tests without asking, unless it read '
+          'untrusted content.',
     ),
     AutonomyLevel.autonomous: (
       'Mostly on its own',
-      'Writes without asking unless it read untrusted content. Destructive '
+      'Writes without asking, unless it read untrusted content. Destructive '
           'actions still ask.',
     ),
     AutonomyLevel.yolo: (
       'Full',
-      'Nothing asks. Forbidden tools stay forbidden.',
+      'Nothing asks.',
     ),
   };
 
@@ -81,16 +81,17 @@ class AutonomyPicker extends StatelessWidget {
           children: [
             Expanded(
               child: Text(
-                'Low asks you before anything; high acts without asking. '
-                'This caps your global setting and never raises it.',
+                'Low asks before anything; high doesn\'t. Caps your global '
+                'setting, never raises it.',
                 key: const Key('autonomy-explainer'),
                 style: small,
               ),
             ),
             Tooltip(
               message:
-                  'Sub-agents it starts get the lower of this level and '
-                  'their own.',
+                  'Sub-agents get the lower of this level and their own. '
+                  'Untrusted content is anything from the web, MCP servers '
+                  'or connectors. Full still can\'t use forbidden tools.',
               child: Padding(
                 padding: const EdgeInsets.only(left: 8, top: 1),
                 child: Icon(Icons.info_outline, size: 14, color: muted),
@@ -134,10 +135,8 @@ class AutonomyPicker extends StatelessWidget {
                         )
                       : l == AutonomyLevel.code
                       ? Text(
-                          '${_copy[l]!.$2} Not fully sandboxed: it can '
-                          'change or delete anything in its folder. You '
-                          'confirm before it turns on, and a snapshot is '
-                          'saved before its first change.'
+                          '${_copy[l]!.$2} Not fully sandboxed. You confirm '
+                          'before it turns on; a snapshot is saved first.'
                           '${codeAuto && value == 'code' ? ' Turned on when you save.' : ''}',
                           key: const Key('autonomy-code-copy'),
                           style: small,
