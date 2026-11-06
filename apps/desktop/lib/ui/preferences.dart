@@ -14,6 +14,7 @@ import 'secrets.dart';
 import 'security.dart';
 import 'servers.dart';
 import 'settings.dart';
+import 'uninstall.dart';
 import 'workspace_ui.dart';
 
 export '../state/version.dart' show appVersion;
@@ -191,6 +192,7 @@ class PreferencesDialog extends StatefulWidget {
     this.onRestart,
     this.section = PrefSection.general,
     this.reveal = revealFile,
+    this.exitApp,
   });
 
   final TernControl control;
@@ -202,6 +204,9 @@ class PreferencesDialog extends StatefulWidget {
   final Future<void> Function()? onRestart;
   final PrefSection section;
   final Future<void> Function(String path) reveal;
+
+  /// Quits the app once tern is uninstalled; defaults to quitting.
+  final Future<void> Function()? exitApp;
 
   @override
   State<PreferencesDialog> createState() => _PreferencesDialogState();
@@ -675,9 +680,26 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
         'Data folder',
         dir,
         trailing: dir != null && _local
-            ? TextButton(
-                onPressed: () => widget.reveal(path!),
-                child: const Text('Reveal'),
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton(
+                    onPressed: () => widget.reveal(path!),
+                    child: const Text('Reveal'),
+                  ),
+                  TextButton(
+                    key: const Key('about-uninstall-button'),
+                    style: TextButton.styleFrom(foregroundColor: c.muted),
+                    onPressed: () => showUninstallDialog(
+                      context,
+                      control: widget.control,
+                      dataDir: dir,
+                      reveal: widget.reveal,
+                      exitApp: widget.exitApp,
+                    ),
+                    child: const Text('Uninstall tern…'),
+                  ),
+                ],
               )
             : null,
       ),
@@ -701,8 +723,8 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
             'included. To back it up, stop tern, then copy the folder. '
             'Dragging this app to the Trash does not stop tern or remove '
             'its login items: run `tern uninstall` first (it keeps your '
-            'data; add --purge to delete it), or use tern › Quit tern '
-            'completely.',
+            'data; add --purge to delete it), use Uninstall tern… above, or '
+            'tern › Quit tern completely.',
             key: const Key('about-uninstall'),
             style: TextStyle(fontSize: 12.5, color: c.muted),
           ),

@@ -148,6 +148,36 @@ impl Agent {
         Ok(())
     }
 
+    /// A tainted run's file write inside its own workspace went through
+    /// unasked ([`crate::approval::TAINTED_WRITE_REASON`]): one row per
+    /// write, with why the run is tainted.
+    pub(super) fn ledger_tainted_write(
+        &self,
+        run: &RunRow,
+        call: &ToolCall,
+        taint_reason: Option<&str>,
+    ) -> Result<(), StepError> {
+        let e = self
+            .ledger_entry(
+                "approval",
+                run,
+                call,
+                format!(
+                    "tainted run writes in its workspace without asking: {}",
+                    self.tools.summarize(call)
+                ),
+            )
+            .actor(ACTOR_TERN)
+            .detail(json!({
+                "decision": crate::approval::TAINTED_WRITE_REASON,
+                "taint": run.taint,
+                "taint_reason": taint_reason,
+                "agent": run.label,
+            }));
+        self.store.ledger_append(&e)?;
+        Ok(())
+    }
+
     /// A tainted run's read outside the workspace ran on the user's "allow
     /// reads in this folder for this run".
     pub(super) fn ledger_tainted_read_grant(

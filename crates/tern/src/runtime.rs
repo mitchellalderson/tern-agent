@@ -165,6 +165,7 @@ impl Runtime {
             &changes,
             &connections,
         )?;
+        tools.set_taint_safe_writes(config.taint.workspace_writes);
         // Every web read goes through the quarantined fetcher (docs/quarantined-fetch-design.md);
         // its settings are read from the live config on each call.
         let fetch_live = live.clone();

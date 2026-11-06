@@ -222,6 +222,14 @@ fn meta(key: &str) -> Meta {
             risky: |v| v == "allow",
             ..m
         },
+        "taint.workspace_writes" => Meta {
+            security: Some(
+                "On: after reading untrusted content, a run can still write and edit files in its \
+                 own folder without asking. A hostile page could change them. Shell, posts, \
+                 connector writes and other folders always ask.",
+            ),
+            ..m
+        },
         "fetch.taint" => Meta {
             choices: &["strict", "legacy"],
             live: true,
@@ -450,6 +458,7 @@ fn placement(key: &str) -> (&'static str, bool) {
         "context_window" | "max_tokens" | "schedules.gate_model" => ("models", true),
         "autonomy"
         | "taint.egress"
+        | "taint.workspace_writes"
         | "fetch.taint"
         | "fetch.allow_domains"
         | "fetch.deny_domains"

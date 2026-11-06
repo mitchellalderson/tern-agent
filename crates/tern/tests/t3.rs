@@ -48,7 +48,7 @@ async fn an_injected_write_waits_in_the_outbox_and_runs_once_when_approved() {
                 { "text": "Drafted a reply; it is waiting for your approval." }
             ]}
         ]}),
-        "",
+        "[taint]\nworkspace_writes = false\n",
     );
     let workspace = env.home.join("tern-workspace");
     let d = env.daemon_with(None);
@@ -301,7 +301,7 @@ async fn an_outbox_item_is_a_needs_you_post_with_a_home_pointer_until_decided() 
                 { "text": "Drafted; it waits for you." }
             ]}
         ]}),
-        "",
+        "[taint]\nworkspace_writes = false\n",
     );
     let _d = env.daemon_with(None);
     let s = env.socket();
@@ -520,7 +520,7 @@ async fn a_routines_deferred_write_reaches_telegram_with_its_delivery_and_closes
             ]}
         ]}),
         &format!(
-            "[gateway.telegram]\nenabled = true\nbot_token_secret = \"TELEGRAM_BOT_TOKEN\"\napi_url = \"{}\"\n\
+            "[taint]\nworkspace_writes = false\n[gateway.telegram]\nenabled = true\nbot_token_secret = \"TELEGRAM_BOT_TOKEN\"\napi_url = \"{}\"\n\
              [schedules]\nquiet_hours = \"none\"\n[outbox]\nwait_secs = 1\n",
             tg.url
         ),
@@ -599,7 +599,7 @@ async fn a_routine_in_quiet_hours_defers_without_pinging_the_chat() {
             ]}
         ]}),
         &format!(
-            "[gateway.telegram]\nenabled = true\nbot_token_secret = \"TELEGRAM_BOT_TOKEN\"\napi_url = \"{}\"\n\
+            "[taint]\nworkspace_writes = false\n[gateway.telegram]\nenabled = true\nbot_token_secret = \"TELEGRAM_BOT_TOKEN\"\napi_url = \"{}\"\n\
              [schedules]\nquiet_hours = \"00:01-00:00\"\n",
             tg.url
         ),

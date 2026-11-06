@@ -369,6 +369,7 @@ void main() {
     expect(find.text('/Users/you/.tern/logs'), findsOneWidget);
     expect(find.textContaining('no telemetry'), findsOneWidget);
     expect(find.byKey(const Key('about-uninstall')), findsOneWidget);
+    expect(find.byKey(const Key('about-uninstall-button')), findsOneWidget);
     expect(
       find.textContaining('cp -R "/Users/you/.tern" ~/tern-backup'),
       findsOneWidget,

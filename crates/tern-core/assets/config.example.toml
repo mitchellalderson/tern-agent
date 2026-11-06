@@ -148,12 +148,14 @@ docker_pids = 512          # 0 for no limit
 # can't send what the agent knows somewhere new.
 # [taint]
 # egress = "ask"               # "allow" for runs meant to browse; an agent can set its own
+# workspace_writes = true      # edits in the agent's own folder skip the taint prompt; false: all writes ask
 
 # Web pages are never read by the agent that asked for them. http_fetch hands the
 # URL to a separate low-privilege reader (two tools, no approvals, no memory or
 # files, hard limits) and returns a short checked result. With only a URL it
-# reads the page without any model; with a question it uses a cheap model from
-# your own providers. See docs/quarantined-fetch-design.md.
+# reads the page without any model and returns data only (headings, tables,
+# links; ask for want = ["text"] to get prose, which taints the run); with a
+# question it uses a cheap model from your own providers. See docs/quarantined-fetch-design.md.
 # [fetch]
 # taint = "strict"             # "strict": only free text (answer, text) taints the caller; "legacy": every fetch does
 # model = "anthropic:claude-haiku"  # reads pages when a question is asked; unset = the cheapest model you configured

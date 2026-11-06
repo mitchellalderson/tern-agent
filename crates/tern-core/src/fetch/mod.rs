@@ -177,11 +177,10 @@ pub fn parse_brief(raw: Value) -> Result<Brief, String> {
     let want = match &b.want {
         Some(names) => Want::parse(names)?,
         None => match mode {
-            // Old prompts (a url only) keep working: structure, links and a
-            // text excerpt, tainting as today.
+            // Data only: structure and links, no free text, so the caller
+            // stays untainted. `text` is returned only when asked for.
             Mode::Extract => Want {
                 structured: true,
-                text: true,
                 links: true,
                 ..Want::default()
             },

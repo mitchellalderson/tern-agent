@@ -107,6 +107,12 @@ pub struct ToolPolicy {
     /// a command with a verified sandbox, no network, the workspace as cwd,
     /// and nothing the shell classifier asks about. Set only by `shell`.
     pub auto_code: bool,
+    /// The call is a file write the tool has verified lands inside the run's
+    /// own workspace (canonical path, no `..`, no symlink on the way, not
+    /// protected). A tainted run's gate may then skip the taint-only ask
+    /// ([`crate::approval::check`]); every other reason to ask still
+    /// applies. Set only by `write_file` and `edit_file`.
+    pub taint_safe: bool,
 }
 
 impl ToolPolicy {
@@ -121,7 +127,12 @@ impl ToolPolicy {
             reach: Reach::Unbounded,
             unbounded: false,
             auto_code: false,
+            taint_safe: false,
         }
+    }
+
+    pub const fn taint_safe(self, taint_safe: bool) -> Self {
+        Self { taint_safe, ..self }
     }
 
     pub const fn auto_code(self, auto_code: bool) -> Self {
@@ -485,6 +496,8 @@ pub trait ToolSource: Send + Sync {
 pub struct ToolRegistry {
     tools: BTreeMap<String, Arc<dyn Tool>>,
     sources: Vec<Arc<dyn ToolSource>>,
+    /// `[taint] workspace_writes = false`: ignore [`ToolPolicy::taint_safe`].
+    no_taint_safe: bool,
 }
 
 impl ToolRegistry {
@@ -494,6 +507,12 @@ impl ToolRegistry {
 
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
         self.tools.insert(tool.spec().name, tool);
+    }
+
+    /// Whether a tool's [`ToolPolicy::taint_safe`] is honoured
+    /// (`[taint] workspace_writes`; on by default).
+    pub fn set_taint_safe_writes(&mut self, on: bool) {
+        self.no_taint_safe = !on;
     }
 
     pub fn add_source(&mut self, source: Arc<dyn ToolSource>) {
@@ -625,7 +644,10 @@ impl ToolRegistry {
     /// Unknown tools need no approval: calling them just returns an error.
     pub fn policy(&self, ctx: &ToolCtx, call: &ToolCall) -> ToolPolicy {
         match self.get(&call.name) {
-            Some(t) => planning(&ctx.run_id, &call.id, || t.policy(ctx, &call.input)),
+            Some(t) => {
+                let p = planning(&ctx.run_id, &call.id, || t.policy(ctx, &call.input));
+                p.taint_safe(p.taint_safe && !self.no_taint_safe)
+            }
             None => ToolPolicy::new(Effect::Read, true),
         }
     }

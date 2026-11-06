@@ -1608,6 +1608,54 @@ defaults were applied (and are the shipped behaviour):
 contain a fetched value, a fetcher run view in the inspector (raw page in the app), JSON-LD, DB-backed cache, helper-process
 isolation, and F3/F4 (MCP and connector quarantine, TUI `/settings` rows beyond what the generic settings view shows).
 
+## Fewer approvals after `http_fetch`: data-only default and workspace writes under taint (2026-11-06)
+
+Owner report: after one `http_fetch`, every `write_file`/`edit_file` asked ("this run read untrusted content"), even for a
+file in the agent's own workspace. Two fixes, both chosen by the owner.
+
+1. **`http_fetch` extract mode defaults to data only.** the default `want` (none given) is `structured` + `links`, not
+   `structured` + `links` + `text`. The design (docs/quarantined-fetch-design.md §2.4) always said asking for `text` taints;
+   the F1/F2 default undercut it because every URL-only call asked for it implicitly. `text` and `answer` are now returned
+   only when named. This reverses the F2 choice "old prompts keep working and taint as before" (see "Quarantined fetch" above):
+   old prompts still work, but a prompt that relied on page prose must ask for `want: ["text"]`; the tool description says so
+   and four starters (competitive-intel, customer-support, sales-outreach, writer-editor) carry a line. `ask` mode is unchanged
+   (facts + answer + links; `answer` still taints).
+2. **A confined workspace write does not ask solely because of taint.** The file tools mark a call `taint_safe` only when the
+   workspace scope verifies the target: the scope is live (same folder identity as when the run began), the path is in the
+   run's own folder and not a read-only root, has no `..` component, neither it nor any folder on the way is a symlink, and the
+   canonical result is not protected (tern's data directory). The gate (`approval::check`) honours the flag for the tool names
+   `write_file` and `edit_file` only, and only to skip the taint ask: whatever else would make an untainted run ask (a forced
+   prompt, `readonly`, `destructive`) still applies, and no "always" is offered. Anything doubtful answers "ask". Each such
+   write gets its own ledger row (`tainted-write-in-workspace`, with the run's taint and reason).
+
+**Choices.**
+- **Key name `[taint] workspace_writes` (default true)**, not under `[fetch]`: the rule is about what a tainted run may do, whatever
+  tainted it (mail, MCP, a fetched `answer`), and `[taint]` already holds `egress`. It is read when the daemon starts (not live).
+- **Why a write, not just the reads rule**: reads of the workspace were already unasked under taint. A tainted run can now also
+  change files in its own folder. The harm bounded: a hostile page could make the agent overwrite or plant a file in the folder
+  the user gave it (data-file injection), but not touch anything outside, run a command, post, send, or write memory.
+  SECURITY.md records it as residual risk, next to the tainted-reads note.
+- **Strict about symlinks**: a symlink anywhere on the path asks, even one that points back inside the workspace. The tool itself
+  still refuses real escapes (the capability handle), so the gate and the tool agree twice.
+- **Not changed**: `shell`, `python` writes, `channel_post`, connector and MCP writes, memory tools, `agent_*`, http egress.
+
+### Read-only shell pipelines are a `read` (2026-11-06)
+
+Owner report: after a fetch, `tail -c 200 <workspace file> | od -c | tail -10` showed "destructive · shell" and asked because
+of taint. `shell` was always `destructive`, with a forced prompt; the code-auto-mode classifier (`shell_class`) is a speed bump
+that says "nothing on the ask list", which is too weak to call a command a read.
+
+- **A second, strict allowlist** (`tern-tools/src/shell_read.rs`): the command must be nothing but pipeline stages of a short list of
+  reading programs (cat head tail od hexdump wc grep egrep fgrep ls stat cut tr nl tac rev), with no redirect, chaining,
+  background, substitution, variable, glob, tilde, backslash, history, comment or newline outside quotes, no `tail -f`, no recursive
+  grep (it follows symlinks), no flag carrying a path, and every other word resolved through `WorkspaceScope::read_target_inside`
+  (symlinks resolved, `..` refused, inside the folder, not a protected file). Left out because they can write or run things: sed, awk,
+  find, xargs, tee, sort, uniq, xxd, file, env, echo. Unparseable = no.
+- **Only with a verified sandbox** (`ShellBound::Bounded`), no `network: true`, and no planned script grant. Then the policy effect is
+  `read` (not forced), so the existing gate does the rest: untainted and tainted runs both go through, and the tainted-read ledger note
+  covers it. Side effect, intended: a `readonly` agent may run these too; they can only read its own folder.
+- No new setting: the classification is independent of taint and its failure mode is "asks".
+
 ## Sandbox reads and toolchains: W3 (2026-11-05)
 
 Owner decision: deny reads of sensitive and other users' locations by default.
