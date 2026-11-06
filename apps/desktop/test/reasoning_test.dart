@@ -177,7 +177,7 @@ void main() {
       );
       await tester.tap(find.byKey(_toggle));
       await tester.pump();
-      expect(find.text('Reasoning hidden by provider'), findsOneWidget);
+      expect(find.text('Reasoning hidden'), findsOneWidget);
     });
   });
 

@@ -8,7 +8,7 @@ import '../theme.dart';
 import 'items.dart' show formatDuration;
 
 /// Shown in place of text when the provider withheld the reasoning.
-const reasoningHiddenText = 'Reasoning hidden by provider';
+const reasoningHiddenText = 'Reasoning hidden';
 
 /// "Thought for 12s", or just "Thought" under a second.
 String thoughtLabel(Reasoning r) {

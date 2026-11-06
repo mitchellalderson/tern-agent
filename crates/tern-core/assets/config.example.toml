@@ -10,8 +10,7 @@
 
 workspace = "~/tern-workspace"   # where the agent works; shell commands start here
 max_iterations = 40              # model calls per run before it stops
-# Show the model's reasoning in the apps (a collapsed "Thinking" box) when
-# the provider returns it. Never sent to Telegram or other channels.
+# Show reasoning in the apps when the model returns it. Never sent to channels.
 show_reasoning = true
 # Model context window in tokens; old messages are summarized past 75%.
 # Override per provider with `context_window` in its [providers.*] table.

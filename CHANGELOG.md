@@ -12,7 +12,7 @@ All notable changes to tern are recorded here. The format follows
 - **Reasoning view**: when a model returns its reasoning (Anthropic thinking, OpenAI-compatible `reasoning_content` /
   `reasoning` from OpenRouter, DeepSeek, Gemini), the desktop app puts a small chevron beside "Thinking". Open it and a
   quiet box streams the reasoning live; afterwards the message keeps a collapsed "Thought for 12s" note. Runs with no
-  reasoning show no chevron, and redacted reasoning reads "Reasoning hidden by provider". Turn it off with
+  reasoning show no chevron, and redacted reasoning reads "Reasoning hidden". Turn it off with
   `show_reasoning = false`. Reasoning is kept with the step, never sent to Telegram or other channels, and Anthropic's
   signed thinking blocks are echoed back only within a tool-use turn.
 
