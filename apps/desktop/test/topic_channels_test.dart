@@ -398,6 +398,25 @@ void main() {
     expect(find.textContaining('replies'), findsNothing);
     expect(find.byTooltip('New posts'), findsNothing);
 
+    // Your posts sit on the user tint; an agent's stay on the page.
+    expect(find.byKey(const Key('user-post')), findsNWidgets(2));
+    for (final text in ['How much did we spend?', 'Why so much?']) {
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('user-post')),
+          matching: find.text(text),
+        ),
+        findsOneWidget,
+      );
+    }
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('user-post')),
+        matching: find.text('About 1,240 EUR.'),
+      ),
+      findsNothing,
+    );
+
     // Posting from the composer.
     await tester.enterText(
       find.widgetWithText(TextField, 'Message #finances'),
