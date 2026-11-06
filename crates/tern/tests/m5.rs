@@ -16,7 +16,6 @@ fn tern_bin() -> std::path::PathBuf {
 
 use serde_json::{Value, json};
 
-#[allow(dead_code)]
 mod subagents_env;
 
 const CHAT: i64 = 4242;

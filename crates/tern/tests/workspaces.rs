@@ -450,6 +450,7 @@ async fn a_missing_folder_stops_the_run_and_is_never_recreated() {
     let id = ch["id"].as_str().unwrap().to_owned();
     let (_, w) = get(&s, &format!("/v1/channels/{id}/workspace")).await;
     let wid = w["workspace"]["id"].as_str().unwrap().to_owned();
+    let old_id = dir_id(&ws);
     std::fs::remove_dir_all(&ws).unwrap();
     let (code, r) = post(
         &s,
@@ -463,7 +464,7 @@ async fn a_missing_folder_stops_the_run_and_is_never_recreated() {
     let (_, w) = get(&s, &format!("/v1/workspaces/{wid}")).await;
     assert_eq!(w["status"], "missing", "{w}");
     // Plugged back in (same folder): runs again, status clears.
-    std::fs::create_dir_all(&ws).unwrap();
+    recreate_as_a_different_dir(&ws, old_id);
     // A recreated directory is a different one: it needs Locate with confirm.
     let (code, _) = post(
         &s,
@@ -679,4 +680,26 @@ fn the_cli_adds_refuses_binds_and_reports() {
     let (ok, _, _) = run(&["workspace", "check"]);
     assert!(ok);
     std::fs::remove_dir_all(&proj).ok();
+}
+
+/// A directory's `(device, inode)`, what the daemon knows a workspace by.
+fn dir_id(dir: &Path) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(dir).unwrap();
+    (m.dev(), m.ino())
+}
+
+/// Create `dir` again as a different directory. ext4 and tmpfs often hand a
+/// just-freed inode straight to the next `mkdir`, which makes the new folder
+/// indistinguishable from the old one; set any such reuse aside and retry.
+fn recreate_as_a_different_dir(dir: &Path, old: (u64, u64)) {
+    for n in 0..16 {
+        std::fs::create_dir_all(dir).unwrap();
+        if dir_id(dir) != old {
+            return;
+        }
+        let held = dir.with_file_name(format!(".held-inode-{n}"));
+        std::fs::rename(dir, held).unwrap();
+    }
+    panic!("mkdir kept reusing the old inode");
 }
