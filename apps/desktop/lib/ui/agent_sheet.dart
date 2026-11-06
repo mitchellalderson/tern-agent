@@ -688,7 +688,7 @@ class _AgentSheetState extends State<AgentSheet> {
                               'knows somewhere new.',
                             ),
                           ),
-                          _section('Autonomy ceiling'),
+                          _section('How much it can do on its own'),
                           AutonomyPicker(
                             value: _autonomy,
                             codeAuto: _codeAuto,
