@@ -23,6 +23,7 @@ All notable changes to tern are recorded here. The format follows
   `$()`/backticks, variable, glob, chaining or `-f`, and every operand inside the agent's workspace (symlinks and `..`
   resolved, protected files excluded), is classified `read` in a verified sandbox: it no longer shows as "destructive ·
   shell" and doesn't ask, including in a tainted run. Anything else, including any doubt, asks as before.
+- **Autonomy ceiling picker** in the agent sheet reads as a scale from low to high (Read only, Ask first, Code, Mostly on its own, Full), with the raw level names beside each, and "Use my global setting" set apart from the scale. Copy only: levels and config values are unchanged.
 
 ## [0.1.0-alpha.1] - 2026-11-06
 
