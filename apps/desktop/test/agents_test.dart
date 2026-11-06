@@ -1437,11 +1437,7 @@ void main() {
     ) async {
       final (_, client) = await editing(tester, capped);
       await show(tester, find.byKey(const Key('autonomy-explainer')));
-      expect(find.textContaining('A cap, not a permission'), findsOneWidget);
-      expect(
-        find.textContaining('never lets the agent do more'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('never raises it'), findsOneWidget);
       bool selected(String wire) =>
           tester
               .widget<RadioGroup<String>>(
@@ -1454,10 +1450,23 @@ void main() {
           wire;
       expect(selected('supervised'), isTrue);
       expect(selected('none'), isFalse);
-      expect(find.text('No ceiling'), findsOneWidget);
-      for (final l in AutonomyLevel.values) {
-        expect(find.text('At most ${l.label.toLowerCase()}'), findsOneWidget);
+      expect(find.text('Use my global setting (default)'), findsOneWidget);
+      for (final t in [
+        'Read only',
+        'Ask first',
+        'Code',
+        'Mostly on its own',
+        'Full',
+      ]) {
+        expect(find.text(t), findsOneWidget);
       }
+      // The raw level names stay visible, and the ends of the scale say
+      // which way is more.
+      for (final l in AutonomyLevel.values) {
+        expect(find.text(l.wire), findsOneWidget);
+      }
+      expect(find.text('Low'), findsOneWidget);
+      expect(find.text('High'), findsOneWidget);
       // Nothing changed: nothing sent for it.
       await save(tester);
       final fields = client.updated.single.$2;
@@ -1545,9 +1554,10 @@ void main() {
             .widget<Text>(find.byKey(const Key('autonomy-code-copy')))
             .data!;
         expect(copy, contains('Not fully sandboxed'));
-        expect(copy, contains('change or delete anything in its folder'));
+        expect(copy, contains('untrusted content'));
         expect(copy, contains('You confirm before it turns on'));
-        expect(find.text('At most code'), findsOneWidget);
+        expect(copy, contains('snapshot'));
+        expect(find.text('Code'), findsOneWidget);
       });
 
       ap3Test('saving the opt-in shows the dialog, and nothing is sent '
@@ -1736,7 +1746,7 @@ void main() {
       await tester.pumpAndSettle();
       await openAdvanced(tester);
       await show(tester, find.byKey(const Key('autonomy-none')));
-      expect(find.text('Autonomy ceiling'), findsOneWidget);
+      expect(find.text('How much it does on its own'), findsOneWidget);
       expect(find.text('Telegram bot'), findsNothing);
     });
 
