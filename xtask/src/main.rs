@@ -4,10 +4,13 @@
 //! cargo test-all            # Rust, then Dart: everything CI runs for tests
 //! cargo test-all --rust     # only the Rust suites
 //! cargo test-all --dart     # only the Dart suites (still builds tern for the live tests)
+//! cargo xtask changelog 0.2.0   # fold changelog.d/ into CHANGELOG.md (see changelog.rs)
 //! ```
 //!
 //! Every step runs even if an earlier one fails, and a summary at the end
 //! lists what failed. Std only, so it builds in a second.
+
+mod changelog;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -22,6 +25,15 @@ and Flutter 3.47+ (which provides dart) for the Dart suites.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("changelog") {
+        return match changelog::run(&repo_root(), &args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let (rust, dart) = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["test"] => (true, true),
         ["test", "--rust"] => (true, false),
