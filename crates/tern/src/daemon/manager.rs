@@ -818,6 +818,8 @@ pub struct Manager {
     pub rt: Arc<Runtime>,
     pub routes: Arc<Routes>,
     active: Mutex<HashMap<String, Active>>,
+    /// Stale outbox items waiting to be reported in one message.
+    pub(super) stale_batch: Mutex<Vec<tern_store::OutboxRow>>,
 }
 
 impl Manager {
@@ -826,6 +828,7 @@ impl Manager {
             rt,
             routes,
             active: Mutex::new(HashMap::new()),
+            stale_batch: Mutex::new(Vec::new()),
         })
     }
 
@@ -1457,9 +1460,13 @@ impl ChatHost for Chats {
     /// A chat button: the chat is remote, so local-only items are refused.
     async fn decide_outbox(&self, id: i64, approve: bool) -> Result<String, String> {
         if approve {
-            self.0
-                .approve_outbox(id, None, true)
-                .map(|_| "Approved; running it".to_owned())
+            self.0.approve_outbox(id, None, true).map(|item| {
+                if item.state == "stale" {
+                    "Skipped: the file changed".to_owned()
+                } else {
+                    "Approved; running it".to_owned()
+                }
+            })
         } else {
             self.0
                 .reject_outbox(id, None, true)
