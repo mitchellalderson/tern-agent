@@ -5,16 +5,13 @@ All notable changes to tern are recorded here. The format follows
 [Semantic Versioning](https://semver.org/). Versions with a hyphen (`-alpha.N`,
 `-beta.N`, `-rc.N`) are GitHub pre-releases.
 
+Entries go in `changelog.d/` (see its README); the release gathers them here.
+
 ## [Unreleased]
 
-### Added
+### Changed
 
-- **Reasoning view**: when a model returns its reasoning (Anthropic thinking, OpenAI-compatible `reasoning_content` /
-  `reasoning` from OpenRouter, DeepSeek, Gemini), the desktop app puts a small chevron beside "Thinking". Open it and a
-  quiet box streams the reasoning live; afterwards the message keeps a collapsed "Thought for 12s" note. Runs with no
-  reasoning show no chevron, and redacted reasoning reads "Reasoning hidden". Turn it off with
-  `show_reasoning = false`. Reasoning is kept with the step, never sent to Telegram or other channels, and Anthropic's
-  signed thinking blocks are echoed back only within a tool-use turn.
+- **Autonomy ceiling picker** in the agent sheet reads as a scale from low to high (Read only, Ask first, Code, Mostly on its own, Full), with the raw level names beside each, and "Use my global setting" set apart from the scale. Copy only: levels and config values are unchanged.
 
 ## [0.1.0-alpha.1] - 2026-11-06
 
