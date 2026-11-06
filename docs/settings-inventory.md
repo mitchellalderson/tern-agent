@@ -75,6 +75,7 @@ same list and a new config field appears in both without UI changes.
 | `skills.capture_min_tool_calls` | int | 8 | config, desktop | yes | no | general | adv |
 | `outbox.wait_secs` / `expire_hours` | int | 120 / 72 | config, desktop | yes | no | permissions | adv |
 | `taint.egress` | choice ask/allow | ask | config, desktop | no | no | permissions | user |
+| `taint.workspace_writes` | bool | true | config, desktop | yes | no | permissions | user |
 | `fetch.taint` | choice strict/legacy | strict | config, desktop | no | no | permissions | user |
 | `fetch.allow_domains` / `deny_domains` | list | `[]` / `[]` | config, desktop | no | no | permissions | user |
 | `fetch.model` | model | unset (cheapest configured) | config, desktop | no | no | models | adv |

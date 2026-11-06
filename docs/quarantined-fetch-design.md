@@ -1,6 +1,6 @@
 # Quarantined fetch: web content is read by a separate agent
 
-Status: F0, F1 and F2 built (2026-11-05, see DECISIONS.md "Quarantined fetch"); F3 and F4 are not. Section 7 records the owner defaults that were applied while the owner had not answered. Owner decision: **all untrusted web ingestion goes through a
+Status: F0, F1 and F2 built (2026-11-05, see DECISIONS.md "Quarantined fetch"); F3 and F4 are not. Since 2026-11-06 `extract` with no `want` is data only (no `text`), per §2.4, and workspace file writes no longer ask under taint (DECISIONS.md "Fewer approvals after `http_fetch`"). Section 7 records the owner defaults that were applied while the owner had not answered. Owner decision: **all untrusted web ingestion goes through a
 separate low-privilege "fetcher" agent (dual-LLM / quarantine style); the calling agent never reads a raw page.**
 Related: [subagents-design.md](subagents-design.md), [alpha-workspaces.md](alpha-workspaces.md) (reads inside the
 workspace stop asking under taint; that work and the approval work land first), [SECURITY.md](../SECURITY.md),
@@ -195,8 +195,8 @@ Mitigation ladder, cheapest first, all in `[fetch]`:
 ## 5. Compatibility
 
 - **Starters** (research, seo, competitive-intel, fact-checker and the others listing `http_fetch`) keep the tool name
-  and `url` argument. With no `question`, the result is extract structure plus a `text` excerpt, so old prompts work
-  and are tainted as today. Each gets one added prompt line about `question`/`want`; seo and fact-checker move to
+  and `url` argument. With no `question`, the result is extract structure and links (data only, no `text`; a prompt that needs prose asks for `want: ["text"]`), so old prompts work
+  and stay untainted. Each gets one added prompt line about `question`/`want`; seo and fact-checker move to
   selectors and facts.
 - **Routines:** the fetcher nests inside the run; nothing new asks at night.
 - **MCP/connectors:** F3. Until then they behave as today (whole-server taint).

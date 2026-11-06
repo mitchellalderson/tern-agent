@@ -3407,6 +3407,7 @@ mod grants;
 
 mod plans;
 mod tainted_reads;
+mod tainted_writes;
 
 mod fetch_e2e;
 
