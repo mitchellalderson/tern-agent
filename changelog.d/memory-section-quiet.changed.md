@@ -1,0 +1,1 @@
+- Side panel Memory is quieter: a collapsed "Memory · N" row like Tools, with one scope menu in place of tabs.
