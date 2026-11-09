@@ -8,7 +8,12 @@ import 'package:tern_desktop/state/store.dart';
 import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/outbox.dart';
 
-OutboxItem item({String state = 'pending', String? taint}) =>
+OutboxItem item({
+  String state = 'pending',
+  String? taint,
+  String? file,
+  bool stale = false,
+}) =>
     OutboxItem.fromJson(
       jsonDecode(
         jsonEncode({
@@ -20,6 +25,8 @@ OutboxItem item({String state = 'pending', String? taint}) =>
           'summary': 'gmail_send to bob@example.com',
           'effect': 'write',
           'taint': ?taint,
+          'file': ?file,
+          'stale': stale,
           'state': state,
           'created_at': DateTime.now().millisecondsSinceEpoch,
           'expires_at': DateTime.now()
@@ -124,5 +131,27 @@ void main() {
     await tester.tap(find.text('Approve with these'));
     await tester.pumpAndSettle();
     expect(client.decided, ['approve 12 {"to":"carol@example.com"}']);
+  });
+
+  testWidgets('a stale item says why and can only be discarded', (tester) async {
+    for (final o in [
+      item(file: '/w/vs-trigger-outline.md', stale: true),
+      item(file: '/w/vs-trigger-outline.md', state: 'stale'),
+    ]) {
+      final (client, _) = await pump(tester, o);
+      expect(o.stale, isTrue);
+      expect(find.text('Out of date · outbox #12'), findsOneWidget);
+      expect(
+        find.text('vs-trigger-outline.md changed since this was queued.'),
+        findsOneWidget,
+      );
+      expect(find.text('Approve'), findsNothing);
+      expect(find.text('Edit…'), findsNothing);
+      expect(find.text('Reject'), findsNothing);
+      await tester.tap(find.widgetWithText(FilledButton, 'Discard'));
+      await tester.pumpAndSettle();
+      expect(client.decided, ['reject 12 null']);
+      expect(find.byType(OutboxCard), findsNothing);
+    }
   });
 }

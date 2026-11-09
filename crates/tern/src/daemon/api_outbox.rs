@@ -2,10 +2,10 @@
 //!
 //! | Method | Path | |
 //! |---|---|---|
-//! | GET | `/v1/outbox[?state=pending\|all\|<state>]` | items, newest first (default `pending`) |
+//! | GET | `/v1/outbox[?state=pending\|all\|<state>]` | items, newest first (default `pending` and `stale`) |
 //! | GET | `/v1/outbox/{id}` | one item |
 //! | POST | `/v1/outbox/{id}/approve` | `{input?}`: run it once, with `input` replacing its arguments |
-//! | POST | `/v1/outbox/{id}/reject` | `{note?}`: the run that queued it is told, if still working |
+//! | POST | `/v1/outbox/{id}/reject` | `{note?}`: the run that queued it is told, if still working; also discards a `stale` item |
 //!
 //! `/v1/events` carries `{"outbox_changed": {"id", "state"}}` when an item
 //! is queued or changes state. Local-only items (host commands) can only be
@@ -36,12 +36,18 @@ struct ListQuery {
 }
 
 async fn list(State(m): State<Shared>, Query(q): Query<ListQuery>) -> ApiResult<Vec<OutboxItem>> {
-    let state = match q.state.as_deref() {
-        None => Some("pending"),
-        Some("all") => None,
-        Some(s) => Some(s),
+    let store = &m.rt.store;
+    let rows = match q.state.as_deref() {
+        // Stale items wait for a Discard, so they are listed with pending.
+        None | Some("pending") => {
+            let mut rows = store.outbox(Some("pending"), 200).map_err(internal)?;
+            rows.extend(store.outbox(Some("stale"), 200).map_err(internal)?);
+            rows.sort_by_key(|r| std::cmp::Reverse(r.id));
+            rows
+        }
+        Some("all") => store.outbox(None, 200).map_err(internal)?,
+        Some(s) => store.outbox(Some(s), 200).map_err(internal)?,
     };
-    let rows = m.rt.store.outbox(state, 200).map_err(internal)?;
     Ok(Json(rows.into_iter().map(|r| m.outbox_view(r)).collect()))
 }
 

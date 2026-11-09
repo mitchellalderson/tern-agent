@@ -1089,6 +1089,7 @@ impl Gateway for TelegramGateway {
         let status = match item.state.as_str() {
             "rejected" => "Rejected",
             "expired" => "Expired",
+            "stale" => "Skipped: the file changed",
             "failed" => "Approved; it failed",
             _ => "Approved",
         };

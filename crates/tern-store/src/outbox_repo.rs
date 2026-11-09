@@ -17,7 +17,8 @@ pub struct OutboxRow {
     pub effect: String,
     pub taint: Option<String>,
     pub local_only: bool,
-    /// `pending`, `approved`, `done`, `failed`, `rejected` or `expired`.
+    /// `pending`, `approved`, `done`, `failed`, `rejected`, `expired` or
+    /// `stale` (its file changed before it ran).
     pub state: String,
     pub created_at: i64,
     pub expires_at: i64,
@@ -26,6 +27,10 @@ pub struct OutboxRow {
     pub edited_input_json: Option<String>,
     pub exec_run_id: Option<String>,
     pub result_json: Option<String>,
+    /// A file edit's resolved target and its content hash (or `absent`) when
+    /// it was queued.
+    pub file_path: Option<String>,
+    pub file_hash: Option<String>,
 }
 
 impl OutboxRow {
@@ -49,10 +54,12 @@ pub struct NewOutbox<'a> {
     pub taint: Option<&'a str>,
     pub local_only: bool,
     pub expires_at: i64,
+    pub file_path: Option<&'a str>,
+    pub file_hash: Option<&'a str>,
 }
 
 const COLS: &str = "id, run_id, session_id, call_id, tool, input_json, summary, effect, taint, local_only, \
-    state, created_at, expires_at, decided_at, note, edited_input_json, exec_run_id, result_json";
+    state, created_at, expires_at, decided_at, note, edited_input_json, exec_run_id, result_json, file_path, file_hash";
 
 fn row(r: &Row<'_>) -> rusqlite::Result<OutboxRow> {
     Ok(OutboxRow {
@@ -74,6 +81,8 @@ fn row(r: &Row<'_>) -> rusqlite::Result<OutboxRow> {
         edited_input_json: r.get(15)?,
         exec_run_id: r.get(16)?,
         result_json: r.get(17)?,
+        file_path: r.get(18)?,
+        file_hash: r.get(19)?,
     })
 }
 
@@ -84,8 +93,8 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO outbox (run_id, session_id, call_id, tool, input_json, summary, effect, taint,
-               local_only, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+               local_only, created_at, expires_at, file_path, file_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT (run_id, call_id) DO NOTHING",
             params![
                 o.run_id,
@@ -98,7 +107,9 @@ impl Store {
                 o.taint,
                 o.local_only,
                 now_ms(),
-                o.expires_at
+                o.expires_at,
+                o.file_path,
+                o.file_hash
             ],
         )?;
         let sql = format!("SELECT {COLS} FROM outbox WHERE run_id = ?1 AND call_id = ?2");
@@ -162,12 +173,12 @@ impl Store {
         Ok(won)
     }
 
-    /// Reject a pending item. Returns whether it was pending.
+    /// Reject (discard) a pending or stale item. Returns whether it was.
     pub fn reject_outbox(&self, id: i64, note: Option<&str>) -> Result<bool> {
         let conn = self.conn()?;
         let rejected = conn.execute(
             "UPDATE outbox SET state = 'rejected', decided_at = ?2, note = ?3
-             WHERE id = ?1 AND state = 'pending'",
+             WHERE id = ?1 AND state IN ('pending', 'stale')",
             params![id, now_ms(), note],
         )? > 0;
         if rejected {
@@ -184,6 +195,33 @@ impl Store {
             params![id, if failed { "failed" } else { "done" }, result_json],
         )?;
         Ok(())
+    }
+
+    /// Mark a pending or approved item `stale`: its file changed, so it was
+    /// not run. `result_json` keeps the reason for "See work". Returns
+    /// whether it changed.
+    pub fn mark_outbox_stale(&self, id: i64, result_json: &str) -> Result<bool> {
+        let conn = self.conn()?;
+        let changed = conn.execute(
+            "UPDATE outbox SET state = 'stale', decided_at = COALESCE(decided_at, ?2), result_json = ?3
+             WHERE id = ?1 AND state IN ('pending', 'approved')",
+            params![id, now_ms(), result_json],
+        )? > 0;
+        if changed {
+            outbox_entry(&conn, id, "outbox.stale", "skipped stale", None)?;
+        }
+        Ok(changed)
+    }
+
+    /// Whether an earlier item (lower id) for the same file is approved and
+    /// not finished: this one waits for it, so edits to one file run in
+    /// queue order, one at a time.
+    pub fn earlier_outbox_running(&self, id: i64, file_path: &str) -> Result<bool> {
+        Ok(self.conn()?.query_row(
+            "SELECT EXISTS (SELECT 1 FROM outbox WHERE file_path = ?2 AND id < ?1 AND state = 'approved')",
+            params![id, file_path],
+            |r| r.get::<_, i64>(0),
+        )? != 0)
     }
 
     /// Expire pending items past their time, returning them (each once).
@@ -337,5 +375,42 @@ mod tests {
         assert_eq!(gone.len(), 1);
         assert!(s.expire_outbox(now_ms()).unwrap().is_empty());
         assert_eq!(s.outbox_item(c.id).unwrap().unwrap().state, "expired");
+    }
+
+    #[test]
+    fn file_state_is_stored_and_stale_items_are_discardable() {
+        let s = store();
+        let far = now_ms() + 60_000;
+        let a = s
+            .add_outbox(&NewOutbox {
+                file_path: Some("/w/a.md"),
+                file_hash: Some("absent"),
+                ..item("f1", far)
+            })
+            .unwrap();
+        assert_eq!(a.file_path.as_deref(), Some("/w/a.md"));
+        assert_eq!(a.file_hash.as_deref(), Some("absent"));
+        let b = s
+            .add_outbox(&NewOutbox {
+                file_path: Some("/w/a.md"),
+                file_hash: Some("h"),
+                ..item("f2", far)
+            })
+            .unwrap();
+        assert!(!s.earlier_outbox_running(b.id, "/w/a.md").unwrap());
+        assert!(s.approve_outbox(a.id, "x1", None).unwrap());
+        assert!(s.earlier_outbox_running(b.id, "/w/a.md").unwrap());
+        assert!(!s.earlier_outbox_running(a.id, "/w/a.md").unwrap());
+        assert!(!s.earlier_outbox_running(b.id, "/w/other.md").unwrap());
+        assert!(s.mark_outbox_stale(a.id, "{}").unwrap());
+        assert!(!s.earlier_outbox_running(b.id, "/w/a.md").unwrap());
+        assert!(!s.mark_outbox_stale(a.id, "{}").unwrap(), "only once");
+        assert_eq!(s.outbox_item(a.id).unwrap().unwrap().state, "stale");
+        assert!(
+            !s.approve_outbox(a.id, "x2", None).unwrap(),
+            "no approving a stale item"
+        );
+        assert!(s.reject_outbox(a.id, None).unwrap(), "discard");
+        assert_eq!(s.outbox_item(a.id).unwrap().unwrap().state, "rejected");
     }
 }
