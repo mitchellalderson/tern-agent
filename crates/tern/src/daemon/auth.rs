@@ -69,6 +69,8 @@ pub const FEATURES: &[&str] = &[
     // `/v1/tasks`: everything running, queued, scheduled, waiting on you or
     // failed recently (tooling spec §8.2).
     "tasks",
+    // `/v1/waits`: active `wait_until` waits, and cancelling one.
+    "waits",
     // `/v1/security/audit`: `tern security audit` (tooling spec §8.4).
     "security_audit",
     // `/v1/bundles`: preview, install, remove (tooling spec §6.5).
@@ -156,6 +158,7 @@ const CHAT_WRITES: &[&str] = &[
     "/v1/approvals",
     "/v1/outbox",
     "/v1/schedules",
+    "/v1/waits",
     "/v1/memories",
     "/v1/uploads",
     "/v1/models/check",

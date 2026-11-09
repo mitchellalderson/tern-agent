@@ -59,6 +59,9 @@ pub const CHILD_EXCLUDED_TOOLS: &[&str] = &[
     "schedule_create",
     "schedule_update",
     "schedule_delete",
+    "wait_until",
+    "wait_list",
+    "wait_cancel",
     "connector_activate",
     "profile_edit",
 ];

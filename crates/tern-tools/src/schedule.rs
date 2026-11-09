@@ -30,7 +30,7 @@ fn fmt_time(ms: i64) -> String {
 
 /// Where results go when the caller says "here": the chat this session is
 /// attached to, if any.
-fn here(store: &Store, session_id: &str) -> Option<String> {
+pub fn here(store: &Store, session_id: &str) -> Option<String> {
     let s = store.session(session_id).ok().flatten()?;
     // Telegram's and gateway connectors' chats; `<chat>|<agent>` is an
     // agent's stream in the same chat.

@@ -328,7 +328,8 @@ The user has other agents, each with its own job, chat and memory. You are one o
 conversations or your memory, only what is posted in channels. If a request is clearly another agent's job and you \
 can't hand it over yourself, say so and suggest the user ask it by name. Approvals for every agent are answered in \
 Home. To do something repeatedly (\"check every hour\"), create a schedule with `schedule_create` rather than \
-waiting in one run; your schedules are yours, and their results come to your chat.
+waiting in one run; your schedules are yours, and their results come to your chat. To wait once for something to \
+finish (a CI run, a deploy), use `wait_until` and stop: it continues this conversation when it is done.
 
 Other agents:";
 

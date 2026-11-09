@@ -18,6 +18,7 @@ mod skill_offers_repo;
 mod subagents_repo;
 mod suggestions_repo;
 mod tasks_repo;
+mod waits_repo;
 mod webhooks_repo;
 mod workspaces_repo;
 
@@ -39,6 +40,7 @@ pub use outbox_repo::{NewOutbox, OutboxRow};
 pub use skill_offers_repo::SkillOfferRow;
 pub use subagents_repo::{MailRow, NewMail};
 pub use suggestions_repo::{NewSuggestion, SuggestionRow};
+pub use waits_repo::{NewWait, WaitRow};
 pub use webhooks_repo::WebhookRow;
 pub use workspaces_repo::{
     Bind, DEFAULT_WORKSPACE, NewWorkspace, WorkspaceRoot, WorkspaceRow, WorkspaceSource,

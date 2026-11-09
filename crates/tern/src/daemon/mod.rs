@@ -19,6 +19,7 @@ mod api_secrets;
 pub mod api_skills;
 mod api_subagents;
 pub mod api_tasks;
+mod api_waits;
 mod api_webhooks;
 pub mod api_workspaces;
 pub mod auth;
@@ -33,6 +34,7 @@ pub mod suggestions;
 pub mod tls;
 pub mod uploads;
 pub mod waiting;
+pub mod waits;
 pub mod wakes;
 
 use std::collections::HashMap;

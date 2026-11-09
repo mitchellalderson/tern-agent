@@ -1409,8 +1409,17 @@ fn build_tools(
     let connectors = Arc::new(tern_lua::Connectors::open(lua.clone(), dirs.active.clone()));
     registry.add_source(connectors.clone());
     // Routines' watches are checked against the active connectors (T1b).
-    let checks: Arc<dyn tern_tools::schedule::RoutineChecks> = Arc::new(
-        crate::routines::LuaChecks::new(lua.clone(), dirs.active.clone()),
+    let lua_checks = Arc::new(crate::routines::LuaChecks::new(
+        lua.clone(),
+        dirs.active.clone(),
+    ));
+    let checks: Arc<dyn tern_tools::schedule::RoutineChecks> = lua_checks.clone();
+    // Waits poll connector reads and URLs (docs/wait-until-design.md).
+    tern_tools::wait::register(
+        &mut registry,
+        store.clone(),
+        config.schedules.max_waits,
+        Some(lua_checks),
     );
     // Clients hear when a tool changes the routines.
     registry.register(Arc::new(tern_tools::schedule::ScheduleCreate {

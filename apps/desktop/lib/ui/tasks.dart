@@ -25,6 +25,7 @@ IconData taskIcon(TaskItem t) => switch (t.kind) {
   'delivery' => Icons.schedule_send_outlined,
   'routine' => Icons.schedule,
   'routine_paused' => Icons.pause_circle_outline,
+  'wait' => Icons.hourglass_top,
   _ when t.section == 'failed' => Icons.error_outline,
   _ when t.section == 'queued' => Icons.hourglass_empty,
   _ => Icons.play_circle_outline,
@@ -99,6 +100,15 @@ class _TasksViewState extends State<TasksView> {
     } on TernException catch (e) {
       if (mounted) setState(() => _error = e.message);
     }
+  }
+
+  Future<void> _cancel(TaskItem t) async {
+    try {
+      await widget.store.client.cancelWait(t.id);
+    } on TernException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    }
+    await _load();
   }
 
   /// Requests live in their run's conversation; runs open as a thread;
@@ -202,7 +212,12 @@ class _TasksViewState extends State<TasksView> {
         ),
       ),
       for (final t in top) ...[
-        TaskRow(task: t, now: now, onOpen: () => _open(t)),
+        TaskRow(
+          task: t,
+          now: now,
+          onOpen: () => _open(t),
+          onCancel: t.kind == 'wait' ? () => _cancel(t) : null,
+        ),
         for (final kid in items.where(
           (k) => k.parentRunId != null && k.parentRunId == t.runId,
         ))
@@ -221,11 +236,15 @@ class TaskRow extends StatelessWidget {
     required this.task,
     required this.now,
     this.onOpen,
+    this.onCancel,
   });
 
   final TaskItem task;
   final DateTime now;
   final VoidCallback? onOpen;
+
+  /// Set for a wait: it ends by itself, and this stops it sooner.
+  final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -282,7 +301,18 @@ class TaskRow extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(Icons.chevron_right, size: 16, color: c.muted),
+            if (onCancel case final cancel?)
+              TextButton(
+                onPressed: cancel,
+                style: TextButton.styleFrom(
+                  foregroundColor: c.muted,
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 12),
+                ),
+                child: const Text('Cancel'),
+              )
+            else
+              Icon(Icons.chevron_right, size: 16, color: c.muted),
           ],
         ),
       ),

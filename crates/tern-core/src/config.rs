@@ -999,6 +999,8 @@ pub struct SchedulesConfig {
     /// The model that decides whether a `notify` result is worth a push;
     /// unset = the cheapest configured model with a known price.
     pub gate_model: Option<ModelChain>,
+    /// Waits (`wait_until`) one agent may have at once.
+    pub max_waits: usize,
 }
 
 impl Default for SchedulesConfig {
@@ -1013,6 +1015,7 @@ impl Default for SchedulesConfig {
             initiative_dial: crate::initiative::Dial::default(),
             digest_times: crate::initiative::DigestTimes::default(),
             gate_model: None,
+            max_waits: 5,
         }
     }
 }
