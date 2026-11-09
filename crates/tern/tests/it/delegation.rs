@@ -191,7 +191,19 @@ async fn tern_hands_research_to_the_research_agent() {
 
     // One pointer in Research's DM for the batch of two, now done.
     let dm = research["main_channel_id"].as_str().unwrap().to_owned();
-    let (_, posts) = get(&s, &format!("/v1/channels/{dm}/posts")).await;
+    // The pointer flips from "Working for" to "Worked for" after the run
+    // completes, so wait for it (bounded) instead of reading it right away.
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let posts = loop {
+        let (_, posts) = get(&s, &format!("/v1/channels/{dm}/posts")).await;
+        let done = posts.as_array().unwrap().iter().any(|p| {
+            p["kind"] == "delegated" && p["text"].as_str().is_some_and(|t| t.starts_with("Worked"))
+        });
+        if done || std::time::Instant::now() > end {
+            break posts;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
     let pointers: Vec<&Value> = posts
         .as_array()
         .unwrap()
@@ -212,7 +224,14 @@ async fn tern_hands_research_to_the_research_agent() {
     assert_eq!(ptr["session_id"], parent_session.as_str());
     // From a tainted run, so tainted.
     assert_eq!(ptr["tainted"], true, "{ptr}");
-    let (_, work) = get(&s, "/v1/agents/research/work").await;
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let work = loop {
+        let (_, work) = get(&s, "/v1/agents/research/work").await;
+        if work[0]["status"] == "done" || std::time::Instant::now() > end {
+            break work;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
     assert_eq!(
         (
             work[0]["kind"].as_str(),
