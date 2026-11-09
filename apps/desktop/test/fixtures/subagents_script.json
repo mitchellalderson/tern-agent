@@ -9,7 +9,7 @@
   ],
   "conversations": [
     { "when_task_contains": "SUBTASK-a", "turns": [
-      { "tool_calls": [{ "name": "shell", "input": { "command": "ls" } }] },
+      { "tool_calls": [{ "name": "shell", "input": { "command": "touch from-a.txt" } }] },
       { "text": "report from a" }
     ] },
     { "when_task_contains": "SUBTASK-b", "turns": [
