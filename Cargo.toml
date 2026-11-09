@@ -102,6 +102,11 @@ uuid = { version = "1.29.0", features = ["v4", "v7"] }
 webpki-root-certs = "1.0.11"
 wiremock = "0.6.5"
 
+# Line tables are enough for backtraces and panics; full debuginfo made the
+# test build ~15% slower and the target dir ~25% bigger (measured).
+[profile.dev]
+debug = "line-tables-only"
+
 # Everyday optimized builds: thin LTO and parallel codegen use every core.
 [profile.release]
 lto = "thin"

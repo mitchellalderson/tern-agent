@@ -265,7 +265,7 @@ Agents work in a folder you choose per channel, topic or agent (`tern workspace`
 
 ```sh
 cargo test -p tern-sandbox -- --ignored real_docker      # needs Docker
-TERN_SMOKE_MODEL=anthropic:claude-sonnet-5-5 ANTHROPIC_API_KEY=... cargo test -p tern --test m1 -- --ignored real_provider
+TERN_SMOKE_MODEL=anthropic:claude-sonnet-5-5 ANTHROPIC_API_KEY=... cargo test -p tern --test it -- --ignored m1::real_provider
 ```
 
 Tests use a scripted mock provider (`TERN_PROVIDER=mock:<script.json>`), so they need no network or API key. `cargo build --release` is the fast optimized build; `--profile dist` is the smaller, slower one used for shipped binaries.

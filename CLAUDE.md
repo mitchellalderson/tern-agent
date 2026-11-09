@@ -17,12 +17,12 @@ How release work is run in this repo. Read this first in a new session.
 ## Checks
 
 - `cargo` isn't on the default PATH. Use `export PATH=/opt/homebrew/opt/rustup/bin:$PATH`.
+- Integration tests: `crates/tern/tests/it/` is one binary, one module per file
+  (`cargo test -p tern --test it -- t1c::`). Add new files as modules there, not as new `tests/*.rs` binaries (each one is a link step).
 - Flutter isn't installed on the owner's Mac. Verify with PR CI: `gh pr checks <n> --watch`.
 - PR CI runs only the jobs the changed paths need (`scripts/ci-classify.sh`, `docs/ci-cost.md`). macOS jobs need
   the `ci-macos` label.
 - UI changes are checked by `flutter analyze` and widget tests only. Ask the owner to look at them in the app.
-- Known flaky test: `a_signed_delivery_starts_one_tainted_run_and_everything_else_is_refused`
-  (`crates/tern/tests/t1c.rs`). Rerun before blaming a PR.
 
 ## Current release
 

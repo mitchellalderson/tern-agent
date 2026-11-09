@@ -253,10 +253,11 @@ jobs:
         with:
           key: e2e-dist
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: End-to-end tests against the shipped (dist) binary
+      - name: Smoke tests against the shipped (dist) binary
         # Test binaries always build with panic=unwind; the shipped profile
-        # can differ, so run the binary users actually get.
-        run: cargo build --profile dist -p tern && TERN_TEST_BIN="$PWD/target/dist/tern" cargo test -p tern --tests
+        # can differ, so run the binary users actually get. A smoke set only
+        # (scripts/smoke.sh); rust-tests already ran the whole suite.
+        run: cargo build --profile dist -p tern && scripts/smoke.sh "$PWD/target/dist/tern"
 
   # Only what differs on macOS: cfg(macos) code (clippy), the Seatbelt sandbox,
   # path/terminal/service/tray code, the desktop tests that branch on the
@@ -286,22 +287,25 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: macOS-specific Rust tests (Seatbelt sandbox, paths, tui)
         run: cargo test -p tern-sandbox -p tern-tools -p tern-tui
-      - name: Build the shipped binary (also the aarch64 release artifact)
+      - name: Build the binary the smoke and Dart tests drive
+        run: cargo build -p tern
+      - name: Smoke tests, Seatbelt through the binary, launchd service files
+        # One end-to-end run per surface (scripts/smoke.sh), plus the macOS
+        # sandbox and `tern service` tests. Not the whole `-p tern` suite.
+        run: scripts/smoke.sh "$PWD/target/debug/tern" t8a::
+      - name: Build the shipped binary (aarch64 release artifact for the DMG)
+        # 19 min with the dist profile: only for the runs that make a DMG.
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
         run: cargo build --profile dist --locked -p tern --target aarch64-apple-darwin
-      - name: tern tests and TUI smoke test against the shipped binary
-        run: |
-          bin="$PWD/target/aarch64-apple-darwin/dist/tern"
-          TERN_TEST_BIN="$bin" cargo test -p tern
-          python3 scripts/tui-smoke.py "$bin"
       - name: Desktop tests that branch on the platform
         working-directory: apps/desktop
         run: |
           (cd packages/tern_client && dart pub get)
           flutter pub get
-          TERN_BIN="$GITHUB_WORKSPACE/target/aarch64-apple-darwin/dist/tern" \
+          TERN_BIN="$GITHUB_WORKSPACE/target/debug/tern" \
             flutter test test/quit_test.dart test/where_to_run_test.dart test/daemon_test.dart test/store_live_test.dart
       - uses: actions/upload-artifact@v4
-        if: ${{ !inputs.skip_builds }}
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
         with:
           name: tern-aarch64-apple-darwin
           path: target/aarch64-apple-darwin/dist/tern
