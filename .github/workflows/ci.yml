@@ -292,7 +292,7 @@ jobs:
       - name: Smoke tests, Seatbelt through the binary, launchd service files
         # One end-to-end run per surface (scripts/smoke.sh), plus the macOS
         # sandbox and `tern service` tests. Not the whole `-p tern` suite.
-        run: scripts/smoke.sh "$PWD/target/debug/tern" t8a::
+        run: 'scripts/smoke.sh "$PWD/target/debug/tern" t8a::'
       - name: Build the shipped binary (aarch64 release artifact for the DMG)
         # 19 min with the dist profile: only for the runs that make a DMG.
         if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
