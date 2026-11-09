@@ -297,13 +297,16 @@ jobs:
         # 19 min with the dist profile: only for the runs that make a DMG.
         if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
         run: cargo build --profile dist --locked -p tern --target aarch64-apple-darwin
+      - name: Build the optimized binary the live Dart tests drive
+        # The debug binary is too slow for their 10 s waits on a macOS runner.
+        run: cargo build --release --locked -p tern
       - name: Desktop tests that branch on the platform
         working-directory: apps/desktop
         run: |
           (cd packages/tern_client && dart pub get)
           flutter pub get
-          TERN_BIN="$GITHUB_WORKSPACE/target/debug/tern" \
-            flutter test test/quit_test.dart test/where_to_run_test.dart test/daemon_test.dart test/store_live_test.dart
+          TERN_BIN="$GITHUB_WORKSPACE/target/release/tern" \
+            flutter test --concurrency=1 test/quit_test.dart test/where_to_run_test.dart test/daemon_test.dart test/store_live_test.dart
       - uses: actions/upload-artifact@v4
         if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
         with:
