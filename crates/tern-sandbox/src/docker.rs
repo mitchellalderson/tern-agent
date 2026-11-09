@@ -350,6 +350,7 @@ mod tests {
         let path = dir.join("docker");
         let script = format!(
             r#"#!/bin/sh
+[ -n "$FAKE_DOCKER_PROBE" ] && exit 0
 echo "$*" >> "{log}"
 case "$1" in
   inspect) if [ -f "{state}" ]; then cat "{state}"; else echo "Error: No such object" >&2; exit 1; fi ;;
@@ -371,6 +372,20 @@ esac
         );
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Another test thread may fork while the file is still open for
+        // writing, and its child keeps that descriptor until it execs:
+        // `exec` then fails with ETXTBSY. Wait that out here, once.
+        let end = std::time::Instant::now() + Duration::from_secs(5);
+        while let Err(e) = std::process::Command::new(&path)
+            .env("FAKE_DOCKER_PROBE", "1")
+            .status()
+        {
+            assert!(
+                e.raw_os_error() == Some(26) && std::time::Instant::now() < end,
+                "{e}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         path
     }
 
