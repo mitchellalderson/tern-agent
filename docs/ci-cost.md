@@ -16,9 +16,9 @@ started the whole matrix and was not cancelled by the next push. A green main pu
 | --- | --- |
 | gitleaks | every event, always |
 | `changes` (diff classifier, `scripts/ci-classify.sh`) | every event; docs/markdown/image/LICENSE-only diffs set `code=false`, which skips everything below. On PRs it also sets `rust` and `dart` |
-| Linux, four parallel jobs: `lint` (fmt, shellcheck, flutter analyze, clippy), `rust-tests` (`cargo test-all --rust`, Docker sandbox), `dart-tests` (`cargo test-all --dart`), `e2e-dist` (tests against the shipped `dist` binary) | every code change outside PRs; on PRs, see the table below |
+| Linux, four parallel jobs: `lint` (fmt, shellcheck, flutter analyze, clippy), `rust-tests` (`cargo test-all --rust`, Docker sandbox), `dart-tests` (`cargo test-all --dart`), `e2e-dist` (`scripts/smoke.sh` against the shipped `dist` binary) | every code change outside PRs; on PRs, see the table below |
 | `build-linux` (musl x2) | after all four Linux jobs, unless `skip_builds` |
-| `check-macos`: clippy (cfg(macos) code), tern-sandbox/tools/tui tests (Seatbelt), `cargo test -p tern` and TUI smoke against the shipped aarch64 binary, the 4 platform-sensitive Dart test files | only after all four Linux jobs are green, and only on push to main, release checks (`workflow_call`), manual dispatch, nightly, or a PR labelled `ci-macos` |
+| `check-macos`: clippy (cfg(macos) code), tern-sandbox/tools/tui tests (Seatbelt), `scripts/smoke.sh` plus the `t8a` service tests against a debug binary, the 4 platform-sensitive Dart test files. The aarch64 `dist` build (~19 min) runs only on manual dispatch and the nightly, where the DMG needs it | only after all four Linux jobs are green, and only on push to main, release checks (`workflow_call`), manual dispatch, nightly, or a PR labelled `ci-macos` |
 | `desktop-macos` (universal DMG; reuses the aarch64 binary from `check-macos`, builds only x86_64) | `workflow_dispatch` and the nightly schedule (skipped if main has no commits in 24 h); release tags are built by `release.yml` |
 
 ### PRs run only what the paths need
@@ -34,7 +34,7 @@ A mixed PR runs the union. Skipped jobs count as passing for `check-macos` and `
 manual runs, the nightly and release checks always run everything. No branch protection is set today; if required
 checks are added, require only jobs that always run (`secrets`, `changes`).
 
-Other rules: every job has `timeout-minutes` (macOS tests 50, DMG 30); `CARGO_INCREMENTAL=0`; rust-cache only saves from main;
+Other rules: every job has `timeout-minutes` (macOS 30; the dist build on dispatch and nightly needs more); `CARGO_INCREMENTAL=0`; rust-cache only saves from main;
 a newer push to the same ref cancels the older run (bursts to main test only the tip), except tag runs, which are
 never cancelled; unrelated PR labels do not re-trigger CI.
 
@@ -77,3 +77,35 @@ the repo's 10 GB Actions cache; if eviction shows up as cold builds, share a key
 - PRs without `ci-macos` merge with no macOS signal until the push to main; label PRs that touch sandbox,
   service, tray, paths or desktop packaging.
 - The x86_64 macOS binary is built (and run through `lipo`) only for DMGs and releases; it is never executed in CI.
+
+## Test audit (2026-11-09)
+
+Measured from run 42654243767 (the macOS job hit its 30 min limit while still passing) and a local run.
+
+Where the time went:
+
+| Job | Before | What dominated |
+| --- | --- | --- |
+| rust tests (linux) | 6.5 min | ~2.5 min of test binaries run one after another; 94 binaries |
+| e2e-dist (linux) | 12.5 min | `dist` build 8.3 min, then `cargo test -p tern --tests` again (1.5 min compile, 74 s run) |
+| macOS | 30+ min (cancelled) | `dist` build 19.1 min, 56 `-p tern` test binaries compiled and linked 4.6 min, then `ap3` alone ran 71 s |
+| dart tests (linux) | 3.1 min | not touched |
+
+Test run time was never the problem: 1261 tests add up to ~540 CPU-seconds. The cost is linking one binary per
+`tests/*.rs` file and building `dist` twice.
+
+What changed:
+
+- `crates/tern`, `tern-auth`, `tern-bundle` and `tern-tools` each have one integration binary, `tests/it/`, with one
+  module per old file. `crates/tern`: 56 binaries became 1 (239 tests in ~12 s on 8 cores, against ~70 s serially). Add
+  new test files as modules there.
+- `scripts/smoke.sh` is the shipped-binary smoke set: create and read back a file, crash and resume, the daemon API over
+  the socket, the sandbox through the binary, an injected write held in the outbox, and the TUI. e2e-dist and macOS run
+  it instead of the whole `-p tern` suite, which `rust-tests` already runs.
+- macOS tests a debug binary. The 19-minute `dist` build runs only when its output is used (manual runs and the nightly).
+- `[profile.dev] debug = "line-tables-only"`: cold test build 56 s to 48 s, target dir 6.1 GB to 4.7 GB (local).
+- Not adopted: `cargo nextest` (the whole `tern` integration suite already runs in ~12 s; a per-test process would add
+  startup cost) and `opt-level` for dependencies (not measured to help).
+- The webhook test `a_signed_delivery_starts_one_tainted_run_and_everything_else_is_refused` was flaky: the daemon
+  answers 413 and closes while the client is still uploading the oversized body, so the client sometimes saw a broken
+  pipe instead of the 413. The test now accepts either (both mean refused; the final run count shows nothing started).
