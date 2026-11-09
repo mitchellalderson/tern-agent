@@ -24,6 +24,10 @@ impl Agent {
         req: &ApprovalRequest,
     ) -> Result<i64, StepError> {
         let expires_at = tern_store::now_ms() + self.cfg.outbox_expiry.as_millis() as i64;
+        // A file edit remembers the file as it is now.
+        let file = outbox::file_target(&req.call.name, &req.call.input, self.scope_for(run).cwd());
+        let file_path = file.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let file_hash = file.as_deref().map(outbox::file_hash);
         let item = self.store.add_outbox(&NewOutbox {
             run_id: &run.id,
             session_id: &run.session_id,
@@ -35,6 +39,8 @@ impl Agent {
             taint: req.taint.as_deref(),
             local_only: req.local_only,
             expires_at,
+            file_path: file_path.as_deref(),
+            file_hash: file_hash.as_deref(),
         })?;
         tracing::info!(run = %run.id, tool = %req.call.name, outbox = item.id, "nobody answered; queued in the outbox");
         self.ledger_queued(run, req, item.id)?;
@@ -59,12 +65,22 @@ impl Agent {
             name: item.tool.clone(),
             input,
         };
+        // Edits to one file run in queue order, one at a time: wait for any
+        // earlier approved item on it to finish.
+        if let Some(path) = item.file_path.as_deref() {
+            while self.store.earlier_outbox_running(item.id, path)? {
+                if ctx.cancel.is_cancelled() {
+                    return Ok(RunStatus::Interrupted);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
         let policy = self.tools.policy(ctx, &call);
         let in_flight = if policy.idempotent {
             InFlight::Retry
         } else {
             let r = ToolResult::error(INTERRUPTED_TOOL_MESSAGE);
-            let note = exec_message(item.id, &item.summary, &call.name, &r);
+            let note = exec_message(item.id, &item.summary, &call.name, &r, false);
             InFlight::Substitute(StepOutput::new(r).with_messages(vec![note]))
         };
         self.emit(AgentEvent::ToolStarted {
@@ -73,6 +89,11 @@ impl Agent {
             name: call.name.clone(),
             summary: item.summary.clone(),
         });
+        let stale_text = item
+            .file_path
+            .as_deref()
+            .map(outbox::stale_message)
+            .unwrap_or_default();
         let step_input = json!({ "outbox_id": item.id, "call": call });
         let result = self
             .journal
@@ -84,12 +105,16 @@ impl Agent {
                 in_flight,
                 || async {
                     // Nothing the user approves runs a forbidden tool.
+                    let stale =
+                        outbox::file_changed(item.file_path.as_deref(), item.file_hash.as_deref());
                     let mut r = match policy.forbidden {
                         Some(flag) => ToolResult::error(crate::approval::forbidden_message(flag)),
+                        // The file changed since it was queued: don't run it.
+                        None if stale => ToolResult::error(stale_text.clone()),
                         None => with_call(&call.id, self.tools.call(ctx, &call)).await.0,
                     };
                     r = r.with_trust(self.tools.trust_floor(&call.name));
-                    let note = exec_message(item.id, &item.summary, &call.name, &r);
+                    let note = exec_message(item.id, &item.summary, &call.name, &r, stale);
                     Ok(StepOutput::new(r).with_messages(vec![note]))
                 },
             )
@@ -100,7 +125,8 @@ impl Agent {
             Err(e) => return Err(e.into()),
         };
         let r = &result.value;
-        if !result.replayed {
+        let stale = r.is_error && !stale_text.is_empty() && r.content == stale_text;
+        if !result.replayed && !stale {
             self.ledger_effect(
                 run,
                 &call,
@@ -120,9 +146,14 @@ impl Agent {
             replayed: result.replayed,
         });
         let result_json = serde_json::to_string(r).map_err(StepError::from)?;
-        self.store
-            .finish_outbox(item.id, r.is_error, &result_json)?;
-        tracing::info!(run = %run.id, outbox = item.id, tool = %call.name, is_error = r.is_error, "outbox item executed");
+        if stale {
+            self.store.mark_outbox_stale(item.id, &result_json)?;
+            tracing::info!(run = %run.id, outbox = item.id, tool = %call.name, "outbox item skipped: its file changed");
+        } else {
+            self.store
+                .finish_outbox(item.id, r.is_error, &result_json)?;
+            tracing::info!(run = %run.id, outbox = item.id, tool = %call.name, is_error = r.is_error, "outbox item executed");
+        }
         // Tell the run that queued it, if it is still working.
         if let Some(done) = self.store.outbox_item(item.id)? {
             tell_run(&self.store, &done, Some(&preview(&r.content)))?;
@@ -130,7 +161,13 @@ impl Agent {
         outcome.final_text = format!(
             "Outbox #{} {}: {}",
             item.id,
-            if r.is_error { "failed" } else { "ran" },
+            if stale {
+                "skipped"
+            } else if r.is_error {
+                "failed"
+            } else {
+                "ran"
+            },
             item.summary
         );
         Ok(RunStatus::Completed)
@@ -140,9 +177,13 @@ impl Agent {
 /// The message an `outbox_exec` step adds to the session, so later runs
 /// there know the call was made. Plain text: there is no `tool_use` to pair
 /// a tool result with.
-fn exec_message(id: i64, summary: &str, tool: &str, r: &ToolResult) -> Message {
+fn exec_message(id: i64, summary: &str, tool: &str, r: &ToolResult, stale: bool) -> Message {
     let content = taint::frame(tool, None, r);
-    let head = if r.is_error {
+    let head = if stale {
+        format!(
+            "[outbox #{id}: the user approved {summary}, but the file changed since it was queued, so it didn't run]"
+        )
+    } else if r.is_error {
         format!("[outbox #{id}: the user approved {summary}, and it failed]")
     } else {
         format!("[outbox #{id}: the user approved {summary}, and it ran]")

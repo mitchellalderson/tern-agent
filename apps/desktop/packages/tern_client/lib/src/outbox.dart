@@ -22,6 +22,8 @@ class OutboxItem {
     this.resultError = false,
     this.channelId,
     this.agentId,
+    this.file,
+    this.staleFlag = false,
   });
 
   factory OutboxItem.fromJson(Json j) {
@@ -45,6 +47,8 @@ class OutboxItem {
       resultError: result?['is_error'] as bool? ?? false,
       channelId: j['channel_id'] as String?,
       agentId: j['agent_id'] as String?,
+      file: j['file'] as String?,
+      staleFlag: j['stale'] as bool? ?? false,
     );
   }
 
@@ -66,7 +70,8 @@ class OutboxItem {
   /// Only a client on this computer may decide it.
   final bool localOnly;
 
-  /// `pending`, `approved`, `done`, `failed`, `rejected` or `expired`.
+  /// `pending`, `approved`, `done`, `failed`, `rejected`, `expired` or
+  /// `stale` (its file changed, so it was skipped).
   final String state;
   final DateTime createdAt;
   final DateTime expiresAt;
@@ -80,7 +85,22 @@ class OutboxItem {
   final String? channelId;
   final String? agentId;
 
-  bool get pending => state == 'pending';
+  /// The file a queued edit targets.
+  final String? file;
+  final bool staleFlag;
+
+  /// Its file changed since it was queued: it can't run, only be discarded.
+  bool get stale => state == 'stale' || staleFlag;
+
+  /// Waiting for the user: pending, or stale and not yet discarded.
+  bool get pending => state == 'pending' || state == 'stale';
+
+  /// `a.md` for `/work/a.md`.
+  String? get fileName => file?.split(RegExp(r'[\\/]')).last;
+
+  /// The one-line reason it can't run.
+  String get staleNote =>
+      '${fileName ?? 'The file'} changed since this was queued.';
 
   /// `write · gmail_send …`, as approval cards show a call.
   String get headline => '$effect · $summary';
