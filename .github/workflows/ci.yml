@@ -267,7 +267,7 @@ jobs:
     # Linux jobs the changed paths don't need are skipped, which counts as OK.
     if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && needs.changes.outputs.macos == 'true' && needs.changes.outputs.code == 'true'
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable

@@ -34,7 +34,7 @@ A mixed PR runs the union. Skipped jobs count as passing for `check-macos` and `
 manual runs, the nightly and release checks always run everything. No branch protection is set today; if required
 checks are added, require only jobs that always run (`secrets`, `changes`).
 
-Other rules: every job has `timeout-minutes` (macOS 30); `CARGO_INCREMENTAL=0`; rust-cache only saves from main;
+Other rules: every job has `timeout-minutes` (macOS tests 50, DMG 30); `CARGO_INCREMENTAL=0`; rust-cache only saves from main;
 a newer push to the same ref cancels the older run (bursts to main test only the tip), except tag runs, which are
 never cancelled; unrelated PR labels do not re-trigger CI.
 
