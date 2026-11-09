@@ -1,1 +1,0 @@
-- **Changelog fragments**: add entries as files in `changelog.d/`, not in `CHANGELOG.md`; `cargo xtask changelog <version>` gathers them at release.

@@ -16,7 +16,8 @@ How release work is run in this repo. Read this first in a new session.
 
 ## Checks
 
-- Flutter (and sometimes `cargo`) isn't installed on the owner's Mac. Verify with PR CI: `gh pr checks <n> --watch`.
+- `cargo` isn't on the default PATH. Use `export PATH=/opt/homebrew/opt/rustup/bin:$PATH`.
+- Flutter isn't installed on the owner's Mac. Verify with PR CI: `gh pr checks <n> --watch`.
 - PR CI runs only the jobs the changed paths need (`scripts/ci-classify.sh`, `docs/ci-cost.md`). macOS jobs need
   the `ci-macos` label.
 - UI changes are checked by `flutter analyze` and widget tests only. Ask the owner to look at them in the app.

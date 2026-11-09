@@ -1,1 +1,0 @@
-- Your posts in Home and channels sit on the same soft `sand-deep` tint as your messages in a conversation, so a thread is easy to scan.

@@ -1,1 +1,0 @@
-- **Stale queued edits:** an `edit_file` or `write_file` waiting in the outbox now remembers the file. If the file changed before you approve it, it is skipped with one line ("a.md changed since this was queued."), not run to fail. Stale items offer **Discard**. Edits to one file run in queue order, and a batch of skipped edits is one message.

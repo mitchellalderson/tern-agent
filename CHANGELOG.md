@@ -9,6 +9,19 @@ Entries go in `changelog.d/` (see its README); the release gathers them here.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-11-09
+
+Fewer approval prompts, a calmer desktop app, and agents that can wait for something and continue.
+
+### Added
+
+- **Reasoning view**: when a model returns its reasoning (Anthropic thinking, OpenAI-compatible `reasoning_content` /
+  `reasoning`), a chevron beside "Thinking" opens a quiet box that streams it live. The message keeps a collapsed
+  "Thought for 12s" note. No chevron when there is none; redacted reasoning reads "Reasoning hidden". Turn it off with
+  `show_reasoning = false`. Never sent to channels.
+- **Uninstall from the app**: Settings › About › **Uninstall tern…** stops tern and removes its login items (and, if you tick it, deletes your data), so removing tern on macOS no longer needs a terminal.
+- **Wait until**: an agent can say "watch this and continue here when it's done" (`wait_until`, with `wait_list` and `wait_cancel`). tern polls a connector read or a public JSON URL with no model call, then continues the same conversation with the result when it matches or times out. Shown as "Waiting: …" in Tasks and the conversation, with Cancel. Up to 5 per agent (`schedules.max_waits`). Recipe: waiting for a GitHub Actions run.
+
 ### Changed
 
 - **`http_fetch` returns data only by default.** With a URL and no `want`, the result is title, meta, headings, tables,
@@ -26,6 +39,19 @@ Entries go in `changelog.d/` (see its README); the release gathers them here.
   resolved, protected files excluded), is classified `read` in a verified sandbox: it no longer shows as "destructive ·
   shell" and doesn't ask, including in a tainted run. Anything else, including any doubt, asks as before.
 - **Autonomy ceiling picker** in the agent sheet reads as a scale from low to high (Read only, Ask first, Code, Mostly on its own, Full), with the raw level names beside each, and "Use my global setting" set apart from the scale. Copy only: levels and config values are unchanged.
+- **Changelog fragments**: add entries as files in `changelog.d/`, not in `CHANGELOG.md`; `cargo xtask changelog <version>` gathers them at release.
+- The first-launch screen is a calm welcome: **Start on this Mac** first, **Connect to a remote server** second, and the socket path and OS error sit behind **Details**.
+- Side panel Memory is quieter: a collapsed "Memory · N" row like Tools, with one scope menu in place of tabs.
+- Your posts in Home and channels sit on the same soft `sand-deep` tint as your messages in a conversation, so a thread is easy to scan.
+- **Higher token and context limits.** Each model's own window and output limit are used when known, instead of a flat
+  128k / 8192. Fallbacks: 200k context, 32k output; local servers keep 32k context. New `max_tokens` setting. Compaction
+  starts at 80% (was 75%); summaries get twice the room.
+
+### Fixed
+
+- Agent messages no longer show literal markup such as `**$ </p`: HTML tags are dropped, a bold or code span cut by a
+  preview is closed, and Home pointers are cut at a word instead of mid-tag.
+- **Stale queued edits:** an `edit_file` or `write_file` waiting in the outbox now remembers the file. If the file changed before you approve it, it is skipped with one line ("a.md changed since this was queued."), not run to fail. Stale items offer **Discard**. Edits to one file run in queue order, and a batch of skipped edits is one message.
 
 ## [0.1.0-alpha.1] - 2026-11-06
 
