@@ -128,7 +128,8 @@ void main() {
     await store.send('delegate two things');
     final session = store.selected!;
 
-    // Sub-agent a's shell call asks here, labelled with its name.
+    // Sub-agent a's shell call (a write; a plain `ls` is a read and no longer
+    // asks) asks here, labelled with its name.
     await until(
       () => store.current!.items.whereType<ApprovalItem>().isNotEmpty,
       'approval from a sub-agent',
