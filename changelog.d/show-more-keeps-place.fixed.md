@@ -1,1 +1,1 @@
-"Show more" and "Show less" in the chat no longer jump the view; the text stays where you clicked.
+- **Show more** no longer jumps the chat view. The text stays where you clicked.
