@@ -591,6 +591,9 @@ class TernStore extends ChangeNotifier {
   /// The Tasks view (tooling spec §8.2).
   bool get hasTasks => health?.features.contains('tasks') ?? false;
 
+  /// `/v1/waits`: `wait_until` waits, shown and cancelled in the app.
+  bool get hasWaits => health?.features.contains('waits') ?? false;
+
   /// What waits for you anywhere: open approval and secret cards in every
   /// conversation this app has, and the outbox.
   int get needsYouCount {

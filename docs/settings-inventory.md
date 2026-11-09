@@ -65,6 +65,7 @@ same list and a new config field appears in both without UI changes.
 | `schedules.usd_per_day` | float, optional | unset | config, desktop | no | no | limits | user |
 | `schedules.tokens_per_run` | int, optional | unset | config, desktop | no | no | limits | user |
 | `schedules.max_events_per_poll` | int | 20 | config, desktop | no | no | limits | adv |
+| `schedules.max_waits` | int | 5 | config | no | no | limits | adv |
 | `schedules.initiative` | choice silent/digest/notify/interrupt | digest | config, desktop | no | no | general | user |
 | `schedules.initiative_dial` | choice vacation/quieter/normal/louder | normal | config, desktop | no | no | general | user |
 | `schedules.digest_times` | list | 08:30, 17:30 | config, desktop | no | no | general | user |

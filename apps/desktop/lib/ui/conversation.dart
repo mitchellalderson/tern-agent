@@ -20,6 +20,7 @@ import 'preferences.dart';
 import 'providers.dart';
 import 'widgets.dart';
 import 'workspace_ui.dart';
+import 'wait_strip.dart';
 
 class ConversationView extends StatefulWidget {
   const ConversationView({
@@ -165,6 +166,7 @@ class _ConversationViewState extends State<ConversationView> {
                 ),
         ),
         if (store.streamOpen && store.hasOutbox) OutboxStrip(store: store),
+        WaitStrip(store: store),
         if (store.error case final e?)
           _ErrorBanner(
             message: e,

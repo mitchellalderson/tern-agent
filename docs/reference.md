@@ -503,6 +503,7 @@ It prints what is left for you to remove by hand: the `tern` binary, `~/.tern` (
 | `schedules.digest_times` | `["08:30", "17:30"]` | Local times when digest results are sent, one message per chat. |
 | `schedules.gate_model` | none | The model that decides whether a `notify` result is worth a push; unset = the cheapest configured model with a known price. |
 | `schedules.max_events_per_poll` | `20` | New watch events that each start a run; the rest of one poll share one run. |
+| `schedules.max_waits` | `5` | Waits (`wait_until`) one agent may have at once. |
 | `memory.user_md_tokens` | `1500` | Cap on `user.md` as injected into the prompt (tokens ≈ chars / 4). |
 | `memory.memory_md_tokens` | `1500` | Cap on `memory.md` (core facts) as injected. |
 | `memory.flush` | `true` | Before older context is summarized, give the agent one silent turn to save durable facts with `memory_save`. |
@@ -743,6 +744,10 @@ A schedule is a **routine**: a prompt with a trigger. The tools and the API keep
   Set it per routine (`initiative`, `"default"` or `null` for the default), or for all with `schedules.initiative`. The **dial** (`schedules.initiative_dial`, or `PUT /v1/initiative {"dial": "vacation"}`) moves every routine one level `quieter` or `louder`, or makes everything silent on `vacation`; `/v1/status` reports it.
 - **API**: `POST /v1/schedules` takes one of `cron`, `at` or `watch` (+ `every`, `backfill`, `include_self`), and `gate`, `gate_connector`, `initiative`; `PATCH` changes any of them. The view adds `trigger`, `at`, `watch`, `every_secs`, `last_check`, `gate`, `gate_connector` and `initiative` (each absent when unset).
 - **In the desktop app** the routine editor has Repeating / Once / On events / Webhook, an initiative menu, and a gate under "Quiet hours and limits".
+
+### Waits
+
+`wait_until` is a one-shot wait tied to the conversation that made it: "watch this GitHub Actions run and continue here when it finishes". The agent gives a check (a connector's **read** tool with arguments, a public JSON URL, or just a delay like `20m`), a condition (`{path, equals}` or `{path, in: [...]}` on the JSON result), `every` (at least 30s, default 1m), a `timeout` (default 1h, at most 24h) and a note to itself. The daemon polls the check, **no model call**; when the condition matches, or the wait times out, it starts one run in the same session and agent with the note and the result (framed as untrusted, and the run tainted, when it came from a connector or a URL), and the wait deletes itself. Waits survive a restart. `wait_list` and `wait_cancel` are the agent's; the user sees "Waiting: <note>" in Library → Tasks (with Cancel) and as a quiet line in the conversation, and `GET /v1/waits`, `DELETE /v1/waits/{id}` serve both. At most `[schedules] max_waits` (default 5) per agent; `runs_per_day` also caps continuations; every create, fire and cancel is in the ledger. Creating one doesn't ask in an untainted run and asks in a tainted one. Design: [wait-until-design.md](wait-until-design.md); GitHub Actions: [recipes/github-actions.md](recipes/github-actions.md).
 
 ### Webhooks
 

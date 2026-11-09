@@ -124,6 +124,48 @@ pub(crate) fn parse_json(out: &str) -> Result<Value, String> {
     serde_json::from_str(out).map_err(|e| format!("unexpected result {out:?}: {e}"))
 }
 
+/// Load active connector `connector` for a read of its own, and find its
+/// read tool `tool`.
+fn read_vm(host: &Host, dir: &Path, connector: &str, tool: &str) -> Result<Vm, String> {
+    if !valid_ident(connector) {
+        return Err(format!("{connector:?} is not a connector name"));
+    }
+    let path = dir.join(format!("{connector}.{EXTENSION}"));
+    let vm = load_active(host, &path)
+        .map_err(|e| format!("connector {connector} is not active ({e})"))?;
+    match vm.spec.tools.iter().find(|t| t.name == tool) {
+        None => Err(format!("connector {connector} has no tool {tool:?}")),
+        Some(t) if t.effect() != tern_core::tool::Effect::Read => Err(format!(
+            "{connector}.{tool} isn't a read tool; a wait only reads"
+        )),
+        Some(_) => Ok(vm),
+    }
+}
+
+/// The hosts connector read tool `connector.tool` reaches, once it is
+/// known to be an active, approved read tool (a wait checks this when it is
+/// made).
+pub fn read_tool_hosts(
+    host: &Host,
+    dir: &Path,
+    connector: &str,
+    tool: &str,
+) -> Result<Vec<String>, String> {
+    Ok(read_vm(host, dir, connector, tool)?.spec.capabilities.http)
+}
+
+/// Run read tool `connector.tool` with `args`, as a wait's poll does: the
+/// connector's own hosts, secrets and limits, GET only, no model.
+pub async fn call_read(
+    host: &Host,
+    dir: &Path,
+    connector: &str,
+    tool: &str,
+    args: &Value,
+) -> Result<String, String> {
+    read_vm(host, dir, connector, tool)?.call(tool, args).await
+}
+
 /// The watches active connector `connector` declares.
 pub async fn watches(host: &Host, dir: &Path, connector: &str) -> Result<Vec<WatchInfo>, String> {
     let vm = watch_vm(host, dir, connector)?;
@@ -403,6 +445,59 @@ return {
         let src = format!("local BASE = \"{}\"\n{GITHUB}", server.uri());
         let dir = install(&tmp, "github", &src);
         (host, tmp, dir, server)
+    }
+
+    #[tokio::test]
+    async fn a_wait_calls_only_read_tools_of_active_connectors() {
+        let (host, _tmp, dir, _server) = github(json!([{ "id": 1, "title": "x" }])).await;
+        let out = call_read(&host, &dir, "github", "search", &json!({}))
+            .await
+            .unwrap();
+        assert!(out.contains("\"title\": \"x\""), "{out}");
+        assert_eq!(
+            read_tool_hosts(&host, &dir, "github", "search").unwrap(),
+            ["127.0.0.1"]
+        );
+        let err = call_read(&host, &dir, "github", "nope", &json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("no tool"), "{err}");
+        let err = call_read(&host, &dir, "nobody", "search", &json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("not active"), "{err}");
+        // A write tool is refused before anything runs.
+        let src = std::fs::read_to_string(dir.join("github.luau")).unwrap().replace(
+            "tools = { search",
+            "tools = { push = { description = \"push\", effect = \"write\", run = function() return 1 end }, search",
+        );
+        std::fs::write(dir.join("github.luau"), src).unwrap();
+        let err = call_read(&host, &dir, "github", "push", &json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("isn't a read tool"), "{err}");
+    }
+
+    /// The GitHub Actions recipe's connector loads and has its read tool.
+    #[test]
+    fn the_github_actions_recipe_loads() {
+        let doc = include_str!("../../../docs/recipes/github-actions.md");
+        let code = doc
+            .split("```lua\n")
+            .nth(1)
+            .and_then(|r| r.split("```").next())
+            .unwrap();
+        let (host, _tmp) = host();
+        let vm = Vm::load(&host, "github.luau", code).unwrap();
+        assert_eq!(vm.spec.name, "github");
+        let t = vm
+            .spec
+            .tools
+            .iter()
+            .find(|t| t.name == "run_status")
+            .unwrap();
+        assert_eq!(t.effect(), tern_core::tool::Effect::Read);
+        assert_eq!(vm.spec.capabilities.http, ["api.github.com/repos/*"]);
     }
 
     #[tokio::test]

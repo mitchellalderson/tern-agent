@@ -86,3 +86,50 @@ class Tasks {
   List<TaskItem> section(String s) =>
       items.where((t) => t.section == s).toList();
 }
+
+/// An active `wait_until` (docs/wait-until-design.md): a one-shot check
+/// tied to a conversation, polled by the daemon with no model call.
+class Wait {
+  const Wait({
+    required this.id,
+    required this.note,
+    required this.agentId,
+    required this.sessionId,
+    this.channelId,
+    this.target = '',
+    this.until,
+    this.expiresAt,
+    this.lastCheck,
+  });
+
+  factory Wait.fromJson(Json j) => Wait(
+    id: j['id'] as String,
+    note: j['note'] as String,
+    agentId: j['agent_id'] as String,
+    sessionId: j['session_id'] as String,
+    channelId: j['channel_id'] as String?,
+    target: j['target'] as String? ?? '',
+    until: j['until'] as String?,
+    expiresAt: switch (j['expires_at']) {
+      final int ms => DateTime.fromMillisecondsSinceEpoch(ms),
+      _ => null,
+    },
+    lastCheck: j['last_check'] as String?,
+  );
+
+  final String id;
+  final String note;
+  final String agentId;
+  final String sessionId;
+  final String? channelId;
+
+  /// What it checks: `github.run_status`, `example.com`, `time`.
+  final String target;
+
+  /// `status == completed`; null for a time wait.
+  final String? until;
+
+  /// When it gives up.
+  final DateTime? expiresAt;
+  final String? lastCheck;
+}

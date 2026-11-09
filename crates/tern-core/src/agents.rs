@@ -338,6 +338,9 @@ pub const STARTER_TOOLS: &[&str] = &[
     "schedule_list",
     "schedule_update",
     "schedule_delete",
+    "wait_until",
+    "wait_list",
+    "wait_cancel",
     "skill_read",
 ];
 
@@ -367,6 +370,8 @@ const WRITE_TOOLS: &[&str] = &[
     "schedule_create",
     "schedule_update",
     "schedule_delete",
+    "wait_until",
+    "wait_cancel",
 ];
 /// The most autonomy any starter may ship with.
 pub const STARTER_MAX_AUTONOMY: crate::approval::Autonomy = crate::approval::Autonomy::Supervised;

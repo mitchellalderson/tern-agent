@@ -13,6 +13,7 @@ pub mod shell_class;
 pub mod shell_read;
 pub mod shell_script;
 pub mod skills;
+pub mod wait;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,6 +60,7 @@ pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> R
         store: opts.store.clone(),
         notify: None,
     }));
+    wait::register(registry, opts.store.clone(), wait::DEFAULT_MAX_ACTIVE, None);
     registry.register(Arc::new(history::HistorySearch::new(opts.store.clone())));
     registry.register(Arc::new(memory::SessionSearch::new(opts.store.clone())));
     registry.register(Arc::new(

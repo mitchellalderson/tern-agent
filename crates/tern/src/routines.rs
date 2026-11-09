@@ -56,6 +56,13 @@ impl RoutineChecks for LuaChecks {
     }
 }
 
+#[async_trait]
+impl tern_tools::wait::WaitChecks for LuaChecks {
+    async fn connector_tool(&self, connector: &str, tool: &str) -> Result<Vec<String>, String> {
+        tern_lua::watch::read_tool_hosts(&self.host, &self.dir, connector, tool)
+    }
+}
+
 /// A Luau host for routines: the same store and secrets as connectors.
 pub fn lua_host(store: &Store, secrets: &tern_core::Secrets) -> anyhow::Result<tern_lua::Host> {
     Ok(tern_lua::Host::new(store.clone(), secrets.clone())?)

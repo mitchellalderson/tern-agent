@@ -36,7 +36,8 @@ pub struct Task {
     pub section: String,
     /// `approval`, `outbox`, `secret_request`, `sign_in`, `skill_offer` (needs you); `run`
     /// (running, queued, failed); `events`, `delivery` (queued);
-    /// `routine` (scheduled); `routine_paused` (failed).
+    /// `routine`, `wait` (scheduled; a wait's `at` is when it gives up);
+    /// `routine_paused` (failed).
     pub kind: String,
     /// The approval, outbox item, run or routine id.
     pub id: String,
@@ -339,6 +340,34 @@ pub fn collect(m: &Manager) -> anyhow::Result<Tasks> {
             at,
             detail,
             ..base
+        });
+    }
+    // Waits: one-shot checks a conversation is waiting on. They end by
+    // themselves; the user can cancel them.
+    for w in store.waits(None)? {
+        let v = super::api_waits::view(store, &w);
+        let (channel_id, _) = place(&w.session_id);
+        let detail = [
+            v.until.clone(),
+            Some(format!("checks {}", v.target)),
+            v.last_check.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+        items.push(Task {
+            section: "scheduled".into(),
+            kind: "wait".into(),
+            id: w.id.clone(),
+            title: format!("Waiting: {}", w.note),
+            detail: Some(detail),
+            at: Some(w.expires_at),
+            session_id: Some(w.session_id.clone()),
+            channel_id,
+            agent_id: Some(w.agent_id.clone()),
+            tainted: w.tainted,
+            ..Task::default()
         });
     }
     for r in store.failed_runs_since(now - FAILED_WINDOW_MS, 50)? {

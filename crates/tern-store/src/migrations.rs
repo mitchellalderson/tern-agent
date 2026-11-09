@@ -37,6 +37,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0027_workspaces.sql"),
     include_str!("../migrations/0028_code_auto.sql"),
     include_str!("../migrations/0029_outbox_file_state.sql"),
+    include_str!("../migrations/0030_waits.sql"),
 ];
 
 /// The migration that introduced first-run seeding.

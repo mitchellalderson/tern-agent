@@ -38,6 +38,9 @@ pub async fn run(manager: Arc<Manager>, shutdown: CancellationToken) {
         if let Err(e) = run_due(&manager).await {
             tracing::error!(error = %e, "scheduler tick failed");
         }
+        if let Err(e) = super::waits::poll(&manager).await {
+            tracing::error!(error = %e, "checking waits failed");
+        }
     }
 }
 

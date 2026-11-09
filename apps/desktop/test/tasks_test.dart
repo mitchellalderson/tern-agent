@@ -192,4 +192,73 @@ void main() {
     await tester.pump();
     expect(store.thread, 's0');
   });
+
+  testWidgets('a wait reads "Waiting: <note>" and can be cancelled', (
+    tester,
+  ) async {
+    final client = _WaitsClient();
+    final store = TernStore(client);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ternTheme(TernColors.light, Brightness.light),
+        home: Scaffold(
+          body: TasksView(
+            store: store,
+            panelOpen: false,
+            onTogglePanel: () {},
+            refreshEvery: const Duration(hours: 1),
+            now: () => taskNow,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Waiting: tell Mitch whether CI passed'), findsOneWidget);
+    expect(find.textContaining('status == completed'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(client.cancelled, ['w1']);
+    expect(find.textContaining('Waiting:'), findsNothing);
+  });
+
+  test('decodes a wait', () {
+    final w = Wait.fromJson({
+      'id': 'w1',
+      'note': 'n',
+      'agent_id': 'tern',
+      'session_id': 's',
+      'channel_id': 'home',
+      'target': 'github.run_status',
+      'until': 'status == completed',
+      'expires_at': taskNow.millisecondsSinceEpoch,
+    });
+    expect((w.id, w.channelId, w.until), ('w1', 'home', 'status == completed'));
+    expect(w.expiresAt, taskNow);
+  });
+}
+
+class _WaitsClient extends TernClient {
+  _WaitsClient() : super(const Endpoint.unix('/nonexistent'));
+
+  final cancelled = <String>[];
+
+  @override
+  Future<Tasks> tasks() async => Tasks.fromJson({
+    'items': [
+      if (cancelled.isEmpty)
+        _t(
+          'scheduled',
+          'wait',
+          'w1',
+          'Waiting: tell Mitch whether CI passed',
+          detail: 'status == completed · checks github.run_status',
+          at: const Duration(hours: 1),
+          session: 's1',
+        ),
+    ],
+    'counts': {'scheduled': cancelled.isEmpty ? 1 : 0},
+  });
+
+  @override
+  Future<void> cancelWait(String id) async => cancelled.add(id);
 }

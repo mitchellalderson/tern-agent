@@ -1271,6 +1271,15 @@ class TernClient {
   Future<Tasks> tasks() async =>
       Tasks.fromJson(await _json('GET', '/v1/tasks') as Json);
 
+  /// Active `wait_until` waits (check `features` in [health] for `waits`).
+  Future<List<Wait>> waits() async => [
+    for (final w in await _json('GET', '/v1/waits') as List)
+      Wait.fromJson(w as Json),
+  ];
+
+  /// Cancel a wait: nothing continues.
+  Future<void> cancelWait(String id) => _json('DELETE', '/v1/waits/$id');
+
   /// `tern security audit` on the core (owner only; check `features` in
   /// [health] for `security_audit`).
   Future<SecurityAudit> securityAudit() async =>
