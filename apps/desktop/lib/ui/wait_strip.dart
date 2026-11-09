@@ -7,7 +7,7 @@ import '../state/store.dart';
 import '../theme.dart';
 
 /// A quiet line above the composer for each `wait_until` this conversation
-/// is waiting on: "Waiting: <note>" and a Cancel link. The daemon polls the
+/// is waiting on: "Waiting: `<note>`" and a Cancel link. The daemon polls the
 /// check and continues the conversation by itself; nothing here needs doing.
 class WaitStrip extends StatefulWidget {
   const WaitStrip({
