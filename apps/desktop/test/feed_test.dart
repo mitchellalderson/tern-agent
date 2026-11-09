@@ -179,6 +179,39 @@ void main() {
     expect(find.textContaining('Line 59 of'), findsNothing);
   });
 
+  _test('Show more keeps the text where it is', (tester) async {
+    final long = List.generate(
+      60,
+      (i) => 'Line $i of a long answer',
+    ).join('\n\n');
+    await _open(tester, [
+      for (var i = 20; i > 2; i--) _m(i + 10, 'user', [TextBlock('Newer $i')]),
+      _m(12, 'assistant', [TextBlock(long)]),
+      for (var i = 10; i > 0; i--) _m(i, 'user', [TextBlock('Older $i')]),
+    ]);
+    final p = _pos(tester);
+    // Scroll until the long message's start is on screen.
+    final head = find.textContaining('Line 0 of');
+    for (var o = 0.0; head.evaluate().isEmpty && o < p.maxScrollExtent;) {
+      o += 200;
+      p.jumpTo(o.clamp(0, p.maxScrollExtent));
+      await tester.pump();
+    }
+    expect(head, findsOneWidget);
+    final top = tester.getTopLeft(head).dy;
+
+    await tester.tap(find.textContaining('Show more ('));
+    await tester.pump();
+    await tester.pump();
+    expect(tester.getTopLeft(head).dy, closeTo(top, 0.5));
+    expect(find.text('Show less'), findsOneWidget);
+
+    await tester.tap(find.text('Show less'));
+    await tester.pump();
+    await tester.pump();
+    expect(tester.getTopLeft(head).dy, closeTo(top, 0.5));
+  });
+
   _test('a run of tool calls is one line until opened', (tester) async {
     final calls = [
       for (var i = 0; i < 10; i++)
