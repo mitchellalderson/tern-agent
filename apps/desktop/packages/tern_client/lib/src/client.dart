@@ -491,6 +491,19 @@ class TernClient {
   Future<void> setPersona(String id, String persona) =>
       _json('PUT', '/v1/agents/${_seg(id)}/persona', {'persona': persona});
 
+  Future<AgentRole> role(String id) async =>
+      AgentRole.fromJson(await _json('GET', '/v1/agents/${_seg(id)}/role'));
+
+  /// The user writes the role; it is stable from then on.
+  Future<AgentRole> setRole(String id, String role) async => AgentRole.fromJson(
+    await _json('PUT', '/v1/agents/${_seg(id)}/role', {'role': role}),
+  );
+
+  /// Forget the role: the agent infers it again.
+  Future<AgentRole> resetRole(String id) async => AgentRole.fromJson(
+    await _json('DELETE', '/v1/agents/${_seg(id)}/role'),
+  );
+
   /// Memories: `agent` is `shared`, an agent (its own), or null for all.
   Future<List<Memory>> memories({String? agent, String? query}) async {
     final q = [

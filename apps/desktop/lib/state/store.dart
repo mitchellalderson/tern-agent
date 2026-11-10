@@ -1244,7 +1244,7 @@ class TernStore extends ChangeNotifier {
   Future<String?> createAgent({
     required String name,
     AvatarSpec? avatar,
-    required String persona,
+    String? persona,
     List<String> model = const [],
     List<String> subagentModel = const [],
     ToolScope? tools,

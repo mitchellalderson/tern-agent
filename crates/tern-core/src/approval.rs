@@ -278,6 +278,10 @@ pub const TAINT_CONTAINED: &[&str] = &[
     "channel_post",
     // Only a card: the user decides, and it's marked tainted like a post.
     "channel_suggest",
+    // The agent's own role prompt. Not asked about: the tool itself refuses
+    // in a tainted run (nothing can approve it), so untrusted content never
+    // shapes the role (agent profiles §1.5).
+    "role_set",
 ];
 
 /// The memory class: an agent's notes in its own namespace. Not a system

@@ -78,6 +78,9 @@ pub struct AgentPrompt {
     pub delegates: Vec<String>,
     /// How many more it may delegate to than `delegates` lists.
     pub delegates_more: usize,
+    /// Its self-written role (agent profiles §1.5); `None` for agents that
+    /// don't have one.
+    pub role: Option<crate::role::Prompt>,
 }
 
 /// The most agents listed in the "Agents" roster and the delegation list.
@@ -98,6 +101,14 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
     let persona =
         read_nonempty(&persona_path).unwrap_or_else(|| defaults::PERSONA_MD.trim().to_owned());
     let mut out = persona;
+
+    if let Some(role) = inp.agent.and_then(|a| a.role.as_ref())
+        && let Some(section) =
+            crate::role::section(role, !matches!(inp.role, AgentRole::Subagent { .. }))
+    {
+        out.push_str("\n\n");
+        out.push_str(&section);
+    }
 
     match inp.role {
         AgentRole::Subagent { label, caller } => {

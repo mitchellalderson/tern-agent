@@ -280,6 +280,32 @@ class _FakeClient extends TernClient {
   Future<void> setPersona(String id, String persona) async =>
       personas.add((id, persona));
 
+  /// The role the fake serves; `none` = a hand-written persona.
+  var roleState = 'none';
+  var roleText = '';
+  final roleSets = <(String, String)>[];
+  final roleResets = <String>[];
+
+  @override
+  Future<AgentRole> role(String id) async =>
+      AgentRole(role: roleText, state: roleState);
+
+  @override
+  Future<AgentRole> setRole(String id, String role) async {
+    roleSets.add((id, role));
+    roleText = role;
+    roleState = 'user';
+    return AgentRole(role: roleText, state: roleState);
+  }
+
+  @override
+  Future<AgentRole> resetRole(String id) async {
+    roleResets.add(id);
+    roleText = '';
+    roleState = 'inferring';
+    return AgentRole(role: roleText, state: roleState);
+  }
+
   @override
   Future<List<Memory>> memories({String? agent, String? query}) async {
     memoryScopes.add(agent);
@@ -643,8 +669,10 @@ void main() {
     await tester.tap(find.byTooltip('New agent'));
     await tester.pumpAndSettle();
     expect(find.text('New agent'), findsOneWidget);
-    // Never a blank page: the Blank template's persona.
+    // A name is enough: the persona waits behind "Describe it".
     expect(find.text('tern adds these to every agent'), findsOneWidget);
+    expect(find.byKey(const Key('describe-it')), findsOneWidget);
+    expect(find.byKey(const Key('agent-persona')), findsNothing);
     await pickStarter(tester, 'inbox');
     expect(find.text('You are Inbox.'), findsOneWidget);
     expect(find.textContaining('Add its routine'), findsOneWidget);
@@ -769,6 +797,100 @@ void main() {
           .text,
       'Mailer 2',
     );
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('a new agent needs only a name and sends no persona', (
+    tester,
+  ) async {
+    final (store, client) = await _store();
+    await _pump(tester, store);
+    await tester.tap(find.byTooltip('New agent'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('agent-name')), 'Tax Helper');
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await tester.pumpAndSettle();
+    final c = client.created.single;
+    expect(c['name'], 'Tax Helper');
+    // No persona and no starter: the agent infers its own role.
+    expect(c['persona'], isNull);
+    expect(c['template'], isNull);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('Describe it opens the persona, and a typed one is sent', (
+    tester,
+  ) async {
+    final (store, client) = await _store();
+    await _pump(tester, store);
+    await tester.tap(find.byTooltip('New agent'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('describe-it')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('agent-persona')),
+      'You are Scout. Find leads.',
+    );
+    await tester.enterText(find.byKey(const Key('agent-name')), 'Scout');
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await tester.pumpAndSettle();
+    final c = client.created.single;
+    expect(c['persona'], 'You are Scout. Find leads.');
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('the Role section shows the role, edits it and re-infers it', (
+    tester,
+  ) async {
+    final (store, client) = await _store();
+    client
+      ..roleState = 'inferring'
+      ..roleText = 'You are Research: you look things up.';
+    await store.openAgent(_research);
+    await _pump(tester, store);
+    await tester.tap(find.byTooltip('Edit Research'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('agent-role')), findsOneWidget);
+    expect(
+      find.text('You are Research: you look things up.'),
+      findsOneWidget,
+    );
+    // Edit: the user's words are saved as the role.
+    await tester.ensureVisible(find.byKey(const Key('role-edit')));
+    await tester.tap(find.byKey(const Key('role-edit')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('role-field')),
+      'You are Research. Cite everything.',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('role-save')));
+    await tester.pumpAndSettle();
+    expect(client.roleSets.single, (
+      'tern:research',
+      'You are Research. Cite everything.',
+    ));
+    expect(find.text('You are Research. Cite everything.'), findsOneWidget);
+    expect(find.text('Written by you.'), findsOneWidget);
+    // Re-infer: cleared, to be written again.
+    await tester.tap(find.byKey(const Key('role-reinfer')));
+    await tester.pumpAndSettle();
+    expect(client.roleResets, ['tern:research']);
+    expect(find.text('Not written yet.'), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('an agent with a hand-written persona has no Role section', (
+    tester,
+  ) async {
+    final (store, _) = await _store();
+    await store.openAgent(_research);
+    await _pump(tester, store);
+    await tester.tap(find.byTooltip('Edit Research'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('agent-role')), findsNothing);
     debugDefaultTargetPlatformOverride = null;
   });
 
