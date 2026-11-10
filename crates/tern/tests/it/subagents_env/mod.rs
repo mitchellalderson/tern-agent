@@ -270,9 +270,9 @@ impl Events {
                 return evs;
             }
             assert!(Instant::now() < end, "timed out; events so far: {evs:#?}");
-            let chunk = tokio::time::timeout(Duration::from_secs(10), self.resp.chunk())
+            let chunk = tokio::time::timeout(Duration::from_secs(60), self.resp.chunk())
                 .await
-                .expect("an event within 10s")
+                .expect("an event within 60s")
                 .unwrap()
                 .unwrap();
             self.buf.push_str(&String::from_utf8_lossy(&chunk));

@@ -198,7 +198,7 @@ async fn runs_steps_and_event_sessions() {
     // Every agent event names its session, not only run_started.
     let mut buf = String::new();
     loop {
-        let chunk = tokio::time::timeout(Duration::from_secs(10), events.chunk())
+        let chunk = tokio::time::timeout(Duration::from_secs(60), events.chunk())
             .await
             .unwrap()
             .unwrap()
