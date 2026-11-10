@@ -1,0 +1,1 @@
+- **Attached TUI** no longer sometimes drops a run's final answer when it arrives just after the run ends.

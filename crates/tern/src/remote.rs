@@ -38,6 +38,10 @@ pub struct Remote {
     events: broadcast::Sender<AgentEvent>,
     /// The connection may answer secret requests (owner scope).
     owner: bool,
+    /// Runs whose `run_finished` has come through the event stream, so
+    /// `drive` can tell that everything the run emitted has been relayed.
+    finished: std::sync::Mutex<std::collections::HashSet<String>>,
+    finished_note: tokio::sync::Notify,
 }
 
 type Attached = (Arc<Remote>, mpsc::Receiver<UserPrompt>);
@@ -90,6 +94,8 @@ async fn attach(http: reqwest::Client, base: String) -> BackendResult<Attached> 
         base,
         events,
         owner: false,
+        finished: Default::default(),
+        finished_note: Default::default(),
     };
     let health: Value = probe
         .request(
@@ -161,7 +167,21 @@ async fn pump(remote: Arc<Remote>, resp: reqwest::Response, prompts: mpsc::Sende
                 .join("\n");
             match serde_json::from_str::<ApiEvent>(&data) {
                 Ok(ApiEvent::Agent(ev)) => {
+                    let finished = match &ev {
+                        AgentEvent::RunFinished { run_id, .. } => Some(run_id.clone()),
+                        _ => None,
+                    };
                     let _ = remote.events.send(ev);
+                    // After the send, so the TUI's receiver already holds
+                    // everything up to the end of the run.
+                    if let Some(id) = finished {
+                        remote
+                            .finished
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(id);
+                        remote.finished_note.notify_waiters();
+                    }
                 }
                 // The TUI re-reads providers and models when it needs them.
                 Ok(ApiEvent::Change(_)) => {}
@@ -341,6 +361,31 @@ async fn forward_secret(
 }
 
 impl Remote {
+    /// `/wait` and the event stream are separate connections, so `/wait` can
+    /// return before the run's last events (the final answer) arrive. Wait
+    /// for `run_finished` on the stream, which follows them, so the TUI
+    /// doesn't drop them as events of a finished run. Bounded in case the
+    /// stream is down.
+    async fn events_caught_up(&self, run_id: &str) {
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let note = self.finished_note.notified();
+                tokio::pin!(note);
+                note.as_mut().enable();
+                let done = self
+                    .finished
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(run_id);
+                if done {
+                    return;
+                }
+                note.await;
+            }
+        })
+        .await;
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
     }
@@ -442,16 +487,19 @@ impl Backend for Remote {
         let wait =
             self.request::<RunOutcome>(self.http.get(self.url(&format!("/v1/runs/{run_id}/wait"))));
         tokio::pin!(wait);
-        tokio::select! {
-            r = &mut wait => return r,
-            () = cancel.cancelled() => {}
-        }
-        let _ = self
-            .http
-            .post(self.url(&format!("/v1/runs/{run_id}/cancel")))
-            .send()
-            .await;
-        wait.await
+        let result = tokio::select! {
+            r = &mut wait => r,
+            () = cancel.cancelled() => {
+                let _ = self
+                    .http
+                    .post(self.url(&format!("/v1/runs/{run_id}/cancel")))
+                    .send()
+                    .await;
+                wait.await
+            }
+        };
+        self.events_caught_up(run_id).await;
+        result
     }
 
     fn set_session_model(&self, session: &str, model: &str) -> BackendResult<()> {
@@ -1186,5 +1234,53 @@ mod spend_tests {
         ])
         .unwrap();
         assert!((spent - 1.25).abs() < 1e-9 && (cap - 2.5).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn remote() -> Arc<Remote> {
+        Arc::new(Remote {
+            http: reqwest::Client::new(),
+            base: BASE.into(),
+            events: broadcast::channel(8).0,
+            owner: false,
+            finished: Default::default(),
+            finished_note: Default::default(),
+        })
+    }
+
+    #[tokio::test]
+    async fn drive_waits_for_the_streams_run_finished() {
+        let r = remote();
+        let mut tui = r.events.subscribe();
+        let late = r.clone();
+        // The stream delivers the final answer after `/wait` has returned.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let _ = late.events.send(AgentEvent::AssistantMessage {
+                run_id: "r1".into(),
+                text: "final".into(),
+                replayed: false,
+            });
+            late.finished.lock().unwrap().insert("r1".into());
+            late.finished_note.notify_waiters();
+        });
+        r.events_caught_up("r1").await;
+        assert!(matches!(
+            tui.try_recv(),
+            Ok(AgentEvent::AssistantMessage { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_run_that_finished_before_drive_started_returns_at_once() {
+        let r = remote();
+        r.finished.lock().unwrap().insert("r1".into());
+        tokio::time::timeout(Duration::from_millis(100), r.events_caught_up("r1"))
+            .await
+            .unwrap();
     }
 }
