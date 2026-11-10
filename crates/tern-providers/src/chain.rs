@@ -118,6 +118,11 @@ impl Provider for ChainProvider {
             .and_then(|v| v.into_iter().min())
     }
 
+    /// The primary's: it is the one whose cache the fork reads.
+    fn fork_min_tokens(&self, model: &str) -> Option<u64> {
+        self.members[0].provider.fork_min_tokens(model)
+    }
+
     async fn stream(
         &self,
         req: ChatRequest,

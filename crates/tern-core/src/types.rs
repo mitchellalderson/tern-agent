@@ -217,6 +217,12 @@ pub struct CacheHint {
     /// between runs (the current time). A provider with a message cache
     /// puts it after the cached prefix; others append it to `system`.
     pub volatile: String,
+    /// A request-specific instruction that goes last, after the cached
+    /// prefix and `volatile`: a fork of the parent's request (compaction)
+    /// reuses its tools, system and history byte for byte and appends this.
+    /// Only honoured by providers that report [`Provider::fork_min_tokens`].
+    /// Never alters `tool_choice`, which would invalidate the cached history.
+    pub tail: String,
 }
 
 impl ChatRequest {
@@ -349,6 +355,13 @@ pub trait Provider: Send + Sync {
     /// allow more than the agent's default. Too low and long tool calls (a
     /// whole file in one write) are cut off mid-argument.
     fn max_output_tokens(&self) -> Option<u32> {
+        None
+    }
+    /// Whether a request that forks another's prefix (same tools, system and
+    /// history, plus [`CacheHint::tail`]) reads that prefix from a cache,
+    /// and the smallest prefix, in estimated tokens, that is worth it for
+    /// `model`. `None`: no such cache, or unverified (the default).
+    fn fork_min_tokens(&self, _model: &str) -> Option<u64> {
         None
     }
     async fn stream(

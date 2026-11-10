@@ -312,6 +312,26 @@ pub fn flush_request(transcript: &str) -> crate::types::Message {
     ))
 }
 
+/// Start of the instruction a forked flush request ends with; see
+/// [`flush_fork_span`].
+pub const FLUSH_FORK_OPEN: &str = "Memory flush request. Look only at the first ";
+
+/// The instruction that ends a flush request forked from the parent's
+/// request (its tools, system prompt and history, so their cache is read).
+/// Other tools stay in the request for the cache's sake; calls to them are
+/// ignored.
+pub fn flush_fork_instruction(span: usize) -> String {
+    format!(
+        "{FLUSH_FORK_OPEN}{span} messages of the conversation above: they are about to leave the agent's context. This is not a task for the agent: do not continue the work. Save their durable facts with `memory_save` (the only tool that works now; calls to others are ignored), or reply NOTHING. {FLUSH_SYSTEM_PROMPT}"
+    )
+}
+
+/// How many messages a forked flush covers, read from its instruction.
+pub fn flush_fork_span(tail: &str) -> Option<usize> {
+    let rest = tail.strip_prefix(FLUSH_FORK_OPEN)?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
 /// Whether a run flushes before compacting: only top-level runs the user
 /// is in. Sub-agents report to their parent, which keeps what matters, and
 /// scheduled runs are unattended (spec §7, T5a).

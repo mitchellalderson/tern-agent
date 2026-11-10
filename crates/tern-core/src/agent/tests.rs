@@ -32,7 +32,27 @@ struct Script {
     flushes: AtomicU32,
     /// Memory flush calls fail (permanently) instead of saving a fact.
     flush_fails: bool,
+    /// Smallest prefix a forked summary is worth it for; `None` = this
+    /// provider can't fork (the default: transcript summaries).
+    fork_min: Option<u64>,
+    fork_mode: ForkMode,
 }
+
+/// What a forked summary request answers with.
+#[derive(Clone, Copy, PartialEq)]
+enum ForkMode {
+    /// The summary, reporting the shared prefix as cache reads.
+    Summary,
+    /// The summary, after a call to `count` it must not get to make.
+    SummaryAndToolCall,
+    /// Only a call to `count`, no text.
+    ToolCallOnly,
+    /// A permanent HTTP error.
+    Fails,
+}
+
+/// Cache reads the test provider reports for a forked request's prefix.
+const FORK_CACHE_READ: u64 = 1000;
 
 fn turns_in(text: &str) -> usize {
     text.split("turns=")
@@ -58,7 +78,14 @@ impl Script {
             summaries: AtomicU32::new(0),
             flushes: AtomicU32::new(0),
             flush_fails: false,
+            fork_min: None,
+            fork_mode: ForkMode::Summary,
         }
+    }
+
+    fn forking(mut self) -> Self {
+        self.fork_min = Some(0);
+        self
     }
 }
 
@@ -66,6 +93,10 @@ impl Script {
 impl Provider for Script {
     fn id(&self) -> &str {
         "script"
+    }
+
+    fn fork_min_tokens(&self, _model: &str) -> Option<u64> {
+        self.fork_min
     }
 
     async fn stream(
@@ -88,7 +119,48 @@ impl Provider for Script {
                 () = cancel.cancelled() => return Err(ProviderError::Cancelled),
             }
         }
-        if req.system == crate::memory::FLUSH_SYSTEM_PROMPT {
+        if let Some(span) = crate::compaction::fork_span(&req.cache.tail) {
+            self.summaries.fetch_add(1, Ordering::SeqCst);
+            if self.fork_mode == ForkMode::Fails {
+                return Err(ProviderError::Http {
+                    status: 400,
+                    body: "no forks".into(),
+                    retry_after: None,
+                });
+            }
+            let text: String = crate::compaction::transcript(&req.messages[..span]);
+            let n = text.matches("### assistant").count() + turns_in(&text);
+            let mut evs = vec![];
+            if matches!(
+                self.fork_mode,
+                ForkMode::SummaryAndToolCall | ForkMode::ToolCallOnly
+            ) {
+                evs.push(Ok(StreamEvent::ToolUseStart {
+                    id: "sneaky".into(),
+                    name: "count".into(),
+                }));
+                evs.push(Ok(StreamEvent::ToolUseInputDelta {
+                    id: "sneaky".into(),
+                    partial_json: "{}".into(),
+                }));
+            }
+            if self.fork_mode != ForkMode::ToolCallOnly {
+                evs.push(Ok(StreamEvent::TextDelta(format!("summary turns={n}"))));
+            }
+            evs.push(Ok(StreamEvent::MessageStop {
+                usage: Usage {
+                    input_tokens: 10,
+                    cache_read_tokens: FORK_CACHE_READ,
+                    output_tokens: 3,
+                    ..Usage::default()
+                },
+                stop_reason: StopReason::EndTurn,
+            }));
+            return Ok(Box::pin(futures::stream::iter(evs)));
+        }
+        if req.system == crate::memory::FLUSH_SYSTEM_PROMPT
+            || crate::memory::flush_fork_span(&req.cache.tail).is_some()
+        {
             let n = self.flushes.fetch_add(1, Ordering::SeqCst) + 1;
             if self.flush_fails {
                 return Err(ProviderError::Http {
@@ -3704,3 +3776,331 @@ fn limits_resolve_user_then_reported_then_model_then_fallback() {
     assert_eq!(cfg.limits(&m("anthropic", "claude-opus-5-5")).0, 64_000);
 }
 mod reasoning;
+
+// ---- compaction forks the parent's request ----
+
+/// The agent-loop requests (not summaries or flushes) a script saw.
+fn loop_requests(script: &Script) -> Vec<ChatRequest> {
+    script
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| {
+            r.system == "system"
+                && crate::compaction::fork_span(&r.cache.tail).is_none()
+                && crate::memory::flush_fork_span(&r.cache.tail).is_none()
+        })
+        .cloned()
+        .collect()
+}
+
+fn fork_requests(script: &Script) -> Vec<(usize, ChatRequest)> {
+    let seen = script.seen.lock().unwrap();
+    seen.iter()
+        .enumerate()
+        .filter(|(_, r)| crate::compaction::fork_span(&r.cache.tail).is_some())
+        .map(|(i, r)| (i, r.clone()))
+        .collect()
+}
+
+/// Cache-read tokens recorded on a run's steps of one kind (what the usage
+/// totals and `usd_per_day` caps are built from).
+fn step_cache_reads(h: &Harness, run: &str, kind: &str) -> u64 {
+    h.store
+        .steps(run)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.kind == kind)
+        .filter_map(|s| s.usage_json)
+        .map(|u| serde_json::from_str::<Usage>(&u).unwrap().cache_read_tokens)
+        .sum()
+}
+
+async fn drive_forking(
+    h: &Harness,
+    script: Arc<Script>,
+    tool: Arc<Counter>,
+) -> (RunOutcome, String) {
+    let agent = h.agent_with_window(script, vec![tool], Arc::new(AutoApprove), TINY_WINDOW);
+    let run = h.start(&agent, "go");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    (out, run)
+}
+
+#[tokio::test]
+async fn a_forked_summary_shares_the_parents_whole_prefix() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", true, false));
+    let script = Arc::new(Script::new(eight_tool_turns()).forking());
+    let (out, run) = drive_forking(&h, script.clone(), tool.clone()).await;
+    assert_eq!(
+        (out.status, out.final_text.as_str()),
+        (RunStatus::Completed, "finished")
+    );
+    let forks = fork_requests(&script);
+    assert!(!forks.is_empty(), "{:?}", h.kinds(&run));
+    let seen = script.seen.lock().unwrap().clone();
+    for (i, fork) in &forks {
+        // The agent-loop request just before it is the parent.
+        let parent = seen[..*i]
+            .iter()
+            .rev()
+            .find(|r| r.system == "system" && r.cache.tail.is_empty())
+            .expect("a parent request");
+        assert_eq!(fork.system, parent.system);
+        assert_eq!(fork.tools, parent.tools);
+        assert_eq!(fork.model, parent.model);
+        assert_eq!(fork.cache.volatile, parent.cache.volatile);
+        assert!(
+            fork.cache.history,
+            "the fork marks its history like the parent"
+        );
+        assert!(
+            !fork.forbid_tool_calls,
+            "tool_choice stays as the parent's: changing it would drop the cached history"
+        );
+        // The parent's history is a byte-identical head of the fork's.
+        assert_eq!(
+            fork.messages[..parent.messages.len()],
+            parent.messages[..],
+            "fork diverges from the parent's prefix"
+        );
+        // And it covers a span of it, with the instruction last.
+        let span = crate::compaction::fork_span(&fork.cache.tail).unwrap();
+        assert!(span > 0 && span < fork.messages.len());
+        assert!(fork.cache.tail.contains("do not call any tool"));
+    }
+    // No transcript request was sent.
+    assert!(
+        seen.iter()
+            .all(|r| r.system != crate::compaction::SYSTEM_PROMPT)
+    );
+    // The history shape after compaction is as before: the summary first.
+    let last = loop_requests(&script).pop().unwrap();
+    assert!(
+        last.messages[0]
+            .text()
+            .starts_with(crate::compaction::SUMMARY_PREFIX)
+    );
+}
+
+#[tokio::test]
+async fn a_forked_summary_is_billed_as_cache_reads() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", true, false));
+    let forked = Arc::new(Script::new(eight_tool_turns()).forking());
+    let (out, run) = drive_forking(&h, forked.clone(), tool.clone()).await;
+    let n = count_kind(&h, &run, "compaction:completed") as u64;
+    assert!(n >= 1);
+    let _ = out;
+    assert_eq!(
+        step_cache_reads(&h, &run, "compaction"),
+        n * FORK_CACHE_READ
+    );
+
+    let h2 = Harness::new();
+    let plain = Arc::new(Script::new(eight_tool_turns()));
+    let (_, run2) = drive_forking(&h2, plain, Arc::new(Counter::new("count", true, false))).await;
+    assert_eq!(step_cache_reads(&h2, &run2, "compaction"), 0);
+}
+
+#[tokio::test]
+async fn a_summary_cannot_call_tools() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", true, false));
+    let mut s = Script::new(eight_tool_turns()).forking();
+    s.fork_mode = ForkMode::SummaryAndToolCall;
+    let script = Arc::new(s);
+    let (out, run) = drive_forking(&h, script.clone(), tool.clone()).await;
+    assert_eq!(out.status, RunStatus::Completed);
+    // Only the loop's own eight calls ran; the summarizer's were ignored.
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 8);
+    assert!(count_kind(&h, &run, "compaction:completed") >= 1);
+    // The summary is its text alone.
+    let last = loop_requests(&script).pop().unwrap();
+    assert!(last.messages[0].text().contains("summary turns="));
+    assert!(last.messages[0].tool_uses().next().is_none());
+}
+
+#[tokio::test]
+async fn a_fork_that_only_calls_a_tool_falls_back_to_the_transcript() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", true, false));
+    let mut s = Script::new(eight_tool_turns()).forking();
+    s.fork_mode = ForkMode::ToolCallOnly;
+    let script = Arc::new(s);
+    let (out, run) = drive_forking(&h, script.clone(), tool.clone()).await;
+    assert_eq!(
+        (out.status, out.final_text.as_str()),
+        (RunStatus::Completed, "finished")
+    );
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 8);
+    let seen = script.seen.lock().unwrap();
+    let plain = seen
+        .iter()
+        .filter(|r| r.system == crate::compaction::SYSTEM_PROMPT)
+        .count();
+    assert_eq!(plain, count_kind(&h, &run, "compaction:completed"));
+    drop(seen);
+    // The wasted fork's tokens are still counted.
+    assert!(step_cache_reads(&h, &run, "compaction") >= FORK_CACHE_READ);
+}
+
+#[tokio::test]
+async fn a_failing_fork_falls_back_to_the_transcript() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", true, false));
+    let mut s = Script::new(eight_tool_turns()).forking();
+    s.fork_mode = ForkMode::Fails;
+    let script = Arc::new(s);
+    let (out, run) = drive_forking(&h, script.clone(), tool).await;
+    assert_eq!(
+        (out.status, out.final_text.as_str()),
+        (RunStatus::Completed, "finished")
+    );
+    assert!(count_kind(&h, &run, "compaction:completed") >= 1);
+    let seen = script.seen.lock().unwrap();
+    assert!(
+        seen.iter()
+            .any(|r| r.system == crate::compaction::SYSTEM_PROMPT)
+    );
+}
+
+#[tokio::test]
+async fn no_fork_when_the_provider_cant_or_the_prefix_is_too_small() {
+    // A provider that doesn't fork.
+    let h = Harness::new();
+    let script = Arc::new(Script::new(eight_tool_turns()));
+    let (_, run) = drive_forking(
+        &h,
+        script.clone(),
+        Arc::new(Counter::new("count", true, false)),
+    )
+    .await;
+    assert!(count_kind(&h, &run, "compaction:completed") >= 1);
+    assert!(fork_requests(&script).is_empty());
+
+    // One that does, but wants a larger prefix than the run ever has.
+    let h = Harness::new();
+    let mut s = Script::new(eight_tool_turns());
+    s.fork_min = Some(1_000_000);
+    let script = Arc::new(s);
+    let (_, run) = drive_forking(
+        &h,
+        script.clone(),
+        Arc::new(Counter::new("count", true, false)),
+    )
+    .await;
+    assert!(count_kind(&h, &run, "compaction:completed") >= 1);
+    assert!(fork_requests(&script).is_empty());
+}
+
+#[tokio::test]
+async fn a_forked_compaction_resumes_and_replays_whatever_shape_made_it() {
+    struct FailAt(Arc<Script>, AtomicU32, u32);
+    #[async_trait]
+    impl Provider for FailAt {
+        fn id(&self) -> &str {
+            "f"
+        }
+        fn fork_min_tokens(&self, m: &str) -> Option<u64> {
+            self.0.fork_min_tokens(m)
+        }
+        async fn stream(
+            &self,
+            r: ChatRequest,
+            c: CancellationToken,
+        ) -> Result<EventStream, ProviderError> {
+            if r.system == "system"
+                && r.cache.tail.is_empty()
+                && self.1.fetch_add(1, Ordering::SeqCst) + 1 == self.2
+            {
+                return Err(ProviderError::Http {
+                    status: 400,
+                    body: "bad".into(),
+                    retry_after: None,
+                });
+            }
+            self.0.stream(r, c).await
+        }
+    }
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", true, false));
+    let first = Arc::new(Script::new(eight_tool_turns()).forking());
+    let fp: Arc<dyn Provider> = Arc::new(FailAt(first.clone(), AtomicU32::new(0), 7));
+    let mut reg = ToolRegistry::new();
+    reg.register(tool.clone());
+    let a = Agent::new(
+        Journal::new(h.store.clone()),
+        Arc::new(move |_| Ok(fp.clone())),
+        Arc::new(reg),
+        Arc::new(AutoApprove),
+        AgentConfig {
+            retry_base: Duration::from_millis(1),
+            default_context_window: Some(TINY_WINDOW),
+            ..AgentConfig::default()
+        },
+    );
+    let run = h.start(&a, "go");
+    assert_eq!(
+        a.drive(&run, CancellationToken::new())
+            .await
+            .unwrap()
+            .status,
+        RunStatus::Failed
+    );
+    let before = first.summaries.load(Ordering::SeqCst);
+    assert!(before >= 1);
+    assert_eq!(before as usize, fork_requests(&first).len());
+
+    // Resume on a provider that can't fork: the journaled summaries are
+    // reused (not requested again, in either shape); later ones use the
+    // transcript.
+    let second = Arc::new(Script::new(eight_tool_turns()));
+    let agent = h.agent_with_window(
+        second.clone(),
+        vec![tool.clone()],
+        Arc::new(AutoApprove),
+        TINY_WINDOW,
+    );
+    let out = agent.resume(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(
+        (out.status, out.final_text.as_str()),
+        (RunStatus::Completed, "finished")
+    );
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 8);
+    let total = count_kind(&h, &run, "compaction:completed") as u32;
+    assert_eq!(before + second.summaries.load(Ordering::SeqCst), total);
+    assert!(fork_requests(&second).is_empty());
+}
+
+#[tokio::test]
+async fn a_forked_flush_keeps_the_parents_tools_and_only_saves_memory() {
+    let h = Harness::new();
+    let count = Arc::new(Counter::new("count", true, false));
+    let save = Arc::new(Counter::new("memory_save", false, false));
+    let script = Arc::new(Script::new(eight_tool_turns()).forking());
+    let agent = flushing_agent(&h, script.clone(), vec![count.clone(), save.clone()], true);
+    let run = h.start(&agent, "go");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    let flushes = count_kind(&h, &run, "memory_flush:completed");
+    assert!(flushes >= 1);
+    assert_eq!(save.calls.load(Ordering::SeqCst) as usize, flushes);
+    let seen = script.seen.lock().unwrap().clone();
+    let flush_forks: Vec<_> = seen
+        .iter()
+        .filter(|r| crate::memory::flush_fork_span(&r.cache.tail).is_some())
+        .collect();
+    assert_eq!(flush_forks.len(), flushes);
+    let parent_tools = loop_requests(&script)[0].tools.clone();
+    for f in flush_forks {
+        assert_eq!(f.tools, parent_tools);
+        assert_eq!(f.system, "system");
+    }
+    assert!(
+        seen.iter()
+            .all(|r| r.system != crate::memory::FLUSH_SYSTEM_PROMPT)
+    );
+}
