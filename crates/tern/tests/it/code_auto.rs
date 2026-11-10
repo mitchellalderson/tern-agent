@@ -27,12 +27,12 @@ async fn opting_in_is_explicit_per_agent_and_visible_in_the_ledger() {
     let _d = env.daemon_with(None);
     let s = env.socket();
 
-    // A starter keeps the conservative ceiling and is not opted in; create
+    // An agent at a supervised ceiling is not opted in; create
     // cannot set the flag at all.
     let (code, a) = post(
         &s,
         "/v1/agents",
-        json!({ "name": "Fixer", "template": "bug-fixer" }),
+        json!({ "name": "Fixer", "template": "bug-fixer", "autonomy": "supervised" }),
     )
     .await;
     assert_eq!(code, 201, "{a}");

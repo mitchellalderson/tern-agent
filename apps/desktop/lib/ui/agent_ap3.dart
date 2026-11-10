@@ -38,7 +38,7 @@ class AutonomyPicker extends StatelessWidget {
     ),
     AutonomyLevel.supervised: (
       'Ask first',
-      'Asks before any change. The default.',
+      'Asks before any change.',
     ),
     AutonomyLevel.code: (
       'Code',
@@ -47,8 +47,8 @@ class AutonomyPicker extends StatelessWidget {
     ),
     AutonomyLevel.autonomous: (
       'Mostly on its own',
-      'Writes without asking, unless it read untrusted content. Destructive '
-          'actions still ask.',
+      'The default. Writes without asking, unless it read untrusted content. '
+          'Destructive actions still ask.',
     ),
     AutonomyLevel.yolo: (
       'Full',

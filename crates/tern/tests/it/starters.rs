@@ -47,9 +47,9 @@ async fn every_starter_creates_a_working_agent() {
         let (code, a) = post(&s, "/v1/agents", json!({ "name": name, "template": t.id })).await;
         assert_eq!(code, 201, "{}: {a}", t.id);
         assert_eq!(a["memory"], t.memory, "{}", t.id);
-        // The starter's ceiling lands on the agent, and no starter is above supervised.
+        // The starter's ceiling lands on the agent, and no starter is above autonomous.
         let ceiling = t.autonomy.expect("every starter has a ceiling");
-        assert!(ceiling <= Autonomy::Supervised, "{}", t.id);
+        assert!(ceiling <= Autonomy::Autonomous, "{}", t.id);
         assert_eq!(a["autonomy"], ceiling.as_str(), "{}", t.id);
         assert_eq!(served_for(served, &t.id)["autonomy"], ceiling.as_str());
         assert_eq!(a["avatar"]["glyph"], t.avatar.0, "{}", t.id);

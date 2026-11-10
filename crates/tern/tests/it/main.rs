@@ -28,6 +28,7 @@ mod m6;
 mod mcp_api;
 mod mcp_cli;
 mod memory_class;
+mod new_defaults;
 mod proactive_delegation;
 mod providers;
 mod py0;

@@ -172,8 +172,8 @@ once and Deny. Identical requests waiting at once share one card.
 
 ## Can a coding agent run my tests without asking every time? What is "Code auto mode"?
 
-Yes, if you turn it on for that agent. Coding starters ship at `supervised`, so `cargo test` or `npm test` asks every
-time. **Code auto mode** (pick **Code** in the agent's autonomy list, `/autonomy code` in the terminal, or `tern agents
+Yes, if you turn it on for that agent. New agents start at `autonomous`, which writes without asking and runs `cargo test` or `npm test` in the sandbox
+without asking; set an agent to `supervised` and they ask every time. **Code auto mode** (pick **Code** in the agent's autonomy list, `/autonomy code` in the terminal, or `tern agents
 code-auto <agent> on`) lets one agent edit files and run build and test commands in its workspace without asking. It
 asks you to confirm first, says when it raises a starter's ceiling, and it is **not fully sandboxed**: the code it writes
 runs on your computer inside the OS sandbox, anything in the folder can change, and it doesn't cover what you run

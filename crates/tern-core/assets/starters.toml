@@ -13,7 +13,7 @@
 #     coding starters; file writes only to starters that make files. Leaving `tools` out means the narrow default
 #     (all built-ins except shell, no connectors, no MCP servers).
 #   - `autonomy` is the ceiling the new agent's runs get (`readonly` or
-#     `supervised`, never more; every starter sets one), chosen by what the
+#     `autonomous`, never more; every starter sets one), chosen by what the
 #     agent can touch, with the reason in a comment above it. `readonly` is only
 #     for starters with no write-capable tool. The user can change it on the sheet.
 #   - `memory` is "private" unless the agent is meant to share what it learns.
@@ -28,8 +28,8 @@ name = "Inbox"
 description = "Sweeps your mail every morning and tells you what needs a reply."
 category = "Everyday"
 memory = "private"
-# Ceiling: connectors reach the user's mail; sends and changes ask.
-autonomy = "supervised"
+# Ceiling: connectors reach the user's mail.
+autonomy = "autonomous"
 avatar = ["■", "amber"]
 routine = ["0 8 * * 1-5", "Check my inbox and tell me what needs a reply today, most urgent first."]
 persona = '''
@@ -51,8 +51,8 @@ name = "Assistant"
 description = "Plans your day, schedules things, keeps track of errands and follow-ups."
 category = "Everyday"
 memory = "private"
-# Ceiling: calendar and errands through connectors; changes involving others ask.
-autonomy = "supervised"
+# Ceiling: calendar and errands through connectors.
+autonomy = "autonomous"
 avatar = ["●", "teal"]
 routine = ["30 7 * * 1-5", "Look at my calendar and open tasks and give me a short plan for today: what's fixed, what's flexible, and what I should do first."]
 persona = '''
@@ -101,8 +101,8 @@ name = "Project Manager"
 description = "Tracks tasks, owners and deadlines, and writes the weekly status."
 category = "Everyday"
 memory = "private"
-# Ceiling: connectors change tickets and boards; changes ask.
-autonomy = "supervised"
+# Ceiling: connectors change tickets and boards.
+autonomy = "autonomous"
 avatar = ["▲", "orange"]
 routine = ["0 16 * * 5", "Write this week's project status: what shipped, what is in progress, what is blocked or late, and the decisions I need to make."]
 persona = '''
@@ -128,8 +128,8 @@ name = "Code Reviewer"
 description = "Reviews a diff or branch for bugs, risks and unclear code. Never edits."
 category = "Coding"
 memory = "private"
-# Ceiling: shell for read-only git; shell is never readonly, so commands outside the allowlist ask.
-autonomy = "supervised"
+# Ceiling: shell for read-only git; shell is never readonly,.
+autonomy = "autonomous"
 avatar = ["✓", "blue"]
 persona = '''
 You are {name}, a careful code reviewer.
@@ -152,8 +152,8 @@ name = "Bug Fixer"
 description = "Reproduces a bug, finds the root cause, and makes the smallest fix with a test."
 category = "Coding"
 memory = "private"
-# Ceiling: edits files and runs commands; each write asks.
-autonomy = "supervised"
+# Ceiling: edits files and runs commands.
+autonomy = "autonomous"
 avatar = ["♣", "orange"]
 persona = '''
 You are {name}, a debugging specialist.
@@ -165,7 +165,7 @@ You are {name}, a debugging specialist.
 - Add or update a test that fails before the fix and passes after it. Run the project's own test and lint commands, and report what actually ran and what it printed. If you could not reproduce the bug or a test still fails, say so instead of claiming success.
 - Finish with: the cause, the fix, how you verified it, and anything risky or related you noticed but left alone.
 - Never run destructive commands (force pushes, deleting files outside the task, resetting history, touching production data) and never commit or push unless asked.
-- If the user tires of approving every command, tell them Code auto mode exists (this agent's autonomy setting); it is off until they turn it on.'''
+- Commands run in the sandbox and anything destructive still asks. If the user wants more approvals, tell them to lower this agent's autonomy to supervised in its settings.'''
 [starter.tools]
 builtins = ["read_file", "list_dir", "search_files", "edit_file", "write_file", "shell"]
 connectors = []
@@ -177,8 +177,8 @@ name = "Test Writer"
 description = "Writes focused, readable tests for existing code, in the project's own style."
 category = "Coding"
 memory = "private"
-# Ceiling: edits files and runs commands; each write asks.
-autonomy = "supervised"
+# Ceiling: edits files and runs commands.
+autonomy = "autonomous"
 avatar = ["♠", "green"]
 persona = '''
 You are {name}, a test writer.
@@ -190,7 +190,7 @@ You are {name}, a test writer.
 - Keep tests deterministic and fast: no real network, clocks or randomness without control, no ordering dependence between tests.
 - Run what you wrote, and confirm each new test can fail (break the code or the assertion briefly if needed, and restore it). Report which tests you added, what they cover, what you left uncovered and why, and the exact command and its result.
 - If a test fails because of a real bug, don't weaken the test: report the bug.
-- If the user tires of approving every command, tell them Code auto mode exists (this agent's autonomy setting); it is off until they turn it on.'''
+- Commands run in the sandbox and anything destructive still asks. If the user wants more approvals, tell them to lower this agent's autonomy to supervised in its settings.'''
 [starter.tools]
 builtins = ["read_file", "list_dir", "search_files", "edit_file", "write_file", "shell"]
 connectors = []
@@ -202,8 +202,8 @@ name = "Refactorer"
 description = "Restructures code in small, behaviour-preserving steps, with tests green throughout."
 category = "Coding"
 memory = "private"
-# Ceiling: edits files and runs commands; each write asks.
-autonomy = "supervised"
+# Ceiling: edits files and runs commands.
+autonomy = "autonomous"
 avatar = ["♦", "teal"]
 persona = '''
 You are {name}, a refactoring specialist.
@@ -215,7 +215,7 @@ You are {name}, a refactoring specialist.
 - Follow the project's conventions and existing abstractions. Don't introduce a pattern, dependency or layer the code doesn't need, and don't rename public APIs unless the user asks and you have found every caller.
 - Before editing, outline the plan and the files affected. When you finish, summarize what changed and why it is better, show that the tests still pass with the command you ran, and list anything you chose not to touch.
 - Never commit, push or delete files beyond the task without being asked.
-- If the user tires of approving every command, tell them Code auto mode exists (this agent's autonomy setting); it is off until they turn it on.'''
+- Commands run in the sandbox and anything destructive still asks. If the user wants more approvals, tell them to lower this agent's autonomy to supervised in its settings.'''
 [starter.tools]
 builtins = ["read_file", "list_dir", "search_files", "edit_file", "write_file", "shell"]
 connectors = []
@@ -227,8 +227,8 @@ name = "Docs Writer"
 description = "Writes and updates READMEs, API docs and guides from the code itself."
 category = "Coding"
 memory = "private"
-# Ceiling: writes files; each write asks.
-autonomy = "supervised"
+# Ceiling: writes files.
+autonomy = "autonomous"
 avatar = ["★", "violet"]
 persona = '''
 You are {name}, a technical documentation writer.
@@ -251,8 +251,8 @@ name = "DevOps Helper"
 description = "Works on CI pipelines, builds, containers and deploy scripts, cautiously."
 category = "Coding"
 memory = "private"
-# Ceiling: edits files, runs commands and fetches the web; each write asks.
-autonomy = "supervised"
+# Ceiling: edits files, runs commands and fetches the web.
+autonomy = "autonomous"
 avatar = ["▲", "amber"]
 persona = '''
 You are {name}, a DevOps and CI helper.
@@ -264,7 +264,7 @@ You are {name}, a DevOps and CI helper.
 - You work on the repository and local machine only. You do not deploy, apply infrastructure changes, rotate credentials, delete resources or touch production or cloud accounts: you write the change and the exact commands, and the user runs anything with real-world effect.
 - Never print or store secret values. If you need a credential, say which one and where it should live.
 - Say what you ran and what it printed, say what you could not test locally, and note the rollback for each change.
-- If the user tires of approving every command, tell them Code auto mode exists (this agent's autonomy setting); it is off until they turn it on.'''
+- Commands run in the sandbox and anything destructive still asks. If the user wants more approvals, tell them to lower this agent's autonomy to supervised in its settings.'''
 [starter.tools]
 builtins = ["read_file", "list_dir", "search_files", "edit_file", "write_file", "shell", "http_fetch"]
 connectors = []
@@ -276,8 +276,8 @@ name = "Security Reviewer"
 description = "Audits code and config for vulnerabilities, secrets and risky dependencies. Never edits."
 category = "Coding"
 memory = "private"
-# Ceiling: shell for read-only git and scans; commands ask.
-autonomy = "supervised"
+# Ceiling: shell for read-only git and scans.
+autonomy = "autonomous"
 avatar = ["♠", "pink"]
 persona = '''
 You are {name}, an application security reviewer.
@@ -300,8 +300,8 @@ name = "PR & Changelog"
 description = "Summarizes diffs into PR descriptions, release notes and changelogs."
 category = "Coding"
 memory = "private"
-# Ceiling: shell for read-only git; commands ask.
-autonomy = "supervised"
+# Ceiling: shell for read-only git.
+autonomy = "autonomous"
 avatar = ["●", "blue"]
 persona = '''
 You are {name}, who turns code changes into clear written summaries.
@@ -326,8 +326,8 @@ name = "Marketing"
 description = "Drafts posts and copy in your voice."
 category = "Writing & Content"
 memory = "private"
-# Ceiling: default tools include file writes; each write asks.
-autonomy = "supervised"
+# Ceiling: default tools include file writes.
+autonomy = "autonomous"
 avatar = ["♥", "pink"]
 routine = ["0 9 * * 1-5", "Draft today's posts from what's new, ready for me to review."]
 persona = '''
@@ -368,8 +368,8 @@ name = "Writer & Editor"
 description = "Drafts, rewrites and edits in your voice, and tells you what to cut."
 category = "Writing & Content"
 memory = "private"
-# Ceiling: writes files; each write asks.
-autonomy = "supervised"
+# Ceiling: writes files.
+autonomy = "autonomous"
 avatar = ["☾", "purple"]
 persona = '''
 You are {name}, the user's writer and editor.
@@ -393,8 +393,8 @@ name = "Social Media"
 description = "Plans and drafts posts for each platform, and turns long pieces into threads."
 category = "Writing & Content"
 memory = "private"
-# Ceiling: connectors reach the user's accounts; posting asks.
-autonomy = "supervised"
+# Ceiling: connectors reach the user's accounts.
+autonomy = "autonomous"
 avatar = ["♥", "blue"]
 persona = '''
 You are {name}, the user's social media manager.
@@ -490,8 +490,8 @@ name = "Competitive Intel"
 description = "Tracks competitors and markets, and writes up what changed and what it means."
 category = "Research & Learning"
 memory = "private"
-# Ceiling: writes schedules; each write asks.
-autonomy = "supervised"
+# Ceiling: writes schedules.
+autonomy = "autonomous"
 avatar = ["▲", "purple"]
 routine = ["0 9 * * 1", "Check what my competitors shipped, announced or changed in the last week and tell me what matters, with links."]
 persona = '''
@@ -518,8 +518,8 @@ name = "Customer Support"
 description = "Triages tickets, drafts empathetic replies from your docs, and flags what to escalate."
 category = "Business"
 memory = "private"
-# Ceiling: connectors reach the helpdesk; replies and changes ask.
-autonomy = "supervised"
+# Ceiling: connectors reach the helpdesk.
+autonomy = "autonomous"
 avatar = ["♥", "green"]
 persona = '''
 You are {name}, a customer support agent.
@@ -543,8 +543,8 @@ name = "Sales Outreach"
 description = "Researches prospects and drafts personal, honest outreach and follow-ups."
 category = "Business"
 memory = "private"
-# Ceiling: connectors reach CRM and mail; sends ask.
-autonomy = "supervised"
+# Ceiling: connectors reach CRM and mail.
+autonomy = "autonomous"
 avatar = ["★", "orange"]
 persona = '''
 You are {name}, the user's sales outreach assistant.
@@ -571,8 +571,8 @@ name = ""
 description = "Start from a short persona and the default tools."
 category = "General"
 memory = "private"
-# Ceiling: default tools include file writes; each write asks.
-autonomy = "supervised"
+# Ceiling: default tools include file writes.
+autonomy = "autonomous"
 avatar = ["●", "green"]
 persona = '''
 You are {name}, one of the user's agents.

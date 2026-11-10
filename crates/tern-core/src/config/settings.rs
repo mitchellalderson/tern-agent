@@ -408,8 +408,10 @@ fn meta(key: &str) -> Meta {
             choices: &["readonly", "supervised", "autonomous", "yolo"],
             security: Some(
                 "How much tern may do without asking, for every agent that doesn't set its own. \
-                 Autonomous stops asking for ordinary writes; yolo asks for nothing, even in a \
-                 run that read untrusted content.",
+                 Autonomous (the default for a new install) stops asking for ordinary writes; \
+                 commands still run in the sandbox, and destructive changes, sends and anything \
+                 after reading untrusted content still ask. Choose supervised to be asked about \
+                 every write. Yolo asks for nothing, even in a run that read untrusted content.",
             ),
             risky: |v| v == "autonomous" || v == "yolo",
             ..m

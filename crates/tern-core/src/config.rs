@@ -81,7 +81,9 @@ pub struct Config {
     #[serde(skip)]
     pub agent_chains: Vec<(String, ModelChain)>,
     /// How much runs may do without asking (tooling spec §5.4): `readonly`,
-    /// `supervised` (the default), `autonomous` or `yolo`. A routine can set
+    /// `supervised`, `autonomous` (the default for a new install) or `yolo`.
+    /// A config file that predates this default and has no `autonomy` line
+    /// stays `supervised`. A routine can set
     /// its own; it is frozen on each run when the run starts.
     pub autonomy: crate::approval::Autonomy,
     pub outbox: OutboxConfig,
@@ -390,7 +392,7 @@ impl Default for Config {
             skills: crate::skill_capture::SkillsConfig::default(),
             home: crate::channels::HomeConfig::default(),
             agent_chains: Vec::new(),
-            autonomy: crate::approval::Autonomy::default(),
+            autonomy: crate::approval::Autonomy::Autonomous,
             outbox: OutboxConfig::default(),
             taint: TaintConfig::default(),
             fetch: FetchConfig::default(),
@@ -420,6 +422,16 @@ impl Config {
             path: path.to_path_buf(),
             source: Box::new(e),
         })?;
+        // Existing files without the line keep the old default: only a new
+        // install (no file, or one written with `autonomy = "autonomous"`)
+        // starts autonomous.
+        let mut c = c;
+        let has_autonomy = toml::from_str::<toml::Table>(text)
+            .map(|t| t.contains_key("autonomy"))
+            .unwrap_or(true);
+        if !has_autonomy {
+            c.autonomy = crate::approval::Autonomy::Supervised;
+        }
         // Code auto mode is a per-agent opt-in, never a global default.
         if c.autonomy == crate::approval::Autonomy::Code {
             return Err(ConfigError::CodeIsPerAgent(path.to_path_buf()));
@@ -1301,10 +1313,41 @@ env_secrets = ["GITHUB_TOKEN"]
             (3, 12)
         );
         assert!(Config::parse("[connectors]\nrate = \"lots\"\n", Path::new("x")).is_err());
+        // A new install is autonomous; a file that predates the default and
+        // has no `autonomy` line keeps supervised; an explicit line wins.
         assert_eq!(
             Config::default().autonomy,
-            crate::approval::Autonomy::Supervised
+            crate::approval::Autonomy::Autonomous
         );
+        let p = Path::new("c");
+        for (text, want) in [
+            ("", crate::approval::Autonomy::Supervised),
+            (
+                "[fetch]\ntaint = \"strict\"\n",
+                crate::approval::Autonomy::Supervised,
+            ),
+            (
+                "autonomy = \"supervised\"",
+                crate::approval::Autonomy::Supervised,
+            ),
+            (
+                "autonomy = \"readonly\"",
+                crate::approval::Autonomy::ReadOnly,
+            ),
+            ("autonomy = \"yolo\"", crate::approval::Autonomy::Yolo),
+            (
+                "autonomy = \"autonomous\"",
+                crate::approval::Autonomy::Autonomous,
+            ),
+        ] {
+            assert_eq!(Config::parse(text, p).unwrap().autonomy, want, "{text:?}");
+        }
+        // The config `tern config init` writes is autonomous, and the fetch
+        // default is any public site.
+        let fresh = Config::parse(crate::defaults::CONFIG_TOML, p).unwrap();
+        assert_eq!(fresh.autonomy, crate::approval::Autonomy::Autonomous);
+        assert!(Config::default().fetch.allow_domains.is_empty());
+        assert!(Config::default().fetch.deny_domains.is_empty());
         assert!(Config::parse("autonomy = \"reckless\"", Path::new("c")).is_err());
         // Code auto mode is opted into per agent, never set globally.
         let e = Config::parse("autonomy = \"code\"", Path::new("c")).unwrap_err();

@@ -200,11 +200,11 @@ async fn a_read_only_agent_cannot_launder_a_write_through_a_delegate() {
     let _d = env.daemon_with(None);
     let s = env.socket();
 
-    // seo is read-only; writer-editor alone may write (supervised).
+    // seo is read-only; writer-editor alone may write (autonomous).
     let direct = say(&s, &dm(&s, "writer-editor").await, "hi").await;
     assert_eq!(
         col(&env, "SELECT autonomy FROM runs WHERE id = ?1", &direct).as_deref(),
-        Some("supervised")
+        Some("autonomous")
     );
     let run = say(&s, &dm(&s, "seo").await, "Rewrite the page copy").await;
     assert_eq!(

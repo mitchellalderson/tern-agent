@@ -312,10 +312,10 @@ fn autonomy(a: &mut Audit, config: &Config, store: Option<&Store>) {
             Some(YOLO_FIX),
         ),
         Autonomy::Autonomous => a.add(
-            Severity::Medium,
+            Severity::Info,
             "autonomy",
-            "autonomy = \"autonomous\": untainted writes run without asking",
-            Some("Tainted writes and destructive calls still ask. Use \"supervised\" to be asked about every write."),
+            "autonomy = \"autonomous\" (the default for a new install): untainted writes run without asking",
+            Some("Tainted writes and destructive calls still ask, and commands run in the sandbox. Use \"supervised\" to be asked about every write."),
         ),
         other => a.add(Severity::Info, "autonomy", format!("autonomy = \"{other}\""), None),
     }

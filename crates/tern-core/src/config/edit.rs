@@ -43,12 +43,18 @@ impl ConfigFile {
                 .into());
             }
         };
-        let doc = text
-            .parse()
-            .map_err(|e: toml_edit::TomlError| EditError::Toml {
-                path: path.to_path_buf(),
-                message: e.to_string(),
-            })?;
+        let missing = text.is_empty() && !path.exists();
+        let mut doc: toml_edit::DocumentMut =
+            text.parse()
+                .map_err(|e: toml_edit::TomlError| EditError::Toml {
+                    path: path.to_path_buf(),
+                    message: e.to_string(),
+                })?;
+        if missing {
+            // A new file starts at the new-install default; without the
+            // line it would read as the old `supervised`.
+            doc["autonomy"] = toml_edit::value("autonomous");
+        }
         Ok(Self {
             path: path.to_path_buf(),
             doc,
@@ -216,6 +222,13 @@ impl ConfigFile {
 
     /// Remove a top-level key such as `default_model`.
     pub fn remove(&mut self, key: &str) -> bool {
+        if key == "autonomy" {
+            // A file with no `autonomy` line reads as the old default
+            // (`supervised`), so resetting to the default writes it out.
+            let had = self.doc.contains_key(key);
+            self.doc["autonomy"] = toml_edit::value("autonomous");
+            return had;
+        }
         self.doc.remove(key).is_some()
     }
 
@@ -340,6 +353,31 @@ api_key_secret = \"ANTHROPIC_API_KEY\"
         let p = dir.path().join("config.toml");
         std::fs::write(&p, body).unwrap();
         p
+    }
+
+    #[test]
+    fn a_new_file_starts_autonomous_and_an_existing_one_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        // No file: the new-install default is written out.
+        let p = dir.path().join("new.toml");
+        let mut f = ConfigFile::open(&p).unwrap();
+        f.set("default_model", "anthropic:x").unwrap();
+        let c = f.save().unwrap();
+        assert_eq!(c.autonomy, crate::approval::Autonomy::Autonomous);
+        // An existing file with no autonomy line stays supervised after an
+        // unrelated edit, and a reset writes the default out.
+        let p = file(&dir, START);
+        let mut f = ConfigFile::open(&p).unwrap();
+        f.set("default_model", "anthropic:new").unwrap();
+        let c = f.save().unwrap();
+        assert_eq!(c.autonomy, crate::approval::Autonomy::Supervised);
+        assert!(!std::fs::read_to_string(&p).unwrap().contains("autonomy"));
+        let mut f = ConfigFile::open(&p).unwrap();
+        f.remove("autonomy");
+        assert_eq!(
+            f.save().unwrap().autonomy,
+            crate::approval::Autonomy::Autonomous
+        );
     }
 
     #[test]

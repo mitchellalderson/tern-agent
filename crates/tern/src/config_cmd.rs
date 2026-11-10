@@ -34,6 +34,12 @@ pub fn init(home: &TernHome, force: bool) -> anyhow::Result<()> {
     std::fs::create_dir_all(&workspace)
         .with_context(|| format!("creating workspace {}", workspace.display()))?;
     println!("ready   {} (workspace)", workspace.display());
+    println!(
+        "\nNew agents start at autonomy = \"autonomous\": ordinary writes and sandboxed commands run \
+         without asking; destructive calls, sends and anything after reading untrusted text still ask. \
+         Set autonomy = \"supervised\" in {} to be asked about every write.",
+        config_path.display()
+    );
     println!("\nNext: run `tern setup` to connect a model provider.");
     Ok(())
 }
