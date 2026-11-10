@@ -1,0 +1,1 @@
+- **Show more** no longer jumps the chat view. The text stays where you clicked.

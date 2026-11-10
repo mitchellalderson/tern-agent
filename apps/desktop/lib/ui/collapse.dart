@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../theme.dart';
 import 'markdown_text.dart';
@@ -55,6 +56,37 @@ class Collapsible extends StatefulWidget {
 class _CollapsibleState extends State<Collapsible> {
   var _open = false;
 
+  /// Flip open/closed without moving what the reader is looking at. In a
+  /// reversed feed a taller item grows upward from its bottom edge, so the
+  /// text clicked would slide away; shift the scroll by the height change to
+  /// keep the item's top where it was (and in view, after a collapse).
+  void _toggle() {
+    final before = context.size?.height;
+    setState(() => _open = !_open);
+    final scrollable = Scrollable.maybeOf(context);
+    if (before == null || scrollable == null) return;
+    if (scrollable.axisDirection != AxisDirection.up) return;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final after = context.size?.height;
+      final pos = scrollable.position;
+      if (after == null || !pos.hasPixels) return;
+      final target = (pos.pixels + after - before).clamp(
+        pos.minScrollExtent,
+        pos.maxScrollExtent,
+      );
+      pos.jumpTo(target);
+      if (after < before) {
+        // The top may now sit above the viewport: bring it back.
+        final box = context.findRenderObject() as RenderBox?;
+        final view = scrollable.context.findRenderObject() as RenderBox?;
+        if (box == null || view == null || !box.attached) return;
+        final top = box.localToGlobal(Offset.zero, ancestor: view).dy;
+        if (top < 0) pos.jumpTo(pos.pixels + top);
+      }
+    }, debugLabel: 'collapsible-keep-top');
+  }
+
   @override
   Widget build(BuildContext context) {
     final preview = widget.collapsible ? collapsedPreview(widget.text) : null;
@@ -73,7 +105,7 @@ class _CollapsibleState extends State<Collapsible> {
           excludeSemantics: true,
           child: InkWell(
             borderRadius: BorderRadius.circular(6),
-            onTap: () => setState(() => _open = !_open),
+            onTap: _toggle,
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
               child: Text(
