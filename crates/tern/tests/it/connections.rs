@@ -107,7 +107,7 @@ async fn wait_for(
     rest: &mut String,
     want: impl Fn(&Value) -> bool,
 ) -> Value {
-    let end = Instant::now() + Duration::from_secs(15);
+    let end = Instant::now() + Duration::from_secs(60);
     loop {
         while let Some(nl) = rest.find('\n') {
             let line: String = rest.drain(..=nl).collect();
@@ -127,7 +127,7 @@ async fn wait_for(
             }
         }
         assert!(Instant::now() < end, "no matching event in {seen}");
-        let chunk = tokio::time::timeout(Duration::from_secs(15), events.chunk())
+        let chunk = tokio::time::timeout(Duration::from_secs(60), events.chunk())
             .await
             .unwrap()
             .unwrap()

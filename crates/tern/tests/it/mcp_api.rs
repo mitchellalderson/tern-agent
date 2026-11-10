@@ -218,11 +218,11 @@ async fn manage_mcp_servers_without_a_restart() {
     assert_eq!(status, 409);
 
     // State changes reach /v1/events.
-    let end = Instant::now() + Duration::from_secs(10);
+    let end = Instant::now() + Duration::from_secs(60);
     let mut seen = String::new();
     while !(seen.contains("mcp_changed") && seen.contains("\"running\"")) {
         assert!(Instant::now() < end, "no mcp_changed event in {seen}");
-        let chunk = tokio::time::timeout(Duration::from_secs(10), events.chunk())
+        let chunk = tokio::time::timeout(Duration::from_secs(60), events.chunk())
             .await
             .unwrap()
             .unwrap()

@@ -260,9 +260,9 @@ async fn fan_out_of_three_reports_back_to_the_parent() {
     // Events: the parent announces each child; each child's run_started
     // names its parent.
     let mut buf = String::new();
-    let end = Instant::now() + Duration::from_secs(30);
+    let end = Instant::now() + Duration::from_secs(90);
     let evs = loop {
-        let chunk = tokio::time::timeout(Duration::from_secs(10), events.chunk())
+        let chunk = tokio::time::timeout(Duration::from_secs(60), events.chunk())
             .await
             .unwrap()
             .unwrap()

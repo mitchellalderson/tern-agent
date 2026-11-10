@@ -1,0 +1,1 @@
+- Event-stream tests wait up to 60s per event, longer than the 15s keep-alive, so a loaded CI runner no longer fails `m5::socket_api_runs_streams_and_approves`.

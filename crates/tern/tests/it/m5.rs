@@ -484,13 +484,17 @@ async fn socket_api_runs_streams_and_approves() {
     // The shell call needs approval: answer it from the event stream.
     let mut buf = String::new();
     let approval_id = loop {
-        let chunk = tokio::time::timeout(Duration::from_secs(10), events.chunk())
+        // Slower than the 15s keep-alive, so a loaded runner can't beat it.
+        let chunk = tokio::time::timeout(Duration::from_secs(60), events.chunk())
             .await
-            .unwrap()
+            .unwrap_or_else(|_| panic!("no event within 60s; so far: {buf:?}"))
             .unwrap()
             .unwrap();
         buf.push_str(&String::from_utf8_lossy(&chunk));
-        if let Some(line) = buf.lines().find(|l| l.contains("approval_requested")) {
+        if let Some(line) = buf
+            .lines()
+            .find(|l| l.contains("approval_requested") && l.ends_with('}'))
+        {
             let ev: Value = serde_json::from_str(line.trim_start_matches("data:").trim()).unwrap();
             assert_eq!(ev["approval_requested"]["summary"], "shell echo via-api");
             break ev["approval_requested"]["id"].as_str().unwrap().to_owned();
