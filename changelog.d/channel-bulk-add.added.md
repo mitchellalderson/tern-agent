@@ -1,1 +1,0 @@
-- **Add many agents to a channel at once.** "+ Agent" opens a searchable checklist with Select all and Clear, members shown checked and disabled, and an "Add 3 agents" button. New channels can pick their agents up-front. The daemon's `POST /v1/channels/{id}/agents` also takes `{agents: [..]}` and reports who joined, who was already in and who failed.

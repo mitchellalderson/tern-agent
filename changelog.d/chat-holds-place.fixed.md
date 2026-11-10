@@ -1,1 +1,0 @@
-- **Chat holds its place for a long reply.** A tall new agent message now stays anchored at its start instead of jumping to its end, in channels and direct chat; a reader scrolled up is never moved.
