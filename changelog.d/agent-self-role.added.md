@@ -1,1 +1,0 @@
-- **Create an agent with just a name.** It works out its own role, refines it over its first 3 messages, then keeps it. See and edit it under **Role** in the agent sheet, or **Re-infer** it. Agents with a persona are unchanged.

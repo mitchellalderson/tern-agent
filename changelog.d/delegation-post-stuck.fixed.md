@@ -1,1 +1,0 @@
-- **A delegation post no longer sticks at "running"** when several tasks finish at once.
