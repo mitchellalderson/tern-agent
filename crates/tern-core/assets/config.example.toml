@@ -270,6 +270,15 @@ docker_pids = 512          # 0 for no limit
 # header_timeout_secs = 10      # time to send the TLS handshake and headers (or idle between requests); slower connections are closed
 # body_timeout_secs = 30        # time to send a body once its headers are in; slower gets 408
 # max_connections = 64          # open connections at once; more are refused (503, or closed under TLS)
+
+# Sign in to a server core with a hosted tern account (Clerk). Off unless
+# `issuer` is set; see docs/recipes/clerk-setup.md.
+# [account]
+# issuer = "https://clerk.example.com"  # Clerk's Frontend API URL; setting it turns accounts on
+# audience = "client_abc"       # the OAuth application's client id
+# publishable_key = "pk_live_..."  # public; the desktop app reads it
+# owner = "user_2abc"           # the Clerk user id that owns this core; unset: no account gets in
+# jwks_url = "https://clerk.example.com/.well-known/jwks.json"  # signing keys; default: under issuer
 #
 # Prices (USD per million tokens) for models whose list doesn't give them:
 # [providers.anthropic.prices]
