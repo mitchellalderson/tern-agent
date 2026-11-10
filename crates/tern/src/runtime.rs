@@ -623,7 +623,7 @@ impl Runtime {
     }
 
     /// [`Runtime::pick_model`] with the agent's model before `default_model`.
-    fn pick_model_for(
+    pub(crate) fn pick_model_for(
         &self,
         flag: Option<&str>,
         session_model: Option<&str>,

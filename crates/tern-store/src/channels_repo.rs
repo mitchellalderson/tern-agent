@@ -391,6 +391,20 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// An agent's own threads, in direct chats and channels alike, newest
+    /// first, without sub-agent and routine sessions.
+    pub fn agent_sessions(&self, agent_id: &str, limit: usize) -> Result<Vec<SessionRow>> {
+        let sql = format!(
+            "SELECT {SESSION_COLS} FROM sessions
+             WHERE agent_id = ?1 AND source NOT IN ('subagent', 'cron')
+             ORDER BY updated_at DESC, rowid DESC LIMIT ?2"
+        );
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![agent_id, limit as i64], session_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// `(messages, runs)` in a session.
     pub fn session_counts(&self, session_id: &str) -> Result<(i64, i64)> {
         Ok(self.conn()?.query_row(
