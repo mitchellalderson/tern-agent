@@ -12,6 +12,7 @@ export 'src/chain.dart';
 export 'src/client.dart';
 export 'src/config.dart';
 export 'src/connections.dart';
+export 'src/documents.dart';
 export 'src/endpoint.dart';
 export 'src/ledger.dart';
 export 'src/lifecycle.dart';

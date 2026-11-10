@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:tern_client/tern_client.dart';
 
+import 'documents.dart';
 import 'notifier.dart';
 import 'transcript.dart';
 import 'version.dart';
@@ -612,6 +613,28 @@ class TernStore extends ChangeNotifier {
 
   /// `/v1/waits`: `wait_until` waits, shown and cancelled in the app.
   bool get hasWaits => health?.features.contains('waits') ?? false;
+
+  /// The core has `/v1/documents` (the Documents panel needs it).
+  bool get hasDocuments => health?.features.contains('documents') ?? false;
+
+  final _documentTouches = StreamController<DocumentTouch>.broadcast();
+
+  /// A document tool call finished: the app refreshes that document, and
+  /// opens it when the agent just created it.
+  Stream<DocumentTouch> get documentTouches => _documentTouches.stream;
+
+  void _noteDocumentTool(ToolFinished e) {
+    if (e.replayed || e.isError) return;
+    final created = e.name == 'create_document';
+    if (!created && e.name != 'edit_document') return;
+    final touch = DocumentTouch.fromToolOutput(
+      e.output,
+      created: created,
+      runId: e.runId,
+      channelId: _live[e.runId]?.channel,
+    );
+    if (touch != null) _documentTouches.add(touch);
+  }
 
   /// What waits for you anywhere: open approval and secret cards in every
   /// conversation this app has, and the outbox.
@@ -1680,7 +1703,10 @@ class TernStore extends ChangeNotifier {
       _phase.remove(e.runId);
       if (_activeAgents.remove(e.runId) != null) workVersion++;
     }
-    if (e is ToolFinished) _closeAuthCalls(e.id);
+    if (e is ToolFinished) {
+      _closeAuthCalls(e.id);
+      _noteDocumentTool(e);
+    }
     String? session;
     switch (e) {
       case AuthPromptOpened(:final prompt):
@@ -2729,6 +2755,7 @@ class TernStore extends ChangeNotifier {
     _retry?.cancel();
     _staleTimer?.cancel();
     _events?.cancel();
+    unawaited(_documentTouches.close());
     client.close();
     super.dispose();
   }

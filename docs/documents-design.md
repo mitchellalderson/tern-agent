@@ -1,6 +1,6 @@
 # Documents design: a writer and viewer next to the chat
 
-Status: draft for owner review, 2026-11-10. Design only; no feature code. Builds on:
+Status: 2026-11-10. Design, plus the **viewer-only MVP built in the same PR** (§7.2, "As built"). Everything else here is still design. Builds on:
 
 - [gui-spec.md](gui-spec.md) and [brand/](brand/) (layout, tokens, underline tabs, monotone icons, no emoji).
 - Workspaces: `crates/tern-core/src/workspace.rs` (cap-std scope, one frozen workspace per run), `docs/reference.md` "Workspaces", `POST /v1/uploads`.
@@ -545,6 +545,19 @@ The user can say "write me a one-pager on X"; the agent calls `create_document`;
 
 In: D0 (all), D1 (viewer, tabs, library, card, fallback reveal animation), D2a minus diff view, `ui_context`, and split preview (those two follow immediately in "Docs B"). Out: streaming (D2b), export beyond Markdown (a **Reveal in Finder** and **Copy** are enough for the alpha), HTML, Mermaid, comments, teams, Telegram files. **Estimate: 3 weeks with two people on D0 and D1/D2a in parallel, 4 to 5 weeks alone.** Release notes line: "The agent can write documents next to the chat. You can edit them. Every change is a version."
 
+### 7.2a As built (the MVP in this PR)
+
+**In:** D0 and the read-only half of D1.
+
+- **Store:** migration `0031_documents.sql` (`documents`, `document_revisions`, `document_blobs`; teams has not claimed 0031 yet, renumber at merge if it has). `documents_repo.rs`: create, compare-and-swap revision commit, list, revisions, review mark, one ledger entry per write, in one transaction. Text is stored uncompressed and content-addressed by sha256; compression is a later, invisible change.
+- **Tools** (`tern-tools/src/documents.rs`): `create_document`, `read_document`, `edit_document`, `list_documents`. `edit_document` takes `edits` (find/replace, each `find` unique) or `content` (full replace, only on the latest revision). A stale `base_rev` is rebased by line diff (`similar`) when the touched lines are unchanged, else refused with the current text of those lines. A hand edit of the file becomes an `external` revision first. Writes are granted inside the workspace (`taint_safe` when confined), never overwrite a file that is not a document, and are capped (256 KB per call, 5 MB per document, 60 revisions per run). A tainted run's document is flagged with provenance and read back `Untrusted`.
+- **API:** `GET /v1/documents`, `/{id}`, `/{id}/revisions[/{rev}]`, `POST /{id}/reviewed`; health feature `documents`.
+- **Live refresh:** no new event type yet. The app listens for `tool_finished` of `create_document` and `edit_document` on the run stream (the tool output carries `doc_id` and `rev`), refreshes that document, and opens a document created in the conversation on screen. The `document_*` events of §6.2 are the follow-up.
+- **Panel:** the right pane's Activity / Documents underline tabs, a tab per open document with an unseen dot, a library list, rendered Markdown (`flutter_markdown_plus`, raw HTML dropped, images never loaded, link confirm), text, code and a CSV grid, a "From the web" bar with **Mark as reviewed**, a History tab with older revisions viewable read-only, Copy.
+- **Differences from the design:** streaming is not built (the text appears when the call finishes); documents above 200 KB render as plain text (not 1 MiB) because the Markdown widget is not lazy; there is no transcript card yet; `external` revisions are noticed when an agent next edits, not by a file watcher; `read_document` returns the latest stored revision, not the file.
+
+**Not built, with clean seams:** user editing and autosave (the revision commit already takes `expect_rev` and an author kind of `user`), diff view (`similar` is in the tree; `added`/`removed` are stored per revision), export, HTML and Mermaid preview, comments and suggestions (a new table and tool), teams sharing (`owner_user_id` and `visibility` columns exist, unused), streaming (`document_stream`), the transcript card, TUI and Telegram, routine `output_document`, and the file watcher.
+
 ### 7.3 Test plan
 
 **Core (Rust):**
@@ -585,7 +598,7 @@ In: D0 (all), D1 (viewer, tabs, library, card, fallback reveal animation), D2a m
 
 ## 9. Open questions
 
-Each has a default; the owner can overrule any.
+Each has a default. **Settled on 2026-11-10** by the owner: Q1 (`documents/` under the run's workspace root; a routine's output may override later), Q6 (reading a tainted document taints the run; documents carry provenance and the panel marks them), Q14 (the tab is called Documents). All other defaults below were taken for the MVP (no agent `delete_document`, remote images never auto-load, the ledger records hash and counts). Still open for later phases: Q2 to Q5, Q7, Q8, Q11 to Q13.
 
 1. **Which workspace subfolder is the default home for documents?** Options: `documents/` under the run's workspace root, or the workspace root itself. **Default: `documents/`** (keeps the user's folder tidy; a routine's `output` can override).
 2. **Should user edits in the panel create per-save revisions or coalesce?** Default: coalesce within 5 minutes by the same author (§2.3). A "Save version" button makes a hard boundary.

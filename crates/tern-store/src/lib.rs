@@ -5,6 +5,7 @@ mod channels_repo;
 mod connections_repo;
 mod daemon_repo;
 mod devices_repo;
+mod documents_repo;
 mod ledger_repo;
 mod manage_repo;
 #[cfg(test)]
@@ -27,6 +28,9 @@ pub use channels_repo::{ChannelRow, HOME, Moved, NewPost, NewThread, PostRow};
 pub use connections_repo::{ConnectionRow, NewConnection};
 pub use daemon_repo::{HeldDelivery, NewEvent, PollRecord, RoutineEvent, ScheduleRow, TokenCounts};
 pub use devices_repo::{DeviceGrant, DeviceRow};
+pub use documents_repo::{
+    Commit, DocumentFilter, DocumentRow, NewDocument, NewRevision, RevisionRow, content_hash,
+};
 pub use ledger_repo::{
     ACTOR_OWNER, ACTOR_TERN, GENESIS, LedgerBreak, LedgerCheck, LedgerEntry, LedgerFilter,
     LedgerRow, entry_hash,

@@ -15,6 +15,7 @@ mod config_api;
 mod connections;
 mod d1;
 mod delegation;
+mod documents;
 mod edit_delete;
 mod g2;
 mod grants_e2e;

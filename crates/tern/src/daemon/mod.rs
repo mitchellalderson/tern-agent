@@ -8,6 +8,7 @@ mod api_bundles;
 pub mod api_channels;
 mod api_config;
 mod api_connections;
+mod api_documents;
 mod api_ledger;
 pub mod api_lifecycle;
 mod api_mcp;
