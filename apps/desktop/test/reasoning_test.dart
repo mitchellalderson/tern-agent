@@ -7,12 +7,12 @@ import 'package:tern_desktop/ui/items.dart';
 import 'package:tern_desktop/ui/reasoning.dart';
 
 Widget _host(Widget child, {Brightness brightness = Brightness.light}) {
-  final c = brightness == Brightness.light ? TernColors.light : TernColors.dark;
+  final c = brightness == Brightness.light
+      ? TernColors.light
+      : TernColors.dark;
   return MaterialApp(
     theme: ternTheme(c, brightness),
-    home: Scaffold(
-      body: Center(child: SizedBox(width: 500, child: child)),
-    ),
+    home: Scaffold(body: Center(child: SizedBox(width: 500, child: child))),
   );
 }
 
@@ -25,10 +25,7 @@ void main() {
     test('streams in, ends when the answer starts, and stays on the run', () {
       final t = Transcript();
       final t0 = DateTime(2026, 11, 6, 9);
-      t.apply(
-        const RunStarted(runId: 'r', sessionId: 's'),
-        now: t0,
-      );
+      t.apply(const RunStarted(runId: 'r', sessionId: 's'), now: t0);
       t.apply(
         const ReasoningDelta(runId: 'r', text: 'Let me '),
         now: t0,
@@ -71,14 +68,8 @@ void main() {
     test('model calls of one run join, in order', () {
       final t = Transcript();
       final t0 = DateTime(2026, 11, 6, 9);
-      t.apply(
-        const RunStarted(runId: 'r', sessionId: 's'),
-        now: t0,
-      );
-      t.apply(
-        const ReasoningDelta(runId: 'r', text: 'First.'),
-        now: t0,
-      );
+      t.apply(const RunStarted(runId: 'r', sessionId: 's'), now: t0);
+      t.apply(const ReasoningDelta(runId: 'r', text: 'First.'), now: t0);
       t.apply(
         const ToolStarted(runId: 'r', id: 'c', name: 'shell', summary: 'ls'),
         now: t0.add(const Duration(seconds: 2)),
@@ -126,10 +117,7 @@ void main() {
         'duration_ms': 900,
       });
       expect((a as ReasoningBlock).text, 'hm');
-      final b = ContentBlock.fromJson({
-        'type': 'redacted_thinking',
-        'data': 'x',
-      });
+      final b = ContentBlock.fromJson({'type': 'redacted_thinking', 'data': 'x'});
       expect((b as ReasoningBlock).hidden, isTrue);
       expect(
         TernEvent.fromJson({
@@ -232,7 +220,10 @@ void main() {
       // The box's own scroller (the selectable text has one inside).
       final scroll = tester.state<ScrollableState>(
         find
-            .descendant(of: find.byKey(_box), matching: find.byType(Scrollable))
+            .descendant(
+              of: find.byKey(_box),
+              matching: find.byType(Scrollable),
+            )
             .first,
       );
       expect(scroll.position.pixels, scroll.position.maxScrollExtent);
@@ -258,7 +249,10 @@ void main() {
       r.add('\nmore', DateTime(2026));
       await tester.pumpWidget(line());
       await tester.pump();
-      expect(tester.state<ScrollableState>(scrollable).position.pixels, before);
+      expect(
+        tester.state<ScrollableState>(scrollable).position.pixels,
+        before,
+      );
       await tester.pumpWidget(const SizedBox());
     });
   });

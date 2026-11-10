@@ -541,12 +541,11 @@ class Transcript {
   /// ends it.
   final _openReasoning = <String, ReasoningItem>{};
 
-  ReasoningItem _reasoningItem(String run) =>
-      _openReasoning.putIfAbsent(run, () {
-        final item = ReasoningItem(run, Reasoning());
-        items.add(item);
-        return item;
-      });
+  ReasoningItem _reasoningItem(String run) => _openReasoning.putIfAbsent(run, () {
+    final item = ReasoningItem(run, Reasoning());
+    items.add(item);
+    return item;
+  });
 
   void _endReasoning(String run, DateTime now) =>
       _openReasoning.remove(run)?.reasoning.end(now);
