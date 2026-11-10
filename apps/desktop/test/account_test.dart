@@ -69,10 +69,18 @@ class _Clerk {
     final back = Uri.parse(
       q['redirect_uri']!,
     ).replace(queryParameters: {'code': 'thecode', 'state': q['state']!});
-    unawaited(
-      HttpClient().getUrl(back).then((r) => r.close()).then((_) {}),
-    );
+    unawaited(_get(back));
   }
+}
+
+/// A bare GET over a socket: flutter_test replaces `HttpClient` with one
+/// that never connects.
+Future<void> _get(Uri url) async {
+  final s = await Socket.connect(url.host, url.port);
+  s.write('GET ${url.path}?${url.query} HTTP/1.0\r\nHost: ${url.host}\r\n\r\n');
+  await s.flush();
+  await s.drain<void>();
+  await s.close();
 }
 
 void main() {
@@ -143,7 +151,7 @@ void main() {
         open: (url) async {
           final back = Uri.parse(url.queryParameters['redirect_uri']!)
               .replace(queryParameters: {'code': 'c', 'state': 'forged'});
-          unawaited(HttpClient().getUrl(back).then((r) => r.close()));
+          unawaited(_get(back));
         },
       );
       addTearDown(bad.dispose);
@@ -224,7 +232,6 @@ void main() {
     late AppPrefs prefs;
     late _MemTokens store;
     late AccountService service;
-    late Connections connections;
     late TernControl control;
     final applied = <Endpoint>[];
 
@@ -248,7 +255,7 @@ void main() {
         tokens: store,
         post: _Clerk().post,
       );
-      return connections = Connections(
+      return Connections(
         prefs: prefs,
         tokens: AccountTokens(store, service),
         apply: applied.add,
@@ -300,6 +307,9 @@ void main() {
     testWidgets('Settings shows who is signed in, and Sign out', (
       tester,
     ) async {
+      tester.view.physicalSize = const Size(1000, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
       final c = build();
       // Signed out: no row.
       await tester.pumpWidget(
