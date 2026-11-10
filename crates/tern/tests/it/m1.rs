@@ -24,6 +24,14 @@ impl Env {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         std::fs::create_dir(&home).unwrap();
+        // These tests are about approvals, so they pin the old default
+        // rather than depend on the new-install one (autonomous).
+        std::fs::create_dir(home.join(".tern")).unwrap();
+        std::fs::write(
+            home.join(".tern/config.toml"),
+            "autonomy = \"supervised\"\n",
+        )
+        .unwrap();
         let script_path = tmp.path().join("script.json");
         std::fs::write(&script_path, script.to_string()).unwrap();
         Self {
