@@ -345,15 +345,19 @@ class Persona {
 /// `inferring` (the agent writes and refines it), `settled`, `user` (edited
 /// by the user) or `none` (the agent has a hand-written persona instead).
 class AgentRole {
-  const AgentRole({required this.role, required this.state});
+  const AgentRole({required this.role, required this.state, this.note});
 
   factory AgentRole.fromJson(Json j) => AgentRole(
     role: j['role'] as String? ?? '',
     state: j['state'] as String? ?? 'none',
+    note: j['note'] as String?,
   );
 
   final String role;
   final String state;
+
+  /// Why a Re-infer changed nothing, when it didn't.
+  final String? note;
 
   /// Whether this agent has a role of its own to show.
   bool get managed => state != 'none';

@@ -1,6 +1,8 @@
 // Agent profiles in the desktop app (docs/agent-profiles-design.md §7.2,
 // AP1): AGENTS in the sidebar, an agent's DM as Home's view, the create
 // and edit sheet, the per-agent side panel, and approvals mirrored in a DM.
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -295,6 +297,25 @@ class _FakeClient extends TernClient {
     roleSets.add((id, role));
     roleText = role;
     roleState = 'user';
+    return AgentRole(role: roleText, state: roleState);
+  }
+
+  final roleInfers = <String>[];
+  Completer<void>? inferGate;
+  String? inferNote;
+  String? inferError;
+  String inferredRole = 'You are Research: you look things up and cite them.';
+
+  @override
+  Future<AgentRole> inferRole(String id) async {
+    roleInfers.add(id);
+    await inferGate?.future;
+    if (inferError != null) throw TernException(inferError!, status: 500);
+    if (inferNote != null) {
+      return AgentRole(role: roleText, state: roleState, note: inferNote);
+    }
+    roleText = inferredRole;
+    roleState = 'inferring';
     return AgentRole(role: roleText, state: roleState);
   }
 
@@ -853,10 +874,7 @@ void main() {
     await tester.tap(find.byTooltip('Edit Research'));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('agent-role')), findsOneWidget);
-    expect(
-      find.text('You are Research: you look things up.'),
-      findsOneWidget,
-    );
+    expect(find.text('You are Research: you look things up.'), findsOneWidget);
     // Edit: the user's words are saved as the role.
     await tester.ensureVisible(find.byKey(const Key('role-edit')));
     await tester.tap(find.byKey(const Key('role-edit')));
@@ -874,11 +892,64 @@ void main() {
     ));
     expect(find.text('You are Research. Cite everything.'), findsOneWidget);
     expect(find.text('Written by you.'), findsOneWidget);
-    // Re-infer: cleared, to be written again.
+    // Re-infer: the agent writes a new one, and says so.
     await tester.tap(find.byKey(const Key('role-reinfer')));
     await tester.pumpAndSettle();
-    expect(client.roleResets, ['tern:research']);
-    expect(find.text('Not written yet.'), findsOneWidget);
+    expect(client.roleInfers, ['tern:research']);
+    expect(
+      find.text('You are Research: you look things up and cite them.'),
+      findsOneWidget,
+    );
+    expect(find.text('New role written.'), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('Re-infer shows progress, then the role, a note or the error', (
+    tester,
+  ) async {
+    final (store, client) = await _store();
+    client
+      ..roleState = 'inferring'
+      ..roleText = '';
+    await store.openAgent(_research);
+    await _pump(tester, store);
+    await tester.tap(find.byTooltip('Edit Research'));
+    await tester.pumpAndSettle();
+    final reinfer = find.byKey(const Key('role-reinfer'));
+    await tester.ensureVisible(reinfer);
+
+    // Progress while the model works; the button is off.
+    client.inferGate = Completer<void>();
+    await tester.tap(reinfer);
+    await tester.pump();
+    expect(find.byKey(const Key('role-progress')), findsOneWidget);
+    expect(tester.widget<TextButton>(reinfer).onPressed, isNull);
+    client.inferGate!.complete();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('role-progress')), findsNothing);
+    expect(find.text('New role written.'), findsOneWidget);
+    expect(find.textContaining('you look things up'), findsOneWidget);
+
+    // An empty result says why, and the role stays.
+    client
+      ..inferGate = null
+      ..inferNote = 'No new role: the model wrote no role.';
+    await tester.tap(reinfer);
+    await tester.pumpAndSettle();
+    expect(find.text('No new role: the model wrote no role.'), findsOneWidget);
+    expect(find.textContaining('you look things up'), findsOneWidget);
+
+    // A failure is shown, never silence.
+    client
+      ..inferNote = null
+      ..inferError = 'the model call failed';
+    await tester.tap(reinfer);
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('Could not write a role: the model call failed'),
+      findsOneWidget,
+    );
+    expect(client.roleInfers.length, 3);
     debugDefaultTargetPlatformOverride = null;
   });
 

@@ -7,6 +7,7 @@ import '../state/transcript.dart';
 import '../state/workspaces.dart';
 import '../theme.dart';
 import 'agent_face.dart';
+import 'agent_picker.dart';
 import 'channel_items.dart' show SuggestionActions;
 import 'conversation.dart';
 import 'feed.dart';
@@ -554,45 +555,29 @@ class MemberAvatars extends StatelessWidget {
             ),
           ),
         const SizedBox(width: 4),
-        PopupMenuButton<String>(
-          tooltip: others.isEmpty
+        Tooltip(
+          message: others.isEmpty
               ? 'Every agent is in #${channel.slug}'
-              : 'Add an agent to #${channel.slug}',
-          enabled: others.isNotEmpty,
-          position: PopupMenuPosition.under,
-          onSelected: (id) => store.addToChannel(channel.id, id),
-          itemBuilder: (_) => [
-            for (final a in others)
-              PopupMenuItem(
-                value: a.id,
-                height: 36,
-                child: Row(
-                  children: [
-                    AgentAvatar.of(a, size: 20),
-                    const SizedBox(width: 8),
-                    Text(a.name),
-                    const SizedBox(width: 6),
-                    Text(
-                      '@${a.slug}',
-                      style: TextStyle(fontSize: 12, color: c.muted),
-                    ),
-                  ],
-                ),
+              : 'Add agents to #${channel.slug}',
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: others.isEmpty
+                ? null
+                : () => showAddAgents(context, store, channel),
+            child: Container(
+              height: 24,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                border: Border.all(color: c.hairline),
+                borderRadius: BorderRadius.circular(12),
               ),
-          ],
-          child: Container(
-            height: 24,
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              border: Border.all(color: c.hairline),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              '+ Agent',
-              style: TextStyle(
-                fontSize: 12,
-                color: others.isEmpty ? c.muted : c.text,
+              child: Text(
+                '+ Agent',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: others.isEmpty ? c.muted : c.text,
+                ),
               ),
             ),
           ),
@@ -982,6 +967,9 @@ class _ChannelDialogState extends State<ChannelDialog> {
   /// The folder chosen for a new channel; null = the default.
   String? _folder;
 
+  /// Agents to add to a new channel (tern is always in).
+  var _members = <String>{};
+
   @override
   void initState() {
     super.initState();
@@ -1015,6 +1003,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
                 ? null
                 : _instructions.text.trim(),
             workspace: _folder,
+            agents: _members.toList(),
           )
         : await widget.store.updateChannel(
             editing.id,
@@ -1034,6 +1023,11 @@ class _ChannelDialogState extends State<ChannelDialog> {
           );
     if (!mounted) return;
     if (err == null) {
+      final late = editing == null ? widget.store.memberError : null;
+      if (late != null) {
+        ScaffoldMessenger.maybeOf(context)
+            ?.showSnackBar(SnackBar(content: Text(late)));
+      }
       if (mounted) Navigator.of(context).pop();
     } else {
       setState(() {
@@ -1139,6 +1133,22 @@ class _ChannelDialogState extends State<ChannelDialog> {
                     return null;
                   },
                   onClear: () => setState(() => _folder = null),
+                ),
+              ],
+              if (editing == null && widget.store.hasAgents) ...[
+                const SizedBox(height: 14),
+                Text('Agents', style: labels),
+                const SizedBox(height: 6),
+                AgentPicker(
+                  height: 160,
+                  agents: [
+                    for (final a in widget.store.agents)
+                      if (!a.archived) a,
+                  ],
+                  locked: {widget.store.defaultAgent?.id ?? 'tern'},
+                  lockedNote: 'Always in',
+                  selected: _members,
+                  onChanged: (s) => setState(() => _members = s),
                 ),
               ],
               if (editing?.agents case final agents?

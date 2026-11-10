@@ -1,0 +1,1 @@
+- **Self-written roles** now work from a name alone: a new agent writes its starter role right after it is created, without waiting for a first message. Re-infer, and the role itself, also draw on the agent's work in channels (not only direct chats), and Re-infer always answers: progress, the new role, a note, or an error.

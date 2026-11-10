@@ -9,7 +9,7 @@
 //! | GET | `/v1/channels/{id}/impact` | what deleting it touches: `{posts, conversations, routines, members, running_runs, blockers}` |
 //! | PATCH | `/v1/channels/{id}` | `{slug?, title?, instructions?, archived?, lead?, agent_wakes?, max_hops?, wakes_per_hour?, let_agents_decide?}` (`instructions: null` clears them; the last five: topic channels) |
 //! | GET | `/v1/channels/{id}/agents` | a topic channel's `{members: [{agent_id, lead?, added_at}], agent_wakes, max_hops, wakes_per_hour}` (also on `Channel` as `agents`) |
-//! | POST | `/v1/channels/{id}/agents` | add `{agent}` (id or slug), with a "Name joined" note |
+//! | POST | `/v1/channels/{id}/agents` | add `{agent}` (id or slug), with a "Name joined" note; or `{agents: [..]}` → the members plus `added`, `already` and `failed: [{agent, error}]` (200; one that can't join doesn't stop the rest) |
 //! | DELETE | `/v1/channels/{id}/agents/{agent}` | take an agent out (not the lead or `tern`) |
 //! | GET | `/v1/channels/{id}/posts?before=&limit=` | `[Post]`, newest first |
 //! | GET | `/v1/channels/{id}/stream?before=&limit=` | a main channel's stream: its segments' messages and its posts, interleaved, newest first, with a `cut` item where each segment starts (`next`: the cursor for older items) |
@@ -396,21 +396,80 @@ async fn members(
 
 #[derive(Deserialize)]
 struct AddMemberBody {
-    agent: String,
+    /// One agent (id or slug)…
+    #[serde(default)]
+    agent: Option<String>,
+    /// …or several at once.
+    #[serde(default)]
+    agents: Vec<String>,
 }
 
+/// What adding several agents did, one by one.
+#[derive(Serialize)]
+struct BulkAdded {
+    #[serde(flatten)]
+    channel: ChannelAgents,
+    /// Agent ids that joined.
+    added: Vec<String>,
+    /// Agent ids that already were members.
+    already: Vec<String>,
+    /// Each agent that couldn't join, as given, with why.
+    failed: Vec<BulkFailure>,
+}
+
+#[derive(Serialize)]
+struct BulkFailure {
+    agent: String,
+    error: String,
+}
+
+/// Add `{agent}` (a 400 if it can't join) or `{agents: [..]}` (200 with
+/// `added`, `already` and `failed`: one that can't join doesn't stop the
+/// others).
 async fn add_member(
     State(m): State<Shared>,
     UrlPath(id): UrlPath<String>,
     Json(b): Json<AddMemberBody>,
-) -> ApiResult<ChannelAgents> {
+) -> ApiResult<serde_json::Value> {
     let c = find(&m, &id)?;
     if c.kind != "topic" || c.archived_at.is_some() {
         return Err(bad("agents join topic channels that aren't archived"));
     }
-    let a = active_agent(&m, &b.agent)?;
-    m.join(&c, &a).map_err(internal)?;
-    members(State(m), UrlPath(id)).await
+    if let Some(agent) = b.agent.as_deref().filter(|_| b.agents.is_empty()) {
+        let a = active_agent(&m, agent)?;
+        m.join(&c, &a).map_err(internal)?;
+        let Json(v) = members(State(m), UrlPath(id)).await?;
+        return Ok(Json(serde_json::to_value(v).map_err(internal)?));
+    }
+    if b.agents.is_empty() {
+        return Err(bad("name an agent, or agents to add"));
+    }
+    let (mut added, mut already, mut failed) = (Vec::new(), Vec::new(), Vec::new());
+    for given in &b.agents {
+        match active_agent(&m, given) {
+            Err(e) => failed.push(BulkFailure {
+                agent: given.clone(),
+                error: e.1,
+            }),
+            Ok(a) if added.contains(&a.id) || already.contains(&a.id) => {}
+            Ok(a) => match m.join(&c, &a) {
+                Ok(true) => added.push(a.id),
+                Ok(false) => already.push(a.id),
+                Err(e) => failed.push(BulkFailure {
+                    agent: given.clone(),
+                    error: e.to_string(),
+                }),
+            },
+        }
+    }
+    let channel = channel_agents(&m, &c).ok_or_else(|| bad("only topic channels have members"))?;
+    let out = BulkAdded {
+        channel,
+        added,
+        already,
+        failed,
+    };
+    Ok(Json(serde_json::to_value(out).map_err(internal)?))
 }
 
 async fn remove_member(

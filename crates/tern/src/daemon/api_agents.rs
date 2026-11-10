@@ -9,6 +9,8 @@
 //! | DELETE | `/v1/agents/{id}?confirm=true[&reassign_to=<agent>\|&delete_routines=true]` | delete it (never the default agent): its conversations stay in History under its name; refused (409) while it has runs in progress or writes in the outbox, or routines that `reassign_to` or `delete_routines` doesn't place |
 //! | GET | `/v1/agents/{id}/impact` | what deleting it touches: `{routines, led_channels, member_channels, conversations, memories, running_runs, pending_outbox, blockers}` |
 //! | GET / PUT | `/v1/agents/{id}/persona` | `{persona}`; GET adds `system_sections`, what tern adds to every persona |
+//! | GET / PUT / DELETE | `/v1/agents/{id}/role` | the self-written role `{role, state}`; PUT = the user writes it (stable), DELETE = forget it |
+//! | POST | `/v1/agents/{id}/role/infer` | Re-infer: one model call writes the role from the name and the agent's work in chats and channels (untainted content only, as data). → `{role, state, note?}`; `note` says why nothing changed; 400 with the reason if the call fails (the old role stays) |
 //! | GET | `/v1/agents/templates` | `[Template]` for the create sheet |
 //! | GET | `/v1/agents/{id}/work?limit=` | its recent work, newest first: delegated batches (`delegated` posts in its DM) and routine runs |
 //! | GET | `/v1/memories?agent=&q=&limit=` | memories: `agent` = `shared`, an agent (its own), or absent for all. Each has a `source`: `agent`, `unverified` (saved in a run that had read untrusted content) or `user` |
@@ -25,7 +27,7 @@
 
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, patch};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -51,6 +53,7 @@ pub fn routes() -> Router<Shared> {
             "/v1/agents/{id}/role",
             get(role).put(set_role).delete(reset_role),
         )
+        .route("/v1/agents/{id}/role/infer", post(infer_role))
         .route("/v1/agents/{id}/work", get(work))
         .route("/v1/memories", get(memories).delete(clear_memories))
         .route(
@@ -348,6 +351,17 @@ async fn create(
         })
         .map_err(bad)?;
     changed(&m);
+    // A name alone: write the starter role now, off this request, so it
+    // exists without waiting for a first message.
+    if tern_core::role::load(&m.rt.home, &row.id).is_some_and(|s| s.open()) {
+        let (m2, a) = (m.clone(), row.clone());
+        tokio::spawn(async move {
+            match m2.rt.infer_role(&a, false).await {
+                Ok(_) => changed(&m2),
+                Err(e) => tracing::warn!(agent = %a.id, "starter role not written: {e:#}"),
+            }
+        });
+    }
     Ok((StatusCode::CREATED, Json(agent_view(&m, row))))
 }
 
@@ -672,6 +686,9 @@ pub struct Role {
     /// `user`. `none` for an agent with a hand-written persona, which has no
     /// role of its own.
     pub state: String,
+    /// Why nothing changed, after a Re-infer that wrote no role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -690,6 +707,7 @@ fn role_of(m: &Shared, id: &str) -> Role {
             None => "none",
         }
         .into(),
+        note: None,
     }
 }
 
@@ -716,6 +734,26 @@ async fn reset_role(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> Ap
     tern_core::role::open(&m.rt.home, &a.id).map_err(bad)?;
     changed(&m);
     Ok(Json(role_of(&m, &a.id)))
+}
+
+/// Re-infer: the agent writes its role again, from its name and its work in
+/// direct chats and channels. The old role stays if this fails; an empty
+/// result comes back as a `note`, never as silence.
+async fn infer_role(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Role> {
+    let a = find(&m, &id)?;
+    if tern_core::role::load(&m.rt.home, &a.id).is_none() {
+        return Err(bad("this agent doesn't infer its role"));
+    }
+    let out =
+        m.rt.infer_role(&a, true)
+            .await
+            .map_err(|e| bad(format!("{e:#}")))?;
+    changed(&m);
+    let mut r = role_of(&m, &a.id);
+    if let crate::role_infer::Inferred::Skipped(why) = out {
+        r.note = Some(format!("No new role: {why}."));
+    }
+    Ok(Json(r))
 }
 
 #[derive(Deserialize)]

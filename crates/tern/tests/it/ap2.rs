@@ -546,3 +546,47 @@ async fn a_moved_in_conversation_continues_and_a_mentioned_agent_answers_in_the_
     .await;
     assert_eq!(posts.last().unwrap()["author_id"], "tern");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn several_agents_join_in_one_request_and_one_that_cannot_doesnt_stop_the_rest() {
+    let env = Env::with_config(&json!({ "conversations": [] }), "");
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let research = agent(&s, "Research").await;
+    let ops = agent(&s, "Ops").await;
+    let infra = agent(&s, "Infra").await;
+    channel(&s, "launch", json!({})).await;
+    let path = "/v1/channels/launch/agents";
+
+    // One is already a member; one doesn't exist; one is given twice.
+    let (code, _) = post(&s, path, json!({ "agent": "ops" })).await;
+    assert_eq!(code, 200);
+    let (code, r) = post(
+        &s,
+        path,
+        json!({ "agents": ["ops", "research", "ghost", "research", "infra"] }),
+    )
+    .await;
+    assert_eq!(code, 200, "{r:#}");
+    assert_eq!(r["added"], json!([research, infra]), "{r:#}");
+    assert_eq!(r["already"], json!([ops]), "{r:#}");
+    assert_eq!(r["failed"].as_array().unwrap().len(), 1, "{r:#}");
+    assert_eq!(r["failed"][0]["agent"], "ghost");
+    assert!(r["failed"][0]["error"].as_str().unwrap().contains("ghost"));
+    // The members come back too, as from a single add.
+    assert_eq!(r["members"].as_array().unwrap().len(), 4, "{r:#}");
+    assert_eq!(r["agent_wakes"], false);
+
+    // One "joined" note each.
+    let notes = posts_until(&s, "launch", |p| {
+        p.iter().filter(|p| p["kind"] == "note").count() == 3
+    })
+    .await;
+    assert!(notes.iter().any(|p| p["text"] == "Infra joined"));
+
+    // Nothing to add is refused; so is a topic that can't take agents.
+    let (code, _) = post(&s, path, json!({ "agents": [] })).await;
+    assert_eq!(code, 400);
+    let (code, _) = post(&s, "/v1/channels/home/agents", json!({ "agents": ["ops"] })).await;
+    assert_eq!(code, 400);
+}
