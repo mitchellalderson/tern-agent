@@ -9,6 +9,12 @@ Entries go in `changelog.d/` (see its README); the release gathers them here.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-11-09
+
+### Fixed
+
+- **Show more** no longer jumps the chat view. The text stays where you clicked.
+
 ## [0.1.0-alpha.2] - 2026-11-09
 
 Fewer approval prompts, a calmer desktop app, and agents that can wait for something and continue.
