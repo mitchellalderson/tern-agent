@@ -9,6 +9,20 @@ Entries go in `changelog.d/` (see its README); the release gathers them here.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6] - 2026-11-10
+
+Prompt caching now works on long sessions (lower cost), and compaction reuses the cached conversation.
+
+### Changed
+
+- **Compaction reads the conversation from the prompt cache** on Anthropic. The summary (and the memory flush before it) is now a fork of the agent's own request: same tools, system prompt and history, with the summarize instruction last, so the cached history is read at 0.1× instead of being sent again as a transcript at full price. Other providers, and prefixes under the model's minimum, keep the transcript request; so does any fork that fails.
+
+### Fixed
+
+- **Attached TUI** no longer sometimes drops a run's final answer when it arrives just after the run ends.
+- **Prompt caching** now works across turns and runs on Anthropic. The conversation history is cached (it wasn't before), the current time no longer sits in the system prompt (it changed every run and broke the cache), and breakpoints are skipped on prompts under the model's minimum. `providers.<name>.cache_ttl = "1h"` keeps the system prompt and tools cached for an hour. Anthropic models via OpenRouter are cached too. Cache reads and writes are priced at Anthropic's rates (0.1×, 1.25×, 2×) unless you set them, and `/usage` and the status line show how much input came from the cache.
+- **Cached tokens on OpenAI-compatible providers** are read from the response (OpenAI, OpenRouter, Gemini's compatible endpoint, DeepSeek, Moonshot) and no longer counted twice in input. `providers.<name>.prompt_cache_key` sends OpenAI's cache routing hint (on for api.openai.com by default).
+
 ## [0.1.0-alpha.5] - 2026-11-10
 
 New installs start at `autonomous`, you can add many agents to a channel at once, and two chat and role fixes.
