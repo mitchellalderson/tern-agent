@@ -180,6 +180,11 @@ impl Manager {
     /// it is a delegated sub-agent (its session's agent isn't its
     /// parent's). Called as the run starts and when it ends.
     pub(super) fn delegation_changed(&self, run_id: &str) {
+        // Read the batch and write the post as one step.
+        let _guard = self
+            .delegation_lock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         if let Err(e) = self.write_delegation(run_id) {
             tracing::warn!(run = %run_id, error = %e, "writing a delegation post failed");
         }
@@ -394,5 +399,106 @@ mod tests {
             done.text(),
             "Worked for Home · \"Size the demand\" · 4 tasks · 1 failed · 6m"
         );
+    }
+
+    /// Children that end together each save their status, then refresh the
+    /// post: the last one to write must have read every status.
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn children_ending_together_leave_the_final_post() {
+        use super::super::manager::Routes;
+        use std::sync::{Arc, Barrier};
+        use tern_store::{NewMessage, NewRun};
+
+        const KIDS: usize = 12;
+        let dir = tempfile::tempdir().unwrap();
+        let home = tern_core::TernHome::new(dir.path());
+        let rt =
+            crate::runtime::Runtime::open(&home, Arc::new(tern_core::approval::AutoDeny)).unwrap();
+        let agent = rt
+            .create_agent(crate::runtime::NewAgent {
+                name: "Scout".into(),
+                ..crate::runtime::NewAgent::default()
+            })
+            .unwrap();
+        let store = rt.store.clone();
+        let manager = Manager::new(Arc::new(rt), Arc::new(Routes::default()));
+        let input = NewMessage {
+            role: "user".into(),
+            content_json: "[]".into(),
+            text: "Find the pricing".into(),
+            summary_of: None,
+        };
+        let mk = |id: &str, session: &str, parent: Option<&str>| {
+            store.create_session(session, "test", None).unwrap();
+            store
+                .create_run(
+                    &NewRun {
+                        id,
+                        session_id: session,
+                        trigger: "subagent",
+                        model: "mock:mock",
+                        system_prompt: "system",
+                        parent_run_id: parent,
+                        parent_call_id: parent.map(|_| id),
+                        label: parent.map(|_| id),
+                        depth: u32::from(parent.is_some()),
+                        ..NewRun::default()
+                    },
+                    &input,
+                )
+                .unwrap();
+        };
+        for round in 0..20 {
+            let parent = format!("p{round}");
+            mk(&parent, &format!("sp{round}"), None);
+            let kids: Vec<String> = (0..KIDS).map(|k| format!("k{round}-{k}")).collect();
+            for kid in &kids {
+                let session = format!("s{kid}");
+                mk(kid, &session, Some(&parent));
+                store.set_session_agent(&session, &agent.id).unwrap();
+            }
+            for kid in &kids {
+                manager.delegation_changed(kid);
+            }
+            let barrier = Arc::new(Barrier::new(KIDS));
+            let threads: Vec<_> = kids
+                .iter()
+                .enumerate()
+                .map(|(i, kid)| {
+                    let (m, store, kid, barrier) =
+                        (manager.clone(), store.clone(), kid.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        // One of them fails, as a run can.
+                        let status = if i == 0 { "failed" } else { "completed" };
+                        store.set_run_status(&kid, status, None).unwrap();
+                        m.delegation_changed(&kid);
+                    })
+                })
+                .collect();
+            for t in threads {
+                t.join().unwrap();
+            }
+            let key = key(&parent, &agent.id);
+            let dm = store.agent_channel(&agent.id).unwrap().unwrap();
+            let (post, _) = store
+                .add_post(&tern_store::NewPost {
+                    channel_id: &dm.id,
+                    dedupe_key: Some(&key),
+                    author_kind: "agent",
+                    author_id: &agent.id,
+                    author: "x",
+                    kind: KIND,
+                    text: "probe",
+                    ..tern_store::NewPost::default()
+                })
+                .unwrap();
+            assert!(
+                post.text.starts_with("Worked for Home") && post.text.contains("12 tasks"),
+                "round {round}: {}",
+                post.text
+            );
+        }
     }
 }

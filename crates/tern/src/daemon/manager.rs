@@ -820,6 +820,9 @@ pub struct Manager {
     active: Mutex<HashMap<String, Active>>,
     /// Stale outbox items waiting to be reported in one message.
     pub(super) stale_batch: Mutex<Vec<tern_store::OutboxRow>>,
+    /// Held while a delegation post is read from the store and written, so
+    /// two children ending together can't leave the older status behind.
+    pub(super) delegation_lock: Mutex<()>,
 }
 
 impl Manager {
@@ -829,6 +832,7 @@ impl Manager {
             routes,
             active: Mutex::new(HashMap::new()),
             stale_batch: Mutex::new(Vec::new()),
+            delegation_lock: Mutex::new(()),
         })
     }
 
@@ -1342,6 +1346,8 @@ impl Manager {
         if let Some(h) = &self.rt.subagents
             && h.cancel_run(run_id, "cancelled by the user")
         {
+            // A queued run never ends through `spawn`; its post still moves.
+            self.delegation_changed(run_id);
             return true;
         }
         self.cancel_active(run_id)
