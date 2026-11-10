@@ -13,28 +13,27 @@ OutboxItem item({
   String? taint,
   String? file,
   bool stale = false,
-}) =>
-    OutboxItem.fromJson(
-      jsonDecode(
-        jsonEncode({
-          'id': 12,
-          'run_id': 'r',
-          'session_id': 's',
-          'tool': 'gmail_send',
-          'input': {'to': 'bob@example.com'},
-          'summary': 'gmail_send to bob@example.com',
-          'effect': 'write',
-          'taint': ?taint,
-          'file': ?file,
-          'stale': stale,
-          'state': state,
-          'created_at': DateTime.now().millisecondsSinceEpoch,
-          'expires_at': DateTime.now()
-              .add(const Duration(hours: 71, minutes: 30))
-              .millisecondsSinceEpoch,
-        }),
-      ) as Json,
-    );
+}) => OutboxItem.fromJson(
+  jsonDecode(
+    jsonEncode({
+      'id': 12,
+      'run_id': 'r',
+      'session_id': 's',
+      'tool': 'gmail_send',
+      'input': {'to': 'bob@example.com'},
+      'summary': 'gmail_send to bob@example.com',
+      'effect': 'write',
+      'taint': ?taint,
+      'file': ?file,
+      'stale': stale,
+      'state': state,
+      'created_at': DateTime.now().millisecondsSinceEpoch,
+      'expires_at': DateTime.now()
+          .add(const Duration(hours: 71, minutes: 30))
+          .millisecondsSinceEpoch,
+    }),
+  ) as Json,
+);
 
 class _FakeClient extends TernClient {
   _FakeClient() : super(const Endpoint.unix('/nonexistent'));
@@ -133,7 +132,9 @@ void main() {
     expect(client.decided, ['approve 12 {"to":"carol@example.com"}']);
   });
 
-  testWidgets('a stale item says why and can only be discarded', (tester) async {
+  testWidgets('a stale item says why and can only be discarded', (
+    tester,
+  ) async {
     for (final o in [
       item(file: '/w/vs-trigger-outline.md', stale: true),
       item(file: '/w/vs-trigger-outline.md', state: 'stale'),

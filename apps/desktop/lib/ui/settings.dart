@@ -212,7 +212,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
             builder: (context, _) => account.signedIn
                 ? ListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: Text('Signed in as ${account.email ?? 'your account'}'),
+                    title: Text(
+                      'Signed in as ${account.email ?? 'your account'}',
+                    ),
                     trailing: TextButton(
                       onPressed: _busy ? null : _signOut,
                       child: const Text('Sign out'),

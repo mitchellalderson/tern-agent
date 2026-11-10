@@ -142,7 +142,9 @@ class _AgentRoleSectionState extends State<AgentRoleSection> {
               spacing: 8,
               children: [
                 TextButton(
-                  onPressed: _busy ? null : () => setState(() => _editing = false),
+                  onPressed: _busy
+                      ? null
+                      : () => setState(() => _editing = false),
                   child: const Text('Cancel'),
                 ),
                 FilledButton(

@@ -248,10 +248,7 @@ class _MemorySectionState extends State<MemorySection> {
           else if (memories == null)
             Text('Loading…', style: Theme.of(context).textTheme.bodySmall)
           else if (memories.isEmpty)
-            Text(
-              'Nothing saved.',
-              style: Theme.of(context).textTheme.bodySmall,
-            )
+            Text('Nothing saved.', style: Theme.of(context).textTheme.bodySmall)
           else
             for (final m in memories.take(_showAll ? memories.length : 8))
               InkWell(

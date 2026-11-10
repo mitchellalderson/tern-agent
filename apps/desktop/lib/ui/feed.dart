@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../state/transcript.dart';
 import '../theme.dart';
@@ -14,6 +15,143 @@ const feedChunk = 100;
 /// How far (in pixels) from the newest entry a reader must be for the feed
 /// to hold new arrivals back instead of moving what they are reading.
 const _holdOffset = 240.0;
+
+/// Gap kept above the top of a message the feed has anchored.
+const _anchorMargin = 16.0;
+
+/// The feed's scroll position. The list is reversed (offset 0 is the
+/// bottom), so a growing newest message pushes everything older upward.
+/// This position corrects for that during layout, so there is no jitter:
+///
+/// * pinned to the bottom: follow it, until the newest message would no
+///   longer fit, then anchor its top in view and stop following;
+/// * scrolled up, or the reader moved: keep what they read in place.
+class FeedScrollPosition extends ScrollPositionWithSingleContext {
+  FeedScrollPosition({
+    required super.physics,
+    required super.context,
+    super.initialPixels,
+    super.oldPosition,
+    super.debugLabel,
+  });
+
+  /// Height of the newest entry if it is built, else null.
+  double? Function()? newestHeight;
+
+  /// Space below the newest entry.
+  double bottomPad = 0;
+
+  var _anchored = false;
+  double? _lastH;
+  double _lastPixels = 0;
+  var _skip = false;
+
+  /// True while the newest message holds its top in view.
+  bool get anchored => _anchored;
+
+  /// A new newest entry arrived: its whole height is growth.
+  void arrived() {
+    _lastH = 0;
+    // A reader parked on the top of a long message stays there.
+    _anchored = false;
+  }
+
+  /// The next height change is the reader's own (a fold opening) and is
+  /// handled by them.
+  void skipNextGrowth() => _skip = true;
+
+  @override
+  bool applyContentDimensions(double minScrollExtent, double maxScrollExtent) {
+    final moved =
+        hasPixels &&
+        hasViewportDimension &&
+        _settle(minScrollExtent, maxScrollExtent);
+    final settled = super.applyContentDimensions(
+      minScrollExtent,
+      maxScrollExtent,
+    );
+    // Laid out at the old offset: do it again at the corrected one.
+    return settled && !moved;
+  }
+
+  /// Corrects the offset for growth of the newest entry; true if it moved.
+  bool _settle(double min, double max) {
+    if (pixels != _lastPixels) {
+      // The reader (or "latest") moved us: follow the bottom only if they
+      // are at it.
+      _anchored = false;
+    }
+    final h = newestHeight?.call();
+    if (h == null) {
+      _lastPixels = pixels;
+      return false;
+    }
+    final last = _lastH;
+    _lastH = h;
+    if (last == null) {
+      _lastPixels = pixels;
+      return false;
+    }
+    final grew = h - last;
+    final skip = _skip;
+    _skip = false;
+    final atBottom = pixels <= 40;
+    final wasFollowing = _anchored || (atBottom && !skip);
+    double? target;
+    if (skip || (!wasFollowing && grew == 0)) {
+      target = null;
+    } else if (wasFollowing) {
+      // Is the newest message's top still in view when we sit at the bottom?
+      final fit = h + bottomPad + _anchorMargin - viewportDimension;
+      if (fit > 0) {
+        _anchored = true;
+        target = fit;
+      } else {
+        _anchored = false;
+      }
+    } else {
+      target = pixels + grew;
+    }
+    var moved = false;
+    if (target != null) {
+      final t = target.clamp(min, max < min ? min : max);
+      if ((t - pixels).abs() > 0.5) {
+        correctBy(t - pixels);
+        moved = true;
+      }
+    }
+    _lastPixels = pixels;
+    return moved;
+  }
+}
+
+class _FeedController extends ScrollController {
+  double? Function()? newestHeight;
+  double bottomPad = 0;
+
+  @override
+  ScrollPosition createScrollPosition(
+    ScrollPhysics physics,
+    ScrollContext context,
+    ScrollPosition? oldPosition,
+  ) =>
+      FeedScrollPosition(
+          physics: physics,
+          context: context,
+          initialPixels: initialScrollOffset,
+          oldPosition: oldPosition,
+          debugLabel: debugLabel,
+        )
+        ..newestHeight = newestHeight
+        ..bottomPad = bottomPad;
+}
+
+/// Tell the feed this scrollable belongs to that the next height change of
+/// the entry holding [context] is handled by the caller.
+void feedSkipNextGrowth(BuildContext context) {
+  final pos = Scrollable.maybeOf(context)?.position;
+  if (pos is FeedScrollPosition) pos.skipNextGrowth();
+}
 
 /// A key that follows an item through rebuilds (a grouped approval is
 /// rebuilt each time, so it takes its first member's).
@@ -133,14 +271,43 @@ class FeedList extends StatefulWidget {
 }
 
 class _FeedListState extends State<FeedList> {
-  final _scroll = ScrollController();
+  late final _scroll = _FeedController()
+    ..newestHeight = (() => _newestH)
+    ..bottomPad = widget.padding.bottom;
+  final _listKey = GlobalKey();
   var _far = false;
 
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_moved);
+    _seen = _newest(widget);
   }
+
+  Object? _seen;
+
+  Object? _newest(FeedList w) =>
+      w.count == 0 ? null : (w.keyFor?.call(0) ?? w.total);
+
+  @override
+  void didUpdateWidget(FeedList old) {
+    super.didUpdateWidget(old);
+    // Compared with what was seen last, not with `old`, whose callbacks may
+    // read a list that has since changed under them.
+    final was = _seen;
+    _seen = _newest(widget);
+    if (was != null && _seen != was && _scroll.hasClients) {
+      _newestH = null;
+      (_scroll.position as FeedScrollPosition).arrived();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _moved();
+      });
+    }
+  }
+
+  /// Height of the newest entry, reported by its own layout; null until
+  /// the one that just arrived has been laid out.
+  double? _newestH;
 
   @override
   void dispose() {
@@ -181,6 +348,7 @@ class _FeedListState extends State<FeedList> {
       children: [
         Positioned.fill(
           child: ListView.builder(
+            key: _listKey,
             controller: _scroll,
             reverse: true,
             padding: w.padding,
@@ -203,10 +371,12 @@ class _FeedListState extends State<FeedList> {
                 );
               }
               final child = w.itemBuilder(context, i);
-              return switch (w.keyFor?.call(i)) {
-                final k? => KeyedSubtree(key: k, child: child),
-                null => child,
-              };
+              return _Measure(
+                key: w.keyFor?.call(i),
+                newest: i == 0,
+                onHeight: (h) => _newestH = h,
+                child: child,
+              );
             },
           ),
         ),
@@ -313,5 +483,41 @@ class _LatestPill extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Reports its height as it lays out, while it is the newest entry. An
+/// entry's size may only be read by its own render object.
+class _Measure extends SingleChildRenderObjectWidget {
+  const _Measure({
+    super.key,
+    required this.newest,
+    required this.onHeight,
+    required super.child,
+  });
+
+  final bool newest;
+  final ValueChanged<double> onHeight;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderMeasure(newest, onHeight);
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderMeasure r) => r
+    ..newest = newest
+    ..onHeight = onHeight;
+}
+
+class _RenderMeasure extends RenderProxyBox {
+  _RenderMeasure(this.newest, this.onHeight);
+
+  bool newest;
+  ValueChanged<double> onHeight;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    if (newest) onHeight(size.height);
   }
 }

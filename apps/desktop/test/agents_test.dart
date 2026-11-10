@@ -853,10 +853,7 @@ void main() {
     await tester.tap(find.byTooltip('Edit Research'));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('agent-role')), findsOneWidget);
-    expect(
-      find.text('You are Research: you look things up.'),
-      findsOneWidget,
-    );
+    expect(find.text('You are Research: you look things up.'), findsOneWidget);
     // Edit: the user's words are saved as the role.
     await tester.ensureVisible(find.byKey(const Key('role-edit')));
     await tester.tap(find.byKey(const Key('role-edit')));

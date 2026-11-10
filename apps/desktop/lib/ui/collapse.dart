@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../theme.dart';
+import 'feed.dart';
 import 'markdown_text.dart';
 
 /// A message longer than this many lines or characters shows its first
@@ -62,6 +63,7 @@ class _CollapsibleState extends State<Collapsible> {
   /// keep the item's top where it was (and in view, after a collapse).
   void _toggle() {
     final before = context.size?.height;
+    feedSkipNextGrowth(context);
     setState(() => _open = !_open);
     final scrollable = Scrollable.maybeOf(context);
     if (before == null || scrollable == null) return;

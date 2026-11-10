@@ -352,7 +352,9 @@ class FileTokens implements TokenStore {
 /// A server's endpoint. An account token is renewed while the app runs, so
 /// it is read live on every request rather than fixed at connect time.
 Endpoint remoteEndpoint(RemoteProfile p, String token, TokenStore tokens) {
-  final account = tokens is AccountTokens && p.viaAccount ? tokens.account : null;
+  final account = tokens is AccountTokens && p.viaAccount
+      ? tokens.account
+      : null;
   return Endpoint.remote(
     p.url,
     token: token,
@@ -721,7 +723,11 @@ class Connections {
     final existing = prefs.servers.where((s) => s.sameAddress(url)).firstOrNull;
     final wanted = name?.trim();
     final profile =
-        existing?.copyWith(url: url, clearPin: true, tokenAccount: accountTokenKey) ??
+        existing?.copyWith(
+          url: url,
+          clearPin: true,
+          tokenAccount: accountTokenKey,
+        ) ??
         RemoteProfile(
           url: url,
           name: _freeName(wanted == null || wanted.isEmpty ? url.host : wanted),

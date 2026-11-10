@@ -88,8 +88,10 @@ class TernControl {
   /// `tern uninstall`: stop tern and remove its login items and menu-bar
   /// icon. With [purge], also delete the data folder (`--yes`: the app has
   /// already asked).
-  Future<void> uninstall({bool purge = false}) =>
-      _tern(['uninstall', if (purge) ...['--purge', '--yes']]);
+  Future<void> uninstall({bool purge = false}) => _tern([
+    'uninstall',
+    if (purge) ...['--purge', '--yes'],
+  ]);
 
   /// Start tern (and, on macOS, the menu-bar icon) at login, or stop
   /// doing so. Either way tern keeps running.

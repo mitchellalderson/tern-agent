@@ -125,7 +125,9 @@ class _OfflineViewState extends State<OfflineView> {
                         foregroundColor: c.onAccent,
                         minimumSize: const Size(220, 44),
                       ),
-                      child: Text(_starting ? 'Starting…' : 'Start on this Mac'),
+                      child: Text(
+                        _starting ? 'Starting…' : 'Start on this Mac',
+                      ),
                     )
                   else
                     SelectableText(
@@ -166,10 +168,7 @@ class _OfflineViewState extends State<OfflineView> {
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: SelectableText(
-                      [
-                        store.client.endpoint.describe(),
-                        ?detail,
-                      ].join('\n'),
+                      [store.client.endpoint.describe(), ?detail].join('\n'),
                       key: const Key('offline-details'),
                       textAlign: TextAlign.center,
                       style: TextStyle(fontSize: 12, color: c.muted),

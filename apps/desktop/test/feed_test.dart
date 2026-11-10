@@ -154,6 +154,27 @@ void main() {
     expect(find.text('New messages'), findsNothing);
   });
 
+  _test('a tall agent message arrives with its start in view', (tester) async {
+    final store = await _open(tester, longHistory(40));
+    final text = List.generate(
+      80,
+      (i) => 'Para $i of a long reply',
+    ).join('\n\n');
+    store.current!.items.add(AssistantItem(text, streaming: true));
+    // ignore: invalid_use_of_protected_member
+    store.notifyListeners();
+    await tester.pump();
+    await tester.pump();
+    final top = tester.getTopLeft(find.textContaining('Para 0 of')).dy;
+    expect(top, inInclusiveRange(0, 200));
+    expect(_pos(tester).pixels, greaterThan(0));
+    expect(
+      tester.getTopLeft(find.textContaining('Para 79 of')).dy,
+      greaterThan(1000),
+      reason: 'the end is below the fold',
+    );
+  });
+
   _test('a long message folds to a few lines and opens', (tester) async {
     final text = List.generate(
       60,
