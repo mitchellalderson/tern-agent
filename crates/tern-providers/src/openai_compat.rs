@@ -42,10 +42,49 @@ impl OpenAiCompat {
     }
 }
 
+/// Whether `model` on OpenRouter is an Anthropic one, which (alone among
+/// OpenRouter's models) takes Anthropic-style `cache_control` markers on
+/// text parts. Everything else caches by itself from a stable prefix.
+fn is_anthropic_on_openrouter(model: &str) -> bool {
+    model.to_ascii_lowercase().starts_with("anthropic/")
+}
+
 pub fn request_body(req: &ChatRequest) -> Value {
+    request_body_for(req, false)
+}
+
+/// `anthropic_cache`: mark the system prompt and the last user message with
+/// `cache_control` (OpenRouter passes it to Anthropic) and send per-run
+/// context as a closing user message, after both, so the cached prefix stays
+/// identical. Otherwise the request is as plain Chat Completions, with the
+/// per-run context folded into `system`.
+pub fn request_body_for(req: &ChatRequest, anthropic_cache: bool) -> Value {
     let mut messages = Vec::new();
-    if !req.system.is_empty() {
-        messages.push(json!({ "role": "system", "content": req.system }));
+    let min = crate::anthropic::min_cacheable_tokens(&req.model);
+    let ephemeral = json!({ "type": "ephemeral" });
+    let part = |text: &str, mark: bool| {
+        let mut p = json!({ "type": "text", "text": text });
+        if mark {
+            p["cache_control"] = ephemeral.clone();
+        }
+        json!([p])
+    };
+    let system = if anthropic_cache {
+        req.system.clone()
+    } else {
+        req.full_system()
+    };
+    if !system.is_empty() {
+        let tools_len: usize = req
+            .tools
+            .iter()
+            .map(|t| t.description.len() + t.input_schema.to_string().len())
+            .sum();
+        let mark = anthropic_cache && (system.len() + tools_len) / 4 >= min;
+        messages.push(json!({
+            "role": "system",
+            "content": if mark { part(&system, true) } else { Value::String(system) },
+        }));
     }
     for m in &req.messages {
         let text: String = m
@@ -100,6 +139,27 @@ pub fn request_body(req: &ChatRequest) -> Value {
                 }
                 messages.push(msg);
             }
+        }
+    }
+    if anthropic_cache {
+        let prefix_len: usize = messages.iter().map(|m| m.to_string().len()).sum();
+        if (prefix_len / 4) >= min
+            && let Some(m) = messages
+                .iter_mut()
+                .rev()
+                .find(|m| m["role"] == "user" && m["content"].is_string())
+        {
+            let text = m["content"].as_str().unwrap_or_default().to_owned();
+            m["content"] = part(&text, true);
+        }
+        if !req.cache.volatile.is_empty() {
+            messages.push(json!({
+                "role": "user",
+                "content": format!(
+                    "Context for this run (from tern, not from the user):\n\n{}",
+                    req.cache.volatile
+                ),
+            }));
         }
     }
     let mut body = json!({
@@ -158,15 +218,22 @@ impl Decoder {
             })];
         }
         if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
-            self.usage.input_tokens = u["prompt_tokens"]
-                .as_u64()
-                .unwrap_or(self.usage.input_tokens);
+            // `prompt_tokens` counts cached tokens too; `input_tokens` is the
+            // uncached rest (as Anthropic reports it), so cache hit rate and
+            // pricing add up.
+            let prompt = u["prompt_tokens"].as_u64();
+            let details = &u["prompt_tokens_details"];
+            self.usage.cache_read_tokens = details["cached_tokens"].as_u64().unwrap_or(0);
+            self.usage.cache_write_tokens = details["cache_write_tokens"].as_u64().unwrap_or(0);
+            self.usage.input_tokens = match prompt {
+                Some(p) => {
+                    p.saturating_sub(self.usage.cache_read_tokens + self.usage.cache_write_tokens)
+                }
+                None => self.usage.input_tokens,
+            };
             self.usage.output_tokens = u["completion_tokens"]
                 .as_u64()
                 .unwrap_or(self.usage.output_tokens);
-            self.usage.cache_read_tokens = u["prompt_tokens_details"]["cached_tokens"]
-                .as_u64()
-                .unwrap_or(0);
         }
         let mut out = Vec::new();
         let Some(choice) = v["choices"].get(0) else {
@@ -264,7 +331,10 @@ impl Provider for OpenAiCompat {
         let mut builder = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
-            .json(&request_body(&req));
+            .json(&request_body_for(
+                &req,
+                self.attribution && is_anthropic_on_openrouter(&req.model),
+            ));
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
         }
@@ -332,7 +402,60 @@ mod tests {
             }],
             max_tokens: 50,
             forbid_tool_calls: false,
+            cache: Default::default(),
         }
+    }
+
+    fn cached_req() -> ChatRequest {
+        let mut r = req();
+        r.model = "anthropic/claude-sonnet-4.5".into();
+        r.system = "s ".repeat(4000);
+        r.cache.history = true;
+        r.cache.volatile = "## Current time\n\nMonday".into();
+        r
+    }
+
+    #[test]
+    fn anthropic_on_openrouter_marks_system_and_last_user_and_trails_the_context() {
+        let b = request_body_for(&cached_req(), true);
+        let m = b["messages"].as_array().unwrap();
+        assert_eq!(m[0]["content"][0]["cache_control"]["type"], "ephemeral");
+        assert!(!m[0].to_string().contains("Monday"));
+        assert_eq!(m[1]["content"][0]["cache_control"]["type"], "ephemeral");
+        let last = m.last().unwrap();
+        assert_eq!(last["role"], "user");
+        assert!(last["content"].as_str().unwrap().contains("Monday"));
+        // Nothing else is touched: no marker outside the two.
+        assert_eq!(b.to_string().matches("cache_control").count(), 2);
+    }
+
+    #[test]
+    fn other_openai_compatible_requests_are_plain_with_the_context_in_system() {
+        let b = request_body_for(&cached_req(), false);
+        assert!(!b.to_string().contains("cache_control"));
+        let m = b["messages"].as_array().unwrap();
+        assert!(m[0]["content"].as_str().unwrap().contains("Monday"));
+        assert!(
+            !m.last()
+                .unwrap()
+                .to_string()
+                .contains("Context for this run")
+        );
+    }
+
+    #[test]
+    fn cached_prompt_tokens_are_split_out_of_input() {
+        let mut d = Decoder::default();
+        d.decode(r#"{"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":800,"cache_write_tokens":100}}}"#);
+        assert_eq!(
+            (
+                d.usage.input_tokens,
+                d.usage.cache_read_tokens,
+                d.usage.cache_write_tokens
+            ),
+            (100, 800, 100)
+        );
+        assert_eq!(d.usage.cache_hit_rate(), Some(0.8));
     }
 
     #[test]

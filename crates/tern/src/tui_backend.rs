@@ -164,6 +164,7 @@ impl Backend for TuiBackend {
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
+            ..Usage::default()
         })
     }
 

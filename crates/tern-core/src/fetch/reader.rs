@@ -196,6 +196,7 @@ pub async fn ask(
             tools: tools(),
             max_tokens: MAX_OUT_TOKENS,
             forbid_tool_calls: last,
+            cache: Default::default(),
         };
         let t = turn(model, req, ctx).await?;
         tokens += t.usage.input_tokens + t.usage.output_tokens;

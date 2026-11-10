@@ -651,10 +651,34 @@ pub struct ProviderConfig {
     /// list gives.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub prices: BTreeMap<String, Pricing>,
+    /// How long Anthropic keeps the cached system prompt and tools:
+    /// `"5m"` (default) or `"1h"`. Ignored by other provider kinds.
+    #[serde(default, skip_serializing_if = "CacheTtl::is_default")]
+    pub cache_ttl: CacheTtl,
+}
+
+/// Lifetime of an Anthropic prompt-cache entry for the system prompt and
+/// tools. Each read refreshes it. `1h` costs twice the input price to write
+/// (5m: 1.25 times), so it pays only for agents that sit idle 5 to 60
+/// minutes between runs (routines, channels).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheTtl {
+    #[default]
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
+impl CacheTtl {
+    pub fn is_default(&self) -> bool {
+        *self == Self::FiveMinutes
+    }
 }
 
 /// A model's price in USD per million tokens. Cache reads and writes cost
-/// the input price unless given.
+/// the input price unless given (for Anthropic models tern fills in its
+/// published multipliers first: [`Pricing::anthropic_cache_defaults`]).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pricing {
@@ -662,18 +686,48 @@ pub struct Pricing {
     pub output: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read: Option<f64>,
+    /// Writing the default 5-minute cache entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write: Option<f64>,
+    /// Writing a 1-hour cache entry. Unset: the 5-minute price scaled by
+    /// 2 / 1.25, which is Anthropic's ratio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h: Option<f64>,
 }
 
 impl Pricing {
-    /// USD for `usage` tokens: (input, output, cache read, cache write).
-    pub fn cost(&self, (input, output, cache_read, cache_write): (u64, u64, u64, u64)) -> f64 {
+    /// Anthropic bills cache reads at 0.1 times the input price, 5-minute
+    /// writes at 1.25 times and 1-hour writes at 2 times. Fill in whichever
+    /// of those the price leaves unset.
+    pub fn anthropic_cache_defaults(mut self) -> Self {
+        self.cache_read.get_or_insert(self.input * 0.1);
+        self.cache_write.get_or_insert(self.input * 1.25);
+        self.cache_write_1h.get_or_insert(self.input * 2.0);
+        self
+    }
+
+    /// USD for `usage` tokens: (input, output, cache read, cache write);
+    /// every cache write at the 5-minute price.
+    pub fn cost(&self, tokens: (u64, u64, u64, u64)) -> f64 {
+        self.cost_with_1h(tokens, 0)
+    }
+
+    /// [`Pricing::cost`] when `write_1h` of the cache-write tokens were
+    /// written with the 1-hour lifetime.
+    pub fn cost_with_1h(
+        &self,
+        (input, output, cache_read, cache_write): (u64, u64, u64, u64),
+        write_1h: u64,
+    ) -> f64 {
         let per = |tokens: u64, price: f64| tokens as f64 * price / 1_000_000.0;
+        let write_5m = self.cache_write.unwrap_or(self.input);
+        let write_1h_price = self.cache_write_1h.unwrap_or(write_5m * 2.0 / 1.25);
+        let write_1h = write_1h.min(cache_write);
         per(input, self.input)
             + per(output, self.output)
             + per(cache_read, self.cache_read.unwrap_or(self.input))
-            + per(cache_write, self.cache_write.unwrap_or(self.input))
+            + per(cache_write - write_1h, write_5m)
+            + per(write_1h, write_1h_price)
     }
 }
 
@@ -1226,6 +1280,47 @@ impl fmt::Display for ModelRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anthropic_cache_prices_default_to_its_multipliers_and_config_wins() {
+        let p = Pricing {
+            input: 3.0,
+            output: 15.0,
+            cache_read: None,
+            cache_write: None,
+            cache_write_1h: None,
+        }
+        .anthropic_cache_defaults();
+        assert!((p.cache_read.unwrap() - 0.3).abs() < 1e-9);
+        assert_eq!((p.cache_write, p.cache_write_1h), (Some(3.75), Some(6.0)));
+        // 1M of each: 3 + 15 + 0.3 + 3.75 (5m write) + 6 (1h write).
+        let usd = p.cost_with_1h((1_000_000, 1_000_000, 1_000_000, 2_000_000), 1_000_000);
+        assert!((usd - 28.05).abs() < 1e-9, "{usd}");
+        // A configured price is kept.
+        let own = Pricing {
+            cache_read: Some(0.5),
+            cache_write: Some(4.0),
+            ..p
+        }
+        .anthropic_cache_defaults();
+        assert_eq!((own.cache_read, own.cache_write), (Some(0.5), Some(4.0)));
+        // Without a 1h price, scale the 5m one by 2 / 1.25.
+        let scaled = Pricing {
+            cache_write_1h: None,
+            ..own
+        };
+        let usd = scaled.cost_with_1h((0, 0, 0, 1_000_000), 1_000_000);
+        assert!((usd - 6.4).abs() < 1e-9, "{usd}");
+        // Unset prices outside Anthropic stay at the input price.
+        let plain = Pricing {
+            input: 1.0,
+            output: 2.0,
+            cache_read: None,
+            cache_write: None,
+            cache_write_1h: None,
+        };
+        assert!((plain.cost((0, 0, 1_000_000, 1_000_000)) - 2.0).abs() < 1e-9);
+    }
 
     const SPEC_EXAMPLE: &str = r#"
 default_model = "anthropic:claude-sonnet-4-5"

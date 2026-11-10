@@ -153,6 +153,30 @@ pub struct Usage {
     pub cache_read_tokens: u64,
     #[serde(default)]
     pub cache_write_tokens: u64,
+    /// Of `cache_write_tokens`, those written with the 1-hour lifetime
+    /// (billed at twice the input price instead of 1.25 times). Zero, and
+    /// left out of stored usage, unless `cache_ttl = "1h"` is on.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_1h_tokens: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+impl Usage {
+    /// Every input token the request carried: uncached, read from the
+    /// cache and written to it.
+    pub fn total_input(&self) -> u64 {
+        self.input_tokens + self.cache_read_tokens + self.cache_write_tokens
+    }
+
+    /// Share of the input served from the cache (0.0 to 1.0); `None` when
+    /// there was no input.
+    pub fn cache_hit_rate(&self) -> Option<f64> {
+        let total = self.total_input();
+        (total > 0).then(|| self.cache_read_tokens as f64 / total as f64)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -175,6 +199,35 @@ pub struct ChatRequest {
     /// serialized request when false, so journaled digests don't change.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub forbid_tool_calls: bool,
+    /// How the provider may cache this request. Not serialized: it never
+    /// enters the journaled request digest.
+    #[serde(skip)]
+    pub cache: CacheHint,
+}
+
+/// What a request tells the provider about prompt caching.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CacheHint {
+    /// The request is one turn of a growing conversation (the agent loop):
+    /// cache its history too, so the next turn reads it. One-off calls
+    /// (summaries, classification) leave this off and pay no write premium
+    /// for history nothing will read.
+    pub history: bool,
+    /// Per-run context kept out of `system` so `system` stays byte-identical
+    /// between runs (the current time). A provider with a message cache
+    /// puts it after the cached prefix; others append it to `system`.
+    pub volatile: String,
+}
+
+impl ChatRequest {
+    /// `system` as a provider without separate cache handling sends it.
+    pub fn full_system(&self) -> String {
+        match (self.system.is_empty(), self.cache.volatile.is_empty()) {
+            (_, true) => self.system.clone(),
+            (true, false) => self.cache.volatile.clone(),
+            (false, false) => format!("{}\n\n{}", self.system, self.cache.volatile),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

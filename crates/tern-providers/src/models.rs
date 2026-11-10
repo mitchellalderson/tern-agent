@@ -227,6 +227,7 @@ fn pricing(p: &Value) -> Option<tern_core::config::Pricing> {
         output: per_mtok("completion")?,
         cache_read: per_mtok("input_cache_read"),
         cache_write: per_mtok("input_cache_write"),
+        cache_write_1h: None,
     })
 }
 
@@ -281,6 +282,7 @@ mod tests {
             api_key_secret: None,
             context_window: None,
             prices: Default::default(),
+            cache_ttl: Default::default(),
         }
     }
 

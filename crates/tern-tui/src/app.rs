@@ -1045,8 +1045,14 @@ impl App {
                 None => self.notice("no session yet"),
                 Some(s) => match self.backend.usage(&s.id) {
                     Ok(u) => self.notice(format!(
-                        "session usage: {} input, {} output, {} cache read, {} cache write tokens",
-                        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens
+                        "session usage: {} input, {} output, {} cache read, {} cache write tokens{}",
+                        u.input_tokens,
+                        u.output_tokens,
+                        u.cache_read_tokens,
+                        u.cache_write_tokens,
+                        u.cache_hit_rate()
+                            .map(|r| format!(" ({:.0}% of input from cache)", r * 100.0))
+                            .unwrap_or_default()
                     )),
                     Err(e) => self.error(e),
                 },

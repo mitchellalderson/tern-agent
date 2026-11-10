@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{Value, json};
+use tern_core::config::CacheTtl;
 use tern_core::types::{
     ChatRequest, ContentBlock, EventStream, Provider, ProviderError, Role, StopReason, StreamEvent,
     Usage,
@@ -20,6 +21,7 @@ pub struct Anthropic {
     base_url: String,
     api_key: String,
     client: reqwest::Client,
+    cache_ttl: CacheTtl,
 }
 
 impl Anthropic {
@@ -29,29 +31,90 @@ impl Anthropic {
             base_url: base_url.trim_end_matches('/').to_owned(),
             api_key,
             client: http::client()?,
+            cache_ttl: CacheTtl::default(),
         })
+    }
+
+    /// Keep the cached system prompt and tools for `ttl` (`1h` costs more
+    /// to write; see [`CacheTtl`]).
+    pub fn with_cache_ttl(mut self, ttl: CacheTtl) -> Self {
+        self.cache_ttl = ttl;
+        self
     }
 }
 
-/// Build the request body. The system prompt and the tool list each carry a
-/// cache breakpoint so both are reused across turns.
+/// Anthropic allows at most this many `cache_control` breakpoints a request.
+pub const MAX_BREAKPOINTS: usize = 4;
+
+/// The shortest prefix, in tokens, Anthropic caches for `model`. A shorter
+/// one with a breakpoint on it is silently not cached (nothing is written
+/// or read), so we leave the breakpoint off. Unknown models get the
+/// commonest minimum, 1024: a marker on a prefix that turns out too short
+/// is ignored, so guessing low costs nothing.
+pub fn min_cacheable_tokens(model: &str) -> usize {
+    let m = model.to_ascii_lowercase().replace('.', "-");
+    let has = |needles: &[&str]| needles.iter().any(|n| m.contains(n));
+    if has(&["opus-4-5", "opus-4-6", "haiku-4-5"]) {
+        4096
+    } else if has(&[
+        "opus-4-7",
+        "mythos-preview",
+        "3-5-haiku",
+        "haiku-3",
+        "3-haiku",
+    ]) {
+        2048
+    } else if has(&["sonnet-5-5", "haiku-5", "opus-5", "fable", "mythos"]) {
+        512
+    } else {
+        1024
+    }
+}
+
+fn cache_control(ttl: CacheTtl) -> Value {
+    match ttl {
+        CacheTtl::FiveMinutes => json!({ "type": "ephemeral" }),
+        CacheTtl::OneHour => json!({ "type": "ephemeral", "ttl": "1h" }),
+    }
+}
+
+/// Build the request body with the default (5-minute) cache lifetime.
 pub fn request_body(req: &ChatRequest) -> Value {
+    request_body_with(req, CacheTtl::FiveMinutes)
+}
+
+/// Build the request body.
+///
+/// Anthropic caches by prefix, in the order tools, system, messages, so the
+/// body is laid out stable-first and carries up to four breakpoints
+/// ([`MAX_BREAKPOINTS`]), each skipped when the prefix before it is under the
+/// model's minimum:
+///
+/// 1. the last tool: tools alone, which several agents share;
+/// 2. the system prompt: tools and system together (both use `ttl`);
+/// 3. the last block of the previous user turn: a read point that survives
+///    this turn's tool loop and, with it, the thinking blocks tern drops from
+///    earlier turns (which change those turns' bytes);
+/// 4. the last block of the history, moving forward each call, so a turn
+///    reads everything the one before it wrote (history requests only).
+///
+/// Per-run context ([`tern_core::types::CacheHint::volatile`]) follows the
+/// last breakpoint, in the final user message. Tools are sorted by name and
+/// JSON objects serialize with sorted keys, so equal inputs give equal bytes.
+pub fn request_body_with(req: &ChatRequest, ttl: CacheTtl) -> Value {
     // Thinking blocks go back only inside the turn in progress: after the
     // last user message that isn't tool results. Anthropic needs those
     // (signed) to continue a tool-use turn, and drops older ones itself, so
     // they are never sent.
-    let turn_start = req
-        .messages
-        .iter()
-        .rposition(|m| {
-            m.role == Role::User
-                && !m
-                    .content
-                    .iter()
-                    .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
-        })
-        .unwrap_or(0);
-    let messages: Vec<Value> = req
+    let is_turn_start = |m: &tern_core::types::Message| {
+        m.role == Role::User
+            && !m
+                .content
+                .iter()
+                .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
+    };
+    let turn_start = req.messages.iter().rposition(is_turn_start).unwrap_or(0);
+    let mut messages: Vec<Vec<Value>> = req
         .messages
         .iter()
         .enumerate()
@@ -67,32 +130,111 @@ pub fn request_body(req: &ChatRequest) -> Value {
                     .filter(|b| !matches!(b, ContentBlock::Text { text } if text.is_empty()))
                     .map(|b| serde_json::to_value(wire_ids(b)).unwrap_or(Value::Null)),
             );
-            json!({ "role": m.role.as_str(), "content": content })
+            content
         })
         .collect();
+
+    let min = min_cacheable_tokens(&req.model);
+    // Rough tokens (JSON bytes / 4, so a slight overcount: a prefix is only
+    // skipped when clearly under the minimum).
+    let est = |bytes: usize| bytes / 4;
+    let history = req.cache.history;
+    let system_text = if history {
+        req.system.clone()
+    } else {
+        req.full_system()
+    };
+
+    let mut tool_values: Vec<Value> = Vec::new();
+    let mut specs: Vec<&tern_core::types::ToolSpec> = req.tools.iter().collect();
+    specs.sort_by(|a, b| a.name.cmp(&b.name));
+    for t in specs {
+        tool_values.push(
+            json!({ "name": t.name, "description": t.description, "input_schema": t.input_schema }),
+        );
+    }
+    let tools_bytes: usize = tool_values.iter().map(|t| t.to_string().len()).sum();
+    let system_bytes = system_text.len();
+
+    // Breakpoints on the history: the last block of messages[i], if the
+    // prefix up to it reaches the minimum.
+    let mut prefix_bytes = tools_bytes + system_bytes;
+    let mut ends: Vec<usize> = Vec::with_capacity(messages.len());
+    for content in &messages {
+        prefix_bytes += content.iter().map(|b| b.to_string().len()).sum::<usize>();
+        ends.push(prefix_bytes);
+    }
+    let mut marks: Vec<usize> = Vec::new();
+    if history {
+        let last = messages.len().wrapping_sub(1);
+        let anchor = req.messages[..turn_start]
+            .iter()
+            .rposition(is_turn_start)
+            .filter(|_| turn_start > 0);
+        for i in anchor
+            .into_iter()
+            .chain((!messages.is_empty()).then_some(last))
+        {
+            if !messages[i].is_empty() && est(ends[i]) >= min && !marks.contains(&i) {
+                marks.push(i);
+            }
+        }
+    }
+    for i in marks {
+        if let Some(block) = messages[i].last_mut() {
+            block["cache_control"] = cache_control(CacheTtl::FiveMinutes);
+        }
+    }
+    // Per-run context after the last breakpoint, so it never touches the
+    // cached prefix.
+    if history && !req.cache.volatile.is_empty() {
+        let block = json!({
+            "type": "text",
+            "text": format!(
+                "Context for this run (from tern, not from the user):\n\n{}",
+                req.cache.volatile
+            ),
+        });
+        match (messages.last_mut(), req.messages.last()) {
+            (Some(content), Some(m)) if m.role == Role::User => content.push(block),
+            _ => messages.push(vec![block]),
+        }
+    }
+    let roles: Vec<&str> = req
+        .messages
+        .iter()
+        .map(|m| m.role.as_str())
+        .chain(std::iter::repeat_n(
+            "user",
+            messages.len().saturating_sub(req.messages.len()),
+        ))
+        .collect();
+    let messages: Vec<Value> = messages
+        .into_iter()
+        .zip(roles)
+        .map(|(content, role)| json!({ "role": role, "content": content }))
+        .collect();
+
     let mut body = json!({
         "model": req.model,
         "max_tokens": tern_core::limits::clamp_output(&req.model, req.max_tokens),
         "stream": true,
         "messages": messages,
     });
-    if !req.system.is_empty() {
-        body["system"] = json!([{
-            "type": "text",
-            "text": req.system,
-            "cache_control": { "type": "ephemeral" },
-        }]);
-    }
-    if !req.tools.is_empty() {
-        let mut tools: Vec<Value> = req
-            .tools
-            .iter()
-            .map(|t| json!({ "name": t.name, "description": t.description, "input_schema": t.input_schema }))
-            .collect();
-        if let Some(last) = tools.last_mut() {
-            last["cache_control"] = json!({ "type": "ephemeral" });
+    if !system_text.is_empty() {
+        let mut block = json!({ "type": "text", "text": system_text });
+        if est(tools_bytes + system_bytes) >= min {
+            block["cache_control"] = cache_control(ttl);
         }
-        body["tools"] = Value::Array(tools);
+        body["system"] = json!([block]);
+    }
+    if !tool_values.is_empty() {
+        if est(tools_bytes) >= min
+            && let Some(last) = tool_values.last_mut()
+        {
+            last["cache_control"] = cache_control(ttl);
+        }
+        body["tools"] = Value::Array(tool_values);
         if req.forbid_tool_calls {
             body["tool_choice"] = json!({ "type": "none" });
         }
@@ -171,6 +313,9 @@ impl Decoder {
                 self.usage.cache_read_tokens = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
                 self.usage.cache_write_tokens =
                     u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+                self.usage.cache_write_1h_tokens = u["cache_creation"]["ephemeral_1h_input_tokens"]
+                    .as_u64()
+                    .unwrap_or(0);
                 self.usage.output_tokens = u["output_tokens"].as_u64().unwrap_or(0);
                 vec![]
             }
@@ -284,7 +429,7 @@ impl Provider for Anthropic {
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
-            .json(&request_body(&req))
+            .json(&request_body_with(&req, self.cache_ttl))
             .send();
         let resp = tokio::select! {
             r = send => r.map_err(http::network)?,
@@ -322,17 +467,354 @@ mod tests {
             }],
             max_tokens: 100,
             forbid_tool_calls: false,
+            cache: Default::default(),
+        }
+    }
+
+    /// About `n` tokens of text.
+    fn words(n: usize) -> String {
+        "lorem ipsum dolor ".repeat(n * 4 / 18 + 1)
+    }
+
+    /// A request big enough to cache on any model: ~2k tokens of tools and
+    /// ~2k of system prompt.
+    fn big_req() -> ChatRequest {
+        let mut r = req();
+        r.system = words(2000);
+        r.tools = vec![
+            ToolSpec {
+                name: "write_file".into(),
+                description: words(1000),
+                input_schema: json!({"type": "object", "properties": {"path": {}, "content": {}}}),
+            },
+            ToolSpec {
+                name: "read_file".into(),
+                description: words(1000),
+                input_schema: json!({"type": "object"}),
+            },
+        ];
+        r
+    }
+
+    fn tool_turn(i: usize) -> [Message; 2] {
+        [
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: format!("t{i}"),
+                    name: "read_file".into(),
+                    input: json!({"path": format!("f{i}"), "a": 1}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: format!("t{i}"),
+                    content: words(300),
+                    is_error: false,
+                }],
+            },
+        ]
+    }
+
+    /// Two finished turns, then a third with `calls` tool calls so far.
+    fn history_req(calls: usize) -> ChatRequest {
+        let mut r = big_req();
+        r.cache.history = true;
+        r.messages = vec![
+            Message::user_text(format!("first {}", words(300))),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "first answer".into(),
+                }],
+            },
+            Message::user_text(format!("second {}", words(300))),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "second answer".into(),
+                }],
+            },
+            Message::user_text(format!("third {}", words(300))),
+        ];
+        for i in 0..calls {
+            r.messages.extend(tool_turn(i));
+        }
+        r
+    }
+
+    /// Where `cache_control` sits: "tools", "system", or "messages[i]".
+    fn marks(b: &Value) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(t) = b["tools"].as_array()
+            && t.iter().any(|t| t.get("cache_control").is_some())
+        {
+            out.push("tools".to_owned());
+        }
+        if b["system"][0].get("cache_control").is_some() {
+            out.push("system".to_owned());
+        }
+        for (i, m) in b["messages"].as_array().unwrap().iter().enumerate() {
+            let blocks = m["content"].as_array().unwrap();
+            for (j, blk) in blocks.iter().enumerate() {
+                if blk.get("cache_control").is_some() {
+                    out.push(format!("messages[{i}].{j}"));
+                }
+            }
+        }
+        out
+    }
+
+    fn strip_cache_control(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                m.remove("cache_control");
+                m.values_mut().for_each(strip_cache_control);
+            }
+            Value::Array(a) => a.iter_mut().for_each(strip_cache_control),
+            _ => {}
         }
     }
 
     #[test]
     fn body_has_cache_breakpoints() {
-        let b = request_body(&req());
+        let b = request_body(&big_req());
         assert_eq!(b["system"][0]["cache_control"]["type"], "ephemeral");
-        assert_eq!(b["tools"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(b["tools"][1]["cache_control"]["type"], "ephemeral");
+        assert_eq!(marks(&b), ["tools", "system"]);
         assert_eq!(b["messages"][0]["content"][0]["type"], "text");
         assert_eq!(b["stream"], true);
         assert!(b.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn nothing_is_marked_when_the_prefix_is_under_the_model_minimum() {
+        // `req()`: a few tokens of system and one tiny tool.
+        let mut r = req();
+        r.cache.history = true;
+        assert!(marks(&request_body(&r)).is_empty());
+        // ~1500 tokens: enough for a 1024 model, not for a 4096 one.
+        let mut r = history_req(0);
+        r.system = words(1500);
+        r.tools = vec![];
+        r.messages.truncate(1);
+        r.messages[0] = Message::user_text("hi");
+        r.model = "claude-sonnet-4-5".into();
+        assert_eq!(marks(&request_body(&r)), ["system", "messages[0].0"]);
+        r.model = "claude-opus-4-5-20251101".into();
+        assert!(marks(&request_body(&r)).is_empty());
+        r.model = "claude-opus-5-5".into();
+        assert_eq!(marks(&request_body(&r)), ["system", "messages[0].0"]);
+    }
+
+    #[test]
+    fn minimum_lengths_by_model() {
+        for (m, n) in [
+            ("claude-opus-5-5", 512),
+            ("claude-sonnet-5-5", 512),
+            ("claude-haiku-5-5", 512),
+            ("claude-fable-5-1", 512),
+            ("claude-sonnet-5", 1024),
+            ("claude-opus-4-8", 1024),
+            ("claude-sonnet-4-5", 1024),
+            ("claude-opus-4-7", 2048),
+            ("claude-3-5-haiku-latest", 2048),
+            ("claude-opus-4-6", 4096),
+            ("claude-opus-4-5-20251101", 4096),
+            ("claude-haiku-4-5", 4096),
+            ("anthropic/claude-opus-4.5", 4096),
+            ("some-new-model", 1024),
+        ] {
+            assert_eq!(min_cacheable_tokens(m), n, "{m}");
+        }
+    }
+
+    #[test]
+    fn history_gets_a_read_point_at_the_last_turn_and_a_rolling_one() {
+        // Third turn, two calls in: [0..4] earlier turns, 4 = this turn's
+        // user message, 5..8 the loop so far.
+        let b = request_body(&history_req(2));
+        assert_eq!(
+            marks(&b),
+            ["tools", "system", "messages[2].0", "messages[8].0"]
+        );
+        assert!(marks(&b).len() <= MAX_BREAKPOINTS);
+        // The first call of a turn: the user message is the last message,
+        // so the rolling one lands there, the read point on the turn before.
+        let b = request_body(&history_req(0));
+        assert_eq!(
+            marks(&b),
+            ["tools", "system", "messages[2].0", "messages[4].0"]
+        );
+        // The first turn of a session has no earlier one.
+        let mut r = history_req(0);
+        r.messages.truncate(1);
+        assert_eq!(
+            marks(&request_body(&r)),
+            ["tools", "system", "messages[0].0"]
+        );
+    }
+
+    #[test]
+    fn one_off_calls_do_not_cache_their_input_as_history() {
+        let mut r = history_req(2);
+        r.cache.history = false;
+        assert_eq!(marks(&request_body(&r)), ["tools", "system"]);
+    }
+
+    #[test]
+    fn the_hour_lifetime_applies_to_tools_and_system_only() {
+        let b = request_body_with(&history_req(1), CacheTtl::OneHour);
+        assert_eq!(b["system"][0]["cache_control"]["ttl"], "1h");
+        assert_eq!(b["tools"][1]["cache_control"]["ttl"], "1h");
+        // Longer lifetimes must precede shorter ones: messages stay at 5m.
+        for m in b["messages"].as_array().unwrap() {
+            for blk in m["content"].as_array().unwrap() {
+                if let Some(c) = blk.get("cache_control") {
+                    assert!(c.get("ttl").is_none(), "{c}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn per_run_context_follows_the_last_breakpoint() {
+        let mut r = history_req(1);
+        r.cache.volatile = "## Current time\n\nMonday 09:00".into();
+        let b = request_body(&r);
+        let last = b["messages"].as_array().unwrap().last().unwrap();
+        let blocks = last["content"].as_array().unwrap();
+        // The tool result keeps the breakpoint; the context is the block after.
+        assert!(blocks[0].get("cache_control").is_some());
+        assert!(blocks[1]["text"].as_str().unwrap().contains("Monday 09:00"));
+        assert!(blocks[1].get("cache_control").is_none());
+        assert!(!b["system"].to_string().contains("Monday"));
+        // Without history caching it stays in the system prompt, as before.
+        r.cache.history = false;
+        let b = request_body(&r);
+        assert!(
+            b["system"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Monday 09:00")
+        );
+    }
+
+    #[test]
+    fn serialization_is_byte_stable() {
+        let a = history_req(2);
+        assert_eq!(
+            request_body(&a).to_string(),
+            request_body(&a.clone()).to_string()
+        );
+        // Tool order and the key order of JSON the model wrote don't matter.
+        let mut b = a.clone();
+        b.tools.reverse();
+        assert_eq!(request_body(&a).to_string(), request_body(&b).to_string());
+        let mut c = a.clone();
+        let mut input = serde_json::Map::new();
+        input.insert("a".into(), json!(1));
+        input.insert("path".into(), json!("f0"));
+        if let ContentBlock::ToolUse { input: i, .. } = &mut c.messages[5].content[0] {
+            *i = Value::Object(input);
+        }
+        assert_eq!(request_body(&a).to_string(), request_body(&c).to_string());
+        // The run's time never reaches anything that is cached.
+        let mut d = a.clone();
+        d.cache.volatile = "## Current time\n\nMonday 09:00".into();
+        let mut e = a;
+        e.cache.volatile = "## Current time\n\nMonday 09:01".into();
+        let (mut d, mut e) = (request_body(&d), request_body(&e));
+        let tail = |v: &mut Value| {
+            v["messages"].as_array_mut().unwrap().last_mut().unwrap()["content"]
+                .as_array_mut()
+                .unwrap()
+                .pop()
+        };
+        assert_ne!(tail(&mut d), tail(&mut e));
+        assert_eq!(d.to_string(), e.to_string());
+    }
+
+    #[test]
+    fn each_turn_reproduces_the_previous_prefix() {
+        // Turn by turn the conversation grows; what the last call sent must
+        // reappear, byte for byte (markers aside), at the start of the next.
+        let mut prev: Option<Value> = None;
+        for calls in 0..4 {
+            let mut r = history_req(calls);
+            r.cache.volatile = format!("## Current time\n\n09:0{calls}");
+            let mut body = request_body(&r);
+            body["messages"].as_array_mut().unwrap().last_mut().unwrap()["content"]
+                .as_array_mut()
+                .unwrap()
+                .pop();
+            strip_cache_control(&mut body);
+            if let Some(p) = &prev {
+                assert_eq!(p["tools"], body["tools"]);
+                assert_eq!(p["system"], body["system"]);
+                let (pm, bm) = (
+                    p["messages"].as_array().unwrap(),
+                    body["messages"].as_array().unwrap(),
+                );
+                assert_eq!(&bm[..pm.len()], &pm[..], "turn {calls}");
+            }
+            prev = Some(body);
+        }
+    }
+
+    #[test]
+    fn usage_reports_hour_writes() {
+        let ev = sse::SseEvent {
+            event: Some("message_start".into()),
+            data: r#"{"type":"message_start","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":900,"cache_read_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":300,"ephemeral_1h_input_tokens":600},"output_tokens":1}}}"#.into(),
+        };
+        let mut d = Decoder::default();
+        d.decode(&ev);
+        assert_eq!(
+            (
+                d.usage.cache_write_tokens,
+                d.usage.cache_write_1h_tokens,
+                d.usage.cache_read_tokens
+            ),
+            (900, 600, 100)
+        );
+    }
+
+    /// Needs `ANTHROPIC_API_KEY`: two identical calls, the second must read
+    /// what the first wrote.
+    /// `cargo test -p tern-providers live_cache -- --ignored`
+    #[tokio::test]
+    #[ignore = "calls the live Anthropic API"]
+    async fn live_cache_reads_on_the_second_call() {
+        let key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY");
+        let p = Anthropic::new("anthropic", "https://api.anthropic.com", key).unwrap();
+        // Unique per run so a warm cache from an earlier run can't pass it.
+        let mut r = big_req();
+        r.model = "claude-haiku-4-5".into();
+        r.system = format!("{} {}", words(5000), std::process::id());
+        r.max_tokens = 16;
+        r.cache.history = true;
+        let mut reads = Vec::new();
+        for _ in 0..2 {
+            let events: Vec<_> = p
+                .stream(r.clone(), CancellationToken::new())
+                .await
+                .unwrap()
+                .collect::<Vec<_>>()
+                .await;
+            let usage = events
+                .into_iter()
+                .filter_map(|e| match e.unwrap() {
+                    StreamEvent::MessageStop { usage, .. } => Some(usage),
+                    _ => None,
+                })
+                .next()
+                .unwrap();
+            reads.push((usage.cache_write_tokens, usage.cache_read_tokens));
+        }
+        assert!(reads[0].0 > 0, "first call wrote nothing: {reads:?}");
+        assert!(reads[1].1 > 0, "second call read nothing: {reads:?}");
     }
 
     #[test]

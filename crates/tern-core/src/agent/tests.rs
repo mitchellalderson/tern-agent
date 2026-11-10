@@ -459,6 +459,59 @@ async fn tool_loop_feeds_results_back() {
     assert_eq!(second.tools[0].name, "count");
 }
 
+/// What prompt caching rests on: across the calls of a run, and across the
+/// runs of a session, what a request opens with is what the one before it
+/// opened with (system, tools, history), and the part that differs per run
+/// (the time) travels apart from `system`.
+#[tokio::test]
+async fn requests_keep_their_prefix_between_calls_and_runs() {
+    let h = Harness::new();
+    let tool = Arc::new(Counter::new("count", false, false));
+    let script = Arc::new(Script::new(vec![
+        Reply::Tool("count", json!({})),
+        Reply::Text("first done"),
+        Reply::Tool("count", json!({})),
+        Reply::Text("second done"),
+    ]));
+    let agent = h.agent(script.clone(), vec![tool], Arc::new(AutoApprove));
+    let model: ModelRef = "script:m".parse().unwrap();
+    let mut runs = Vec::new();
+    for (i, time) in ["Monday 09:00", "Monday 09:07"].into_iter().enumerate() {
+        let system = format!(
+            "stable prompt{}## Current time\n\n{time}",
+            crate::prompt::VOLATILE_MARK
+        );
+        let run = agent
+            .start_run(
+                &h.session,
+                &format!("question {i}"),
+                &model,
+                &system,
+                "user",
+            )
+            .unwrap();
+        agent
+            .drive(&run.id, CancellationToken::new())
+            .await
+            .unwrap();
+        runs.push(run.id);
+    }
+    let seen = script.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 4);
+    for (i, req) in seen.iter().enumerate() {
+        assert_eq!(req.system, "stable prompt", "request {i}");
+        assert!(req.cache.history, "request {i}");
+        assert!(req.cache.volatile.starts_with("## Current time"));
+        assert_eq!(req.tools, seen[0].tools);
+    }
+    assert_ne!(seen[0].cache.volatile, seen[2].cache.volatile);
+    for pair in seen.windows(2) {
+        let (before, after) = (&pair[0].messages, &pair[1].messages);
+        assert!(after.len() > before.len());
+        assert_eq!(&after[..before.len()], &before[..], "history was rewritten");
+    }
+}
+
 #[tokio::test]
 async fn a_call_cut_off_by_the_output_limit_is_not_run_and_the_model_is_told() {
     let h = Harness::new();
@@ -2529,7 +2582,7 @@ async fn a_fallback_answer_is_journaled_replayed_and_billed_to_its_model() {
         .usage_by_model_since("s1", 0)
         .unwrap()
         .into_iter()
-        .map(|(m, (input, ..))| (m.unwrap_or_default(), input))
+        .map(|(m, (input, ..), _)| (m.unwrap_or_default(), input))
         .collect();
     assert_eq!(
         by_model.keys().collect::<Vec<_>>(),

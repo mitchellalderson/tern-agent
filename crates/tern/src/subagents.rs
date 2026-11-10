@@ -1306,6 +1306,7 @@ pub fn child_run(store: &Store, child: &RunRow) -> anyhow::Result<ChildRun> {
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
+            ..Usage::default()
         },
         result_preview: result
             .filter(|r| !r.trim().is_empty())

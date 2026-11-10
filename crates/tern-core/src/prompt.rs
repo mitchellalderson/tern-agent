@@ -176,12 +176,6 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
         out.push_str(&core);
     }
 
-    out.push_str("\n\n## Current time\n\n");
-    out.push_str(&inp.now.format("%A, %Y-%m-%d %H:%M (UTC%:z)").to_string());
-    if let Some(tz) = std::env::var("TZ").ok().filter(|t| !t.is_empty()) {
-        out.push_str(&format!(", timezone {tz}"));
-    }
-
     out.push_str("\n\n## Workspace\n\n");
     out.push_str(&format!(
         "Relative file paths and shell commands run in {}.",
@@ -228,7 +222,29 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
     }
     out.push_str("\n\n");
     out.push_str(SUGGEST_CONNECTOR);
+
+    // Last, behind a marker: the one part that differs from run to run. The
+    // agent sends it apart from the rest ([`split_volatile`]) so the rest
+    // stays byte-identical and prompt caching can reuse it.
+    out.push_str(VOLATILE_MARK);
+    out.push_str("## Current time\n\n");
+    out.push_str(&inp.now.format("%A, %Y-%m-%d %H:%M (UTC%:z)").to_string());
+    if let Some(tz) = std::env::var("TZ").ok().filter(|t| !t.is_empty()) {
+        out.push_str(&format!(", timezone {tz}"));
+    }
     out
+}
+
+/// Starts the per-run tail of a system prompt (what changes between runs).
+pub const VOLATILE_MARK: &str = "\n\n<!-- tern:volatile -->\n";
+
+/// A frozen system prompt as (stable part, per-run part). A prompt frozen
+/// before the marker existed has no per-run part.
+pub fn split_volatile(system: &str) -> (&str, &str) {
+    match system.rsplit_once(VOLATILE_MARK) {
+        Some((stable, volatile)) => (stable, volatile),
+        None => (system, ""),
+    }
 }
 
 /// Under the integrations list: a script calling the API directly would
@@ -461,6 +477,34 @@ pub(crate) fn strip_html_comments(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_time_is_last_and_splits_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = TernHome::new(tmp.path());
+        let memory = MemoryConfig::default();
+        let inp = |now| PromptInputs {
+            home: &home,
+            now,
+            workspace: Path::new("/ws"),
+            skills: &[],
+            integrations: &[],
+            role: AgentRole::Main,
+            subagents: None,
+            memory: &memory,
+            agent: None,
+        };
+        let a = system_prompt(&inp(Local::now()));
+        let b = system_prompt(&inp(Local::now() + chrono::Duration::hours(30)));
+        let (stable_a, tail_a) = split_volatile(&a);
+        let (stable_b, tail_b) = split_volatile(&b);
+        assert_eq!(stable_a, stable_b, "only the time may differ between runs");
+        assert_ne!(tail_a, tail_b);
+        assert!(tail_a.starts_with("## Current time"));
+        assert!(!stable_a.contains("Current time"));
+        // A prompt frozen before the marker existed has no tail.
+        assert_eq!(split_volatile("old prompt"), ("old prompt", ""));
+    }
 
     #[test]
     fn assembles_sections_and_skips_placeholder_user_notes() {
