@@ -49,9 +49,11 @@ pub fn build(
             let key = key.ok_or_else(|| {
                 ProviderError::Config(format!("provider {name}: anthropic needs api_key_secret"))
             })?;
-            Arc::new(Anthropic::new(name, base, key)?)
+            Arc::new(Anthropic::new(name, base, key)?.with_cache_ttl(cfg.cache_ttl))
         }
-        ProviderKind::OpenaiCompat => Arc::new(OpenAiCompat::new(name, base, key)?),
+        ProviderKind::OpenaiCompat => {
+            Arc::new(OpenAiCompat::new(name, base, key)?.with_cache_key(cfg.prompt_cache_key))
+        }
     })
 }
 

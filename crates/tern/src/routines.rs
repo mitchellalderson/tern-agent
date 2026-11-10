@@ -115,6 +115,7 @@ pub async fn gate_text(
         tools: Vec::new(),
         max_tokens,
         forbid_tool_calls: false,
+        cache: Default::default(),
     };
     let call = async {
         let mut stream = provider

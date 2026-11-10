@@ -350,6 +350,7 @@ impl Manager {
             tools: Vec::new(),
             max_tokens: 2500,
             forbid_tool_calls: true,
+            cache: Default::default(),
         };
         let call = async {
             let mut stream = provider

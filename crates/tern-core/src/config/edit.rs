@@ -393,6 +393,8 @@ api_key_secret = \"ANTHROPIC_API_KEY\"
                 api_key_secret: None,
                 context_window: None,
                 prices: Default::default(),
+                cache_ttl: Default::default(),
+                prompt_cache_key: None,
             },
         )
         .unwrap();
@@ -420,6 +422,8 @@ api_key_secret = \"ANTHROPIC_API_KEY\"
                 api_key_secret: Some("OTHER_KEY".into()),
                 context_window: None,
                 prices: Default::default(),
+                cache_ttl: Default::default(),
+                prompt_cache_key: None,
             },
         )
         .unwrap();

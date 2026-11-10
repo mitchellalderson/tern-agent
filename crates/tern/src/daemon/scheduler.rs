@@ -402,12 +402,12 @@ fn spend_since(manager: &Manager, s: &ScheduleRow, since: i64) -> anyhow::Result
     let mut spent = 0.0;
     let models = usage
         .iter()
-        .map(|(m, u)| (m.clone(), *u))
-        .chain(next_model.map(|m| (Some(m), (0, 0, 0, 0))));
-    for (model, used) in models {
+        .map(|(m, u, w1h)| (m.clone(), *u, *w1h))
+        .chain(next_model.map(|m| (Some(m), (0, 0, 0, 0), 0)));
+    for (model, used, write_1h) in models {
         let model = model.unwrap_or_default();
         match rt.price_of(&model) {
-            Some(p) => spent += p.cost(used),
+            Some(p) => spent += p.cost_with_1h(used, write_1h),
             None => {
                 let key = format!("{}|{model}", s.id);
                 if noted().lock().is_ok_and(|mut n| n.insert(key)) {

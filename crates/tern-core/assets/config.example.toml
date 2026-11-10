@@ -284,4 +284,16 @@ docker_pids = 512          # 0 for no limit
 #
 # Prices (USD per million tokens) for models whose list doesn't give them:
 # [providers.anthropic.prices]
-# "claude-sonnet-4-5" = { input = 3.0, output = 15.0, cache_read = 0.3, cache_write = 3.75 }
+# "claude-sonnet-4-5" = { input = 3.0, output = 15.0, cache_read = 0.3, cache_write = 3.75, cache_write_1h = 6.0 }
+#
+# Anthropic keeps the cached system prompt and tools for 5 minutes by default.
+# "1h" costs twice the input price to write (5m: 1.25 times) and pays off for
+# agents idle 5 to 60 minutes between runs (routines, channels):
+# [providers.anthropic]
+# cache_ttl = "1h"
+#
+# OpenAI's prompt_cache_key (routes requests with the same prompt prefix to one
+# cache). Sent to api.openai.com by default; other compatible servers may
+# reject it, so it is off for them unless you set it:
+# [providers.my-server]
+# prompt_cache_key = true

@@ -191,6 +191,7 @@ impl Runtime {
             tools: Vec::new(),
             max_tokens: 800,
             forbid_tool_calls: true,
+            cache: Default::default(),
         };
         let call = async {
             let mut stream = provider

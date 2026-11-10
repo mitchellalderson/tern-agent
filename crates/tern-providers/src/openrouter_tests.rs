@@ -21,6 +21,7 @@ fn req() -> ChatRequest {
         tools: vec![],
         max_tokens: 10,
         forbid_tool_calls: false,
+        cache: Default::default(),
     }
 }
 
@@ -122,6 +123,8 @@ async fn a_pasted_responses_endpoint_still_reaches_chat_completions() {
         api_key_secret: Some("OPENROUTER_TEST_KEY".into()),
         context_window: None,
         prices: Default::default(),
+        cache_ttl: Default::default(),
+        prompt_cache_key: None,
     };
     // The key comes from a secrets file, not the environment.
     let dir = tempfile::tempdir().unwrap();

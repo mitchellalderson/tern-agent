@@ -244,14 +244,16 @@ struct Plan {
 /// provider's model list. `None` when neither knows it.
 pub fn price_of(config: &Config, cache: &ModelCache, model: &str) -> Option<Pricing> {
     let m: ModelRef = model.parse().ok()?;
-    if let Some(p) = config
-        .providers
-        .get(&m.provider)
-        .and_then(|p| p.prices.get(&m.model))
-    {
-        return Some(*p);
-    }
-    cache.pricing(&m.provider, &m.model)
+    let provider = config.providers.get(&m.provider);
+    let price = provider
+        .and_then(|p| p.prices.get(&m.model).copied())
+        .or_else(|| cache.pricing(&m.provider, &m.model))?;
+    // Anthropic's own cache prices (reads 0.1x, writes 1.25x / 2x) fill in
+    // whatever the price leaves unset; configured values win.
+    Some(match provider.map(|p| p.kind) {
+        Some(ProviderKind::Anthropic) => price.anthropic_cache_defaults(),
+        _ => price,
+    })
 }
 
 impl Runtime {
@@ -530,6 +532,8 @@ impl Runtime {
                     api_key_secret: None,
                     context_window: None,
                     prices: Default::default(),
+                    cache_ttl: Default::default(),
+                    prompt_cache_key: None,
                 };
                 (name, cfg)
             }

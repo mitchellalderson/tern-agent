@@ -677,7 +677,13 @@ impl Agent {
             .ok_or_else(|| AgentError::Corrupt(format!("run {} has no model", run.id)))?
             .parse()?;
         let provider = (self.providers)(&model)?;
-        let system = run.system_prompt.clone().unwrap_or_default();
+        // The frozen prompt's per-run tail (the time) travels apart from the
+        // rest, so what precedes the history is identical run to run.
+        let frozen = run.system_prompt.clone().unwrap_or_default();
+        let (system, volatile) = {
+            let (stable, volatile) = crate::prompt::split_volatile(&frozen);
+            (stable.to_owned(), volatile.to_owned())
+        };
         let ctx = ToolCtx {
             scope: self.scope_for(run),
             run_id: run.id.clone(),
@@ -767,6 +773,10 @@ impl Agent {
                 tools: tools.clone(),
                 max_tokens,
                 forbid_tool_calls: wrap_up.is_some(),
+                cache: crate::types::CacheHint {
+                    history: true,
+                    volatile: volatile.clone(),
+                },
             };
             let step_input = LlmStepInput {
                 model: &req.model,
@@ -1606,6 +1616,7 @@ impl Agent {
             tools: vec![],
             max_tokens: compaction::SUMMARY_MAX_TOKENS,
             forbid_tool_calls: false,
+            cache: Default::default(),
         };
         self.journal
             .step_with(
@@ -1683,6 +1694,7 @@ impl Agent {
             tools,
             max_tokens: memory::FLUSH_MAX_TOKENS,
             forbid_tool_calls: false,
+            cache: Default::default(),
         };
         let out = self
             .journal
@@ -1945,6 +1957,7 @@ fn add_usage(total: &mut Usage, u: &Usage) {
     total.output_tokens += u.output_tokens;
     total.cache_read_tokens += u.cache_read_tokens;
     total.cache_write_tokens += u.cache_write_tokens;
+    total.cache_write_1h_tokens += u.cache_write_1h_tokens;
 }
 
 /// Exponential backoff with jitter: base * 2^(attempt-1), capped at 30s,

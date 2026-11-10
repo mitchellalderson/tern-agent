@@ -100,6 +100,7 @@ impl Agent {
                             tools: vec![],
                             max_tokens: compaction::SUMMARY_MAX_TOKENS,
                             forbid_tool_calls: false,
+                            cache: Default::default(),
                         };
                         let turn = self.call_llm(&run.id, provider, req, cancel, false).await?;
                         carry.summary = turn.message.text();

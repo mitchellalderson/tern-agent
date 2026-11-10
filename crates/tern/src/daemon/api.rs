@@ -765,6 +765,7 @@ async fn usage(
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
+            ..Usage::default()
         },
         context_tokens: context.map(|(_, tokens)| tokens),
         context_window: window,

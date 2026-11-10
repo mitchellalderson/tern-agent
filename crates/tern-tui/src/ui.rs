@@ -856,9 +856,14 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ),
         }
     } else if let Some(u) = &app.last_usage {
+        let cached = u
+            .cache_hit_rate()
+            .filter(|r| *r > 0.0)
+            .map(|r| format!(" ({:.0}% cached)", r * 100.0))
+            .unwrap_or_default();
         format!(
-            "last turn {} in / {} out",
-            u.input_tokens + u.cache_read_tokens + u.cache_write_tokens,
+            "last turn {} in{cached} / {} out",
+            u.total_input(),
             u.output_tokens
         )
     } else {

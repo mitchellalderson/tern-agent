@@ -258,6 +258,7 @@ mod tests {
             tools: vec![],
             max_tokens: 100,
             forbid_tool_calls: false,
+            cache: Default::default(),
         }
     }
 
