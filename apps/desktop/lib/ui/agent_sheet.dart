@@ -7,6 +7,7 @@ import '../state/store.dart';
 import '../theme.dart';
 import 'underline_tabs.dart';
 import 'agent_ap3.dart';
+import 'agent_role.dart';
 import 'agent_starters.dart';
 import 'channel_view.dart' show slugFor;
 import 'code_auto.dart';
@@ -46,6 +47,7 @@ const systemTools = {
   'memory_save',
   'memory_search',
   'profile_edit',
+  'role_set',
   'session_search',
 };
 
@@ -92,6 +94,10 @@ class _AgentSheetState extends State<AgentSheet> {
   late List<String> _model = [...?widget.editing?.model];
   late List<String> _subagentModel = [...?widget.editing?.subagentModel];
   String? _personaBefore;
+
+  /// The user typed in the persona box (creating): without this, a new
+  /// agent from the blank starter has no persona of its own and infers a role.
+  var _personaEdited = false;
   String? _system;
   List<AgentTemplate> _templates = [];
   String? _template;
@@ -139,6 +145,11 @@ class _AgentSheetState extends State<AgentSheet> {
 
   bool get _creating => widget.editing == null;
   bool get _isDefault => widget.editing?.isDefault ?? false;
+
+  /// Creating from a name alone: the blank starter, persona untouched. The
+  /// agent writes its own role.
+  bool get _namesOnly =>
+      _creating && (_template == null || _template == 'blank') && !_personaEdited;
 
   List<String> get _builtins => [
     for (final t in widget.store.info?.tools ?? const [])
@@ -209,6 +220,7 @@ class _AgentSheetState extends State<AgentSheet> {
   void _apply(AgentTemplate? t) {
     if (t == null) return;
     setState(() {
+      _personaEdited = false;
       _template = t.id;
       if (t.name.isNotEmpty) _name.text = t.name;
       final name = _name.text.trim().isEmpty ? 'this agent' : _name.text.trim();
@@ -313,7 +325,7 @@ class _AgentSheetState extends State<AgentSheet> {
       err = await store.createAgent(
         name: _name.text.trim(),
         avatar: avatar,
-        persona: _persona.text,
+        persona: _namesOnly ? null : _persona.text,
         model: _model,
         subagentModel: _subagentModel,
         tools: _tools,
@@ -321,7 +333,7 @@ class _AgentSheetState extends State<AgentSheet> {
         egress: _browse ? 'allow' : null,
         autonomy: _autonomy,
         codeAuto: _codeAuto,
-        template: _template,
+        template: _namesOnly ? null : _template,
         routine: _addRoutine ? _routine : null,
       );
     }
@@ -346,6 +358,22 @@ class _AgentSheetState extends State<AgentSheet> {
       });
     }
   }
+
+  Widget _personaField(InputDecoration input) => TextField(
+    key: const Key('agent-persona'),
+    controller: _persona,
+    minLines: 4,
+    maxLines: 8,
+    style: const TextStyle(fontSize: 13),
+    onChanged: (_) {
+      if (_creating && !_personaEdited) setState(() => _personaEdited = true);
+    },
+    decoration: input.copyWith(
+      labelText: 'Persona',
+      alignLabelWithHint: true,
+      hintText: 'Who it is, its job, its tone.',
+    ),
+  );
 
   Widget _section(String label) => Padding(
     padding: const EdgeInsets.only(top: 14, bottom: 4),
@@ -430,7 +458,7 @@ class _AgentSheetState extends State<AgentSheet> {
                           _isDefault
                               ? 'Your default agent. Home is its chat.'
                               : editing == null
-                              ? 'Pick a starter or start blank, name it, create.'
+                              ? 'Name it. It works out its own role.'
                               : 'Changes apply from its next run.',
                           style: small,
                         ),
@@ -498,18 +526,41 @@ class _AgentSheetState extends State<AgentSheet> {
                         ),
                       ),
                     const SizedBox(height: 12),
-                    TextField(
-                      key: const Key('agent-persona'),
-                      controller: _persona,
-                      minLines: 4,
-                      maxLines: 8,
-                      style: const TextStyle(fontSize: 13),
-                      decoration: input.copyWith(
-                        labelText: 'Persona',
-                        alignLabelWithHint: true,
-                        hintText: 'Who it is, its job, its tone.',
-                      ),
-                    ),
+                    if (_creating)
+                      Theme(
+                        data: flat,
+                        child: ExpansionTile(
+                          // A starter fills the persona, so it opens.
+                          key: ValueKey('describe-$_template'),
+                          initiallyExpanded:
+                              _template != null && _template != 'blank',
+                          tilePadding: EdgeInsets.zero,
+                          childrenPadding: EdgeInsets.zero,
+                          dense: true,
+                          visualDensity: VisualDensity.compact,
+                          expandedCrossAxisAlignment:
+                              CrossAxisAlignment.stretch,
+                          title: const Text(
+                            'Describe it',
+                            key: Key('describe-it'),
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          subtitle: Text(
+                            _namesOnly
+                                ? 'Optional. Otherwise it works out its own role.'
+                                : 'Its persona.',
+                            style: TextStyle(fontSize: 11.5, color: c.muted),
+                          ),
+                          children: [_personaField(input)],
+                        ),
+                      )
+                    else
+                      _personaField(input),
+                    if (editing != null && !_isDefault)
+                      AgentRoleSection(store: widget.store, agent: editing),
                     Theme(
                       data: flat,
                       child: ExpansionTile(

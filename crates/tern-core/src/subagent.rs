@@ -64,6 +64,7 @@ pub const CHILD_EXCLUDED_TOOLS: &[&str] = &[
     "wait_cancel",
     "connector_activate",
     "profile_edit",
+    "role_set",
 ];
 
 /// Numeric limits from `[subagents]`.

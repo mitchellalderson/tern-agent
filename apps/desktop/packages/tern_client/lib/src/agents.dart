@@ -341,6 +341,24 @@ class Persona {
   final String? systemSections;
 }
 
+/// The role an agent wrote for itself (agent profiles §1.5). `state` is
+/// `inferring` (the agent writes and refines it), `settled`, `user` (edited
+/// by the user) or `none` (the agent has a hand-written persona instead).
+class AgentRole {
+  const AgentRole({required this.role, required this.state});
+
+  factory AgentRole.fromJson(Json j) => AgentRole(
+    role: j['role'] as String? ?? '',
+    state: j['state'] as String? ?? 'none',
+  );
+
+  final String role;
+  final String state;
+
+  /// Whether this agent has a role of its own to show.
+  bool get managed => state != 'none';
+}
+
 /// A long-term memory: shared, or an agent's own.
 class Memory {
   const Memory({

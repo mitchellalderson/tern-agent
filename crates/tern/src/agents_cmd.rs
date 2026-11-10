@@ -46,6 +46,9 @@ pub fn run(home: &TernHome, command: Option<AgentsCommand>) -> anyhow::Result<Ex
                 "persona: {}",
                 tern_core::agents::persona_path(home, &a.id).display()
             );
+            if tern_core::role::load(home, &a.id).is_some() {
+                println!("role: it writes its own from its name, in its first messages");
+            }
         }
         AgentsCommand::Telegram { agent, secret } => {
             let a = find(&rt, &agent)?;

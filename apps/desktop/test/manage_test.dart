@@ -154,6 +154,10 @@ class _Fake extends TernClient {
   Future<List<AgentTemplate>> agentTemplates() async => const [];
 
   @override
+  Future<AgentRole> role(String id) async =>
+      const AgentRole(role: '', state: 'none');
+
+  @override
   Future<Persona> persona(String id) async =>
       const Persona(persona: 'You are Research.', systemSections: '');
 

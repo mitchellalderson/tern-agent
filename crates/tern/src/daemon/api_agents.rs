@@ -47,6 +47,10 @@ pub fn routes() -> Router<Shared> {
         )
         .route("/v1/agents/{id}/impact", get(impact))
         .route("/v1/agents/{id}/persona", get(persona).put(set_persona))
+        .route(
+            "/v1/agents/{id}/role",
+            get(role).put(set_role).delete(reset_role),
+        )
         .route("/v1/agents/{id}/work", get(work))
         .route("/v1/memories", get(memories).delete(clear_memories))
         .route(
@@ -657,6 +661,61 @@ async fn set_persona(
         persona: b.persona.trim().to_owned(),
         system_sections: None,
     }))
+}
+
+/// An agent's self-written role (agent profiles §1.5).
+#[derive(Serialize, Deserialize)]
+pub struct Role {
+    /// The role prompt; empty until the agent has written one.
+    pub role: String,
+    /// `inferring` (open: the agent writes and refines it), `settled` or
+    /// `user`. `none` for an agent with a hand-written persona, which has no
+    /// role of its own.
+    pub state: String,
+}
+
+#[derive(Deserialize)]
+struct RoleBody {
+    role: String,
+}
+
+fn role_of(m: &Shared, id: &str) -> Role {
+    let st = tern_core::role::load(&m.rt.home, id);
+    Role {
+        role: tern_core::role::read(&m.rt.home, id).unwrap_or_default(),
+        state: match st.map(|s| s.stage) {
+            Some(tern_core::role::Stage::Inferring) => "inferring",
+            Some(tern_core::role::Stage::Settled) => "settled",
+            Some(tern_core::role::Stage::User) => "user",
+            None => "none",
+        }
+        .into(),
+    }
+}
+
+async fn role(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Role> {
+    let a = find(&m, &id)?;
+    Ok(Json(role_of(&m, &a.id)))
+}
+
+/// The user writes the role: it is stable from then on.
+async fn set_role(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+    Json(b): Json<RoleBody>,
+) -> ApiResult<Role> {
+    let a = find(&m, &id)?;
+    tern_core::role::write_user(&m.rt.home, &a.id, &b.role).map_err(bad)?;
+    changed(&m);
+    Ok(Json(role_of(&m, &a.id)))
+}
+
+/// Forget the role: the agent infers it again.
+async fn reset_role(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Role> {
+    let a = find(&m, &id)?;
+    tern_core::role::open(&m.rt.home, &a.id).map_err(bad)?;
+    changed(&m);
+    Ok(Json(role_of(&m, &a.id)))
 }
 
 #[derive(Deserialize)]

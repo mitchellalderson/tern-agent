@@ -153,6 +153,10 @@ class _Client extends TernClient {
   ];
 
   @override
+  Future<AgentRole> role(String id) async =>
+      const AgentRole(role: '', state: 'none');
+
+  @override
   Future<Persona> persona(String id) async => const Persona(
     persona: "You are Research, the user's research agent.",
     systemSections: '## Untrusted content',

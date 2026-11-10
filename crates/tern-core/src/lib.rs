@@ -22,6 +22,7 @@ pub mod outbox;
 pub mod presets;
 pub mod prompt;
 pub mod quiet;
+pub mod role;
 pub mod script;
 pub mod secrets;
 pub mod skill_capture;

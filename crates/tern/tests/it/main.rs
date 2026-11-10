@@ -31,6 +31,7 @@ mod proactive_delegation;
 mod providers;
 mod py0;
 mod reset;
+mod role_infer;
 mod routines_visible;
 mod s1;
 mod s2;

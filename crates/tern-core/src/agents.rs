@@ -22,6 +22,7 @@ pub const SYSTEM_TOOLS: &[&str] = &[
     "memory_search",
     "memory_forget",
     "profile_edit",
+    "role_set",
     "session_search",
 ];
 

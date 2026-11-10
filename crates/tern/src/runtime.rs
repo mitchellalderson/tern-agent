@@ -503,6 +503,9 @@ impl Runtime {
                 serde_json::json!({ "glyph": t.avatar.0, "color": t.avatar.1 }).to_string()
             })
         });
+        // A name alone: the agent writes its own role (agent profiles §1.5).
+        let infer_role =
+            template.is_none() && !a.persona.as_deref().is_some_and(|p| !p.trim().is_empty());
         let persona = a
             .persona
             .filter(|p| !p.trim().is_empty())
@@ -511,6 +514,9 @@ impl Runtime {
             .unwrap_or_default()
             .replace("{name}", &name);
         self.write_persona(&id, &persona)?;
+        if infer_role {
+            tern_core::role::open(&self.home, &id).map_err(anyhow::Error::msg)?;
+        }
         let (row, _) = self.store.create_agent(&tern_store::AgentRow {
             id,
             slug,
@@ -857,6 +863,10 @@ impl Runtime {
         } else {
             AgentRole::Main
         };
+        // A user turn counts toward an open role (agent profiles §1.5).
+        if role == AgentRole::Main {
+            tern_core::role::begin_turn(&self.home, &agent.id);
+        }
         let (prompt, scope) = agent_frame(&self.home, &self.store, &agent, Some(text));
         let mut system = self.prompts.build(role, 0, prompt.as_ref(), scope.as_ref());
         // Always, so the agent knows where it is and that its reply is
@@ -1061,6 +1071,7 @@ pub(crate) fn agent_frame(
         others_more,
         delegates,
         delegates_more,
+        role: tern_core::role::prompt(home, &agent.id, &agent.name),
     };
     (Some(prompt), scope)
 }
@@ -1390,6 +1401,10 @@ fn build_tools(
         tern_tools::memory::ProfileEdit::new(home.clone(), config.memory.clone())
             .with_store(store.clone()),
     ));
+    registry.register(Arc::new(tern_tools::memory::RoleSet::new(
+        home.clone(),
+        store.clone(),
+    )));
     if config.subagents.enabled && config.subagents.max_depth >= 1 {
         tern_tools::agents::register(&mut registry, subagents.clone());
     }

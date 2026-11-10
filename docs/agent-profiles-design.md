@@ -113,6 +113,31 @@ every agent in a DM, one line each: `@slug · Name · first line of its persona`
 asks that agent (§5.2), and that approvals go to Home. That way an agent knows who else is around and can hand work
 on without the user wiring it up.
 
+### 1.5 Self-written roles ("create with just a name")
+
+An agent can be created with only a name. It then works out its own specialised role and writes it as a prompt.
+
+- **Creating.** Name only; the persona is optional. A new agent with no persona and no starter gets the blank persona
+  and an open role (`agents/<slug>/role.json`, state `inferring`). Agents with a persona or a starter, the 25 starters
+  and every agent that exists today have no `role.json`: nothing about them changes.
+- **Inferring.** While the role is open, the prompt has a "Your role" section: infer the job from the name, call
+  `role_set` with a short second-person prompt (the first reply already does this), then refine it from what the user
+  asks over the first 3 turns. `role_set` writes `agents/<slug>/role.md`, a file like `persona.md`, so the user can
+  read and edit it. It is not in `memory.md` (shared, capped) or the `memories` table (searched, not always loaded).
+- **Using.** The prompt builder puts `role.md` right under the persona in every later run (Main and Scheduled), the
+  same way the persona goes in.
+- **Stable.** After 3 turns with a role written, the state is `settled`. The section then shows the role as fixed.
+  `role_set` refuses; the agent may suggest an edit in its reply, and the user decides.
+- **User control.** `GET/PUT/DELETE /v1/agents/{id}/role`: read, edit (state `user`, stable), and reset (delete
+  `role.md`, back to `inferring`, so it is inferred again). The agent sheet has a Role section with Edit and Re-infer.
+- **Safety.** The role is in every system prompt, so untrusted content must never shape it. `role_set` refuses in a
+  tainted run (the run row's `taint`), and is in `TAINT_CONTAINED`, so `approval::check` gives a tainted run the
+  verdict a clean one gets and the tool does the refusing: it is not approvable, and not asked about. The agent
+  retries on a clean turn. Autonomy `readonly` refuses it like `profile_edit`. Taint is read when the call runs,
+  not when the run starts, so reading a page and then calling `role_set` in one run is refused.
+- **Turn count.** A user-triggered run of an `inferring` agent counts one turn at start (`start_run`); routines and
+  sub-agents don't.
+
 ## 2. Data model
 
 One migration, the next free number (built as 0013, after C4's and T3's). It's all additive, and every new
@@ -347,6 +372,7 @@ the agent scope: a private agent's memory is personal to the owner. Nothing in t
 | PATCH | `/v1/agents/{id}` | any field; `archived: true` archives, `false` restores |
 | DELETE / GET | `/v1/agents/{id}?confirm=true[&reassign_to=\|&delete_routines=true]` / `/v1/agents/{id}/impact` | delete an agent (a tombstone: its history stays readable under its name; never the default agent), and what that touches. DECISIONS.md "Editing and deleting" |
 | GET / PUT | `/v1/agents/{id}/persona` | the Markdown; GET also returns the engine-owned sections as `system_sections` for the read-only preview |
+| GET / PUT / DELETE | `/v1/agents/{id}/role` | the self-written role (§1.5): `{role, state}`; PUT is the user's edit, DELETE resets it to be inferred again |
 | GET / POST / DELETE | `/v1/channels/{id}/agents[/{agent}]` | members; PATCH `/v1/channels/{id}` gains `lead`, `agent_wakes`, `max_hops`, `wakes_per_hour` |
 | GET | `/v1/schedules?agent=` | an agent's jobs; create and update take `agent` |
 | GET | `/v1/memories?agent=` | scope filter |
