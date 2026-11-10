@@ -706,3 +706,22 @@ fn domain_matching() {
     assert!(!domain_listed("badexample.com", &l));
     assert!(!domain_listed("example.com.evil.test", &l));
 }
+
+#[tokio::test]
+async fn the_default_policy_allows_any_public_site() {
+    let cfg = FetchConfig::default();
+    for host in [
+        "example.com",
+        "news.ycombinator.com",
+        "docs.rs",
+        "a.b.c.test",
+    ] {
+        assert!(super::domain_allowed(host, &cfg).is_ok(), "{host}");
+    }
+    // The SSRF checks are not part of the domain policy and stay on.
+    let g = gateway(cfg, None);
+    let r = g
+        .fetch(&ctx("r"), json!({"url": "http://169.254.169.254/latest/"}))
+        .await;
+    assert!(r.is_error, "{}", r.content);
+}

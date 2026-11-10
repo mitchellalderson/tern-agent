@@ -53,7 +53,7 @@ fn a_clean_home_is_seeded_once_with_the_set_and_the_starter_ceilings() {
     let seo: String = env.query("SELECT autonomy FROM agents WHERE slug = 'seo'");
     assert_eq!(seo, "readonly");
     let assistant: String = env.query("SELECT autonomy FROM agents WHERE slug = 'assistant'");
-    assert_eq!(assistant, "supervised");
+    assert_eq!(assistant, "autonomous");
     // A second start doesn't add them again.
     run(&env, &["agents", "list"]);
     assert_eq!(slugs(&env), expected());

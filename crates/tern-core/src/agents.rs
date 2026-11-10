@@ -309,7 +309,7 @@ pub struct Template {
     pub tools: Option<ToolScope>,
     pub memory: String,
     /// The autonomy ceiling a new agent gets from this starter (a cap, never
-    /// a grant). The catalog only uses `readonly` and `supervised`.
+    /// a grant). The catalog only uses `readonly` and `autonomous`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomy: Option<crate::approval::Autonomy>,
     /// A suggested routine: (cron, prompt).
@@ -375,7 +375,7 @@ const WRITE_TOOLS: &[&str] = &[
     "wait_cancel",
 ];
 /// The most autonomy any starter may ship with.
-pub const STARTER_MAX_AUTONOMY: crate::approval::Autonomy = crate::approval::Autonomy::Supervised;
+pub const STARTER_MAX_AUTONOMY: crate::approval::Autonomy = crate::approval::Autonomy::Autonomous;
 
 impl Template {
     /// The checks a starter must pass: everything a user-created agent is
@@ -423,7 +423,7 @@ impl Template {
         }
         if let Some(a) = self.autonomy {
             if a > STARTER_MAX_AUTONOMY {
-                return bad("autonomy may be at most supervised");
+                return bad("autonomy may be at most autonomous");
             }
             if a == crate::approval::Autonomy::ReadOnly {
                 // `None` is the narrow default, which includes file writes.
@@ -766,12 +766,12 @@ mod tests {
         let mut t = good.clone();
         t.category = " ".into();
         assert!(t.validate().is_err());
-        // The ceiling: a real level, no higher than supervised, and readonly
-        // only without write-capable tools.
+        // The ceiling: a real level, no higher than autonomous (yolo is never
+        // a starter's), and readonly only without write-capable tools.
         use crate::approval::Autonomy;
         let mut t = good.clone();
         t.autonomy = Some(Autonomy::Autonomous);
-        assert!(t.validate().is_err());
+        assert!(t.validate().is_ok());
         t.autonomy = Some(Autonomy::Yolo);
         assert!(t.validate().is_err());
         t.autonomy = Some(Autonomy::ReadOnly); // code-reviewer has shell
@@ -799,13 +799,13 @@ persona = "You are X."
     }
 
     #[test]
-    fn every_starter_has_a_conservative_ceiling() {
+    fn every_starter_is_autonomous_or_readonly() {
         use crate::approval::Autonomy;
         for t in templates() {
             let a = t
                 .autonomy
                 .unwrap_or_else(|| panic!("{} has no autonomy", t.id));
-            assert!(a <= Autonomy::Supervised, "{}: {a}", t.id);
+            assert!(a <= Autonomy::Autonomous, "{}: {a}", t.id);
         }
         let level = |id: &str| template(id).unwrap().autonomy.unwrap();
         for id in [
@@ -824,7 +824,7 @@ persona = "You are X."
             "customer-support",
             "blank",
         ] {
-            assert_eq!(level(id), Autonomy::Supervised, "{id}");
+            assert_eq!(level(id), Autonomy::Autonomous, "{id}");
         }
     }
 }

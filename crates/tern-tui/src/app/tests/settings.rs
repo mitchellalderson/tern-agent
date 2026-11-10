@@ -93,12 +93,12 @@ fn every_section_is_there_and_toggles_and_resets_work() {
     assert_eq!(setting_calls(&fake).last().unwrap().1, None);
     assert!(!screen(&mut app, 110, 34).contains("saved change applies"));
 
-    // A choice cycles with Right.
+    // A choice cycles with Left (the default is autonomous).
     goto_setting(&mut app, "autonomy");
-    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Left);
     assert_eq!(
         setting_calls(&fake).last().unwrap(),
-        &("autonomy".to_owned(), Some(serde_json::json!("autonomous")))
+        &("autonomy".to_owned(), Some(serde_json::json!("supervised")))
     );
     assert!(screen(&mut app, 110, 34).contains("autonomous"));
 
