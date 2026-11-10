@@ -1,1 +1,0 @@
-- Tests and the TUI smoke script pin `autonomy = "supervised"` where they exercise approvals, so they no longer depend on the new-install default.

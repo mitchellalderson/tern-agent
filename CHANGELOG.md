@@ -9,6 +9,24 @@ Entries go in `changelog.d/` (see its README); the release gathers them here.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.5] - 2026-11-10
+
+New installs start at `autonomous`, you can add many agents to a channel at once, and two chat and role fixes.
+
+### Added
+
+- **Add many agents to a channel at once.** "+ Agent" opens a searchable checklist with Select all and Clear, members shown checked and disabled, and an "Add 3 agents" button. New channels can pick their agents up-front. The daemon's `POST /v1/channels/{id}/agents` also takes `{agents: [..]}` and reports who joined, who was already in and who failed.
+
+### Changed
+
+- **New installs start at `autonomous`** (was `supervised`). Ordinary writes and sandboxed commands no longer ask by default; the OS sandbox stays on, an unsandboxed shell is still refused, and destructive calls, sends and anything after reading untrusted text still ask. Starter agents now ship at `autonomous` (look-only ones stay `readonly`). Set `autonomy = "supervised"` in `config.toml`, in Settings, or on an agent to be asked about every write. A `config.toml` with no `autonomy` line and every saved agent keep their level. `yolo` stays opt-in.
+- **Fetching defaults documented**: `http_fetch` reads any public site unless `[fetch] allow_domains` is set; private, loopback and metadata addresses stay refused.
+
+### Fixed
+
+- **Chat holds its place for a long reply.** A tall new agent message now stays anchored at its start instead of jumping to its end, in channels and direct chat; a reader scrolled up is never moved.
+- **Self-written roles** now work from a name alone: a new agent writes its starter role right after it is created, without waiting for a first message. Re-infer, and the role itself, also draw on the agent's work in channels (not only direct chats), and Re-infer always answers: progress, the new role, a note, or an error.
+
 ## [0.1.0-alpha.4] - 2026-11-10
 
 Agents that write their own role, optional hosted accounts, and two fixes. alpha.3 was tagged but never published; its fix is here.

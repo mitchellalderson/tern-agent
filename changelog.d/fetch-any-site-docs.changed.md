@@ -1,1 +1,0 @@
-- **Fetching defaults documented**: `http_fetch` reads any public site unless `[fetch] allow_domains` is set; private, loopback and metadata addresses stay refused.
