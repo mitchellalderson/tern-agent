@@ -82,6 +82,16 @@ class _SettingsDialogState extends State<SettingsDialog> {
     }
   }
 
+  Future<void> _signOut() async {
+    setState(() => _busy = true);
+    try {
+      await widget.connections?.signOutAccount();
+    } on Exception catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
   Widget _where(BuildContext context) {
     final small = Theme.of(context).textTheme.bodySmall;
     final server = _server;
@@ -196,6 +206,20 @@ class _SettingsDialogState extends State<SettingsDialog> {
           ),
         ),
         if (widget.connections != null) _where(context),
+        if (widget.connections?.account case final account?)
+          ListenableBuilder(
+            listenable: account,
+            builder: (context, _) => account.signedIn
+                ? ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('Signed in as ${account.email ?? 'your account'}'),
+                    trailing: TextButton(
+                      onPressed: _busy ? null : _signOut,
+                      child: const Text('Sign out'),
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
         if (_server == null) ...[
           SwitchListTile(
             contentPadding: EdgeInsets.zero,

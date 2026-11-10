@@ -37,6 +37,9 @@ blake3 = "1.8.7"
 # The workspace scope: handle-based (openat) file access, no check-then-open.
 cap-std = "4.0.3"
 # Direct for the webhook listener's header timeout; axum already pulls both in.
+# Verifies Clerk-issued account JWTs against a JWKS (deployment spec §10.6);
+# the maintained Rust JWT crate, here on aws-lc-rs like the rest of the TLS code.
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_lc_rs"] }
 hyper = { version = "1.12.0", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "service", "http1", "server"] }
 # minisign's prehashed signatures (bundles, tooling spec §6.5).

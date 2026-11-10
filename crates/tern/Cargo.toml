@@ -52,6 +52,7 @@ clap.workspace = true
 crossterm.workspace = true
 futures.workspace = true
 hyper.workspace = true
+jsonwebtoken.workspace = true
 hyper-util.workspace = true
 qrcode.workspace = true
 rcgen.workspace = true

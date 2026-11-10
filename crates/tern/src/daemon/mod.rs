@@ -1,6 +1,7 @@
 //! `tern daemon` (spec §12.3): one process that owns the runtime, the
 //! scheduler, gateways, and the local API on `~/.tern/tern.sock`.
 
+pub mod account;
 pub mod api;
 pub mod api_agents;
 mod api_bundles;

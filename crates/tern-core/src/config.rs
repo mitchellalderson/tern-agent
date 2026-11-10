@@ -63,6 +63,8 @@ pub struct Config {
     pub mcp: McpConfig,
     pub api: ApiConfig,
     pub webhooks: WebhooksConfig,
+    /// Hosted tern account sign-in (deployment spec §10.4a). Off by default.
+    pub account: AccountConfig,
     pub subagents: SubagentsConfig,
     pub schedules: SchedulesConfig,
     pub memory: crate::memory::MemoryConfig,
@@ -381,6 +383,7 @@ impl Default for Config {
             mcp: McpConfig::default(),
             api: ApiConfig::default(),
             webhooks: WebhooksConfig::default(),
+            account: AccountConfig::default(),
             subagents: SubagentsConfig::default(),
             schedules: SchedulesConfig::default(),
             memory: crate::memory::MemoryConfig::default(),
@@ -817,6 +820,56 @@ pub struct TelegramConfig {
     pub bot_token_secret: String,
     /// Bot API base URL; only changed for tests or self-hosted API servers.
     pub api_url: Option<String>,
+}
+
+/// `[account]`: sign-in with a hosted tern account (Clerk), deployment spec
+/// §10.4a. Off unless `issuer` is set; local use never reads it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AccountConfig {
+    /// Clerk's Frontend API URL, e.g. `https://clerk.example.com`. JWTs must
+    /// name it as `iss`. Setting it turns accounts on.
+    pub issuer: Option<String>,
+    /// The Clerk publishable key (public; the desktop app reads it).
+    pub publishable_key: Option<String>,
+    /// The `aud` JWTs must carry: the OAuth application's client id.
+    pub audience: Option<String>,
+    /// The Clerk user id (`user_…`) that owns this core. Only that account's
+    /// tokens are accepted; unset means none are.
+    pub owner: Option<String>,
+    /// Where the signing keys are; default `<issuer>/.well-known/jwks.json`.
+    pub jwks_url: Option<String>,
+}
+
+impl AccountConfig {
+    pub fn enabled(&self) -> bool {
+        self.issuer.is_some()
+    }
+
+    pub fn jwks_url(&self) -> Option<String> {
+        let issuer = self.issuer.as_deref()?;
+        Some(
+            self.jwks_url.clone().unwrap_or_else(|| {
+                format!("{}/.well-known/jwks.json", issuer.trim_end_matches('/'))
+            }),
+        )
+    }
+
+    /// Why this section can't work, if it can't.
+    pub fn check(&self) -> Result<(), String> {
+        let Some(issuer) = self.issuer.as_deref() else {
+            return Ok(());
+        };
+        let local =
+            issuer.starts_with("http://127.0.0.1") || issuer.starts_with("http://localhost");
+        if !issuer.starts_with("https://") && !local {
+            return Err("account.issuer must be an https:// URL".into());
+        }
+        if self.audience.as_deref().is_none_or(str::is_empty) {
+            return Err("account.audience is required when account.issuer is set".into());
+        }
+        Ok(())
+    }
 }
 
 /// `[api]`: where the daemon's API listens (deployment spec §6.1).

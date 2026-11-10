@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:tern_client/tern_client.dart';
 
+import 'state/account.dart';
 import 'state/connection.dart';
 import 'state/daemon.dart';
 import 'state/notifier.dart';
@@ -11,7 +12,14 @@ import 'ui/home.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final prefs = AppPrefs.load();
-  final tokens = TokenStore.platform();
+  final stored = TokenStore.platform();
+  // Accounts exist only in a build or environment with a Clerk key.
+  final clerk = ClerkConfig.fromEnvironment();
+  final account = clerk == null
+      ? null
+      : AccountService(config: clerk, tokens: stored);
+  await account?.load();
+  final tokens = account == null ? stored : AccountTokens(stored, account);
   final endpoint = await endpointFor(prefs.connection, tokens);
   // A server whose token is gone can't be used: ask again where to run.
   if (endpoint == null) prefs.connection = null;
@@ -19,6 +27,7 @@ Future<void> main() async {
     TernApp(
       prefs: prefs,
       tokens: tokens,
+      account: account,
       endpoint: endpoint ?? Endpoint.local(),
     ),
   );
@@ -32,10 +41,12 @@ class TernApp extends StatefulWidget {
     required this.prefs,
     required this.tokens,
     required this.endpoint,
+    this.account,
   });
 
   final AppPrefs prefs;
   final TokenStore tokens;
+  final AccountService? account;
   final Endpoint endpoint;
 
   @override
@@ -53,6 +64,7 @@ class _TernAppState extends State<TernApp> {
     prefs: widget.prefs,
     tokens: widget.tokens,
     apply: _switchTo,
+    account: widget.account,
   );
 
   static TernStore _storeFor(Endpoint e, AppPrefs prefs) => TernStore(

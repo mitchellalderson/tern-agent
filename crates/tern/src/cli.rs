@@ -52,6 +52,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ServiceCommand,
     },
+    /// Hosted tern account sign-in for this core.
+    Account {
+        #[command(subcommand)]
+        command: Option<AccountCommand>,
+    },
     /// Pair and manage devices that reach this core over TCP.
     Devices {
         #[command(subcommand)]
@@ -409,6 +414,13 @@ pub enum GatewayCommand {
     },
     /// Gateways in config.toml and whether each can run.
     List,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AccountCommand {
+    /// Whether account sign-in is on, who owns this core, and whether the
+    /// signing keys can be fetched.
+    Status,
 }
 
 #[derive(Debug, Subcommand)]

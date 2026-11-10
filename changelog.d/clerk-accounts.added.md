@@ -1,0 +1,1 @@
+- **Hosted tern accounts (Clerk).** Off unless configured: an `[account]` section lets a server core accept its owner's sign-in, `tern account status` checks it, and the app gets a **Sign in** choice and a "Signed in as" row. Local use is unchanged. See `docs/recipes/clerk-setup.md`.

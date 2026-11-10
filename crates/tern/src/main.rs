@@ -1,3 +1,4 @@
+mod account_cmd;
 mod agents_cmd;
 mod bundle_cmd;
 mod channels_cmd;
@@ -150,6 +151,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             refresh,
             json,
         }) => providers_cmd::models(&home, provider, refresh, json),
+        Some(Command::Account { command }) => account_cmd::run(&home, command),
         Some(Command::Devices { command }) => devices_cmd::run(&home, command),
         Some(Command::Run {
             prompt,

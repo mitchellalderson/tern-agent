@@ -499,7 +499,9 @@ fn placement(key: &str) -> (&'static str, bool) {
         "api.listen" | "api.public_url" | "webhooks.listen" | "webhooks.public_url" => {
             ("servers", false)
         }
-        k if k.starts_with("api.") || k.starts_with("webhooks.") => ("servers", true),
+        k if k.starts_with("api.") || k.starts_with("webhooks.") || k.starts_with("account.") => {
+            ("servers", true)
+        }
         _ => ("advanced", true),
     }
 }
@@ -959,6 +961,7 @@ mod tests {
                 "bundles",
                 "python",
                 "webhooks",
+                "account",
                 "api"
             ]
         );

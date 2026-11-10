@@ -637,6 +637,56 @@ work (D3) and the cloud (D5) are independent in §12.
 - **Billing**: Stripe subscriptions plus metered model usage. Plan limits enforced in the control plane (suspend,
   gateway refusal), never inside the agent loop.
 
+### 10.4a Accounts (Clerk)
+
+The first account system is **Clerk**, hosted by them. It is optional everywhere: with no `[account]` section and no
+Clerk key in the app, tern behaves exactly as before (§1), and tier 1 never contacts Clerk.
+
+**Desktop sign-in: the system browser, OAuth 2.0 with PKCE.** The app opens Clerk's `/oauth/authorize` in the user's
+browser, with a loopback redirect (`http://127.0.0.1:<random port>/callback`), `S256` PKCE and a random `state`. It
+exchanges the code at `/oauth/token` as a public client (no secret). Chosen over the beta `clerk_flutter` SDK because:
+- Clerk is then just a standard OAuth/OIDC provider. Nothing in the app depends on a beta SDK's desktop support or
+  its API changes, and swapping the provider later means changing two URLs.
+- Passkeys, Sign in with Apple and Google work in the user's real browser, where their sessions and password manager
+  are. An embedded form on desktop gets none of that.
+- A native app that opens the system browser and a loopback port is the pattern RFC 8252 recommends.
+
+The app needs two values, set at build or run time: the Clerk **publishable key** (it spells out the Frontend API
+host, which is the issuer) and the OAuth application's **client id**. With neither, the app shows no sign-in.
+
+**Tokens.** The app keeps the id token (what cores verify), the refresh token and the expiry as one item in the OS
+keychain (the same store as device tokens), renews 2 minutes before expiry, and signs out if the refresh token is
+refused. It sends the id token as `Authorization: Bearer` to a core, read live per request so a renewal needs no
+reconnect. The id token is used rather than the access token because it is always a JWT with `aud` = client id.
+
+**Claims.** A tern account is the Clerk user: `sub` is the account id (`user_…`), `email` its address (shown, never
+trusted for access). `iss`, `aud` and `exp` are checked. Nothing else is read.
+
+**Server core.** With `[account] issuer` set, the TCP listener accepts a JWT as a bearer token next to `tern_dev_…`
+tokens (anything that is not `tern_dev_` and has three dot-separated parts). It verifies RS256 or ES256 against the
+issuer's JWKS (`<issuer>/.well-known/jwks.json`, cached for an hour and re-fetched at most every 30 seconds when a
+key id is unknown), with the issuer, audience and expiry (30 s leeway) all required. `HS*` and `none` are refused.
+Event streams opened with a token end when it expires. Unix socket and local mode never see any of this.
+
+```toml
+[account]
+issuer = "https://clerk.example.com"   # Clerk Frontend API URL; setting it turns accounts on
+audience = "<OAuth client id>"
+publishable_key = "pk_live_…"          # public; what the app reads
+owner = "user_2abc…"                   # the Clerk user id that owns this core
+# jwks_url = "…"                       # only to override the default
+```
+
+**Ownership.** A core has one owner, per the non-goal in §1: `owner = <Clerk user id>`. A valid token for any other
+account gets 403, and with no `owner` no account is accepted at all. An owner token has `owner` scope (like
+`tern devices pair --scope owner`). It is a second way to be the owner, not a way to be a limited device: scoped
+device tokens still exist for phones. `tern account status` shows the config and checks the keys can be fetched.
+Claiming an unowned core by signing in (setting `owner` for you) is for the control plane (§10.2), not built here.
+
+**Not built:** listing a user's cores (§7.1's Cloud profile), the control plane, billing, revocation lists. Today the
+desktop signs in, then asks for the server address; the server must have a normal certificate (`tls = "files"` or a
+proxy), as there is no pairing link to carry a pin.
+
 ### 10.5 Lifecycle
 
 - **Provisioning**: sign up → create volume + core VM → generate config (`[api] listen = tcp`, auth `jwt`,
