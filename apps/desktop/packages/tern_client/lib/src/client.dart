@@ -617,6 +617,15 @@ class TernClient {
         }),
       );
 
+  /// Add several agents (ids or slugs) in one request. One that can't
+  /// join (gone, archived) is in [BulkAdd.failed]; the others still join.
+  Future<BulkAdd> addChannelAgents(String channel, List<String> agents) async =>
+      BulkAdd.fromJson(
+        await _json('POST', '/v1/channels/${_seg(channel)}/agents', {
+          'agents': agents,
+        }),
+      );
+
   /// Take an agent out of a topic channel (not its lead or `tern`).
   Future<ChannelAgents> removeChannelAgent(
     String channel,

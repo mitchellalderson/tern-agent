@@ -126,4 +126,29 @@ void main() {
       ('home', 's1', 'idle', null),
     );
   });
+
+  test('a bulk add decodes who joined, who was in and who failed', () {
+    final r = BulkAdd.fromJson({
+      'members': [
+        {'agent_id': 'tern', 'lead': true, 'added_at': 1762185600000},
+        {'agent_id': 'tern:ops', 'added_at': 1762185600000},
+      ],
+      'agent_wakes': false,
+      'max_hops': 2,
+      'wakes_per_hour': 6,
+      'added': ['tern:ops'],
+      'already': ['tern'],
+      'failed': [
+        {'agent': 'ghost', 'error': 'no agent "ghost"'},
+      ],
+    });
+    expect(r.agents.members.map((m) => m.agentId), ['tern', 'tern:ops']);
+    expect(r.added, ['tern:ops']);
+    expect(r.already, ['tern']);
+    expect((r.failed.single.agent, r.ok), ('ghost', false));
+    // An older shape has none of the extras.
+    final plain = BulkAdd.fromJson({'members': const []});
+    expect(plain.ok, isTrue);
+    expect(plain.added, isEmpty);
+  });
 }

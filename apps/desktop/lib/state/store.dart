@@ -284,6 +284,25 @@ class TernStore extends ChangeNotifier {
     }
   }
 
+  /// Add several agents in one request. Returns why some couldn't join
+  /// (the others did), or null when all did.
+  Future<String?> addAgentsToChannel(String channelId, List<String> ids) async {
+    try {
+      final r = await client.addChannelAgents(channelId, ids);
+      channels = await client.channels();
+      notifyListeners();
+      return _bulkError(r);
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  String? _bulkError(BulkAdd r) {
+    if (r.ok) return null;
+    String name(String id) => agentById(id)?.name ?? id;
+    return "Couldn't add ${[for (final f in r.failed) '${name(f.agent)} (${f.error})'].join(', ')}.";
+  }
+
   Future<String?> removeFromChannel(String channelId, String agentId) async {
     try {
       await client.removeChannelAgent(channelId, agentId);
@@ -1395,6 +1414,9 @@ class TernStore extends ChangeNotifier {
       if (s.channelId == id) s,
   ];
 
+  /// Why some agents chosen for the channel just created didn't join.
+  String? memberError;
+
   /// Create a topic channel and open it. Returns the daemon's reason on
   /// failure.
   Future<String?> createChannel({
@@ -1402,7 +1424,9 @@ class TernStore extends ChangeNotifier {
     String? title,
     String? instructions,
     String? workspace,
+    List<String> agents = const [],
   }) async {
+    memberError = null;
     try {
       final c = await client.createChannel(
         slug: slug,
@@ -1410,6 +1434,15 @@ class TernStore extends ChangeNotifier {
         instructions: instructions,
         workspace: workspace,
       );
+      if (agents.isNotEmpty) {
+        // The channel exists now: a member that can't join is reported
+        // after, not as a failure to create.
+        try {
+          memberError = _bulkError(await client.addChannelAgents(c.id, agents));
+        } on TernException catch (e) {
+          memberError = e.message;
+        }
+      }
       channels = await client.channels();
       await openChannelView(c.id);
       return null;
