@@ -104,8 +104,10 @@ class AccountSession {
 
 /// Posts a form to Clerk's token endpoint and returns the JSON answer.
 /// Replaced in tests. Throws [AccountException].
-typedef PostForm =
-    Future<Map<String, dynamic>> Function(Uri url, Map<String, String> form);
+typedef PostForm = Future<Map<String, dynamic>> Function(
+  Uri url,
+  Map<String, String> form,
+);
 
 /// Opens a page in the system browser. Replaced in tests.
 typedef OpenUrl = Future<void> Function(Uri url);
@@ -123,7 +125,10 @@ class AccountException implements Exception {
   String toString() => message;
 }
 
-Future<Map<String, dynamic>> _postForm(Uri url, Map<String, String> form) async {
+Future<Map<String, dynamic>> _postForm(
+  Uri url,
+  Map<String, String> form,
+) async {
   final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
   try {
     final req = await client.postUrl(url);
@@ -280,7 +285,9 @@ class AccountService extends ChangeNotifier {
           'redirect_uri': redirect,
           'scope': 'openid profile email offline_access',
           'state': state,
-          'code_challenge': _b64url(sha256.convert(utf8.encode(verifier)).bytes),
+          'code_challenge': _b64url(
+            sha256.convert(utf8.encode(verifier)).bytes,
+          ),
           'code_challenge_method': 'S256',
         },
       );
@@ -288,9 +295,8 @@ class AccountService extends ChangeNotifier {
           .firstWhere((r) => r.uri.path == '/callback')
           .timeout(
             signInTimeout,
-            onTimeout: () => throw const AccountException(
-              'Sign-in timed out. Try again.',
-            ),
+            onTimeout: () =>
+                throw const AccountException('Sign-in timed out. Try again.'),
           );
       // If opening the browser fails, nobody awaits this any more.
       answer.ignore();
@@ -330,9 +336,8 @@ class AccountService extends ChangeNotifier {
   }
 
   /// Gets a new token with the refresh token.
-  Future<void> renew() => _renewing ??= _renew().whenComplete(
-    () => _renewing = null,
-  );
+  Future<void> renew() =>
+      _renewing ??= _renew().whenComplete(() => _renewing = null);
 
   Future<void> _renew() async {
     final s = _session;
@@ -381,7 +386,8 @@ class AccountService extends ChangeNotifier {
         : _now().add(Duration(seconds: (json['expires_in'] as int?) ?? 3600));
     final session = AccountSession(
       bearer: bearer,
-      refreshToken: (json['refresh_token'] as String?) ?? previous?.refreshToken,
+      refreshToken:
+          (json['refresh_token'] as String?) ?? previous?.refreshToken,
       expiresAt: exp,
       userId: user,
       email: (claims['email'] as String?) ?? previous?.email,

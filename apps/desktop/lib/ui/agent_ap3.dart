@@ -32,10 +32,7 @@ class AutonomyPicker extends StatelessWidget {
   /// The scale's plain-word label and one line per level, lowest first. The
   /// wire name shows beside it so it maps to config and the CLI.
   static const _copy = <AutonomyLevel, (String, String)>{
-    AutonomyLevel.readonly: (
-      'Read only',
-      'Looks, never changes anything.',
-    ),
+    AutonomyLevel.readonly: ('Read only', 'Looks, never changes anything.'),
     AutonomyLevel.supervised: (
       'Ask first',
       'Asks before any change. The default.',
@@ -50,10 +47,7 @@ class AutonomyPicker extends StatelessWidget {
       'Writes without asking, unless it read untrusted content. Destructive '
           'actions still ask.',
     ),
-    AutonomyLevel.yolo: (
-      'Full',
-      'Nothing asks.',
-    ),
+    AutonomyLevel.yolo: ('Full', 'Nothing asks.'),
   };
 
   @override
@@ -112,10 +106,7 @@ class AutonomyPicker extends StatelessWidget {
                 dense: true,
                 contentPadding: EdgeInsets.zero,
                 title: title('Use my global setting (default)', null),
-                subtitle: Text(
-                  'No cap for this agent.',
-                  style: small,
-                ),
+                subtitle: Text('No cap for this agent.', style: small),
               ),
               const SizedBox(height: 16),
               end('Low'),

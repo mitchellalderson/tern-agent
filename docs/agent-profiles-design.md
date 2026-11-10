@@ -124,6 +124,15 @@ An agent can be created with only a name. It then works out its own specialised 
   `role_set` with a short second-person prompt (the first reply already does this), then refine it from what the user
   asks over the first 3 turns. `role_set` writes `agents/<slug>/role.md`, a file like `persona.md`, so the user can
   read and edit it. It is not in `memory.md` (shared, capped) or the `memories` table (searched, not always loaded).
+- **Starter role (no message needed).** Right after a name-only create, the daemon makes one tool-less model call
+  (`role_infer.rs`) that writes the starter role from the name: scope, tone, outputs, what it won't do, when to
+  delegate. It writes only into an empty open role, so a later `role_set` is never overwritten. If the call fails the
+  role stays empty and the first reply writes it with `role_set`, as above.
+- **Evidence, in chats and channels.** Inference and Re-infer (`POST /v1/agents/{id}/role/infer`) also read what the
+  agent has done: its direct chats and the topic channels it posted in (the newest posts, each and the total
+  capped). It is quoted as data in the prompt, never as instructions. Messages and posts from tainted runs are left
+  out (and counted), so outside content can't shape the role. Turns in channels count toward the 3-turn window like
+  direct messages. Re-infer replaces the role only on success; an empty result returns a `note`, a failure an error.
 - **Using.** The prompt builder puts `role.md` right under the persona in every later run (Main and Scheduled), the
   same way the persona goes in.
 - **Stable.** After 3 turns with a role written, the state is `settled`. The section then shows the role as fixed.

@@ -500,8 +500,14 @@ class TernClient {
   );
 
   /// Forget the role: the agent infers it again.
-  Future<AgentRole> resetRole(String id) async => AgentRole.fromJson(
-    await _json('DELETE', '/v1/agents/${_seg(id)}/role'),
+  Future<AgentRole> resetRole(String id) async =>
+      AgentRole.fromJson(await _json('DELETE', '/v1/agents/${_seg(id)}/role'));
+
+  /// Re-infer: the agent writes its role again from its name and its work
+  /// in chats and channels. Slow (one model call): the old role stays on
+  /// failure, and an empty result comes back as `note`.
+  Future<AgentRole> inferRole(String id) async => AgentRole.fromJson(
+    await _json('POST', '/v1/agents/${_seg(id)}/role/infer', {}),
   );
 
   /// Memories: `agent` is `shared`, an agent (its own), or null for all.

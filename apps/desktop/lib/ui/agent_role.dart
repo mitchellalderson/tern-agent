@@ -6,7 +6,9 @@ import '../theme.dart';
 
 /// The role an agent wrote for itself (agent profiles §1.5): shown in the
 /// agent sheet, with Edit (the user's words, fixed from then on) and
-/// Re-infer (forget it; the agent writes a new one).
+/// Re-infer (the agent writes a new one from its name and its work in chats
+/// and channels). Re-infer always answers: progress, then the new role, a
+/// note when nothing changed, or the error.
 class AgentRoleSection extends StatefulWidget {
   const AgentRoleSection({super.key, required this.store, required this.agent});
 
@@ -23,6 +25,8 @@ class _AgentRoleSectionState extends State<AgentRoleSection> {
   var _editing = false;
   var _busy = false;
   String? _error;
+  String? _info;
+  var _inferring = false;
 
   @override
   void initState() {
@@ -49,6 +53,7 @@ class _AgentRoleSectionState extends State<AgentRoleSection> {
     setState(() {
       _busy = true;
       _error = null;
+      _info = null;
     });
     try {
       final r = await call();
@@ -68,10 +73,38 @@ class _AgentRoleSectionState extends State<AgentRoleSection> {
     }
   }
 
+  Future<void> _reinfer() async {
+    setState(() {
+      _busy = true;
+      _inferring = true;
+      _error = null;
+      _info = null;
+    });
+    try {
+      final r = await widget.store.client.inferRole(widget.agent.id);
+      if (!mounted) return;
+      setState(() {
+        _role = r;
+        _info = r.note ?? 'New role written.';
+      });
+    } on TernException catch (e) {
+      if (mounted) {
+        setState(() => _error = 'Could not write a role: ${e.message}');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _inferring = false;
+        });
+      }
+    }
+  }
+
   String _status(AgentRole r) => switch (r.state) {
     'inferring' =>
       r.role.isEmpty
-          ? 'It writes this from its name, in its first reply.'
+          ? 'It writes this from its name, then refines it from its work.'
           : 'It refines this over its first few messages.',
     'user' => 'Written by you.',
     _ => 'Fixed. It can suggest changes, you decide.',
@@ -112,9 +145,7 @@ class _AgentRoleSectionState extends State<AgentRoleSection> {
                 ),
                 TextButton(
                   key: const Key('role-reinfer'),
-                  onPressed: _busy
-                      ? null
-                      : () => _run(() => widget.store.client.resetRole(id)),
+                  onPressed: _busy ? null : _reinfer,
                   child: const Text('Re-infer'),
                 ),
               ],
@@ -142,7 +173,9 @@ class _AgentRoleSectionState extends State<AgentRoleSection> {
               spacing: 8,
               children: [
                 TextButton(
-                  onPressed: _busy ? null : () => setState(() => _editing = false),
+                  onPressed: _busy
+                      ? null
+                      : () => setState(() => _editing = false),
                   child: const Text('Cancel'),
                 ),
                 FilledButton(
@@ -176,7 +209,24 @@ class _AgentRoleSectionState extends State<AgentRoleSection> {
           ),
         Padding(
           padding: const EdgeInsets.only(top: 4, left: 2),
-          child: Text(_error ?? _status(r), style: small),
+          child: _inferring
+              ? Row(
+                  key: const Key('role-progress'),
+                  children: [
+                    const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 8),
+                    Text('Writing a role from its work…', style: small),
+                  ],
+                )
+              : Text(
+                  _error ?? _info ?? _status(r),
+                  key: const Key('role-status'),
+                  style: small,
+                ),
         ),
       ],
     );

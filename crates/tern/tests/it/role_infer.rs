@@ -61,6 +61,8 @@ async fn role(s: &Path, slug: &str) -> Value {
 async fn a_name_is_enough_the_agent_infers_a_role_and_uses_it_next_time() {
     let env = Env::with_config(
         &json!({ "conversations": [
+            // The starter inferred at creation writes nothing here.
+            { "matches": "named \"Tax Helper\"", "turns": [{ "text": " " }] },
             { "matches": "second", "turns": [{ "text": "Noted." }] },
             { "matches": "first", "turns": [
                 set_role("You are Tax Helper: you help the user with their taxes."),
@@ -150,6 +152,7 @@ async fn the_role_is_refined_over_the_first_three_turns_then_stays() {
 async fn a_tainted_run_cannot_write_the_role() {
     let env = Env::with_config(
         &json!({ "conversations": [
+            { "matches": "named \"Scout\"", "turns": [{ "text": " " }] },
             { "matches": "clean", "turns": [set_role("You are Scout: you scout."), { "text": "ok" }] },
             { "matches": "tainted", "turns": [
                 // Reading outside content taints the run (as in memory_class).
@@ -287,4 +290,179 @@ async fn the_user_can_edit_the_role_and_reset_it_to_be_inferred_again() {
     )
     .await;
     assert_eq!(code, 400);
+}
+
+// ---- inference from the name alone, and from channel work ----
+
+/// The agent's role once it is non-empty (the starter is written off the
+/// create request).
+async fn role_when_written(s: &Path, slug: &str) -> Value {
+    for _ in 0..100 {
+        let r = role(s, slug).await;
+        if !r["role"].as_str().unwrap().is_empty() {
+            return r;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("no role was written for {slug}");
+}
+
+async fn channel_post(s: &Path, text: &str) -> String {
+    let (code, sent) = post(s, "/v1/channels/launch/posts", json!({ "text": text })).await;
+    assert_eq!(code, 200, "{sent}");
+    let run = sent["woke"][0]["run_id"].as_str().unwrap().to_owned();
+    get(s, &format!("/v1/runs/{run}/wait")).await;
+    run
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_name_alone_gets_a_starter_role_before_any_message() {
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "matches": "named \"product marketer\"", "turns": [{ "text":
+                "You are a product marketer. Scope: positioning, messaging, launch copy. \
+                 Tone: plain and specific. Outputs: briefs and drafts. You don't set pricing. \
+                 Hand research to a researcher and code to an engineer." }] },
+            { "matches": "hello", "turns": [{ "text": "Hi." }] }
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let (code, a) = post(&s, "/v1/agents", json!({ "name": "product marketer" })).await;
+    assert_eq!(code, 201, "{a}");
+
+    let r = role_when_written(&s, "product-marketer").await;
+    assert_eq!(r["state"], "inferring");
+    assert!(
+        r["role"]
+            .as_str()
+            .unwrap()
+            .starts_with("You are a product marketer."),
+        "{r}"
+    );
+    let runs: i64 = env.query("SELECT COUNT(*) FROM runs");
+    assert_eq!(runs, 0, "written by itself, with no message");
+
+    // It still refines from its first messages: the role is in the prompt
+    // and the agent may still change it.
+    let run = say(&s, a["main_channel_id"].as_str().unwrap(), "hello").await;
+    let sys = system_of(&env, &run);
+    assert!(
+        sys.contains("## Your role\n\nYou are a product marketer."),
+        "{sys}"
+    );
+    assert!(sys.contains("refine it with `role_set`"), "{sys}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reinfer_draws_on_channel_work_and_leaves_out_tainted_posts() {
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            // Anything from the tainted post in the evidence is a leak.
+            { "matches": "SECRET-PLAN-TEXT", "turns": [{ "text": "LEAKED" }] },
+            { "matches": "In channel \"launch\"", "turns": [{ "text":
+                "You are Launch Helper: you plan launches with the team in #launch." }] },
+            { "matches": "Build the launch plan", "turns": [{ "text": "SECRET-PLAN-TEXT: step one." }] },
+            { "matches": "named \"Launch Helper\"", "turns": [{ "text": " " }] }
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let (_, a) = post(&s, "/v1/agents", json!({ "name": "Launch Helper" })).await;
+    let id = a["id"].as_str().unwrap();
+    post(&s, "/v1/channels", json!({ "slug": "launch" })).await;
+    channel_post(&s, "@launch-helper Build the launch plan for Zebra").await;
+    // No direct chat at all, and the name alone wrote nothing here.
+    assert_eq!(
+        role(&s, "launch-helper").await,
+        json!({ "role": "", "state": "inferring" })
+    );
+    // Its answer read outside content, so it is left out as evidence.
+    env.db()
+        .execute(
+            "UPDATE posts SET tainted = 1 WHERE author_kind = 'agent'",
+            [],
+        )
+        .unwrap();
+
+    let (code, r) = send(
+        &s,
+        reqwest::Method::POST,
+        &format!("/v1/agents/{id}/role/infer"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(code, 200, "{r}");
+    assert_eq!(
+        r,
+        json!({ "role": "You are Launch Helper: you plan launches with the team in #launch.",
+                "state": "inferring" })
+    );
+    assert_eq!(
+        role(&s, "launch-helper").await["role"],
+        r["role"],
+        "saved, not only returned"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn channel_turns_count_toward_the_refinement_window() {
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "matches": "named \"Counter\"", "turns": [{ "text": "You are Counter: you count." }] },
+            { "matches": "tick", "turns": [{ "text": "ok" }] }
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    post(&s, "/v1/agents", json!({ "name": "Counter" })).await;
+    role_when_written(&s, "counter").await;
+    post(&s, "/v1/channels", json!({ "slug": "launch" })).await;
+    for i in 1..=3 {
+        channel_post(&s, &format!("@counter tick {i}")).await;
+        assert_eq!(role(&s, "counter").await["state"], "inferring", "turn {i}");
+    }
+    // The fourth channel turn settles it, as a fourth direct message does.
+    channel_post(&s, "@counter tick 4").await;
+    assert_eq!(role(&s, "counter").await["state"], "settled");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reinfer_always_answers_with_a_role_a_note_or_an_error() {
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "matches": "named \"Scout\"", "turns": [{ "text": "   " }] }
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let (_, a) = post(&s, "/v1/agents", json!({ "name": "Scout" })).await;
+    let id = a["id"].as_str().unwrap();
+    let url = format!("/v1/agents/{id}/role/infer");
+
+    // The model wrote nothing: a note, and the role is as it was.
+    let (code, r) = send(&s, reqwest::Method::POST, &url, json!({})).await;
+    assert_eq!(code, 200, "{r}");
+    assert_eq!(r["role"], "");
+    assert!(r["note"].as_str().unwrap().contains("No new role"), "{r}");
+
+    // An agent that has no role of its own says so.
+    post(
+        &s,
+        "/v1/agents",
+        json!({ "name": "Ledger", "persona": "You are Ledger." }),
+    )
+    .await;
+    let (code, r) = send(
+        &s,
+        reqwest::Method::POST,
+        "/v1/agents/tern:ledger/role/infer",
+        json!({}),
+    )
+    .await;
+    assert_eq!(code, 400, "{r}");
 }
