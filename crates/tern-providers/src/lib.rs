@@ -51,7 +51,9 @@ pub fn build(
             })?;
             Arc::new(Anthropic::new(name, base, key)?.with_cache_ttl(cfg.cache_ttl))
         }
-        ProviderKind::OpenaiCompat => Arc::new(OpenAiCompat::new(name, base, key)?),
+        ProviderKind::OpenaiCompat => {
+            Arc::new(OpenAiCompat::new(name, base, key)?.with_cache_key(cfg.prompt_cache_key))
+        }
     })
 }
 

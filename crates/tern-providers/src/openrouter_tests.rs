@@ -124,6 +124,7 @@ async fn a_pasted_responses_endpoint_still_reaches_chat_completions() {
         context_window: None,
         prices: Default::default(),
         cache_ttl: Default::default(),
+        prompt_cache_key: None,
     };
     // The key comes from a secrets file, not the environment.
     let dir = tempfile::tempdir().unwrap();

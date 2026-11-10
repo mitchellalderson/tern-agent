@@ -655,6 +655,10 @@ pub struct ProviderConfig {
     /// `"5m"` (default) or `"1h"`. Ignored by other provider kinds.
     #[serde(default, skip_serializing_if = "CacheTtl::is_default")]
     pub cache_ttl: CacheTtl,
+    /// Send OpenAI's `prompt_cache_key` with requests. Unset: only to
+    /// api.openai.com; other compatible servers may reject the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<bool>,
 }
 
 /// Lifetime of an Anthropic prompt-cache entry for the system prompt and

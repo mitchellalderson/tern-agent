@@ -283,6 +283,7 @@ mod tests {
             context_window: None,
             prices: Default::default(),
             cache_ttl: Default::default(),
+            prompt_cache_key: None,
         }
     }
 

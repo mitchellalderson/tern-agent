@@ -19,6 +19,10 @@ pub struct OpenAiCompat {
     api_key: Option<String>,
     /// OpenRouter asks apps to identify themselves with two headers.
     pub(crate) attribution: bool,
+    /// Send `prompt_cache_key` (OpenAI's cache routing hint). Only OpenAI
+    /// proper takes it by default: other compatible servers may reject
+    /// fields they don't know.
+    cache_key: bool,
     client: reqwest::Client,
 }
 
@@ -31,15 +35,38 @@ impl OpenAiCompat {
         // Tidy a base URL pasted wrong (a missing `/api/v1`, a pasted
         // `/chat/completions`), so a mistake in config doesn't 404 every call.
         let base_url = tern_core::presets::normalize_base_url(base_url);
-        let attribution = tern_core::models::host_of(&base_url) == "openrouter.ai";
+        let host = tern_core::models::host_of(&base_url);
+        let attribution = host == "openrouter.ai";
         Ok(Self {
             id: id.to_owned(),
             base_url,
             api_key,
             attribution,
+            cache_key: host == "api.openai.com",
             client: http::client()?,
         })
     }
+
+    /// Override whether `prompt_cache_key` is sent (config
+    /// `prompt_cache_key`; default: only for api.openai.com).
+    pub fn with_cache_key(mut self, on: Option<bool>) -> Self {
+        if let Some(on) = on {
+            self.cache_key = on;
+        }
+        self
+    }
+}
+
+/// A stable key for a prompt's shared prefix (the system prompt), so OpenAI
+/// routes requests with the same prefix to the same cache. FNV-1a, so it is
+/// the same in every process.
+fn cache_key_of(system: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in system.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("tern-{h:016x}")
 }
 
 /// Whether `model` on OpenRouter is an Anthropic one, which (alone among
@@ -50,15 +77,16 @@ fn is_anthropic_on_openrouter(model: &str) -> bool {
 }
 
 pub fn request_body(req: &ChatRequest) -> Value {
-    request_body_for(req, false)
+    request_body_for(req, false, false)
 }
 
+/// `cache_key`: add `prompt_cache_key`, derived from the system prompt.
 /// `anthropic_cache`: mark the system prompt and the last user message with
 /// `cache_control` (OpenRouter passes it to Anthropic) and send per-run
 /// context as a closing user message, after both, so the cached prefix stays
 /// identical. Otherwise the request is as plain Chat Completions, with the
 /// per-run context folded into `system`.
-pub fn request_body_for(req: &ChatRequest, anthropic_cache: bool) -> Value {
+pub fn request_body_for(req: &ChatRequest, anthropic_cache: bool, cache_key: bool) -> Value {
     let mut messages = Vec::new();
     let min = crate::anthropic::min_cacheable_tokens(&req.model);
     let ephemeral = json!({ "type": "ephemeral" });
@@ -169,6 +197,9 @@ pub fn request_body_for(req: &ChatRequest, anthropic_cache: bool) -> Value {
         "stream_options": { "include_usage": true },
         "messages": messages,
     });
+    if cache_key && !req.system.is_empty() {
+        body["prompt_cache_key"] = json!(cache_key_of(&req.system));
+    }
     if !req.tools.is_empty() {
         body["tools"] = req
             .tools
@@ -223,7 +254,17 @@ impl Decoder {
             // pricing add up.
             let prompt = u["prompt_tokens"].as_u64();
             let details = &u["prompt_tokens_details"];
-            self.usage.cache_read_tokens = details["cached_tokens"].as_u64().unwrap_or(0);
+            // OpenAI, OpenRouter and Gemini's compat endpoint: details.
+            // cached_tokens; DeepSeek: prompt_cache_hit_tokens; Moonshot:
+            // a top-level cached_tokens.
+            self.usage.cache_read_tokens = [
+                &details["cached_tokens"],
+                &u["prompt_cache_hit_tokens"],
+                &u["cached_tokens"],
+            ]
+            .into_iter()
+            .find_map(|v| v.as_u64())
+            .unwrap_or(0);
             self.usage.cache_write_tokens = details["cache_write_tokens"].as_u64().unwrap_or(0);
             self.usage.input_tokens = match prompt {
                 Some(p) => {
@@ -334,6 +375,7 @@ impl Provider for OpenAiCompat {
             .json(&request_body_for(
                 &req,
                 self.attribution && is_anthropic_on_openrouter(&req.model),
+                self.cache_key,
             ));
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
@@ -417,7 +459,7 @@ mod tests {
 
     #[test]
     fn anthropic_on_openrouter_marks_system_and_last_user_and_trails_the_context() {
-        let b = request_body_for(&cached_req(), true);
+        let b = request_body_for(&cached_req(), true, false);
         let m = b["messages"].as_array().unwrap();
         assert_eq!(m[0]["content"][0]["cache_control"]["type"], "ephemeral");
         assert!(!m[0].to_string().contains("Monday"));
@@ -431,7 +473,7 @@ mod tests {
 
     #[test]
     fn other_openai_compatible_requests_are_plain_with_the_context_in_system() {
-        let b = request_body_for(&cached_req(), false);
+        let b = request_body_for(&cached_req(), false, false);
         assert!(!b.to_string().contains("cache_control"));
         let m = b["messages"].as_array().unwrap();
         assert!(m[0]["content"].as_str().unwrap().contains("Monday"));
@@ -456,6 +498,118 @@ mod tests {
             (100, 800, 100)
         );
         assert_eq!(d.usage.cache_hit_rate(), Some(0.8));
+    }
+
+    /// Usage as each kind of server reports it: (uncached input, cache read,
+    /// cache write) for `prompt_tokens` of 1000, which count cached ones too.
+    #[test]
+    fn cached_tokens_are_read_from_each_servers_usage_without_double_counting() {
+        for (name, usage, want) in [
+            (
+                "openai",
+                r#"{"prompt_tokens":1000,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":900}}"#,
+                (100, 900, 0),
+            ),
+            (
+                "openrouter",
+                r#"{"prompt_tokens":1000,"completion_tokens":3,"cost":0.01,"prompt_tokens_details":{"cached_tokens":600,"cache_write_tokens":300}}"#,
+                (100, 600, 300),
+            ),
+            (
+                "gemini (compat endpoint)",
+                r#"{"prompt_tokens":1000,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":750}}"#,
+                (250, 750, 0),
+            ),
+            (
+                "deepseek",
+                r#"{"prompt_tokens":1000,"completion_tokens":3,"prompt_cache_hit_tokens":800,"prompt_cache_miss_tokens":200}"#,
+                (200, 800, 0),
+            ),
+            (
+                "moonshot",
+                r#"{"prompt_tokens":1000,"completion_tokens":3,"cached_tokens":400}"#,
+                (600, 400, 0),
+            ),
+            (
+                "local server (no cache fields)",
+                r#"{"prompt_tokens":1000,"completion_tokens":3}"#,
+                (1000, 0, 0),
+            ),
+        ] {
+            let mut d = Decoder::default();
+            d.decode(&format!(r#"{{"choices":[],"usage":{usage}}}"#));
+            let u = d.usage;
+            assert_eq!(
+                (u.input_tokens, u.cache_read_tokens, u.cache_write_tokens),
+                want,
+                "{name}"
+            );
+            // Nothing counted twice: the parts add up to prompt_tokens.
+            assert_eq!(u.total_input(), 1000, "{name}");
+        }
+    }
+
+    #[test]
+    fn prompt_cache_key_is_sent_only_where_enabled_and_is_stable() {
+        let mut r = req();
+        r.system = "you are tern".into();
+        assert!(
+            request_body_for(&r, false, false)
+                .get("prompt_cache_key")
+                .is_none()
+        );
+        let a = request_body_for(&r, false, true);
+        let b = request_body_for(&r.clone(), false, true);
+        assert_eq!(a["prompt_cache_key"], b["prompt_cache_key"]);
+        assert!(a["prompt_cache_key"].as_str().unwrap().starts_with("tern-"));
+        r.system = "you are another agent".into();
+        assert_ne!(
+            request_body_for(&r, false, true)["prompt_cache_key"],
+            a["prompt_cache_key"]
+        );
+        // The key follows the system prompt, not the conversation.
+        let mut longer = r.clone();
+        longer.messages.push(Message::user_text("more"));
+        assert_eq!(
+            request_body_for(&longer, false, true)["prompt_cache_key"],
+            request_body_for(&r, false, true)["prompt_cache_key"]
+        );
+    }
+
+    #[test]
+    fn prompt_cache_key_defaults_to_openai_proper() {
+        let on = |url: &str| OpenAiCompat::new("p", url, None).unwrap().cache_key;
+        assert!(on("https://api.openai.com/v1"));
+        assert!(!on("https://openrouter.ai/api/v1"));
+        assert!(!on("http://localhost:11434/v1"));
+        let forced = OpenAiCompat::new("p", "http://localhost:1/v1", None)
+            .unwrap()
+            .with_cache_key(Some(true));
+        assert!(forced.cache_key);
+        let off = OpenAiCompat::new("p", "https://api.openai.com/v1", None)
+            .unwrap()
+            .with_cache_key(Some(false));
+        assert!(!off.cache_key);
+    }
+
+    #[test]
+    fn requests_are_byte_stable_and_grow_by_appending() {
+        let mut r = cached_req();
+        r.tools.reverse();
+        let first = request_body_for(&r, false, true);
+        assert_eq!(
+            first.to_string(),
+            request_body_for(&r.clone(), false, true).to_string()
+        );
+        // The next turn's messages start with this turn's, byte for byte.
+        let mut next = r.clone();
+        next.messages.push(Message::user_text("and then"));
+        let (a, b) = (
+            first["messages"].as_array().unwrap(),
+            request_body_for(&next, false, true),
+        );
+        let b = b["messages"].as_array().unwrap();
+        assert_eq!(&b[..a.len()], &a[..]);
     }
 
     #[test]
