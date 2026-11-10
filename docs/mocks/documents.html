@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tern documents: UI mock</title>
+<style>
+  :root {
+    --cream:#f7eedc; --paper:#fcf7eb; --sand:#efe3cb; --hairline:#e0d2b6;
+    --ink:#2b2118; --muted:#6f604f; --orange:#f07a2b; --red:#d93a2b; --ok:#4f7a3a;
+    --add:#e4efd6; --del:#f6dcd6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --cream:#1f1812; --paper:#2a211a; --sand:#261e17; --hairline:#3d3226; --ink:#f3e8d2; --muted:#b3a58f; --orange:#f58a3d; --red:#e5483a; --ok:#8db56f; --add:#2f3a24; --del:#46241f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px 16px 64px; background:var(--cream); color:var(--ink); font:14px/1.5 "DM Sans", system-ui, sans-serif; }
+  h1 { font:700 18px "Archivo", system-ui, sans-serif; margin:0 0 4px; }
+  .note { color:var(--muted); margin:0 0 20px; max-width:680px; }
+  .cap { color:var(--muted); font-size:12px; font-weight:600; margin:24px 0 8px; }
+  .win { display:grid; grid-template-columns:minmax(260px,1fr) minmax(320px,1.15fr); border:1px solid var(--hairline); border-radius:10px; overflow:hidden; background:var(--paper); max-width:1100px; }
+  @media (max-width:760px){ .win { grid-template-columns:1fr; } }
+  .chat { padding:16px; border-right:1px solid var(--hairline); }
+  .msg { margin:0 0 12px; } .you { color:var(--muted); }
+  .card { display:flex; align-items:center; gap:10px; border:1px solid var(--hairline); border-radius:8px; padding:9px 12px; background:var(--sand); }
+  .card .grow { flex:1; min-width:0; } .sub { color:var(--muted); font-size:12px; }
+  .panel { display:flex; flex-direction:column; min-width:0; }
+  .tabs { display:flex; gap:18px; border-bottom:1px solid var(--hairline); padding:0 16px; overflow-x:auto; }
+  .tabs span { padding:10px 0; color:var(--muted); white-space:nowrap; }
+  .tabs .on { color:var(--ink); border-bottom:2px solid var(--orange); margin-bottom:-1px; font-weight:600; }
+  .dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--orange); margin-left:6px; vertical-align:middle; }
+  .bar { display:flex; align-items:center; gap:10px; padding:8px 16px; border-bottom:1px solid var(--hairline); }
+  .bar .grow { flex:1; }
+  .seg { display:inline-flex; border:1px solid var(--hairline); border-radius:6px; overflow:hidden; }
+  .seg span { padding:3px 11px; color:var(--muted); } .seg .on { background:var(--sand); color:var(--ink); font-weight:600; }
+  .btn { border:1px solid var(--hairline); background:transparent; color:var(--ink); padding:4px 11px; border-radius:6px; font:inherit; }
+  .btn.primary { background:var(--orange); border-color:var(--orange); color:#2b2118; font-weight:600; }
+  .chip { font-size:12px; border:1px solid var(--hairline); border-radius:999px; padding:1px 9px; color:var(--muted); }
+  .doc { padding:20px 28px 28px; max-width:720px; }
+  .doc h2 { font:700 20px "Archivo", system-ui, sans-serif; margin:0 0 6px; }
+  .doc p { margin:0 0 10px; }
+  .doc code { background:var(--sand); padding:0 4px; border-radius:3px; font-size:13px; }
+  .chg { background:var(--add); border-left:2px solid var(--ok); padding-left:8px; margin-left:-10px; }
+  .gone { background:var(--del); text-decoration:line-through; color:var(--muted); }
+  .ins { background:var(--add); text-decoration:underline; }
+  .sel { background:color-mix(in srgb, var(--orange) 28%, transparent); }
+  .status { color:var(--muted); font-size:12px; padding:8px 16px; border-top:1px solid var(--hairline); display:flex; gap:14px; }
+  .conflict { margin:0 16px 12px; border:1px solid var(--orange); border-radius:8px; padding:10px 12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .conflict .grow { flex:1; min-width:180px; }
+  .split { display:grid; grid-template-columns:1fr 1fr; }
+  .src { font:12.5px/1.6 ui-monospace, Menlo, monospace; padding:16px; border-right:1px solid var(--hairline); white-space:pre-wrap; color:var(--muted); }
+  .rev { display:flex; gap:10px; padding:9px 16px; border-bottom:1px solid var(--hairline); align-items:center; }
+  .rev .grow { flex:1; min-width:0; }
+  svg { width:15px; height:15px; stroke:currentColor; fill:none; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; vertical-align:-3px; }
+  .toolbar { position:relative; display:inline-flex; gap:2px; border:1px solid var(--hairline); border-radius:8px; background:var(--paper); padding:3px; box-shadow:0 2px 8px rgba(0,0,0,.08); }
+  .toolbar span { padding:2px 9px; border-radius:5px; } .toolbar span:first-child { background:var(--sand); font-weight:600; }
+</style>
+</head>
+<body>
+<h1>tern documents: UI mock</h1>
+<p class="note">Companion to <code>docs/documents-design.md</code>. Static; the real panel is Flutter. Four states: viewing with an agent change highlighted, selecting text to ask tern, a conflict while editing, and history.</p>
+
+<p class="cap">1. Conversation with the document open; tern changed two passages (sand highlight, gutter rule)</p>
+<div class="win">
+  <div class="chat">
+    <p class="msg you">You: tighten the intro and add the Q3 numbers</p>
+    <p class="msg">Done. I rewrote the intro and added a table of Q3 numbers.</p>
+    <div class="card">
+      <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>
+      <div class="grow"><b>Weekly report</b><div class="sub">Revision 6 by research · +12 −3</div></div>
+      <button class="btn">Open</button>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="tabs"><span>Activity</span><span class="on">Weekly report<i class="dot"></i></span><span>Notes</span><span>+</span></div>
+    <div class="bar">
+      <div class="seg"><span class="on">View</span><span>Edit</span></div>
+      <span class="chip">From the web</span>
+      <span class="grow"></span>
+      <button class="btn">Changes +12 −3</button>
+      <button class="btn">Export</button>
+    </div>
+    <div class="doc">
+      <h2>Weekly report</h2>
+      <p class="chg">Revenue grew 8% in Q3, led by the self-serve plan. Churn held at 2.1%.</p>
+      <p>Pipeline coverage is <code>3.2x</code> for Q4, up from 2.7x.</p>
+      <p class="chg">Open risks: two renewals slipped into November.</p>
+    </div>
+    <div class="status"><span>Changed by research · 12 s ago</span><span>Saved</span><span>rev 6</span></div>
+  </div>
+</div>
+
+<p class="cap">2. Selecting a passage: ask tern about exactly this text</p>
+<div class="win">
+  <div class="chat">
+    <p class="msg you">You: (selection is sent with your next message)</p>
+  </div>
+  <div class="panel">
+    <div class="tabs"><span>Activity</span><span class="on">Weekly report</span></div>
+    <div class="doc">
+      <h2>Weekly report</h2>
+      <p>Revenue grew 8% in Q3, led by the self-serve plan.</p>
+      <p><span class="sel">Pipeline coverage is 3.2x for Q4, up from 2.7x, which is a fairly large increase over the last quarter.</span></p>
+      <div class="toolbar"><span>Ask tern…</span><span>Rewrite</span><span>Shorten</span><span>Explain</span></div>
+    </div>
+  </div>
+</div>
+
+<p class="cap">3. Editing: split preview, and a conflict because tern changed the paragraph being typed in</p>
+<div class="win">
+  <div class="chat"><p class="msg">tern is editing the same document in the background.</p></div>
+  <div class="panel">
+    <div class="tabs"><span>Activity</span><span class="on">Weekly report</span></div>
+    <div class="bar"><div class="seg"><span>View</span><span class="on">Edit</span></div><span class="grow"></span><span class="sub">Saving…</span></div>
+    <div class="conflict"><div class="grow"><b>tern changed this paragraph while you were editing it.</b></div>
+      <button class="btn">Keep mine</button><button class="btn">Take tern's</button><button class="btn primary">Compare</button></div>
+    <div class="split">
+      <div class="src"># Weekly report
+
+Revenue grew 8% in Q3, led by
+the self-serve plan.
+
+Open risks: two renewals slipped.</div>
+      <div class="doc"><h2>Weekly report</h2><p>Revenue grew 8% in Q3, led by the self-serve plan.</p><p>Open risks: two renewals slipped.</p></div>
+    </div>
+  </div>
+</div>
+
+<p class="cap">4. History and diff</p>
+<div class="win">
+  <div class="chat"><p class="msg">Restore creates a new revision. Nothing is ever rewritten.</p></div>
+  <div class="panel">
+    <div class="tabs"><span>Document</span><span class="on">History</span></div>
+    <div class="rev"><div class="grow"><b>6</b> · research agent <span class="sub">12 s ago · +12 −3</span></div><span class="chip">current</span></div>
+    <div class="rev"><div class="grow"><b>5</b> · you <span class="sub">4 min ago · edited intro</span></div><button class="btn">Restore</button></div>
+    <div class="rev"><div class="grow"><b>4</b> · research agent <span class="sub">yesterday · Monday run</span> <span class="chip">sent to Dana</span></div><button class="btn">Restore</button></div>
+    <div class="doc">
+      <p><span class="gone">Revenue went up a bit in the third quarter.</span> <span class="ins">Revenue grew 8% in Q3, led by the self-serve plan.</span></p>
+    </div>
+  </div>
+</div>
+</body>
+</html>
