@@ -187,17 +187,23 @@ pub fn request_body_with(req: &ChatRequest, ttl: CacheTtl) -> Value {
     }
     // Per-run context after the last breakpoint, so it never touches the
     // cached prefix.
+    let mut after: Vec<Value> = Vec::new();
     if history && !req.cache.volatile.is_empty() {
-        let block = json!({
+        after.push(json!({
             "type": "text",
             "text": format!(
                 "Context for this run (from tern, not from the user):\n\n{}",
                 req.cache.volatile
             ),
-        });
+        }));
+    }
+    if !req.cache.tail.is_empty() {
+        after.push(json!({ "type": "text", "text": req.cache.tail }));
+    }
+    if !after.is_empty() {
         match (messages.last_mut(), req.messages.last()) {
-            (Some(content), Some(m)) if m.role == Role::User => content.push(block),
-            _ => messages.push(vec![block]),
+            (Some(content), Some(m)) if m.role == Role::User => content.extend(after),
+            _ => messages.push(after),
         }
     }
     let roles: Vec<&str> = req
@@ -417,6 +423,10 @@ impl Decoder {
 impl Provider for Anthropic {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn fork_min_tokens(&self, model: &str) -> Option<u64> {
+        Some(min_cacheable_tokens(model) as u64)
     }
 
     async fn stream(
@@ -761,6 +771,54 @@ mod tests {
             }
             prev = Some(body);
         }
+    }
+
+    #[test]
+    fn a_forked_request_reproduces_the_parents_prefix_and_ends_with_the_instruction() {
+        let mut parent = history_req(2);
+        parent.cache.volatile = "## Current time\n\n09:00".into();
+        // The next loop request: two more messages, then compaction forks it.
+        let mut fork = history_req(3);
+        fork.cache.volatile = parent.cache.volatile.clone();
+        fork.cache.tail = tern_core::compaction::fork_instruction(4);
+        assert!(!fork.forbid_tool_calls);
+
+        let pb = request_body(&parent);
+        let fb = request_body(&fork);
+        // Not a byte of tool_choice: changing it would drop the cached history.
+        assert!(fb.get("tool_choice").is_none());
+        assert_eq!(pb["tools"], fb["tools"]);
+        assert_eq!(pb["system"], fb["system"]);
+        // The instruction is the last block, after the volatile context, and
+        // carries no marker (nothing after it is ever read).
+        let last = fb["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(last.last().unwrap()["text"], json!(fork.cache.tail));
+        assert!(last.last().unwrap().get("cache_control").is_none());
+        assert!(
+            last[last.len() - 2]["text"]
+                .as_str()
+                .unwrap()
+                .contains("09:00")
+        );
+        // Everything before it is the parent's request, byte for byte.
+        let (mut pb, mut fb) = (pb, fb);
+        for (b, n) in [(&mut pb, 1), (&mut fb, 2)] {
+            let content = b["messages"].as_array_mut().unwrap().last_mut().unwrap()["content"]
+                .as_array_mut()
+                .unwrap();
+            for _ in 0..n {
+                content.pop();
+            }
+            strip_cache_control(b);
+        }
+        let (pm, fm) = (
+            pb["messages"].as_array().unwrap(),
+            fb["messages"].as_array().unwrap(),
+        );
+        assert_eq!(&fm[..pm.len()], &pm[..]);
     }
 
     #[test]

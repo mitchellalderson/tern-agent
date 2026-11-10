@@ -750,7 +750,19 @@ impl Agent {
             let estimate = compaction::estimate_tokens(&system, &messages, &tools);
             if (estimate as f64 * correction) > window as f64 * compaction::THRESHOLD {
                 match self
-                    .compact(run, idx, &model, &provider, cancel, &mut outcome.usage)
+                    .compact(
+                        run,
+                        idx,
+                        &model,
+                        &provider,
+                        &ForkParent {
+                            system: &system,
+                            volatile: &volatile,
+                            tools: &tools,
+                        },
+                        cancel,
+                        &mut outcome.usage,
+                    )
                     .await
                 {
                     Ok(0) => {}
@@ -776,6 +788,7 @@ impl Agent {
                 cache: crate::types::CacheHint {
                     history: true,
                     volatile: volatile.clone(),
+                    ..Default::default()
                 },
             };
             let step_input = LlmStepInput {
@@ -1518,6 +1531,42 @@ impl Agent {
         }
     }
 
+    /// Make the forked request if there is one, else (or when it fails, or
+    /// its answer isn't `usable`) the plain one. What the failed attempt
+    /// cost is added to the answer's usage.
+    async fn call_forked(
+        &self,
+        run_id: &str,
+        provider: &Arc<dyn Provider>,
+        forked: Option<ChatRequest>,
+        plain: ChatRequest,
+        cancel: &CancellationToken,
+        usable: impl Fn(&AssistantTurn) -> bool,
+    ) -> Result<AssistantTurn, StepError> {
+        let mut spent = Usage::default();
+        if let Some(req) = forked {
+            match self.call_llm(run_id, provider, req, cancel, false).await {
+                Ok(turn) if usable(&turn) => return Ok(turn),
+                Ok(turn) => {
+                    tracing::warn!(
+                        run_id,
+                        "forked request gave no usable answer; using the plain one"
+                    );
+                    spent = turn.usage;
+                }
+                Err(StepError::Cancelled) => return Err(StepError::Cancelled),
+                Err(e) => {
+                    tracing::warn!(run_id, error = %e, "forked request failed; using the plain one")
+                }
+            }
+        }
+        let mut turn = self
+            .call_llm(run_id, provider, plain, cancel, false)
+            .await?;
+        add_usage(&mut turn.usage, &spent);
+        Ok(turn)
+    }
+
     async fn stream_once(
         &self,
         run_id: &str,
@@ -1575,12 +1624,14 @@ impl Agent {
     /// Summarize old context as step `idx`, after a memory flush when one
     /// applies. Returns the number of steps recorded (0: nothing to
     /// compact). The flush's usage is added to `usage`.
+    #[allow(clippy::too_many_arguments)]
     async fn compact(
         &self,
         run: &RunRow,
         idx: u32,
         model: &ModelRef,
         provider: &Arc<dyn Provider>,
+        parent: &ForkParent<'_>,
         cancel: &CancellationToken,
         usage: &mut Usage,
     ) -> Result<u32, StepError> {
@@ -1591,6 +1642,11 @@ impl Agent {
         let old = to_messages(rows[..plan.split].to_vec())
             .map_err(|e| StepError::Failed(e.to_string()))?;
         let transcript = compaction::transcript(&old);
+        // The history exactly as the loop sends it, when the summary can be a
+        // fork of that request (see `fork_of`).
+        let fork = to_messages(rows)
+            .ok()
+            .and_then(|all| parent.span_in(&**provider, &model.model, all, &old));
         let flushed = self
             .flush_memory(
                 run,
@@ -1598,6 +1654,7 @@ impl Agent {
                 model,
                 provider,
                 &transcript,
+                fork.as_ref(),
                 plan.cover_through,
                 cancel,
                 usage,
@@ -1618,6 +1675,16 @@ impl Agent {
             forbid_tool_calls: false,
             cache: Default::default(),
         };
+        // The journaled input doesn't depend on the request's shape, so a
+        // replay (or a resume after a crash) reuses the recorded summary
+        // whichever shape produced it, and a re-run asks the same question.
+        let forked = fork.as_ref().map(|f| {
+            f.request(
+                model,
+                compaction::SUMMARY_MAX_TOKENS,
+                compaction::fork_instruction(f.span),
+            )
+        });
         self.journal
             .step_with(
                 &run.id,
@@ -1626,7 +1693,11 @@ impl Agent {
                 &input,
                 InFlight::Retry,
                 || async {
-                    let turn = self.call_llm(&run.id, provider, req, cancel, false).await?;
+                    let turn = self
+                        .call_forked(&run.id, provider, forked, req, cancel, |t| {
+                            !t.message.text().trim().is_empty()
+                        })
+                        .await?;
                     let summary = turn.message.text();
                     let usage = turn.usage;
                     Ok(StepOutput::new(summary.clone())
@@ -1656,6 +1727,7 @@ impl Agent {
         model: &ModelRef,
         provider: &Arc<dyn Provider>,
         transcript: &str,
+        fork: Option<&Fork>,
         cover_through: i64,
         cancel: &CancellationToken,
         usage: &mut Usage,
@@ -1696,6 +1768,17 @@ impl Agent {
             forbid_tool_calls: false,
             cache: Default::default(),
         };
+        // `memory_save` must be among the parent's tools for the fork to
+        // offer it; the other tools stay (for the cache) and are ignored.
+        let forked = fork
+            .filter(|f| f.tools.iter().any(|t| t.name == memory::FLUSH_TOOL))
+            .map(|f| {
+                f.request(
+                    model,
+                    memory::FLUSH_MAX_TOKENS,
+                    memory::flush_fork_instruction(f.span),
+                )
+            });
         let out = self
             .journal
             .step_with(
@@ -1707,7 +1790,10 @@ impl Agent {
                 || async {
                     let mut out = memory::FlushOutput::default();
                     let mut answered = None;
-                    match self.call_llm(&run.id, provider, req, cancel, false).await {
+                    match self
+                        .call_forked(&run.id, provider, forked, req, cancel, |_| true)
+                        .await
+                    {
                         Err(StepError::Cancelled) => return Err(StepError::Cancelled),
                         Err(e) => out.error = Some(e.to_string()),
                         Ok(turn) => {
@@ -1760,6 +1846,73 @@ impl Agent {
             }
         }
         Ok(true)
+    }
+}
+
+/// What the loop's own requests carry, for a summary that forks them.
+struct ForkParent<'a> {
+    system: &'a str,
+    volatile: &'a str,
+    tools: &'a [crate::types::ToolSpec],
+}
+
+/// A request forked from the loop's: the same tools, system prompt (and
+/// volatile context) and history, to which an instruction is appended last.
+/// Anthropic reads the cached prefix of the parent's last request and
+/// charges full price only for the instruction and the summary.
+struct Fork {
+    /// Messages of `messages` the instruction covers.
+    span: usize,
+    system: String,
+    volatile: String,
+    tools: Vec<crate::types::ToolSpec>,
+    messages: Vec<Message>,
+}
+
+impl ForkParent<'_> {
+    /// The fork of the loop's request for summarizing `old`, the first
+    /// messages of `all`, or `None` when the old shape must be used: the
+    /// provider has no cache to read (or can't be trusted to), the prefix is
+    /// under its minimum, or `old` isn't a clean head of `all` (a message of
+    /// the span merged with one that stays, which the instruction couldn't
+    /// address).
+    fn span_in(
+        &self,
+        provider: &dyn Provider,
+        model: &str,
+        all: Vec<Message>,
+        old: &[Message],
+    ) -> Option<Fork> {
+        let min = provider.fork_min_tokens(model)?;
+        let clean = !old.is_empty() && all.len() > old.len() && all[..old.len()] == *old;
+        (clean && compaction::estimate_tokens(self.system, &all, self.tools) >= min).then(|| Fork {
+            span: old.len(),
+            system: self.system.to_owned(),
+            volatile: self.volatile.to_owned(),
+            tools: self.tools.to_vec(),
+            messages: all,
+        })
+    }
+}
+
+impl Fork {
+    fn request(&self, model: &ModelRef, max_tokens: u32, tail: String) -> ChatRequest {
+        ChatRequest {
+            model: model.model.clone(),
+            system: self.system.clone(),
+            messages: self.messages.clone(),
+            tools: self.tools.clone(),
+            max_tokens,
+            // `tool_choice` is left alone: changing it would invalidate the
+            // cached history. The instruction forbids tools and the caller
+            // ignores any call.
+            forbid_tool_calls: false,
+            cache: crate::types::CacheHint {
+                history: true,
+                volatile: self.volatile.clone(),
+                tail,
+            },
+        }
     }
 }
 

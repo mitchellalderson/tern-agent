@@ -124,6 +124,11 @@ pub struct Script {
     /// HTTP status, for fallback chains (T6a): `{ "down": 529 }`.
     #[serde(default)]
     pub fail_models: std::collections::BTreeMap<String, u16>,
+    /// Summarize and flush by forking the agent's own request (as a provider
+    /// with a prompt cache lets it) instead of sending a transcript, and
+    /// report the shared prefix as cache reads.
+    #[serde(default)]
+    pub fork_compaction: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -193,6 +198,10 @@ impl Provider for MockProvider {
         "mock"
     }
 
+    fn fork_min_tokens(&self, _model: &str) -> Option<u64> {
+        self.script.fork_compaction.then_some(0)
+    }
+
     async fn stream(
         &self,
         req: ChatRequest,
@@ -204,6 +213,30 @@ impl Provider for MockProvider {
                 body: format!("mock: {} fails with {status}", req.model),
                 retry_after: Some(Duration::ZERO),
             });
+        }
+        if let Some(span) = tern_core::compaction::fork_span(&req.cache.tail) {
+            // The first `span` messages, as the plain path would have sent
+            // them; everything but the instruction is the parent's prefix.
+            let upto = span.min(req.messages.len());
+            let text = tern_core::compaction::transcript(&req.messages[..upto]);
+            let n = text.matches("### assistant").count() + summarized_turns(&text);
+            let prefix =
+                tern_core::compaction::estimate_tokens(&req.system, &req.messages, &req.tools);
+            let events = vec![
+                Ok(StreamEvent::TextDelta(format!(
+                    "mock summary mock-turns={n}"
+                ))),
+                Ok(StreamEvent::MessageStop {
+                    usage: Usage {
+                        input_tokens: req.cache.tail.len() as u64 / 4,
+                        cache_read_tokens: prefix,
+                        output_tokens: 8,
+                        ..Usage::default()
+                    },
+                    stop_reason: StopReason::EndTurn,
+                }),
+            ];
+            return Ok(Box::pin(futures::stream::iter(events)));
         }
         if req.system == tern_core::compaction::SYSTEM_PROMPT {
             let text = req.messages.iter().map(|m| m.text()).collect::<String>();
@@ -220,7 +253,9 @@ impl Provider for MockProvider {
         }
         log_request(&req);
         let n = turns_so_far(&req);
-        let turn = if req.system == tern_core::memory::FLUSH_SYSTEM_PROMPT {
+        let flush = req.system == tern_core::memory::FLUSH_SYSTEM_PROMPT
+            || tern_core::memory::flush_fork_span(&req.cache.tail).is_some();
+        let turn = if flush {
             Turn {
                 text: if self.script.memory_flush.is_empty() {
                     "NOTHING".into()

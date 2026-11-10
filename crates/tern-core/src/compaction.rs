@@ -150,6 +150,29 @@ pub fn summary_request(transcript: &str) -> Message {
     ))
 }
 
+/// Start of the instruction a forked summary request ends with. Test
+/// providers recognize these requests by it ([`fork_span`]).
+pub const FORK_OPEN: &str = "Summarization request. Summarize only the first ";
+
+/// The instruction that ends a forked summary request: the parent's tools,
+/// system prompt and history stay as they were (so their cache is read) and
+/// this goes last. `span` is how many of the history's messages to cover; the
+/// rest stay in context as they are. The model is not stopped from calling
+/// tools (that would change the cached prefix), so it is told not to, and
+/// the caller ignores any call it makes.
+pub fn fork_instruction(span: usize) -> String {
+    format!(
+        "{FORK_OPEN}{span} messages of the conversation above, in order, ending with message {span}. They will be replaced in the agent's context by your summary; the messages after them stay as they are, so leave those out. This is not a task for the agent: do not continue the work and do not call any tool (a tool call is ignored and wastes the request). Reply with the summary only. {SYSTEM_PROMPT}"
+    )
+}
+
+/// How many messages a forked summary request covers, read from its
+/// instruction; `None` if `tail` isn't one.
+pub fn fork_span(tail: &str) -> Option<usize> {
+    let rest = tail.strip_prefix(FORK_OPEN)?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
 pub fn summary_message(summary: &str) -> Message {
     Message::user_text(format!("{SUMMARY_PREFIX}\n\n{}", summary.trim()))
 }
