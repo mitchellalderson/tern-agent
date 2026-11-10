@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tern teams: UI mock</title>
+<style>
+  :root {
+    --cream:#f7eedc; --paper:#fcf7eb; --sand:#efe3cb; --hairline:#e0d2b6;
+    --ink:#2b2118; --muted:#6f604f; --orange:#f07a2b; --on-stripe:#2b2118; --red:#d93a2b; --ok:#4f7a3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --cream:#1f1812; --paper:#2a211a; --sand:#261e17; --hairline:#3d3226; --ink:#f3e8d2; --muted:#b3a58f; --orange:#f58a3d; --red:#e5483a; --ok:#8db56f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px 16px 64px; background:var(--cream); color:var(--ink);
+         font:14px/1.45 "DM Sans", system-ui, sans-serif; }
+  h1 { font:700 18px "Archivo", system-ui, sans-serif; margin:0 0 4px; }
+  .note { color:var(--muted); margin:0 0 24px; max-width:640px; }
+  .grid { display:grid; gap:24px; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); max-width:1100px; }
+  .frame { background:var(--paper); border:1px solid var(--hairline); border-radius:10px; padding:16px; }
+  .cap { color:var(--muted); font-size:12px; font-weight:600; margin:0 0 10px; }
+  .tabs { display:flex; gap:18px; border-bottom:1px solid var(--hairline); margin-bottom:12px; }
+  .tabs span { padding:6px 0; color:var(--muted); }
+  .tabs .on { color:var(--ink); border-bottom:2px solid var(--orange); margin-bottom:-1px; font-weight:600; }
+  .row { display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--hairline); }
+  .row:last-child { border-bottom:0; }
+  .av { width:26px; height:26px; border-radius:50%; background:var(--sand); display:grid; place-items:center; font-size:11px; font-weight:700; }
+  .grow { flex:1; min-width:0; } .sub { color:var(--muted); font-size:12px; }
+  .pill { font-size:12px; border:1px solid var(--hairline); border-radius:999px; padding:1px 9px; color:var(--muted); }
+  .pill.admin { color:var(--ink); }
+  svg { width:15px; height:15px; stroke:currentColor; fill:none; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; vertical-align:-3px; }
+  .btn { border:1px solid var(--hairline); background:transparent; color:var(--ink); padding:6px 12px; border-radius:6px; font:inherit; }
+  .btn.primary { background:var(--orange); border-color:var(--orange); color:var(--on-stripe); font-weight:600; }
+  .btn[disabled] { opacity:.45; }
+  .seg { display:inline-flex; border:1px solid var(--hairline); border-radius:6px; overflow:hidden; }
+  .seg span { padding:5px 12px; color:var(--muted); }
+  .seg .on { background:var(--sand); color:var(--ink); font-weight:600; }
+  .badge { color:var(--muted); font-size:12px; }
+  .empty { text-align:center; padding:28px 8px; color:var(--muted); }
+  .empty b { display:block; color:var(--ink); margin-bottom:4px; }
+  input { font:inherit; padding:6px 10px; border:1px solid var(--hairline); background:var(--cream); color:var(--ink); border-radius:6px; width:100%; }
+  .card { border:1px solid var(--hairline); border-radius:8px; padding:10px 12px; background:var(--cream); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14.5c2.4 0 4 1.8 4 4.5"/></symbol>
+  <symbol id="dots" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+  <symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+</svg>
+
+<h1>Teams: UI mock</h1>
+<p class="note">Static sketch for docs/teams-design.md section 6. Underline tabs, monotone line icons, no emoji, orange for the one primary action. Not a spec for pixel values.</p>
+
+<div class="grid">
+
+  <section class="frame">
+    <p class="cap">Team screen, admin: Members</p>
+    <div class="tabs"><span class="on">Members</span><span>Invites</span><span>Settings</span><span>Audit</span></div>
+    <div class="row"><div class="av">MA</div><div class="grow">Mitchell<div class="sub">@mitchell · active now</div></div><span class="pill admin">Admin</span><svg><use href="#dots"/></svg></div>
+    <div class="row"><div class="av">DK</div><div class="grow">Dana<div class="sub">@dana · 2 hours ago</div></div><span class="pill">Member</span><svg><use href="#dots"/></svg></div>
+    <div class="row"><div class="av">SO</div><div class="grow">Sam<div class="sub">@sam · yesterday</div></div><span class="pill">Member</span><svg><use href="#dots"/></svg></div>
+    <p class="sub" style="margin:12px 0 0">The last admin cannot be demoted or removed. Add another admin first.</p>
+  </section>
+
+  <section class="frame">
+    <p class="cap">Team screen, admin: Invites</p>
+    <div class="tabs"><span>Members</span><span class="on">Invites</span><span>Settings</span><span>Audit</span></div>
+    <div style="display:flex; gap:8px; margin-bottom:10px"><input placeholder="Email" value="riley@example.com"><span class="seg"><span class="on">Member</span><span>Admin</span></span></div>
+    <button class="btn primary">Create invite</button>
+    <div class="card" style="margin-top:12px; display:flex; gap:8px; align-items:center">
+      <div class="grow sub" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap">tern://invite?server=acme&amp;token=…</div>
+      <button class="btn"><svg><use href="#copy"/></svg> Copy</button>
+    </div>
+    <p class="sub">Shown once. Expires in 7 days. Only riley@example.com can accept it.</p>
+    <div class="row"><div class="grow">sam@example.com<div class="sub">Member · expires in 3 days</div></div><button class="btn">Revoke</button></div>
+  </section>
+
+  <section class="frame">
+    <p class="cap">Agent sheet: sharing</p>
+    <div class="row"><div class="grow"><b>Researcher</b><div class="sub">by you</div></div>
+      <span class="seg"><span><svg><use href="#lock"/></svg> Private</span><span class="on"><svg><use href="#people"/></svg> Team</span></span></div>
+    <p class="sub" style="margin:8px 0 12px">Everyone on the team can use it.</p>
+    <div class="card"><b>Share Researcher with the team?</b>
+      <p class="sub" style="margin:4px 0 8px">They will see its persona, tools and team memory. They will use their own accounts, not yours.</p>
+      <p class="sub" style="margin:0 0 8px; color:var(--red)">Blocked: delegate "Finance" is private. Share it too, or remove it.</p>
+      <button class="btn primary" disabled>Share</button> <button class="btn">Cancel</button></div>
+  </section>
+
+  <section class="frame">
+    <p class="cap">Sidebar rows: badges</p>
+    <div class="row"><div class="grow">Researcher</div><span class="badge"><svg><use href="#people"/></svg> Team</span></div>
+    <div class="row"><div class="grow">Finance</div><span class="badge"><svg><use href="#lock"/></svg> Private</span></div>
+    <div class="row"><div class="grow">Designer</div><span class="badge"><svg><use href="#people"/></svg> Team · by Dana</span></div>
+    <div class="row"><div class="grow">#design</div><span class="badge"><svg><use href="#people"/></svg> Team</span></div>
+    <div class="row"><div class="grow">#my-notes</div><span class="badge"><svg><use href="#lock"/></svg> Private</span></div>
+  </section>
+
+  <section class="frame">
+    <p class="cap">Approval card in a team channel</p>
+    <div class="card"><b>Send an email from your Gmail?</b>
+      <p class="sub" style="margin:4px 0 8px">Dana asked · Researcher · uses your Gmail<br>The result will be visible in #design.</p>
+      <button class="btn primary">Approve</button> <button class="btn">Deny</button></div>
+  </section>
+
+  <section class="frame">
+    <p class="cap">Empty and denied states</p>
+    <div class="empty"><b>You're not on this team yet</b>Enter the invite code you were sent.<div style="margin:10px 0"><input placeholder="Invite code"></div><button class="btn primary">Join</button></div>
+    <div class="empty" style="border-top:1px solid var(--hairline)"><b>You don't have access to this</b>Ask Dana to share it.</div>
+    <div class="empty" style="border-top:1px solid var(--hairline)"><b>Only admins can change this</b>You can see who is on the team.</div>
+  </section>
+
+  <section class="frame">
+    <p class="cap">Remove a member</p>
+    <div class="card"><b>Remove Dana?</b>
+      <p class="sub" style="margin:4px 0 8px">Dana owns 2 shared agents, 1 team channel and 3 private items.</p>
+      <div class="row"><span class="grow">Transfer shared items to me</span><span class="pill admin">Default</span></div>
+      <div class="row"><span class="grow">Transfer to someone else</span></div>
+      <div class="row"><span class="grow">Archive, delete after 30 days</span></div>
+      <p class="sub" style="margin:8px 0">Dana's accounts are disconnected now. Private items are archived and unreadable.</p>
+      <button class="btn" style="border-color:var(--red); color:var(--red)">Remove</button> <button class="btn">Cancel</button></div>
+  </section>
+
+</div>
+</body>
+</html>
