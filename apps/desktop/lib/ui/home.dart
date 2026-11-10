@@ -158,7 +158,10 @@ class _HomeState extends State<Home> {
                     onSettings: _settings,
                     onConnectRemote: widget.connections == null
                         ? null
-                        : () => showServersDialog(context, widget.connections!),
+                        : () => showServersDialog(
+                            context,
+                            widget.connections!,
+                          ),
                   );
                 }
                 final content = LayoutBuilder(

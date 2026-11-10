@@ -184,7 +184,9 @@ class _OutboxCardState extends State<OutboxCard> {
           ),
           const SizedBox(height: 4),
           Text(
-            o.stale ? o.staleNote : 'Nobody was here to approve this, so tern carried on without it.',
+            o.stale
+                ? o.staleNote
+                : 'Nobody was here to approve this, so tern carried on without it.',
             style: TextStyle(fontSize: 12.5, color: c.muted),
           ),
           if (o.taintNote case final note?) ...[

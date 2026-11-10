@@ -149,9 +149,7 @@ class _AgentSheetState extends State<AgentSheet> {
   /// Creating from a name alone: the blank starter, persona untouched. The
   /// agent writes its own role.
   bool get _namesOnly =>
-      _creating &&
-      (_template == null || _template == 'blank') &&
-      !_personaEdited;
+      _creating && (_template == null || _template == 'blank') && !_personaEdited;
 
   List<String> get _builtins => [
     for (final t in widget.store.info?.tools ?? const [])

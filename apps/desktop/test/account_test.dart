@@ -31,7 +31,11 @@ String _b64(Object o) =>
 
 /// An unsigned JWT: the app only reads its claims.
 String _jwt(DateTime exp, {String sub = 'user_1', String? email}) =>
-    '${_b64({'alg': 'none'})}.${_b64({'sub': sub, 'exp': exp.millisecondsSinceEpoch ~/ 1000, 'email': ?email})}.sig';
+    '${_b64({'alg': 'none'})}.${_b64({
+      'sub': sub,
+      'exp': exp.millisecondsSinceEpoch ~/ 1000,
+      'email': ?email,
+    })}.sig';
 
 // `pk_test_` + base64("clerk.example.accounts.dev$")
 const _pk = 'pk_test_Y2xlcmsuZXhhbXBsZS5hY2NvdW50cy5kZXYk';
@@ -62,8 +66,9 @@ class _Clerk {
   /// "The browser": follows the authorize URL's redirect with a code.
   Future<void> open(Uri authorize) async {
     final q = authorize.queryParameters;
-    final back = Uri.parse(q['redirect_uri']!)
-        .replace(queryParameters: {'code': 'thecode', 'state': q['state']!});
+    final back = Uri.parse(
+      q['redirect_uri']!,
+    ).replace(queryParameters: {'code': 'thecode', 'state': q['state']!});
     unawaited(_get(back));
   }
 }
@@ -182,10 +187,9 @@ void main() {
       expect(form['grant_type'], 'refresh_token');
       expect(form['refresh_token'], 'refresh1');
       expect(again.signedIn, isTrue);
-      expect(
-        jwtClaims(again.currentToken!)['exp'],
-        greaterThan(soon.millisecondsSinceEpoch ~/ 1000 + 3000),
-      );
+      expect(jwtClaims(again.currentToken!)['exp'], greaterThan(
+        soon.millisecondsSinceEpoch ~/ 1000 + 3000,
+      ));
     });
 
     test('a token with time left is not renewed', () async {
@@ -203,17 +207,14 @@ void main() {
       expect(store.tokens, isNot(contains(accountSessionKey)));
     });
 
-    test(
-      'sign out forgets the session and revokes the refresh token',
-      () async {
-        await service.signIn();
-        await service.signOut();
-        expect(service.signedIn, isFalse);
-        expect(store.tokens, isEmpty);
-        expect(clerk.posts.last.$1.path, '/oauth/token/revoke');
-        expect(clerk.posts.last.$2['token'], 'refresh1');
-      },
-    );
+    test('sign out forgets the session and revokes the refresh token', () async {
+      await service.signIn();
+      await service.signOut();
+      expect(service.signedIn, isFalse);
+      expect(store.tokens, isEmpty);
+      expect(clerk.posts.last.$1.path, '/oauth/token/revoke');
+      expect(clerk.posts.last.$2['token'], 'refresh1');
+    });
 
     test('AccountTokens answers the account key with the live token', () async {
       await service.signIn();
@@ -282,7 +283,9 @@ void main() {
       expect(find.text(CloudOffer.title), findsOneWidget);
 
       await tester.pumpWidget(
-        app((_) => WhereToRunDialog(control: control, connections: build())),
+        app(
+          (_) => WhereToRunDialog(control: control, connections: build()),
+        ),
       );
       await tester.pumpAndSettle();
       // The third choice, after this computer and a server.

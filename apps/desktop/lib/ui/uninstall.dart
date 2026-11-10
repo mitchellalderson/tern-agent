@@ -59,8 +59,7 @@ class _UninstallDialogState extends State<UninstallDialog> {
   String? _error;
 
   Future<void> _quit() async {
-    final exit =
-        widget.exitApp ??
+    final exit = widget.exitApp ??
         () async {
           await ServicesBinding.instance.exitApplication(AppExitType.required);
         };
@@ -91,7 +90,7 @@ class _UninstallDialogState extends State<UninstallDialog> {
         title: const Text('tern is removed'),
         content: Text(
           'tern is stopped and removed from login items. '
-                  '${widget.macOS ? 'Drag tern to the Trash to finish.' : ''}'
+          '${widget.macOS ? 'Drag tern to the Trash to finish.' : ''}'
               .trim(),
         ),
         actions: [
