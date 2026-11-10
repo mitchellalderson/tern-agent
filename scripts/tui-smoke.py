@@ -28,6 +28,13 @@ def tern_env(home, script):
     script_path = os.path.join(home, "script.json")
     with open(script_path, "w") as f:
         json.dump(script, f)
+    # The smoke test exercises approval prompts, so pin supervised rather than
+    # depend on the new-install default (autonomous).
+    os.makedirs(os.path.join(home, ".tern"), exist_ok=True)
+    cfg = os.path.join(home, ".tern", "config.toml")
+    if not os.path.exists(cfg):
+        with open(cfg, "w") as f:
+            f.write('autonomy = "supervised"\n')
     return {
         "PATH": os.environ["PATH"],
         "HOME": home,
