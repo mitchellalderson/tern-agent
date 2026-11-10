@@ -9,10 +9,18 @@ Entries go in `changelog.d/` (see its README); the release gathers them here.
 
 ## [Unreleased]
 
-## [0.1.0-alpha.3] - 2026-11-09
+## [0.1.0-alpha.4] - 2026-11-10
+
+Agents that write their own role, optional hosted accounts, and two fixes. alpha.3 was tagged but never published; its fix is here.
+
+### Added
+
+- **Create an agent with just a name.** It works out its own role, refines it over its first 3 messages, then keeps it. See and edit it under **Role** in the agent sheet, or **Re-infer** it. Agents with a persona are unchanged.
+- **Hosted tern accounts (Clerk).** Off unless configured: an `[account]` section lets a server core accept its owner's sign-in, `tern account status` checks it, and the app gets a **Sign in** choice and a "Signed in as" row. Local use is unchanged. See `docs/recipes/clerk-setup.md`.
 
 ### Fixed
 
+- **A delegation post no longer sticks at "running"** when several tasks finish at once.
 - **Show more** no longer jumps the chat view. The text stays where you clicked.
 
 ## [0.1.0-alpha.2] - 2026-11-09
