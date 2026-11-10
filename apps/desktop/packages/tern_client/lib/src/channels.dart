@@ -121,6 +121,40 @@ class ChannelAgents {
   final bool letAgentsDecide;
 }
 
+/// What adding several agents to a channel at once did.
+class BulkAdd {
+  const BulkAdd({
+    required this.agents,
+    this.added = const [],
+    this.already = const [],
+    this.failed = const [],
+  });
+
+  factory BulkAdd.fromJson(Json j) => BulkAdd(
+    agents: ChannelAgents.fromJson(j),
+    added: [for (final a in j['added'] as List? ?? const []) a as String],
+    already: [for (final a in j['already'] as List? ?? const []) a as String],
+    failed: [
+      for (final f in j['failed'] as List? ?? const [])
+        (agent: (f as Json)['agent'] as String, error: f['error'] as String),
+    ],
+  );
+
+  /// The channel's agents afterwards.
+  final ChannelAgents agents;
+
+  /// Agent ids that joined.
+  final List<String> added;
+
+  /// Agent ids that already were members.
+  final List<String> already;
+
+  /// Each agent that couldn't join, and why.
+  final List<({String agent, String error})> failed;
+
+  bool get ok => failed.isEmpty;
+}
+
 class ChannelMember {
   const ChannelMember({
     required this.agentId,

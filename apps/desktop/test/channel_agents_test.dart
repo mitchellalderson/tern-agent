@@ -167,9 +167,9 @@ class _FakeClient extends TernClient {
         ];
 
   @override
-  Future<ChannelAgents> addChannelAgent(String channel, String agent) async {
-    added.add(agent);
-    return _agents;
+  Future<BulkAdd> addChannelAgents(String channel, List<String> agents) async {
+    added.addAll(agents);
+    return BulkAdd(agents: _agents, added: agents);
   }
 
   @override
@@ -316,10 +316,12 @@ void main() {
     await tester.tap(find.text('+ Agent'));
     await tester.pump(const Duration(milliseconds: 500));
     await _settle(tester);
-    // Only agents not in the channel are offered.
+    // Members show checked and disabled; the others can be chosen.
     expect(find.text('@ops'), findsOneWidget);
-    expect(find.text('@research'), findsNothing);
+    expect(find.text('In channel'), findsNWidgets(2));
     await tester.tap(find.text('Ops').last);
+    await tester.pump();
+    await tester.tap(find.text('Add 1 agent'));
     await _settle(tester);
     expect(client.added, ['tern:ops']);
     expect(store.openChannel!.memberIds, ['tern:research', 'tern', 'tern:ops']);
