@@ -36,7 +36,7 @@ Future<void> maybeAskWhereToRun(
   if (chosen != true) await connections.useLocal();
 }
 
-enum _Where { here, server, cloud }
+enum _Where { here, server, account, cloud }
 
 class WhereToRunDialog extends StatefulWidget {
   const WhereToRunDialog({
@@ -56,12 +56,14 @@ class _WhereToRunDialogState extends State<WhereToRunDialog> {
   var _where = _Where.here;
   var _atLogin = true;
   final _server = ServerFields();
+  final _accountUrl = TextEditingController();
   var _busy = false;
   String? _error;
 
   @override
   void dispose() {
     _server.dispose();
+    _accountUrl.dispose();
     super.dispose();
   }
 
@@ -79,6 +81,12 @@ class _WhereToRunDialogState extends State<WhereToRunDialog> {
           }
         case _Where.server:
           await widget.connections.connect(_server.link());
+        case _Where.account:
+          final account = widget.connections.account;
+          if (account == null) return;
+          final url = parseServerUrl(_accountUrl.text);
+          if (!account.signedIn) await account.signIn();
+          await widget.connections.connectAccount(url);
         case _Where.cloud:
           // Not offered yet (CloudOffer.available).
           return;
@@ -160,14 +168,44 @@ class _WhereToRunDialogState extends State<WhereToRunDialog> {
                     padding: const EdgeInsets.only(left: 40, bottom: 4),
                     child: ServerForm(fields: _server, enabled: !_busy),
                   ),
-                // The hosted option goes here when it exists.
-                const RadioListTile<_Where>(
-                  contentPadding: EdgeInsets.zero,
-                  value: _Where.cloud,
-                  enabled: CloudOffer.available,
-                  title: Text(CloudOffer.title),
-                  subtitle: Text(CloudOffer.subtitle),
-                ),
+                if (widget.connections.account case final account?) ...[
+                  const RadioListTile<_Where>(
+                    contentPadding: EdgeInsets.zero,
+                    value: _Where.account,
+                    title: Text('Sign in'),
+                    subtitle: Text('Use your tern account.'),
+                  ),
+                  if (_where == _Where.account)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 40, bottom: 4),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (account.email case final email?)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Text('Signed in as $email', style: small),
+                            ),
+                          TextField(
+                            controller: _accountUrl,
+                            enabled: !_busy,
+                            autofocus: true,
+                            decoration: const InputDecoration(
+                              labelText: 'Server address',
+                              hintText: 'https://tern.example.com',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ] else
+                  const RadioListTile<_Where>(
+                    contentPadding: EdgeInsets.zero,
+                    value: _Where.cloud,
+                    enabled: CloudOffer.available,
+                    title: Text(CloudOffer.title),
+                    subtitle: Text(CloudOffer.subtitle),
+                  ),
                 if (_error case final e?) ...[
                   const SizedBox(height: 8),
                   Text(e, style: TextStyle(fontSize: 12, color: c.error)),
@@ -182,7 +220,11 @@ class _WhereToRunDialogState extends State<WhereToRunDialog> {
           onPressed: _busy ? null : _continue,
           child: Text(
             _busy
-                ? (_where == _Where.server ? 'Connecting…' : 'Setting up…')
+                ? switch (_where) {
+                    _Where.server => 'Connecting…',
+                    _Where.account => 'Signing in…',
+                    _ => 'Setting up…',
+                  }
                 : 'Continue',
           ),
         ),

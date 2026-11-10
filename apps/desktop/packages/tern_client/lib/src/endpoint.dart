@@ -18,6 +18,7 @@ sealed class Endpoint {
     Uri base, {
     required String token,
     String? pin,
+    String Function()? liveToken,
   }) = RemoteEndpoint;
 
   /// The local daemon's socket: `$TERN_HOME/tern.sock`, else `~/.tern/tern.sock`.
@@ -79,15 +80,27 @@ final class UnixEndpoint extends Endpoint {
 /// system's CAs. Without one, the certificate is verified normally (a core
 /// using `tls = "files"`).
 final class RemoteEndpoint extends Endpoint {
-  const RemoteEndpoint(this.base, {required this.token, this.pin});
+  const RemoteEndpoint(
+    this.base, {
+    required this.token,
+    this.pin,
+    this.liveToken,
+  });
 
   @override
   final Uri base;
   final String token;
   final String? pin;
 
+  /// For an account token that is renewed while the app runs: asked for
+  /// on every request, so a refreshed token is used without reconnecting.
+  /// [token] is what it was at the start.
+  final String Function()? liveToken;
+
   @override
-  Map<String, String> get headers => {'authorization': 'Bearer $token'};
+  Map<String, String> get headers => {
+    'authorization': 'Bearer ${liveToken?.call() ?? token}',
+  };
 
   @override
   HttpClient httpClient() {

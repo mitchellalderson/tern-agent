@@ -125,7 +125,14 @@ impl std::str::FromStr for Scope {
 /// means the local owner.
 #[derive(Debug, Clone)]
 pub enum Auth {
-    Device { id: String, scope: Scope },
+    Device {
+        id: String,
+        scope: Scope,
+    },
+    /// A signed-in tern account that owns this core (spec §10.4a).
+    Account {
+        user_id: String,
+    },
 }
 
 /// Paths only the owner may touch, whatever the method.
@@ -187,6 +194,7 @@ pub fn required_scope(method: &Method, path: &str) -> Scope {
 pub struct AuthState {
     pub manager: Shared,
     pub trust_proxy: bool,
+    account: Option<Arc<super::account::AccountVerifier>>,
     pairing: Arc<RateLimit>,
 }
 
@@ -195,11 +203,18 @@ impl AuthState {
         Self {
             manager,
             trust_proxy,
+            account: None,
             pairing: Arc::new(RateLimit::new(
                 PAIR_ATTEMPTS_PER_MINUTE,
                 Duration::from_secs(60),
             )),
         }
+    }
+
+    /// Also accept the owner's account JWT (`[account]`, spec §10.4a).
+    pub fn with_account(mut self, v: Option<super::account::AccountVerifier>) -> Self {
+        self.account = v.map(Arc::new);
+        self
     }
 }
 
@@ -276,6 +291,48 @@ pub async fn require_auth(
             StatusCode::UNAUTHORIZED,
             "webhook secrets are not accepted on the API; use a device token",
         );
+    }
+    if let (Some(verifier), Some(t)) = (&st.account, token)
+        && !t.starts_with(TOKEN_PREFIX)
+        && super::account::AccountVerifier::looks_like_jwt(t)
+    {
+        use super::account::Verdict;
+        return match verifier.verify(t).await {
+            Verdict::Owner(claims) => {
+                if req.method() != Method::GET {
+                    tracing::info!(target: "audit", account = %claims.sub, email = ?claims.email, %ip, method = %req.method(), %path, "owner action from an account");
+                }
+                req.extensions_mut().insert(Auth::Account {
+                    user_id: claims.sub.clone(),
+                });
+                let resp = next.run(req).await;
+                // Event streams end when the token does.
+                let left = claims
+                    .exp
+                    .saturating_sub(chrono::Utc::now().timestamp().max(0).unsigned_abs());
+                let streaming = resp
+                    .headers()
+                    .get(header::CONTENT_TYPE)
+                    .is_some_and(|v| v.as_bytes().starts_with(b"text/event-stream"));
+                if !streaming {
+                    return resp;
+                }
+                resp.map(|body| {
+                    Body::from_stream(
+                        body.into_data_stream()
+                            .take_until(tokio::time::sleep(Duration::from_secs(left))),
+                    )
+                })
+            }
+            Verdict::Stranger(claims) => {
+                tracing::warn!(target: "audit", account = %claims.sub, %ip, "account is not this core's owner");
+                deny(StatusCode::FORBIDDEN, "this account does not own this core")
+            }
+            Verdict::Rejected(why) => {
+                tracing::warn!(target: "audit", %ip, %why, "account token refused");
+                deny(StatusCode::UNAUTHORIZED, &why)
+            }
+        };
     }
     let Some(token) = token.filter(|t| t.starts_with(TOKEN_PREFIX)) else {
         return deny(
@@ -612,6 +669,7 @@ pub fn health(auth: Option<&Auth>) -> Value {
     let (deployment, kind, scope) = match auth {
         None => ("local", "owner", Scope::Owner),
         Some(Auth::Device { scope, .. }) => ("server", "device", *scope),
+        Some(Auth::Account { .. }) => ("server", "account", Scope::Owner),
     };
     json!({
         "pid": std::process::id(),
@@ -774,6 +832,7 @@ async fn revoke_device(
     STREAMS.revoke(&id);
     let by = match auth {
         Some(Extension(Auth::Device { id, .. })) => id,
+        Some(Extension(Auth::Account { user_id })) => format!("account:{user_id}"),
         None => "local".into(),
     };
     tracing::info!(target: "audit", device = %id, by = %by, revoked, "device revoked");

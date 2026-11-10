@@ -81,7 +81,9 @@ pub async fn serve(
     if tls.is_none() {
         tracing::warn!("api.tls = \"off\": expecting a TLS-terminating proxy in front");
     }
-    let state = AuthState::new(manager.clone(), api.trust_proxy);
+    let state = AuthState::new(manager.clone(), api.trust_proxy).with_account(
+        super::account::AccountVerifier::from_config(&manager.rt.config.account),
+    );
     let app = super::api::router(manager)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(axum::middleware::from_fn_with_state(

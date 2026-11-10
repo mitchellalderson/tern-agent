@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:tern_client/tern_client.dart';
 
+import 'account.dart';
 import 'daemon.dart';
 
 /// Where the app's tern runs: one saved entry per place (deployment spec
@@ -117,6 +118,9 @@ final class RemoteProfile extends Profile {
   /// The Keychain account its token is stored under. Each saved server has
   /// its own, so a token is only ever read to talk to its own server.
   final String account;
+
+  /// Takes the signed-in tern account's token, not a device token.
+  bool get viaAccount => account == accountTokenKey;
 
   /// The same entry with other details (its id and token account stay).
   RemoteProfile copyWith({
@@ -345,6 +349,18 @@ class FileTokens implements TokenStore {
   Future<void> delete(String account) => _save(_all()..remove(account));
 }
 
+/// A server's endpoint. An account token is renewed while the app runs, so
+/// it is read live on every request rather than fixed at connect time.
+Endpoint remoteEndpoint(RemoteProfile p, String token, TokenStore tokens) {
+  final account = tokens is AccountTokens && p.viaAccount ? tokens.account : null;
+  return Endpoint.remote(
+    p.url,
+    token: token,
+    pin: p.pin,
+    liveToken: account == null ? null : () => account.currentToken ?? token,
+  );
+}
+
 /// The endpoint for [profile], or null when it can't be used (never
 /// chosen, a server whose token is gone, or an address that isn't allowed
 /// such as plain http to another computer): the app then asks again.
@@ -359,7 +375,7 @@ Future<Endpoint?> endpointFor(Profile? profile, TokenStore tokens) async {
       if (remoteUrlProblem(p.url) != null) return null;
       final token = await tokens.read(p.account);
       if (token == null) return null;
-      return Endpoint.remote(p.url, token: token, pin: p.pin);
+      return remoteEndpoint(p, token, tokens);
   }
 }
 
@@ -447,7 +463,7 @@ Future<ServerStatus> checkServer(
           return ServerStatus.checking;
         }
       }
-      endpoint = Endpoint.remote(p.url, token: token, pin: p.pin);
+      endpoint = remoteEndpoint(p, token, tokens);
   }
   final client = (clientFor ?? TernClient.new)(endpoint);
   try {
@@ -512,6 +528,7 @@ class Connections {
     this.probeUrl = _probeUrl,
     this.check,
     this.clientFor,
+    this.account,
   });
 
   final AppPrefs prefs;
@@ -521,6 +538,9 @@ class Connections {
   final ProbeUrl probeUrl;
   final CheckServer? check;
   final TernClient Function(Endpoint)? clientFor;
+
+  /// Signing in to a tern account; null in a build without one.
+  final AccountService? account;
 
   /// Runs one change at a time, so two quick clicks can't leave the saved
   /// choice and the connection on different servers.
@@ -628,7 +648,7 @@ class Connections {
     }
     prefs.connection = p;
     await prefs.save();
-    apply(Endpoint.remote(p.url, token: token, pin: p.pin));
+    apply(remoteEndpoint(p, token, tokens));
   });
 
   /// Pair with a server and save it, then switch to it (unless
@@ -682,6 +702,48 @@ class Connections {
     if (activate || wasActive) apply(paired.endpoint);
     return profile;
   });
+
+  /// Save the server at [url] as one that takes the signed-in account (no
+  /// pairing), and switch to it unless [activate] is false. Needs a
+  /// session ([AccountService.signIn] first). Throws [FormatException]
+  /// with a sentence to show.
+  Future<RemoteProfile> connectAccount(
+    Uri url, {
+    String? name,
+    bool activate = true,
+  }) => _one(() async {
+    final problem = remoteUrlProblem(url);
+    if (problem != null) throw FormatException(problem);
+    final a = account;
+    if (a == null || !a.signedIn) {
+      throw const FormatException('Sign in first.');
+    }
+    final existing = prefs.servers.where((s) => s.sameAddress(url)).firstOrNull;
+    final wanted = name?.trim();
+    final profile =
+        existing?.copyWith(url: url, clearPin: true, tokenAccount: accountTokenKey) ??
+        RemoteProfile(
+          url: url,
+          name: _freeName(wanted == null || wanted.isEmpty ? url.host : wanted),
+          tokenAccount: accountTokenKey,
+        );
+    final token = await tokens.read(accountTokenKey);
+    if (token == null) throw const FormatException('Sign in first.');
+    _put(profile);
+    final wasActive = current?.id == profile.id;
+    if (activate || wasActive) prefs.connection = profile;
+    await prefs.save();
+    if (activate || wasActive) apply(remoteEndpoint(profile, token, tokens));
+    return profile;
+  });
+
+  /// Sign out of the account. A server that used it can't be reached any
+  /// more, so if one is in use the app goes back to this computer.
+  Future<void> signOutAccount() async {
+    final cur = current;
+    if (cur is RemoteProfile && cur.viaAccount) await useLocal();
+    await account?.signOut();
+  }
 
   /// Pair [id] again, at its address or a new one. The old token is
   /// forgotten only once the new pairing worked, and a token is never

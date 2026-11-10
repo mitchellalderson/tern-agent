@@ -55,6 +55,7 @@ pub(super) fn limited(auth: Option<&Extension<Auth>>) -> Result<(), ApiError> {
     static HITS: Mutex<Option<HashMap<String, VecDeque<Instant>>>> = Mutex::new(None);
     let who = match auth.map(|a| &a.0) {
         Some(Auth::Device { id, .. }) => id.clone(),
+        Some(Auth::Account { user_id }) => format!("account:{user_id}"),
         None => "local".into(),
     };
     let now = Instant::now();
