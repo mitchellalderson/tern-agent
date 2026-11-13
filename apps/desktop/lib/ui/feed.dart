@@ -42,6 +42,10 @@ class FeedScrollPosition extends ScrollPositionWithSingleContext {
   double bottomPad = 0;
 
   var _anchored = false;
+
+  /// The anchor may be applied only until the reader first moves; after that
+  /// it is released for good (until the next message arrives).
+  var _canAnchor = true;
   double? _lastH;
   double _lastPixels = 0;
   var _skip = false;
@@ -54,6 +58,7 @@ class FeedScrollPosition extends ScrollPositionWithSingleContext {
     _lastH = 0;
     // A reader parked on the top of a long message stays there.
     _anchored = false;
+    _canAnchor = true;
   }
 
   /// The next height change is the reader's own (a fold opening) and is
@@ -78,8 +83,9 @@ class FeedScrollPosition extends ScrollPositionWithSingleContext {
   bool _settle(double min, double max) {
     if (pixels != _lastPixels) {
       // The reader (or "latest") moved us: follow the bottom only if they
-      // are at it.
+      // are at it, and never anchor again.
       _anchored = false;
+      _canAnchor = false;
     }
     final h = newestHeight?.call();
     if (h == null) {
@@ -96,7 +102,7 @@ class FeedScrollPosition extends ScrollPositionWithSingleContext {
     final skip = _skip;
     _skip = false;
     final atBottom = pixels <= 40;
-    final wasFollowing = _anchored || (atBottom && !skip);
+    final wasFollowing = _anchored || (atBottom && !skip && _canAnchor);
     double? target;
     if (skip || (!wasFollowing && grew == 0)) {
       target = null;
@@ -109,6 +115,10 @@ class FeedScrollPosition extends ScrollPositionWithSingleContext {
       } else {
         _anchored = false;
       }
+    } else if (pixels <= 0.5 && !skip) {
+      // At the bottom after taking over (or "Jump to latest"): follow the
+      // bottom, never re-anchor.
+      target = 0;
     } else {
       target = pixels + grew;
     }

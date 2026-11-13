@@ -183,4 +183,99 @@ void main() {
     expect(tops, isNotEmpty);
     expect(tops.toSet().length, 1, reason: 'top held still: $tops');
   });
+
+  // Regression: after the user takes over, the anchor must never re-apply.
+  Future<_HarnessState> tall(WidgetTester tester) async {
+    final h = await _open(tester, 30);
+    h.add(120); // 2400px in a 500px view, anchored at its top
+    await _settle(tester);
+    return h;
+  }
+
+  testWidgets('e: reading down to the end of a tall message stays put', (
+    tester,
+  ) async {
+    await tall(tester);
+    final p = _pos(tester);
+    expect(p.pixels, greaterThan(1000));
+    // Scroll toward the end of the message (reversed: offset falls to 0).
+    p.jumpTo(30);
+    await _settle(tester);
+    expect(p.pixels, 30);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(p.pixels, 30, reason: 'not yanked back to the top');
+    p.jumpTo(0);
+    await _settle(tester);
+    expect(p.pixels, 0);
+    expect(find.text('r30 l119'), findsOneWidget);
+  });
+
+  testWidgets('e: trackpad-style small deltas down to the bottom', (
+    tester,
+  ) async {
+    await tall(tester);
+    final p = _pos(tester);
+    final list = find.byType(Scrollable);
+    // Drag in small steps until at the bottom, checking it never rebounds.
+    var last = p.pixels;
+    for (var i = 0; i < 400 && p.pixels > 0; i++) {
+      await tester.drag(list, const Offset(0, -60)); // finger up = read on
+      await tester.pump();
+      expect(p.pixels, lessThanOrEqualTo(last + 0.5), reason: 'step $i');
+      last = p.pixels;
+    }
+    await tester.pumpAndSettle();
+    expect(p.pixels, 0);
+  });
+
+  testWidgets('e: streaming growth does not move a reader at the end', (
+    tester,
+  ) async {
+    final h = await tall(tester);
+    final p = _pos(tester);
+    p.jumpTo(0);
+    await _settle(tester);
+    for (final n in [130, 150, 200]) {
+      h.grow(n);
+      await _settle(tester);
+      expect(p.pixels, 0, reason: 'still at the bottom at $n lines');
+    }
+  });
+
+  testWidgets('e: streaming growth does not move a reader mid-message', (
+    tester,
+  ) async {
+    final h = await tall(tester);
+    final p = _pos(tester);
+    p.jumpTo(600);
+    await _settle(tester);
+    final before = _top(tester, 'r30 l100');
+    h.grow(160);
+    await _settle(tester);
+    expect(_top(tester, 'r30 l100'), before);
+  });
+
+  testWidgets('e: Jump to latest reaches the real bottom and stays', (
+    tester,
+  ) async {
+    final h = await tall(tester);
+    final p = _pos(tester);
+    expect(find.text('Jump to latest'), findsOneWidget);
+    await tester.tap(find.text('Jump to latest'));
+    await tester.pumpAndSettle();
+    expect(p.pixels, 0);
+    expect(find.text('r30 l119'), findsOneWidget);
+    h.grow(140); // keeps following the bottom
+    await tester.pumpAndSettle();
+    expect(p.pixels, 0);
+  });
+
+  testWidgets('e: a later tall message anchors again', (tester) async {
+    final h = await tall(tester);
+    _pos(tester).jumpTo(0);
+    await _settle(tester);
+    h.add(120);
+    await _settle(tester);
+    expect(_top(tester, 'r31 l0'), inInclusiveRange(0, 40));
+  });
 }
