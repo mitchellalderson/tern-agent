@@ -1,1 +1,0 @@
-- **`tern start` on macOS** no longer waits out 15 s when launchd can't start tern (a quarantined, un-notarized app). It starts tern directly instead, and if that fails it says macOS blocked it rather than pointing at a log that doesn't exist.
