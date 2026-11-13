@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
@@ -21,6 +22,8 @@ import 'preferences.dart';
 import 'quit.dart';
 import 'routines.dart';
 import 'servers.dart';
+import '../state/documents.dart';
+import 'documents/documents_panel.dart';
 import 'side_panel.dart';
 import 'sidebar.dart';
 import 'tasks.dart';
@@ -30,9 +33,19 @@ import 'where_to_run.dart';
 import 'widgets.dart';
 
 class Home extends StatefulWidget {
-  const Home({super.key, required this.store, this.prefs, this.connections});
+  const Home({
+    super.key,
+    required this.store,
+    this.prefs,
+    this.connections,
+    this.documents,
+  });
 
   final TernStore store;
+
+  /// The Documents panel's state; built from the store's client when not
+  /// given (tests).
+  final DocumentsState? documents;
 
   /// Loaded from disk when not given (tests).
   final AppPrefs? prefs;
@@ -47,6 +60,12 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> {
   var _panel = true;
+  var _mode = PaneMode.activity;
+  late final DocumentsState _docs =
+      widget.documents ??
+      DocumentsState(ClientDocumentsApi(widget.store.client));
+  StreamSubscription<DocumentTouch>? _touches;
+  var _docsLoaded = false;
   late final AppLifecycleListener _lifecycle;
   final _control = TernControl(bin: findTern());
   late final _prefs = widget.prefs ?? AppPrefs.load();
@@ -66,6 +85,9 @@ class _HomeState extends State<Home> {
           widget.store.appActive = s == AppLifecycleState.resumed,
       onExitRequested: _onExit,
     );
+    _touches = widget.store.documentTouches.listen(_onTouch);
+    widget.store.addListener(_loadDocuments);
+    _loadDocuments();
     final connections = widget.connections;
     if (connections != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -126,8 +148,36 @@ class _HomeState extends State<Home> {
         section: section,
       );
 
+  /// Load the documents once the core says it has them.
+  void _loadDocuments() {
+    if (_docsLoaded || !widget.store.hasDocuments) return;
+    _docsLoaded = true;
+    unawaited(_docs.refresh());
+  }
+
+  /// The agent wrote a document: follow it. One created in the conversation
+  /// on screen opens in the panel; a background run's does not steal focus.
+  void _onTouch(DocumentTouch t) {
+    final s = widget.store;
+    final here =
+        t.channelId == null ||
+        t.channelId == s.streamChannel ||
+        t.channelId == s.channel;
+    final open = t.created && here;
+    if (open && mounted) {
+      setState(() {
+        _panel = true;
+        _mode = PaneMode.documents;
+      });
+    }
+    unawaited(_docs.touched(t, openNew: open));
+  }
+
   @override
   void dispose() {
+    _touches?.cancel();
+    widget.store.removeListener(_loadDocuments);
+    if (widget.documents == null) _docs.dispose();
     _lifecycle.dispose();
     super.dispose();
   }
@@ -158,10 +208,7 @@ class _HomeState extends State<Home> {
                     onSettings: _settings,
                     onConnectRemote: widget.connections == null
                         ? null
-                        : () => showServersDialog(
-                            context,
-                            widget.connections!,
-                          ),
+                        : () => showServersDialog(context, widget.connections!),
                   );
                 }
                 final content = LayoutBuilder(
@@ -240,13 +287,36 @@ class _HomeState extends State<Home> {
                           SizedBox(width: 380, child: ThreadPane(store: store)),
                         ] else if (panel) ...[
                           const Hairline(vertical: true),
-                          SizedBox(
-                            width: 290,
-                            child: SidePanel(
-                              store: store,
-                              onClose: _togglePanel,
+                          if (store.hasDocuments && _mode == PaneMode.documents)
+                            SizedBox(
+                              width: (box.maxWidth * 0.4).clamp(380, 560),
+                              child: DocumentsPanel(
+                                docs: _docs,
+                                mode: _mode,
+                                onMode: (m) => setState(() => _mode = m),
+                                onClose: _togglePanel,
+                              ),
+                            )
+                          else
+                            SizedBox(
+                              width: 290,
+                              child: ListenableBuilder(
+                                listenable: _docs,
+                                builder: (context, _) => SidePanel(
+                                  store: store,
+                                  onClose: _togglePanel,
+                                  tabs: store.hasDocuments
+                                      ? PaneTabs(
+                                          mode: _mode,
+                                          onMode: (m) =>
+                                              setState(() => _mode = m),
+                                          unseenDocuments:
+                                              _docs.unseen.isNotEmpty,
+                                        )
+                                      : null,
+                                ),
+                              ),
                             ),
-                          ),
                         ],
                       ],
                     );

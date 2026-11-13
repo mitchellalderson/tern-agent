@@ -8,6 +8,7 @@ import 'chain.dart';
 import 'channels.dart';
 import 'config.dart';
 import 'connections.dart';
+import 'documents.dart';
 import 'endpoint.dart';
 import 'ledger.dart';
 import 'lifecycle.dart';
@@ -1307,6 +1308,40 @@ class TernClient {
 
   /// Cancel a wait: nothing continues.
   Future<void> cancelWait(String id) => _json('DELETE', '/v1/waits/$id');
+
+  /// Documents the agents wrote, newest first (check `features` in [health]
+  /// for `documents`). [session] limits them to one conversation.
+  Future<List<DocumentMeta>> documents({String? session, String? query}) async {
+    final qs = [
+      if (session != null) 'session=${Uri.encodeQueryComponent(session)}',
+      if (query != null) 'q=${Uri.encodeQueryComponent(query)}',
+    ];
+    final path = '/v1/documents${qs.isEmpty ? '' : '?${qs.join('&')}'}';
+    return [
+      for (final d in await _json('GET', path) as List)
+        DocumentMeta.fromJson(d as Json),
+    ];
+  }
+
+  /// One document with its latest text.
+  Future<DocumentContent> document(String id) async =>
+      DocumentContent.fromJson(await _json('GET', '/v1/documents/$id') as Json);
+
+  /// Every revision of a document, newest first.
+  Future<List<DocumentRevision>> documentRevisions(String id) async => [
+    for (final r in await _json('GET', '/v1/documents/$id/revisions') as List)
+      DocumentRevision.fromJson(r as Json),
+  ];
+
+  /// One revision with its text.
+  Future<DocumentRevision> documentRevision(String id, int rev) async =>
+      DocumentRevision.fromJson(
+        await _json('GET', '/v1/documents/$id/revisions/$rev') as Json,
+      );
+
+  /// Clear a document's "from the web" mark (recorded in the ledger).
+  Future<void> markDocumentReviewed(String id) =>
+      _json('POST', '/v1/documents/$id/reviewed');
 
   /// `tern security audit` on the core (owner only; check `features` in
   /// [health] for `security_audit`).

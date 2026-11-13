@@ -43,7 +43,7 @@ fn write_policy(ctx: &ToolCtx, args: &Value) -> ToolPolicy {
 }
 
 /// Run a blocking scope operation off the async threads.
-async fn run_scope<T: Send + 'static>(
+pub(crate) async fn run_scope<T: Send + 'static>(
     ctx: &ToolCtx,
     f: impl FnOnce(&WorkspaceScope) -> ScopeResult<T> + Send + 'static,
 ) -> ScopeResult<T> {
@@ -53,7 +53,7 @@ async fn run_scope<T: Send + 'static>(
         .unwrap_or_else(|e| Err(ScopeError::Io(format!("file call failed: {e}"))))
 }
 
-fn refusal(ctx: &ToolCtx, tool: &str, raw: &str, e: ScopeError) -> ToolResult {
+pub(crate) fn refusal(ctx: &ToolCtx, tool: &str, raw: &str, e: ScopeError) -> ToolResult {
     ToolResult::error(ctx.scope.fail(tool, raw, e))
 }
 

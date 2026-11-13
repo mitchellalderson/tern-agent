@@ -215,6 +215,7 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_ledger::routes())
         .merge(super::api_tasks::routes())
         .merge(super::api_waits::routes())
+        .merge(super::api_documents::routes())
         .merge(super::api_skills::routes())
         .merge(super::api_runs::routes())
         .merge(super::api_subagents::routes())

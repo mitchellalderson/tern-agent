@@ -81,6 +81,10 @@ pub const FEATURES: &[&str] = &[
     // channel and agent, with read-only extra folders
     // (docs/alpha-workspaces.md). Older cores lack it: hide the folder picker.
     "workspaces",
+    // `/v1/documents`: what `create_document` and `edit_document` made, with
+    // its revisions (docs/documents-design.md). Older cores lack it: hide the
+    // Documents panel.
+    "documents",
 ];
 
 pub const TOKEN_PREFIX: &str = "tern_dev_";
