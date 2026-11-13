@@ -256,10 +256,6 @@ pub fn start(home: &TernHome) -> anyhow::Result<ExitCode> {
     }
     home.ensure_layout()?;
     let svc = service::state().filter(|s| s.installed);
-    let err_log = home.logs_dir().join(match svc {
-        Some(_) => "daemon.err.log",
-        None => "daemon.log",
-    });
     if let Some(s) = svc {
         println!("Starting tern through {}…", s.kind.name());
         service::start(&s)?;
@@ -267,7 +263,10 @@ pub fn start(home: &TernHome) -> anyhow::Result<ExitCode> {
         println!("Starting tern…");
         spawn_detached(home)?;
     }
-    let end = Instant::now() + Duration::from_secs(15);
+    let mut end = Instant::now() + Duration::from_secs(15);
+    let mut spawn_failed = false;
+    let mut detached = svc.is_none();
+    let mut next_check = Instant::now() + Duration::from_secs(1);
     loop {
         if let Some(pid) = running_pid(home)
             && healthy(home)
@@ -275,13 +274,53 @@ pub fn start(home: &TernHome) -> anyhow::Result<ExitCode> {
             println!("tern is running (pid {pid}).");
             return Ok(ExitCode::SUCCESS);
         }
+        // launchd can't exec the job (macOS blocked it): don't wait it out.
+        if !detached
+            && Instant::now() >= next_check
+            && svc.is_some_and(|s| s.kind == service::Kind::Launchd)
+        {
+            next_check = Instant::now() + Duration::from_secs(1);
+            if service::job_spawn_failed() {
+                spawn_failed = true;
+                detached = true;
+                println!("macOS didn't let launchd start tern; starting it directly…");
+                spawn_detached(home)?;
+                end = Instant::now() + Duration::from_secs(15);
+            }
+        }
         if Instant::now() >= end {
             bail!(
-                "tern didn't start within 15 s; see {} (or run `tern daemon` to see why)",
-                err_log.display()
+                "{}",
+                start_failure(svc.map(|s| s.method), spawn_failed, home)
             );
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// What to tell the user when tern didn't come up in time.
+fn start_failure(method: Option<service::Method>, spawn_failed: bool, home: &TernHome) -> String {
+    let log = |name: &str| home.logs_dir().join(name).display().to_string();
+    if spawn_failed {
+        return format!(
+            "macOS blocked tern from starting. Allow it in System Settings → Privacy & Security, \
+             or run `xattr -dr com.apple.quarantine /Applications/tern.app`. \
+             Try `tern daemon` to see why; {} may have details.",
+            log("daemon.log")
+        );
+    }
+    match method {
+        Some(m) if !m.writes_err_log() => {
+            "tern didn't start within 15 s. Run `tern daemon` to see why.".to_string()
+        }
+        Some(_) => format!(
+            "tern didn't start within 15 s; see {} (or run `tern daemon` to see why)",
+            log("daemon.err.log")
+        ),
+        None => format!(
+            "tern didn't start within 15 s; see {} (or run `tern daemon` to see why)",
+            log("daemon.log")
+        ),
     }
 }
 
@@ -312,7 +351,9 @@ pub fn spawn_detached(home: &TernHome) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::skew_note;
+    use super::{skew_note, start_failure};
+    use crate::service::Method;
+    use tern_core::TernHome;
 
     #[test]
     fn same_version_is_quiet() {
@@ -324,5 +365,22 @@ mod tests {
         let n = skew_note("0.1.0", "0.1.1").unwrap();
         assert!(n.contains("v0.1.0") && n.contains("v0.1.1"), "{n}");
         assert!(n.contains("tern stop && tern start"), "{n}");
+    }
+
+    #[test]
+    fn start_failure_points_only_at_logs_that_exist() {
+        let home = TernHome::new("/h");
+        let blocked = start_failure(Some(Method::AppService), true, &home);
+        assert!(blocked.contains("Privacy & Security"), "{blocked}");
+        assert!(!blocked.contains("daemon.err.log"), "{blocked}");
+        let app = start_failure(Some(Method::AppService), false, &home);
+        assert!(!app.contains("daemon.err.log"), "{app}");
+        let file = start_failure(Some(Method::File), false, &home);
+        assert!(file.contains("daemon.err.log"), "{file}");
+        let none = start_failure(None, false, &home);
+        assert!(
+            none.contains("daemon.log") && !none.contains("err"),
+            "{none}"
+        );
     }
 }
