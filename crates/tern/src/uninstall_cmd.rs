@@ -11,10 +11,10 @@ use crate::{lifecycle, reset_cmd, service};
 
 pub fn run(home: &TernHome, purge: bool, yes: bool) -> anyhow::Result<ExitCode> {
     if lifecycle::running_pid(home).is_some() {
-        lifecycle::stop(home)?;
+        let _ = lifecycle::stop(home)?;
     }
     if service::state().is_some_and(|s| s.installed) {
-        service::uninstall(home)?;
+        let _ = service::uninstall(home)?;
     }
     let mut purged = false;
     if purge {
