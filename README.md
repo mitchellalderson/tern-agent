@@ -1,10 +1,11 @@
 # tern
 
-A personal AI agent you run yourself, shipped as **one static binary**: no Python, no Node, no Docker required. It chats in your terminal, on Telegram, and in a macOS desktop app. You can keep several **agents**, each with its own persona, model, tools and memory, starting from a catalog of 23 starters (research, inbox, code review, bug fixing, writing, SEO audits and more). They run scheduled routines, delegate to each other and to sub-agents, write their own sandboxed connectors for APIs nobody built one for, and ask before they run commands or change anything. It survives crashes: every model call and tool result is journaled, so a killed run resumes where it stopped without repeating completed work.
+A personal AI agent you run yourself, shipped as **one static binary**: no Python, no Node, no Docker required. You can keep several **agents**, each with its own persona, model, tools and memory. For an API that has no integration, an agent writes a sandboxed Luau connector, or generates one from an OpenAPI document. The connector stays in drafts until you approve the hosts, secrets and tools it declares. It runs in its own VM, limited to those hosts, and tern adds the credentials to its requests so the script never sees them. Agents ask before they run commands or change anything. It chats in your terminal, on Telegram, and in a macOS desktop app, starting from a catalog of 23 starters (research, inbox, code review, bug fixing, writing, SEO audits and more). They also run scheduled routines and delegate to each other and to sub-agents.
 
-<!-- TODO(launch): replace this screenshot with docs/assets/demo.gif, the 90-second demo in docs/launch-plan.md §4.1
-     (routine, Telegram approval, kill -9 and resume, agent-written connector). The screenshot is the desktop app
-     rendered from demo data by apps/desktop/test/screenshot_test.dart. -->
+<!-- TODO(launch): replace this screenshot with docs/assets/demo.gif. Center the demo on an agent writing a sandboxed
+     Luau connector, or generating one from an OpenAPI document, and on approving its declared hosts, secrets and
+     tools before it runs. The screenshot is the desktop app rendered from demo data by
+     apps/desktop/test/screenshot_test.dart. -->
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/desktop-dark.png">
   <img alt="The tern desktop app: a conversation that delegated to three sub-agents, an approval card for a shell command, and routines in the side panel" src="docs/assets/desktop-light.png">
