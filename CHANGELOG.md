@@ -11,7 +11,11 @@ Entries go in `changelog.d/` (see its README); the release gathers them here.
 
 ## [0.1.0-alpha.7] - 2026-11-13
 
-The desktop app starts tern again on a fresh macOS install, and long chat messages no longer jump back while you read.
+Agents can write documents you read in a new Documents tab. The desktop app starts tern again on a fresh macOS install, and long chat messages no longer jump back while you read.
+
+### Added
+
+- **Documents.** Agents can write a document (`create_document`, `edit_document`, `read_document`, `list_documents`) as a real Markdown file in the workspace, with a revision for every change. A new **Documents** tab in the side panel shows them rendered, in tabs, with a history of revisions. Read-only for now. Links ask first, images never load, and a document written from web content is marked.
 
 ### Fixed
 
