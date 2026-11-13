@@ -17,7 +17,7 @@ macOS and Linux (the desktop app is macOS for now). Anthropic or any OpenAI-comp
 
 ## Quick start
 
-**Status: alpha.** The first release is [v0.1.0-alpha.1](https://github.com/mitchellalderson/tern-agent/releases/tag/v0.1.0-alpha.1), a GitHub *pre-release* (expect rough edges; how releases are cut: [docs/release-checklist.md](docs/release-checklist.md)). If the installer or the DMG link below says the release isn't there, it isn't published yet: build from a clone of this repository with Rust 1.89+:
+**Status: alpha.** The first release is [v0.1.0-alpha.7](https://github.com/mitchellalderson/tern-agent/releases/tag/v0.1.0-alpha.7), a GitHub *pre-release* (expect rough edges; how releases are cut: [docs/release-checklist.md](docs/release-checklist.md)). If the installer or the DMG link below says the release isn't there, it isn't published yet: build from a clone of this repository with Rust 1.89+:
 
 ```sh
 git clone https://github.com/mitchellalderson/tern-agent && cd tern-agent
