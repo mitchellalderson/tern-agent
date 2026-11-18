@@ -1782,6 +1782,9 @@ class TernStore extends ChangeNotifier {
       case SchedulesChanged():
         unawaited(refreshSchedules());
         return;
+      case NotificationRequested():
+        _notifyRoutine(e);
+        return;
       case UnknownEvent() || EventsDropped():
         return;
     }
@@ -1855,6 +1858,22 @@ class TernStore extends ChangeNotifier {
       (selected != session &&
           thread != session &&
           !(streamOpen && _streamSessions.contains(session)));
+
+  /// A routine result the daemon pushed: already posted in its channel, so
+  /// notify unless the window is focused on that channel.
+  void _notifyRoutine(NotificationRequested n) {
+    final ch = n.channelId;
+    if (appActive && ch != null && ch == channel) return;
+    unawaited(
+      notifier.show(
+        id: '$_routineNotePrefix${ch ?? ''}',
+        title: n.title,
+        body: n.body,
+      ),
+    );
+  }
+
+  static const _routineNotePrefix = 'channel:';
 
   void _notifyApproval(Approval a) {
     if (!_unseen(a.sessionId)) return;
@@ -1971,6 +1990,18 @@ class TernStore extends ChangeNotifier {
   }
 
   void _onNotification(String id, NotificationAction action) {
+    if (id.startsWith(_routineNotePrefix)) {
+      if (action != NotificationAction.open) return;
+      final ch = id.substring(_routineNotePrefix.length);
+      unawaited(
+        ch.isEmpty || ch == homeId
+            ? openHome()
+            : ch.startsWith('dm:')
+            ? openStream(ch)
+            : openChannelView(ch),
+      );
+      return;
+    }
     if (action == NotificationAction.open) {
       // An approval id opens the conversation it belongs to.
       final session =
@@ -2455,7 +2486,9 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Create or edit a routine. Returns the daemon's reason on failure.
+  /// Create or edit a routine. `deliverTo`: null leaves the target alone
+  /// (a new routine's is where it lives); else `none`, `home`, `dm` or
+  /// `channel:<id>`. Returns the daemon's reason on failure.
   Future<String?> saveSchedule({
     String? id,
     required String cron,
@@ -2482,7 +2515,7 @@ class TernStore extends ChangeNotifier {
           id,
           cron: cron,
           prompt: prompt,
-          deliverTo: deliverTo ?? 'none',
+          deliverTo: deliverTo,
           limits: limits,
           channel: channel,
           agent: agent,

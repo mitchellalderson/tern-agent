@@ -6,7 +6,7 @@ wins; please open an issue.
 ## What is tern, in one paragraph?
 
 A personal agent you run yourself. One static binary for macOS or Linux holds the whole engine: chat in the terminal,
-a daemon with a scheduler, Telegram, MCP, sandboxed Luau connectors, several agents of your own (from 23 starters),
+a daemon with a scheduler, MCP, sandboxed Luau connectors, several agents of your own (from 23 starters),
 sub-agents, and a SQLite journal that records every model call and tool result. Kill it mid-task and it resumes where
 it stopped without repeating side effects. You bring a model key (Anthropic or any OpenAI-compatible endpoint, local
 ones included). There is also a macOS desktop app, a download that carries its own `tern`; you can also build it from
@@ -19,12 +19,11 @@ Said first, because you'll find out anyway:
 - **No browser and no computer use.** It calls APIs. You can add a browser through an MCP server (below).
 - **No connector catalog.** Nothing is pre-built beyond what MCP servers give you; the agent writes a connector when
   you need one.
-- **Few chat channels.** Telegram, plus ntfy and Slack as built-in gateway connectors. No Discord, WhatsApp or
-  iMessage yet.
-- **No mobile app and no push notifications.** Telegram is the phone interface.
-- **No hosted version.** You run it. A hosted tier is an idea on the [roadmap](../ROADMAP.md), not a product.
-- **Approvals in a live run block.** A run waits on its approval, and if there's no attached client or Telegram chat
-  to ask, the answer is deny. Writes from unattended runs (routines, a tainted run) don't block: they wait in
+- **No chat apps and no phone.** tern is local-only: you talk to it in the desktop app or the terminal. There are
+  no Telegram, Slack or other messaging gateways. A routine can raise a macOS notification from the desktop app.
+- **No hosted version.** You run it, on your own machine.
+- **Approvals in a live run block.** A run waits on its approval, and if there's no attached client to ask, the answer is deny.
+  Writes from unattended runs (routines, a tainted run) don't block: they wait in
   the **outbox** for you to approve or reject while the rest of the run carries on.
 - **Prompt-injection defence narrows the damage; it doesn't remove it.** Every tool has an effect, a run that reads
   untrusted content is tainted (its writes ask, new sites ask), and approvals, the workspace boundary and the SSRF
@@ -38,7 +37,7 @@ Said first, because you'll find out anyway:
 
 ## Does it keep running when my laptop is closed?
 
-Not on the laptop alone. Schedules, watches and Telegram replies need tern to be running, so a sleeping laptop pauses them. A schedule missed while the daemon was down runs once on the next start, and an interrupted run resumes from its journal without repeating completed steps. For routines that run around the clock, run tern on an always-on machine or server (`tern service install` keeps it running there), and pair your laptop or phone to it. A hosted option that does this for you is on the roadmap.
+Not on the laptop alone. Schedules and watches need tern to be running, so a sleeping laptop pauses them. A schedule missed while the daemon was down runs once on the next start, and an interrupted run resumes from its journal without repeating completed steps. For routines that run around the clock, run tern on an always-on machine or server (`tern service install` keeps it running there). tern is local-only, so you use it on that machine.
 
 ## Why not OpenClaw?
 
@@ -89,17 +88,6 @@ IronClaw chose WASM, and it's a reasonable choice. tern chose Luau because:
 The trade-off: a WASM module has a memory-isolation boundary of its own and lets you write tools in any language. A
 Luau VM runs inside tern's process, so a bug in the VM is a bug in tern. In both designs the important rules (which
 hosts and secrets a tool may use) are enforced by the host, not by the script.
-
-## Why Telegram and not Slack?
-
-Telegram was the cheapest useful first channel: a bot is one token from BotFather, tern talks to it with long polling
-(so it works from a laptop behind NAT with no public URL), it's free, it's on every phone, and inline buttons make
-approvals one tap. Only accounts paired with a one-time code can talk to the bot.
-
-Slack needs an app created and installed per workspace, and it is workspace-scoped, which fits teams more than one
-person. It is available anyway, with ntfy, as a built-in gateway connector: a Luau file rather than a Rust crate
-(`tern gateway add slack`; see [Gateway connectors](reference.md#gateway-connectors-ntfy-slack)). Discord and
-WhatsApp aren't built. iMessage isn't planned; it needs Apple Business approval and per-user fees.
 
 ## Why no browser?
 
@@ -167,8 +155,7 @@ Only the exact thing you were shown. Where a tool can name it (for example a con
 draft's source, its hosts, secrets, effect and account), the card offers **once**, **for this run**, **for this
 conversation** or **always**. A different tool, an edited draft, a new host or another account asks again. Run and
 conversation grants live in memory, so a daemon restart forgets them; "always" is stored and listed by `tern grants`.
-Nothing is offered on a tainted run or for a `destructive` call, which ask every time, and Telegram's buttons are Allow
-once and Deny. Identical requests waiting at once share one card.
+Nothing is offered on a tainted run or for a `destructive` call, which ask every time. Identical requests waiting at once share one card.
 
 ## Can a coding agent run my tests without asking every time? What is "Code auto mode"?
 
@@ -216,7 +203,6 @@ Only where you point it. There is no telemetry, no update check, no account, and
 
 - **Your model provider** receives the conversation, the system prompt (including `persona.md` and `user.md`) and
   tool results, including any memories or files the agent reads. That's how an LLM agent works; use a local model if that's a problem.
-- **Telegram**, if you enable it: messages to and from the bot pass through Telegram's servers.
 - **The hosts you or the agent call**: `http_fetch` URLs, the hosts a connector declares, MCP servers you configure.
 
 Everything else stays in `~/.tern`: config, the SQLite database (conversations, journal, memories), and

@@ -159,19 +159,17 @@ void main() {
     expect((gone.deleted, gone.archived), (true, true));
   });
 
-  test('an agent carries its autonomy ceiling and its own bot', () {
+  test('an agent carries its autonomy ceiling', () {
     final a = Agent.fromJson({
       'id': 'tern:ops',
       'slug': 'ops',
       'name': 'Ops',
       'memory': 'private',
       'autonomy': 'supervised',
-      'telegram': {'bot_token_secret': 'OPS_BOT'},
       'updated_at': 0,
     });
     expect(a.autonomy, 'supervised');
     expect(a.autonomyLevel, AutonomyLevel.supervised);
-    expect(a.telegramSecret, 'OPS_BOT');
     final none = Agent.fromJson({
       'id': 'tern:x',
       'slug': 'x',
@@ -180,7 +178,6 @@ void main() {
     });
     expect(none.autonomy, isNull);
     expect(none.autonomyLevel, isNull);
-    expect(none.telegramSecret, isNull);
     // The core still accepts `read_only`; the client says `readonly`.
     final old = Agent.fromJson({
       'id': 'tern:y',

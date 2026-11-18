@@ -26,7 +26,7 @@
 //! | POST | `/v1/approvals/{id}` | answer `{decision: "once" \| "always" \| "deny"}` |
 //! | GET / POST | `/v1/outbox[/{id}[/approve\|/reject]]` | deferred approvals (`api_outbox.rs`) |
 //! | GET / POST | `/v1/secret-requests[/{id}]` | the agent's prompts for secrets (`api_secrets.rs`) |
-//! | GET | `/v1/status` | version, uptime, counts, gateway health (`api_lifecycle.rs`) |
+//! | GET | `/v1/status` | version, uptime, counts (`api_lifecycle.rs`) |
 //! | POST | `/v1/shutdown[?dry_run=1]` | stop with exit code 0 (`api_lifecycle.rs`) |
 //! | GET / POST | `/v1/mcp-serve/{tools,call}` | what `tern mcp serve` offers, and its calls (`api_mcp_serve.rs`) |
 //!
@@ -240,10 +240,6 @@ pub struct Info {
     #[serde(default)]
     pub setup_needed: bool,
     pub tools: Vec<(String, String)>,
-    /// Gateways routines can deliver to (`<name>:<chat>`), Telegram and
-    /// gateway connectors alike, by name.
-    #[serde(default)]
-    pub gateways: Vec<InfoGateway>,
     /// Whether the OS sandbox is confirmed active for shell commands. Script
     /// grants ("allow this python script for this run") apply only then.
     #[serde(default)]
@@ -257,28 +253,7 @@ pub struct InfoSandbox {
     pub detail: String,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct InfoGateway {
-    pub name: String,
-    /// `telegram`, `ntfy`, `slack`, … (a connector's `gateway.kind`).
-    pub kind: String,
-}
-
 async fn info(State(m): State<Shared>) -> Json<Info> {
-    let mut gateways: Vec<InfoGateway> = m
-        .routes
-        .gateways
-        .get()
-        .map(|g| {
-            g.values()
-                .map(|g| InfoGateway {
-                    name: g.name().to_owned(),
-                    kind: g.kind().to_owned(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    gateways.sort_by(|a, b| a.name.cmp(&b.name));
     let sandbox = {
         let (config, home) = (m.rt.config.clone(), m.rt.home.clone());
         tokio::task::spawn_blocking(move || crate::runtime::shell_sandbox_status(&config, &home))
@@ -291,7 +266,6 @@ async fn info(State(m): State<Shared>) -> Json<Info> {
     };
     Json(Info {
         sandbox,
-        gateways,
         default_model: m.rt.pick_model(None, None).ok().map(|x| x.to_string()),
         setup_needed: m.rt.setup_needed(),
         tools: m

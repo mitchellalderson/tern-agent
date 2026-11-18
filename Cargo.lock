@@ -4724,7 +4724,6 @@ dependencies = [
  "tern-auth",
  "tern-bundle",
  "tern-core",
- "tern-gateway",
  "tern-lua",
  "tern-mcp",
  "tern-providers",
@@ -4817,25 +4816,6 @@ dependencies = [
  "tracing",
  "uuid",
  "webpki-root-certs",
- "wiremock",
-]
-
-[[package]]
-name = "tern-gateway"
-version = "0.1.0-alpha.7"
-dependencies = [
- "async-trait",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tern-core",
- "tern-lua",
- "tern-store",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
  "wiremock",
 ]
 

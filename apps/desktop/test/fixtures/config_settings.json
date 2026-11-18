@@ -669,7 +669,7 @@
   {
    "id": "home",
    "title": "Home",
-   "description": "Home (and each Telegram chat) is one stream cut into sessions. A message starts a new one, with a summary of the last carried over, after:",
+   "description": "Home is one stream cut into sessions. A message starts a new one, with a summary of the last carried over, after:",
    "settings": [
     {
      "key": "home.idle_hours",

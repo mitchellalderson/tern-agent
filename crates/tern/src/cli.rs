@@ -29,7 +29,7 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Run the gateway, scheduler, and local API in the foreground.
+    /// Run the scheduler and local API in the foreground.
     Daemon,
     /// Start tern in the background (through the service if installed).
     Start,
@@ -42,11 +42,6 @@ pub enum Command {
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
-    },
-    /// Messaging gateways.
-    Gateway {
-        #[command(subcommand)]
-        command: GatewayCommand,
     },
     /// List, create, edit and archive your agents: each has its own
     /// persona, model, tools, memory, routines and DM.
@@ -367,30 +362,6 @@ impl ProviderKindArg {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum GatewayCommand {
-    /// Print a one-time pairing code to send to the Telegram bot or a
-    /// gateway connector.
-    Pair,
-    /// Install a built-in gateway connector (`ntfy` or `slack`) and enable
-    /// it in config.toml.
-    Add {
-        /// `ntfy` or `slack`.
-        kind: String,
-        /// A self-hosted ntfy server, e.g. https://ntfy.example.com.
-        #[arg(long)]
-        server: Option<String>,
-        /// The Slack channel id to talk in (C0123456789).
-        #[arg(long)]
-        channel: Option<String>,
-        /// Replace the connector file if it differs from the built-in one.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Gateways in config.toml and whether each can run.
-    List,
-}
-
-#[derive(Debug, Subcommand)]
 pub enum AgentsCommand {
     /// List agents (the default, `tern`, first).
     List {
@@ -417,13 +388,6 @@ pub enum AgentsCommand {
         /// autonomous or yolo (the lower of this and `autonomy` applies).
         #[arg(long)]
         autonomy: Option<String>,
-    },
-    /// Give an agent a Telegram bot of its own, or take it away. The token
-    /// is a secret (`tern secrets set <name>`); restart the daemon to apply.
-    Telegram {
-        agent: String,
-        /// The secret holding the BotFather token, or `none` to remove it.
-        secret: String,
     },
     /// Set or clear an agent's autonomy ceiling.
     Autonomy {

@@ -189,11 +189,6 @@ impl Manager {
             let text = outbox::stale_summary(&file, items.len());
             let first = &items[0];
             self.outbox_post(first, &text, &format!("outbox-stale:{}", first.id));
-            if let Some(target) = self.outbox_target(first)
-                && let Err(e) = self.send_to(&target, None, &text).await
-            {
-                tracing::warn!(target, error = %e, "outbox summary delivery failed");
-            }
         }
     }
 
@@ -298,11 +293,6 @@ impl Manager {
             }
         );
         self.outbox_post(item, &text, &format!("outbox-done:{}", item.id));
-        if let Some(target) = self.outbox_target(item)
-            && let Err(e) = self.send_to(&target, None, &text).await
-        {
-            tracing::warn!(target, error = %e, "outbox result delivery failed");
-        }
         self.outbox_changed(item);
     }
 
@@ -356,13 +346,6 @@ impl Manager {
         }
     }
 
-    /// The chat the run tree that queued `item` reports to, if any.
-    fn outbox_target(&self, item: &OutboxRow) -> Option<String> {
-        let store = &self.rt.store;
-        let root = store.root_run(&item.run_id).ok()?;
-        store.run_deliver_to(&root).ok().flatten()
-    }
-
     /// A new item: its `needs_you` post (and Home pointer), clients, and
     /// the chat its run reports to. A routine's chat gets no card now: the
     /// routine's own delivery, which keeps its quiet hours and initiative,
@@ -371,24 +354,7 @@ impl Manager {
         let Ok(Some(item)) = self.rt.store.outbox_item(id) else {
             return;
         };
-        if !self.queued_by_routine(&item)
-            && let Some(target) = self.outbox_target(&item)
-            && let Some((name, chat)) = target.split_once(':')
-            && let Some(g) = self.gateway(name)
-        {
-            g.outbox_notice(chat, &self.outbox_view(item.clone())).await;
-        }
         self.outbox_changed(&item);
-    }
-
-    /// Whether the run tree that queued `item` is a routine's.
-    fn queued_by_routine(&self, item: &OutboxRow) -> bool {
-        let store = &self.rt.store;
-        store
-            .root_run(&item.run_id)
-            .ok()
-            .and_then(|r| store.run(&r).ok().flatten())
-            .is_some_and(|r| r.trigger == "cron")
     }
 
     /// Every change to an item goes through here: its `needs_you` post
@@ -399,17 +365,6 @@ impl Manager {
             self.open_needs_you(item);
         } else {
             self.resolve_needs_you(item);
-            let view = self.outbox_view(item.clone());
-            for g in self
-                .routes
-                .gateways
-                .get()
-                .into_iter()
-                .flat_map(|g| g.values())
-            {
-                let (g, view) = (g.clone(), view.clone());
-                tokio::spawn(async move { g.outbox_resolved(&view).await });
-            }
         }
         let _ = self.rt.changes.send(Change::OutboxChanged {
             id: item.id,

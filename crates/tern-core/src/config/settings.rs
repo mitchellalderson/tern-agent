@@ -5,7 +5,7 @@
 //! shows up without changes here; [`meta`] only adds what the defaults
 //! can't say (choices, ranges, live, security notes).
 //!
-//! Providers, MCP servers and the Telegram gateway have their own editors
+//! Providers and MCP servers have their own editors
 //! and hold secret names, so they're left out; secret values never pass
 //! through here.
 
@@ -19,7 +19,7 @@ use super::edit::{ConfigFile, EditError};
 use super::{Config, ModelRef};
 
 /// Sections with editors of their own.
-const ELSEWHERE: &[&str] = &["providers", "mcp", "gateway"];
+const ELSEWHERE: &[&str] = &["providers", "mcp"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1025,7 +1025,7 @@ mod tests {
             SettingError::Unknown(_)
         ));
         assert!(matches!(
-            err(&mut f, "gateway.telegram.bot_token_secret", json!("x")),
+            err(&mut f, "providers.x.api_key_secret", json!("x")),
             SettingError::Secret(_)
         ));
         assert!(matches!(

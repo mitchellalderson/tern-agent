@@ -177,7 +177,6 @@ async fn status_dry_run_and_shutdown_then_resume() {
     assert_eq!(status["running_runs"], 0);
     assert_eq!(status["pending_approvals"], 0);
     assert_eq!(status["active_schedules"], 0);
-    assert_eq!(status["gateways"], json!([]));
 
     // Nothing running: a dry run lists nothing and stops nothing.
     let dry = post(&http, "/v1/shutdown?dry_run=1", json!({})).await;

@@ -1,18 +1,15 @@
 //! T1a end-to-end (docs/personal-agent-tooling-spec.md §4.1, §8.3, §12.1):
 //! `NO_REPLY`, quiet hours (across a restart), `urgent`, and per-schedule
-//! caps, against the daemon, a fake Telegram, and the mock provider.
+//! caps, against the daemon, the notifications the desktop app would raise, and the mock provider.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(unix)]
 
-use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use chrono::Timelike;
 use serde_json::{Value, json};
-
-const CHAT: i64 = 5151;
 
 fn tern_bin() -> PathBuf {
     std::env::var_os("TERN_TEST_BIN").map_or_else(|| env!("CARGO_BIN_EXE_tern").into(), Into::into)
@@ -27,83 +24,17 @@ impl Drop for Killed {
     }
 }
 
-struct FakeTelegram {
-    _proc: Killed,
-    url: String,
-    http: reqwest::Client,
-}
-
-impl FakeTelegram {
-    fn start() -> Self {
-        let script =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_telegram.py");
-        let mut child = Command::new("python3")
-            .arg(script)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut line = String::new();
-        std::io::BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let port: u16 = line.trim().parse().unwrap();
-        Self {
-            _proc: Killed(child),
-            url: format!("http://127.0.0.1:{port}"),
-            http: reqwest::Client::new(),
-        }
-    }
-
-    async fn texts(&self) -> Vec<String> {
-        let all: Vec<Value> = self
-            .http
-            .get(format!("{}/control/messages", self.url))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        all.iter()
-            .map(|m| m["text"].as_str().unwrap_or_default().to_owned())
-            .collect()
-    }
-
-    async fn count(&self, needle: &str) -> usize {
-        self.texts()
-            .await
-            .iter()
-            .filter(|t| t.contains(needle))
-            .count()
-    }
-
-    /// Wait for a bot message containing `needle`; returns its text.
-    async fn wait_for(&self, needle: &str, secs: u64) -> String {
-        let end = Instant::now() + Duration::from_secs(secs);
-        loop {
-            if let Some(t) = self.texts().await.into_iter().find(|t| t.contains(needle)) {
-                return t;
-            }
-            assert!(
-                Instant::now() < end,
-                "no bot message containing {needle:?}; got {:#?}",
-                self.texts().await
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-}
+use super::notes::Notes;
 
 struct Env {
     _tmp: tempfile::TempDir,
     home: PathBuf,
     tern_home: PathBuf,
     script: PathBuf,
-    telegram_url: String,
 }
 
 impl Env {
-    fn new(tg: &FakeTelegram, extra_config: &str) -> Self {
+    fn new(tg: &Notes, extra_config: &str) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let tern_home = home.join(".tern");
@@ -112,22 +43,15 @@ impl Env {
             script: tmp.path().join("script.json"),
             home,
             tern_home,
-            telegram_url: tg.url.clone(),
             _tmp: tmp,
         };
         env.config(extra_config);
+        tg.watch(env.socket());
         env
     }
 
     fn config(&self, extra: &str) {
-        std::fs::write(
-            self.tern_home.join("config.toml"),
-            format!(
-                "[gateway.telegram]\nenabled = true\nbot_token_secret = \"TELEGRAM_BOT_TOKEN\"\napi_url = \"{}\"\n\n{extra}",
-                self.telegram_url
-            ),
-        )
-        .unwrap();
+        std::fs::write(self.tern_home.join("config.toml"), extra).unwrap();
     }
 
     fn script(&self, script: Value) {
@@ -142,7 +66,6 @@ impl Env {
             .env("HOME", &self.home)
             .env("TERN_HOME", &self.tern_home)
             .env("TERN_PROVIDER", format!("mock:{}", self.script.display()))
-            .env("TELEGRAM_BOT_TOKEN", "TEST:TOKEN")
             .env("TERN_SCHEDULER_TICK_MS", "200")
             .stdin(Stdio::null());
         c
@@ -241,7 +164,7 @@ impl Env {
 }
 
 fn target() -> String {
-    format!("telegram:{CHAT}")
+    "home".to_owned()
 }
 
 /// Quiet hours from an hour ago to an hour from now, local.
@@ -259,7 +182,7 @@ async fn ticks() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_no_reply_run_delivers_nothing_and_is_recorded_quiet() {
-    let tg = FakeTelegram::start();
+    let tg = Notes::start();
     let env = Env::new(&tg, "");
     env.script(json!({ "conversations": [
         { "matches": "Watch the inbox", "turns": [{ "text": "  NO_REPLY\n" }] },
@@ -300,7 +223,7 @@ async fn a_no_reply_run_delivers_nothing_and_is_recorded_quiet() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn quiet_hours_hold_deliveries_across_a_restart_and_urgent_bypasses_them() {
-    let tg = FakeTelegram::start();
+    let tg = Notes::start();
     let env = Env::new(
         &tg,
         &format!("[schedules]\nquiet_hours = \"{}\"\n", quiet_now()),
@@ -368,7 +291,7 @@ async fn quiet_hours_hold_deliveries_across_a_restart_and_urgent_bypasses_them()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn runs_per_day_pauses_the_schedule_with_exactly_one_notice() {
-    let tg = FakeTelegram::start();
+    let tg = Notes::start();
     let env = Env::new(&tg, "");
     env.script(json!({ "turns": [{ "text": "Checked the feed." }] }));
     let _daemon = env.daemon();
@@ -434,7 +357,7 @@ async fn runs_per_day_pauses_the_schedule_with_exactly_one_notice() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tokens_per_run_stops_a_run_as_failed() {
-    let tg = FakeTelegram::start();
+    let tg = Notes::start();
     let env = Env::new(&tg, "[schedules]\nquiet_hours = \"none\"\n");
     env.script(json!({ "turns": [
         { "text": "Looking.", "tool_calls": [{ "name": "schedule_list", "input": {} }] },
@@ -463,7 +386,7 @@ async fn tokens_per_run_stops_a_run_as_failed() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn usd_per_day_is_ignored_without_a_price_and_applies_with_one() {
-    let tg = FakeTelegram::start();
+    let tg = Notes::start();
     let env = Env::new(
         &tg,
         "[schedules]\nquiet_hours = \"none\"\nusd_per_day = 0.0001\n",

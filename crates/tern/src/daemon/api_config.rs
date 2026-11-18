@@ -1,6 +1,6 @@
 //! `config.toml` as settings, for the config editor. Owner only (`/v1/config`
-//! is in `OWNER_ONLY`). Providers, MCP servers and the Telegram gateway
-//! have their own routes, and no secret value passes through here.
+//! is in `OWNER_ONLY`). Providers and MCP servers have their own
+//! routes, and no secret value passes through here.
 //!
 //! | Method | Path | |
 //! |---|---|---|
