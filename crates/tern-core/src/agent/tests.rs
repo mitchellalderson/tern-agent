@@ -1465,6 +1465,14 @@ impl crate::subagent::SubagentHost for FakeHost {
     ) -> Result<Value, String> {
         unreachable!()
     }
+    async fn delegate_team(
+        &self,
+        _: &ToolCtx,
+        _: &str,
+        _: crate::subagent::TeamRequest,
+    ) -> Result<Value, String> {
+        unreachable!()
+    }
     async fn cancel(
         &self,
         _: &ToolCtx,

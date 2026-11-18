@@ -21,8 +21,8 @@ use tern_core::journal::{Journal, StepError};
 use tern_core::subagent::{
     self, AGENT_TOOLS, ASK_PREFIX, AskRequest, CHILD_EXCLUDED_TOOLS, CHILD_ONLY_TOOLS,
     CancelRequest, ChildRun, FINISHED_PREFIX, Finished, Note, Question, READ_ONLY_TOOLS,
-    ResultRequest, SendRequest, SpawnRequest, SubagentHost, SubagentLimits, ToolsArg, WaitMode,
-    WaitRequest,
+    ResultRequest, SendRequest, SpawnRequest, SubagentHost, SubagentLimits, TeamRequest, ToolsArg,
+    WaitMode, WaitRequest,
 };
 use tern_core::tool::{ToolCtx, ToolRegistry, consume_mail, progress_sink};
 use tern_core::types::Usage;
@@ -132,6 +132,9 @@ pub struct Subagents {
     reasons: Mutex<HashMap<String, String>>,
     /// Serializes "is there room?" decisions (spawning and dequeueing).
     gate: Mutex<()>,
+    /// Told about each post this host writes (the "Handed to" card), so
+    /// clients hear of it like any other.
+    announce: OnceLock<tern_tools::channels::OnPost>,
 }
 
 /// A sub-agent's system prompt, from its label, depth, the agent it works
@@ -167,7 +170,13 @@ impl Subagents {
             notify: Notify::new(),
             reasons: Mutex::new(HashMap::new()),
             gate: Mutex::new(()),
+            announce: OnceLock::new(),
         }
+    }
+
+    /// Announce the posts this host writes.
+    pub fn set_announce(&self, announce: tern_tools::channels::OnPost) {
+        let _ = self.announce.set(announce);
     }
 
     /// Replace the driver (the daemon swaps in its `Manager`).
@@ -614,6 +623,11 @@ impl Subagents {
         Ok(names)
     }
 
+    /// The most characters of reports one call puts in the caller's context.
+    fn fanout_budget(&self) -> usize {
+        subagent::FANOUT_RESULT_CHARS.max(self.limits.max_result_chars)
+    }
+
     fn handle(&self, child: &RunRow) -> anyhow::Result<Value> {
         Ok(json!({
             "agent": child.label,
@@ -680,6 +694,7 @@ impl Subagents {
     fn report_entry(mail: &MailRow) -> Value {
         match serde_json::from_str::<Finished>(&mail.body) {
             Ok(f) => {
+                let next = subagent::unfinished_guidance(&f);
                 let mut v = json!({
                     "agent": f.agent,
                     "status": f.status,
@@ -689,6 +704,9 @@ impl Subagents {
                 });
                 if let Some(r) = f.result {
                     v["result"] = r.into();
+                }
+                if let Some(next) = next {
+                    v["next"] = next.into();
                 }
                 if let Some(e) = f.error {
                     v["error"] = e.into();
@@ -990,6 +1008,8 @@ impl Subagents {
                         }
                     }
                 }
+                // Reports that arrive together share one budget.
+                subagent::share_budget(&mut entries, self.fanout_budget());
                 let mut out = json!({ "agents": entries });
                 // A report written by a tainted child taints its reader.
                 let mut tainted = false;
@@ -1212,6 +1232,131 @@ impl Subagents {
     }
 }
 
+impl Subagents {
+    /// `delegate_team`: one lane per teammate, spawned together, waited for
+    /// together. Every lane is checked before any starts, so a refused name
+    /// leaves nothing running.
+    async fn try_team(
+        &self,
+        ctx: &ToolCtx,
+        call_id: &str,
+        req: TeamRequest,
+    ) -> anyhow::Result<Value> {
+        let parent = self.run(&ctx.run_id).map_err(anyhow::Error::msg)?;
+        if !(2..=subagent::MAX_TEAM_LANES).contains(&req.lanes.len()) {
+            anyhow::bail!(
+                "delegate_team takes 2 to {} lanes, one per teammate; for one teammate use agent_spawn with `agent`",
+                subagent::MAX_TEAM_LANES
+            );
+        }
+        let caller = self.store.session_agent(&parent.session_id)?;
+        let mut lanes: Vec<(tern_store::AgentRow, &subagent::Lane)> = Vec::new();
+        for lane in &req.lanes {
+            if lane.task.trim().is_empty() {
+                anyhow::bail!(
+                    "the lane for {:?} has an empty task: give it its complete brief",
+                    lane.agent
+                );
+            }
+            let target = self
+                .delegate(&caller, &lane.agent)?
+                .map_err(anyhow::Error::msg)?;
+            if lanes.iter().any(|(a, _)| a.id == target.id) {
+                anyhow::bail!(
+                    "{} appears in two lanes: give each teammate one",
+                    target.name
+                );
+            }
+            lanes.push((target, lane));
+        }
+        let mut labels = Vec::new();
+        for (i, (target, lane)) in lanes.iter().enumerate() {
+            let label = team_label(&target.slug);
+            labels.push(label.clone());
+            self.try_spawn(
+                ctx,
+                &format!("{call_id}:{i}"),
+                SpawnRequest {
+                    label,
+                    task: lane.task.clone(),
+                    tools: None,
+                    model: None,
+                    max_iterations: None,
+                    budget_tokens: None,
+                    post: false,
+                    agent: Some(target.id.clone()),
+                    subdir: None,
+                },
+            )?;
+        }
+        let names: Vec<String> = lanes.iter().map(|(a, _)| a.name.clone()).collect();
+        self.handed_card(&parent, call_id, &caller, &names);
+        let mut out = self
+            .try_wait(
+                ctx,
+                WaitRequest {
+                    agents: Some(labels.clone()),
+                    mode: WaitMode::All,
+                    timeout_secs: req.timeout_secs,
+                },
+            )
+            .await?;
+        if let Some(entries) = out["agents"].as_array_mut() {
+            for (entry, (target, _)) in entries.iter_mut().zip(&lanes) {
+                entry["teammate"] = target.name.clone().into();
+            }
+        }
+        out["handed_to"] = json!(names);
+        out["next"] = "Answer once, in your own words, crediting each teammate by name for their part. A part that didn't finish says what to do about it.".into();
+        Ok(out)
+    }
+
+    /// The one card for a team call, in the caller's conversation: "Handed
+    /// to Scout and Researcher".
+    fn handed_card(&self, parent: &RunRow, call_id: &str, caller: &str, names: &[String]) {
+        let Ok(Some(channel)) = self.store.session_channel(&parent.session_id) else {
+            return;
+        };
+        let author = self
+            .store
+            .agent(caller)
+            .ok()
+            .flatten()
+            .map_or_else(|| caller.to_owned(), |a| a.name);
+        let key = format!("handed:{}:{call_id}", parent.id);
+        let text = format!("Handed to {}", tern_tools::agents::names_list(names));
+        let written = self.store.add_post(&tern_store::NewPost {
+            channel_id: &channel.id,
+            session_id: Some(&parent.session_id),
+            run_id: Some(&parent.id),
+            author_kind: "agent",
+            author_id: caller,
+            author: &author,
+            kind: "handed",
+            text: &text,
+            tainted: parent.taint.is_some(),
+            dedupe_key: Some(&key),
+            ..tern_store::NewPost::default()
+        });
+        match written {
+            Ok((row, true)) => {
+                if let Some(f) = self.announce.get() {
+                    f(row);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "writing the team card failed"),
+        }
+    }
+}
+
+/// The label a team lane's sub-agent gets: `team-<slug>`, valid as a label.
+fn team_label(slug: &str) -> String {
+    let mut label = format!("{}{slug}", subagent::TEAM_LABEL_PREFIX);
+    label.truncate(32);
+    label.trim_end_matches('-').to_owned()
+}
+
 /// `900` → "15 minutes", `90` → "90 seconds".
 fn human_secs(secs: u64) -> String {
     match secs {
@@ -1393,6 +1538,17 @@ impl SubagentHost for Subagents {
 
     async fn wait(&self, ctx: &ToolCtx, req: WaitRequest) -> Result<Value, String> {
         self.try_wait(ctx, req).await.map_err(|e| format!("{e:#}"))
+    }
+
+    async fn delegate_team(
+        &self,
+        ctx: &ToolCtx,
+        call_id: &str,
+        req: TeamRequest,
+    ) -> Result<Value, String> {
+        self.try_team(ctx, call_id, req)
+            .await
+            .map_err(|e| format!("{e:#}"))
     }
 
     async fn result(&self, ctx: &ToolCtx, req: ResultRequest) -> Result<Value, String> {
@@ -1763,7 +1919,7 @@ mod tests {
         );
         assert!(
             result.contains("report truncated: showing the first 8000 of 20000 characters")
-                && result.contains("agent_result {\"agent\": \"clean\", \"offset\": 8000}"),
+                && result.contains("read_report {\"agent\": \"clean\", \"offset\": 8000}"),
             "{result}"
         );
         assert!(out.get("tainted").is_none(), "a clean child is not framed");

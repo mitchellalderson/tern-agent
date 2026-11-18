@@ -333,6 +333,12 @@ impl Manager {
     /// `max_hops` deep, and the hourly budget isn't used up. One wake per
     /// agent per post; an agent never wakes itself.
     pub(super) async fn wake_from_post(self: &Arc<Self>, post: &Post) -> anyhow::Result<()> {
+        if matches!(
+            post.kind.as_str(),
+            crate::team_tools::BRIEF_NOW | crate::team_tools::BRIEF_REPLY
+        ) {
+            return self.wake_from_brief(post).await;
+        }
         if post.mentions.is_empty()
             || !matches!(post.author_kind.as_str(), "agent" | "subagent" | "routine")
             || matches!(post.kind.as_str(), "pointer" | "note" | "moved")
@@ -424,6 +430,79 @@ impl Manager {
                 .await?;
             tracing::info!(post = post.id, agent = %agent.id, run = %woken.run_id, queued = woken.queued, "an agent's mention woke an agent");
         }
+        Ok(())
+    }
+
+    /// A `brief_team` with `now` or `want_reply`: wake the agent whose DM
+    /// it is, in that DM, under the same guards as a mention (the hop limit
+    /// and the hourly budget), so briefs can't chain forever. A plain brief
+    /// never gets here: its reader sees it at its next run.
+    async fn wake_from_brief(self: &Arc<Self>, post: &Post) -> anyhow::Result<()> {
+        let store = &self.rt.store;
+        if post.author_kind != "agent" {
+            return Ok(());
+        }
+        let Some(channel) = store.channel(&post.channel_id)? else {
+            return Ok(());
+        };
+        if channel.kind != "main" || channel.archived_at.is_some() {
+            return Ok(());
+        }
+        let agent = channel.lead().to_owned();
+        let Some(target) = store.agent(&agent)?.filter(|a| a.archived_at.is_none()) else {
+            return Ok(());
+        };
+        if target.id == post.author_id {
+            return Ok(());
+        }
+        let wakes = store.channel_wakes(&channel.id)?;
+        let key = format!("nowake:{}:{}", post.id, target.id);
+        if post.wake_depth >= wakes.max_hops {
+            return self.note(
+                &channel.id,
+                &format!(
+                    "{} not woken: agents have already woken each other {} times in a row",
+                    target.name, post.wake_depth
+                ),
+                &key,
+            );
+        }
+        let used = store.agent_wakes_since(&channel.id, tern_store::now_ms() - HOUR_MS)?;
+        if used >= wakes.wakes_per_hour {
+            return self.note(
+                &channel.id,
+                &format!(
+                    "{} not woken: the hourly wake budget ({}) is used up",
+                    target.name, wakes.wakes_per_hour
+                ),
+                &key,
+            );
+        }
+        let body = if post.tainted {
+            tern_core::agent::taint::wrap(&format!("brief from {}", post.author), &post.text)
+        } else {
+            post.text.clone()
+        };
+        let ask = if post.kind == crate::team_tools::BRIEF_REPLY {
+            format!(
+                "\n\n{} wants a reply: answer them with `brief_team` (agents: [\"{}\"]), without waking them.",
+                post.author,
+                store
+                    .agent(&post.author_id)?
+                    .map_or(post.author_id.clone(), |a| a.slug)
+            )
+        } else {
+            "\n\nAct on it now if it changes your work; no reply is needed.".to_owned()
+        };
+        let text = format!("{} briefed you:\n\n{body}{ask}", post.author);
+        let taint = post
+            .tainted
+            .then(|| format!("woken by a tainted brief from {}", post.author));
+        let session = self.agent_thread(&channel, &target.id)?;
+        let woken = self
+            .wake_keyed(&target.id, &session, post.id, &text, taint.as_deref())
+            .await?;
+        tracing::info!(post = post.id, agent = %target.id, run = %woken.run_id, queued = woken.queued, "a brief woke an agent");
         Ok(())
     }
 

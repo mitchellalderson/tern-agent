@@ -17,6 +17,10 @@ use super::manager::Manager;
 
 /// The post kind.
 pub const KIND: &str = "delegated";
+/// The kind of the "Message from X" card in the asker's chat.
+pub const MESSAGE_KIND: &str = "message_from";
+/// How much of a report the card carries.
+const CARD_CHARS: usize = 400;
 
 /// One batch, as the post and the side panel describe it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -221,6 +225,7 @@ impl Manager {
         let name = store
             .agent(&agent)?
             .map_or_else(|| agent.clone(), |a| a.name);
+        self.message_card(&run, &parent, &agent, &name)?;
         let key = key(&parent.id, &agent);
         let text = b.text();
         let (row, created) = store.add_post(&NewPost {
@@ -247,6 +252,66 @@ impl Manager {
                     post: Box::new(super::channels::view(store, row)),
                 });
             }
+        }
+        Ok(())
+    }
+
+    /// "Message from Scout": what a delegate answered, as a card in the
+    /// chat of the agent that asked it, where the answer belongs. Once per
+    /// delegated run, when it ends; a team call (`delegate_team`) has its
+    /// own single card. The delegate's own DM only gets the pointer above:
+    /// nothing is posted into a conversation the asker isn't in.
+    fn message_card(
+        &self,
+        run: &RunRow,
+        parent: &RunRow,
+        agent: &str,
+        name: &str,
+    ) -> anyhow::Result<()> {
+        let store = &self.rt.store;
+        if !matches!(run.status.as_str(), "completed" | "failed")
+            || run
+                .label
+                .as_deref()
+                .is_some_and(|l| l.starts_with(tern_core::subagent::TEAM_LABEL_PREFIX))
+        {
+            return Ok(());
+        }
+        let Some(channel) = store.session_channel(&parent.session_id)? else {
+            return Ok(());
+        };
+        let report = super::channels::final_text(store, run).unwrap_or_default();
+        let report = report.trim();
+        let body = match (run.status.as_str(), report.is_empty()) {
+            ("completed", false) => {
+                let cut: String = report.chars().take(CARD_CHARS).collect();
+                if report.chars().count() > CARD_CHARS {
+                    format!("{cut}…")
+                } else {
+                    cut
+                }
+            }
+            ("completed", true) => "Done, with nothing to report.".to_owned(),
+            _ => "Couldn't finish.".to_owned(),
+        };
+        let text = format!("Message from {name}\n\n{body}");
+        let key = format!("msgfrom:{}", run.id);
+        let (row, created) = store.add_post(&NewPost {
+            channel_id: &channel.id,
+            // The asker's own conversation: its digest leaves the card out.
+            session_id: Some(&parent.session_id),
+            run_id: Some(&parent.id),
+            author_kind: "agent",
+            author_id: agent,
+            author: name,
+            kind: MESSAGE_KIND,
+            text: &text,
+            tainted: run.taint.is_some(),
+            dedupe_key: Some(&key),
+            ..NewPost::default()
+        })?;
+        if created {
+            self.publish(super::channels::view(store, row));
         }
         Ok(())
     }

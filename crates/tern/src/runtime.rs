@@ -209,8 +209,14 @@ impl Runtime {
         )));
         tools.register(Arc::new(tern_tools::channels::ChannelSuggest::new(
             store.clone(),
+            Some(announce(post_changes.clone(), store.clone())),
+        )));
+        // Agents working as a team: brief teammates, look at their own runs.
+        tools.register(Arc::new(crate::team_tools::BriefTeam::new(
+            store.clone(),
             Some(announce(post_changes, store.clone())),
         )));
+        tools.register(Arc::new(crate::team_tools::InspectWork::new(store.clone())));
         tools.register(Arc::new(tern_tools::secret_request::SecretRequest::new(
             approvals.clone(),
             secrets.clone(),
@@ -324,6 +330,7 @@ impl Runtime {
                 mock,
             ));
             host.set_driver(Arc::new(LocalDriver::new(&agent)));
+            host.set_announce(announce(changes.clone(), store.clone()));
             let p = prompts.clone();
             let st = store.clone();
             let h = home.clone();

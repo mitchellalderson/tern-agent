@@ -39,6 +39,7 @@ mod settings;
 mod skills_cmd;
 mod subagents;
 mod tasks_cmd;
+mod team_tools;
 mod tray;
 mod tui_backend;
 mod uninstall_cmd;
