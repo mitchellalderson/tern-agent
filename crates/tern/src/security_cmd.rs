@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use serde::{Deserialize, Serialize};
 use tern_core::approval::{Autonomy, Egress};
-use tern_core::config::{ConfineMode, SandboxBackendKind, Strangers, TlsMode};
+use tern_core::config::{ConfineMode, SandboxBackendKind, Strangers};
 use tern_core::{Config, TernHome};
 use tern_store::Store;
 
@@ -203,40 +203,6 @@ fn listeners(a: &mut Audit, config: &Config) {
                     "the API is on TCP and sandbox.backend = \"host\": shell commands approved from a paired device run on this machine",
                     Some("Consider sandbox.backend = \"docker\", or pair phones with --scope read."),
                 );
-            }
-        }
-    }
-    match crate::daemon::hooks::check(config) {
-        Err(e) => a.add(
-            Severity::High,
-            "listeners",
-            format!("the webhook listener: {e:#}"),
-            None,
-        ),
-        Ok(addrs) => {
-            let tls = config.webhooks.tls.unwrap_or(config.api.tls);
-            for addr in addrs {
-                let (sev, reach) = if addr.ip().is_loopback() {
-                    (Severity::Info, "this machine, or a tunnel in front")
-                } else {
-                    (Severity::Low, "the network")
-                };
-                a.add(
-                    sev,
-                    "listeners",
-                    format!(
-                        "webhooks on tcp://{addr} ({tls:?} TLS), reachable from {reach}: each routine's secret guards it, and its runs are tainted"
-                    ),
-                    None,
-                );
-                if tls == TlsMode::Off && !addr.ip().is_loopback() {
-                    a.add(
-                        Severity::High,
-                        "listeners",
-                        format!("webhooks on tcp://{addr} without TLS"),
-                        None,
-                    );
-                }
             }
         }
     }
@@ -580,7 +546,7 @@ fn devices(a: &mut Audit, store: &Store) {
 
 fn routines(a: &mut Audit, config: &Config, store: &Store) {
     for s in store.schedules().unwrap_or_default() {
-        if !s.enabled || !matches!(s.trigger.as_str(), "watch" | "webhook") {
+        if !s.enabled || s.trigger != "watch" {
             continue;
         }
         let level = s
@@ -588,11 +554,7 @@ fn routines(a: &mut Audit, config: &Config, store: &Store) {
             .as_deref()
             .and_then(Autonomy::parse)
             .unwrap_or(config.autonomy);
-        let source = if s.trigger == "webhook" {
-            "a webhook delivery"
-        } else {
-            "what its watch finds"
-        };
+        let source = "what its watch finds";
         let title = crate::daemon::scheduler::title(&s);
         let (sev, then) = match level {
             Autonomy::Yolo => (

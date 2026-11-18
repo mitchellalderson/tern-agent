@@ -58,7 +58,7 @@ enum PrefSection {
   servers(
     'Servers',
     Icons.dns_outlined,
-    'saved servers remote listen api webhooks devices tls address',
+    'saved servers remote listen api devices tls address',
   ),
   advanced(
     'Advanced',
@@ -117,7 +117,7 @@ const _intro = {
   PrefSection.limits:
       'Caps on how long and how much tern works before it stops or asks.',
   PrefSection.servers:
-      'Where tern runs, and how other devices and webhooks reach it.',
+      'Where tern runs, and how other devices reach it.',
   PrefSection.advanced:
       'Tuning knobs most people never touch, and the raw file. Each change '
       'is checked and saved right away, keeping config.toml\'s comments.',
@@ -591,7 +591,7 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
               'This app is not set up to switch servers.',
               style: TextStyle(color: c.muted),
             ),
-          heading('Listeners & webhooks'),
+          heading('Listeners'),
           ..._rows('servers'),
         ];
       case PrefSection.advanced:

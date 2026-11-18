@@ -22,7 +22,6 @@ import 'subagents.dart';
 import 'security.dart';
 import 'tasks.dart';
 import 'tools.dart';
-import 'webhooks.dart';
 import 'workspaces.dart';
 
 /// An error response from the daemon (`{"error": "..."}`) or a failure to
@@ -1094,45 +1093,6 @@ class TernClient {
 
   Future<void> deleteSchedule(String id) =>
       _json('DELETE', '/v1/schedules/$id');
-
-  /// Owner only: every webhook routine's hook (never secrets).
-  Future<List<Webhook>> webhooks() async => [
-    for (final w in await _json('GET', '/v1/webhooks') as List)
-      Webhook.fromJson(w as Json),
-  ];
-
-  /// Owner only: a routine run by webhook deliveries. The answer carries
-  /// the secret, which the daemon never shows again. `auth`: `hmac` or
-  /// `bearer`.
-  Future<CreatedWebhook> createWebhook({
-    required String prompt,
-    String auth = 'hmac',
-    String? deliverTo,
-    ScheduleLimits? limits,
-    String? channel,
-    String? agent,
-    RoutineOptions? options,
-  }) async => CreatedWebhook.fromJson(
-    await _json('POST', '/v1/webhooks', {
-      'prompt': prompt,
-      'auth': auth,
-      'deliver_to': ?deliverTo,
-      'channel': ?channel,
-      'agent': ?agent,
-      ...?limits?.toJson(),
-      ...?options?.toJson(),
-    }),
-  );
-
-  /// A new secret at once (the old one stops working); also turns a
-  /// revoked hook back on.
-  Future<Webhook> rotateWebhook(String id, {String? auth}) async =>
-      Webhook.fromJson(
-        await _json('POST', '/v1/webhooks/$id/rotate', {'auth': ?auth}),
-      );
-
-  /// The URL answers 404 until [rotateWebhook].
-  Future<void> revokeWebhook(String id) => _json('DELETE', '/v1/webhooks/$id');
 
   /// Owner only: installed bundles (tooling spec §6.5).
   Future<List<InstalledBundle>> bundles() async => [

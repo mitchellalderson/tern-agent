@@ -59,8 +59,6 @@ pub const FEATURES: &[&str] = &[
     "agents",
     // `/v1/outbox` and `outbox_changed` events (tooling spec §5.2).
     "outbox",
-    // `/v1/webhooks`: webhook routines, their secrets and local fires (T1c).
-    "webhooks",
     // `/v1/connections`, `/v1/auth-prompts` and their events (tooling spec
     // §6.7–6.8).
     "connections",
@@ -151,8 +149,6 @@ const OWNER_ONLY: &[&str] = &[
     "/v1/shutdown",
     // Moving conversations between channels rearranges what everyone sees.
     "/v1/channels/move",
-    // Webhook secrets let the internet start (tainted) runs.
-    "/v1/webhooks",
     // Every account, grant and approval (tooling spec §8.1).
     "/v1/ledger",
     // How exposed the core is (tooling spec §8.4).
@@ -287,15 +283,6 @@ pub async fn require_auth(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim);
-    if token.is_some_and(|t| t.starts_with(super::hooks::SECRET_PREFIX)) {
-        // W6: a webhook secret is for its hook's path on the webhook
-        // listener, never a credential for the API.
-        tracing::warn!(target: "audit", %ip, %path, "webhook secret sent to the API; refused");
-        return deny(
-            StatusCode::UNAUTHORIZED,
-            "webhook secrets are not accepted on the API; use a device token",
-        );
-    }
     if let (Some(verifier), Some(t)) = (&st.account, token)
         && !t.starts_with(TOKEN_PREFIX)
         && super::account::AccountVerifier::looks_like_jwt(t)
@@ -440,18 +427,6 @@ impl<K: std::hash::Hash + Eq> RateLimit<K> {
 
     pub(super) fn allow(&self, key: K) -> bool {
         self.allow_up_to(key, self.max)
-    }
-
-    /// Whether `key` has used up its window, without counting a hit.
-    pub(super) fn exceeded(&self, key: &K) -> bool {
-        let now = Instant::now();
-        let hits = self.hits.lock().unwrap_or_else(|p| p.into_inner());
-        hits.get(key).is_some_and(|q| {
-            q.iter()
-                .filter(|t| now.duration_since(**t) < self.window)
-                .count()
-                >= self.max
-        })
     }
 
     /// [`Self::allow`] with a limit that may change between calls.
@@ -874,9 +849,6 @@ mod tests {
         );
         assert_eq!(required_scope(&get, "/v1/secrets"), Scope::Owner);
         assert_eq!(required_scope(&post, "/v1/shutdown"), Scope::Owner);
-        // Webhook secrets let the internet start runs: owner-only to read too.
-        assert_eq!(required_scope(&get, "/v1/webhooks"), Scope::Owner);
-        assert_eq!(required_scope(&post, "/v1/webhooks/x/rotate"), Scope::Owner);
         assert_eq!(required_scope(&get, "/v1/status"), Scope::Read);
         assert_eq!(required_scope(&get, "/v1/mcp/github"), Scope::Read);
         assert_eq!(required_scope(&post, "/v1/mcp"), Scope::Owner);

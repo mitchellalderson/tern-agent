@@ -41,7 +41,7 @@ pub fn routes() -> Router<Shared> {
 #[derive(Serialize, Deserialize)]
 pub struct Schedule {
     pub id: String,
-    /// What starts it (T1b): `cron`, `once`, `watch` or `webhook` (T1c).
+    /// What starts it (T1b): `cron`, `once` or `watch`.
     #[serde(default = "cron")]
     pub trigger: String,
     /// The cron expression; empty for other triggers.
@@ -310,9 +310,8 @@ async fn create(
     Ok((StatusCode::CREATED, Json(view(&m, row))))
 }
 
-/// Create the routine `b` describes (`POST /v1/webhooks` sets a webhook
-/// trigger first).
-pub(super) async fn create_row(m: &Shared, mut b: CreateBody) -> Result<ScheduleRow, ApiError> {
+/// Create the routine `b` describes.
+async fn create_row(m: &Shared, mut b: CreateBody) -> Result<ScheduleRow, ApiError> {
     let m = m.clone();
     check_trigger(&m, &mut b.trigger, &b.limits, None).await?;
     let deliver_to = target(&m, b.deliver_to.as_deref())?;

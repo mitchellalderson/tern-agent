@@ -210,7 +210,6 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_workspaces::routes())
         .merge(super::api_config::routes())
         .merge(super::api_schedules::routes())
-        .merge(super::api_webhooks::routes())
         .merge(super::api_outbox::routes())
         .merge(super::api_ledger::routes())
         .merge(super::api_tasks::routes())

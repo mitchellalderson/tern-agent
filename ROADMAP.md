@@ -48,7 +48,7 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 - **Quieter schedules**: `NO_REPLY`, quiet hours, per-schedule run caps and budgets (T1a).
 - **Routines** (T1b): schedules become routines with cron and one-off triggers, Luau watches that remember where they
   left off, gate scripts that skip a run, initiative levels, and digests.
-- **Webhook triggers** (T1c): an outside event can start a routine.
+- Webhook triggers (T1c) were built, then removed: tern is local-only, so nothing outside this machine starts a routine. Watches poll outbound instead.
 
 **Memory and models**
 - **Memory flush before compaction**, with capped `user.md` and `memory.md` (T5a).

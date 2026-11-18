@@ -74,7 +74,6 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern ledger`](#activity-ledger) | The hash-chained activity ledger; `tern ledger verify` checks it. |
 | [`tern security audit`](#security-audit) | How exposed this core is and what could act without asking; non-zero on a high finding. |
 | [`tern outbox`](#outbox) | Writes waiting for your approval: list, show, approve (optionally edited), reject. |
-| [`tern hooks`](#webhooks) | Webhook routines: create (URL and secret shown once), list, rotate, revoke, fire locally. |
 | [`tern connectors`](#tern-connectors) | List or validate Luau connectors, replay or record their test fixtures, or generate one from an OpenAPI document. |
 | [`tern connections`](#tern-connections) | Accounts of connectors and MCP servers: sign in, add another, set the default, remove. |
 | [`tern bundle`](#tern-bundle) | Install, update, remove and export bundles of connectors, skills and routines; signing keys and trust. |
@@ -715,7 +714,7 @@ tainted run. The block is part of the run's input message, so it is in the conve
 
 A schedule is a **routine**: a prompt with a trigger. The tools and the API keep their `schedule_*` and `/v1/schedules` names; schedules from before routines are cron routines that push every result, as they did.
 
-- **Triggers.** `cron` (repeating), `at` (once, a local `"YYYY-MM-DD HH:MM"`: reminders; it turns itself off after running, and a new `at` turns it on again), `watch`, or a [webhook](#webhooks).
+- **Triggers.** `cron` (repeating), `at` (once, a local `"YYYY-MM-DD HH:MM"`: reminders; it turns itself off after running, and a new `at` turns it on again), or `watch`.
 - **Watches.** A connector can declare watches next to its tools:
 
   ```lua
@@ -732,7 +731,7 @@ A schedule is a **routine**: a prompt with a trigger. The tools and the API keep
   ```
 
   A routine with `watch = "github.review_requests"` (and `every`, at least `1m`, default the watch's own) is polled by the daemon. **A poll that finds nothing costs no tokens**: no model is called. Each new event starts an ordinary run in the routine's session with the event attached as untrusted input, so the run is [tainted](#taint) (its writes ask, or wait in the outbox). Events are deduplicated by their `id` (or their content), and the cursor is saved with them, so a restart or an overlapping poll never starts an event twice. The first poll only records what is already there, unless `backfill: true`; events marked `origin = "self"` are skipped unless `include_self: true`; more than `max_events_per_poll` new events at once share one run. A watch runs in the connector's sandbox with its hosts and secrets, GET only (`read_via_post = true` allows POST), and only for an active, approved connector. Creating one tells you its interval and the hosts it reaches. No watch is on until you (or the agent, with your approval) create one.
-- **Gates.** A cron, once or webhook routine can have a `gate`: Luau run before each slot, at no token cost. False skips that run. An expression (`os.date("*t").wday ~= 1`) or statements with `return`; it gets `ctx` and `routine` (`id`, `last_run_at`, `now`), and with `gate_connector` that connector's hosts (GET only), secrets and tools as `connector` (`#connector.tools.unread.run(ctx, {}) > 0`). A gate that fails lets the run go ahead.
+- **Gates.** A cron or once routine can have a `gate`: Luau run before each slot, at no token cost. False skips that run. An expression (`os.date("*t").wday ~= 1`) or statements with `return`; it gets `ctx` and `routine` (`id`, `last_run_at`, `now`), and with `gate_connector` that connector's hosts (GET only), secrets and tools as `connector` (`#connector.tools.unread.run(ctx, {}) > 0`). A gate that fails lets the run go ahead.
 - **`last_check`** in `GET /v1/schedules` (and the app's tooltip) says what the last poll or gate found.
 - **Initiative.** Every result is posted to the routine's channel; its initiative decides whether it is also sent to its chat (`deliver_to`):
 
@@ -745,45 +744,11 @@ A schedule is a **routine**: a prompt with a trigger. The tools and the API keep
 
   Set it per routine (`initiative`, `"default"` or `null` for the default), or for all with `schedules.initiative`. The **dial** (`schedules.initiative_dial`, or `PUT /v1/initiative {"dial": "vacation"}`) moves every routine one level `quieter` or `louder`, or makes everything silent on `vacation`; `/v1/status` reports it.
 - **API**: `POST /v1/schedules` takes one of `cron`, `at` or `watch` (+ `every`, `backfill`, `include_self`), and `gate`, `gate_connector`, `initiative`; `PATCH` changes any of them. The view adds `trigger`, `at`, `watch`, `every_secs`, `last_check`, `gate`, `gate_connector` and `initiative` (each absent when unset).
-- **In the desktop app** the routine editor has Repeating / Once / On events / Webhook, an initiative menu, and a gate under "Quiet hours and limits".
+- **In the desktop app** the routine editor has Repeating / Once / On events, an initiative menu, and a gate under "Quiet hours and limits".
 
 ### Waits
 
 `wait_until` is a one-shot wait tied to the conversation that made it: "watch this GitHub Actions run and continue here when it finishes". The agent gives a check (a connector's **read** tool with arguments, a public JSON URL, or just a delay like `20m`), a condition (`{path, equals}` or `{path, in: [...]}` on the JSON result), `every` (at least 30s, default 1m), a `timeout` (default 1h, at most 24h) and a note to itself. The daemon polls the check, **no model call**; when the condition matches, or the wait times out, it starts one run in the same session and agent with the note and the result (framed as untrusted, and the run tainted, when it came from a connector or a URL), and the wait deletes itself. Waits survive a restart. `wait_list` and `wait_cancel` are the agent's; the user sees "Waiting: <note>" in Library → Tasks (with Cancel) and as a quiet line in the conversation, and `GET /v1/waits`, `DELETE /v1/waits/{id}` serve both. At most `[schedules] max_waits` (default 5) per agent; `runs_per_day` also caps continuations; every create, fire and cancel is in the ledger. Creating one doesn't ask in an untainted run and asks in a tainted one. Design: [wait-until-design.md](wait-until-design.md); GitHub Actions: [recipes/github-actions.md](recipes/github-actions.md).
-
-### Webhooks
-
-A webhook routine runs its prompt each time something POSTs to its URL: a GitHub push, a form, a script. It's the one thing the internet can call, so it is fenced off:
-
-- **Its own listener.** Deliveries arrive only on `[webhooks] listen`, a port separate from the API's, serving nothing but `POST /v1/hooks/<routine id>` and `GET /healthz`. It's off by default; without it, `tern hooks fire` still delivers locally. Put it behind a tunnel (Cloudflare Tunnel, Tailscale Funnel) or reverse proxy and set `public_url`, so you expose webhooks without exposing the API.
-
-  ```toml
-  [webhooks]
-  listen = ["tcp://127.0.0.1:8712"]
-  tls = "off"                         # the tunnel or proxy terminates TLS; needs [api] trust_proxy = true
-  public_url = "https://hooks.example.com"
-  ```
-
-  | Key | Default | |
-  |---|---|---|
-  | `webhooks.listen` | none | `tcp://host:port` listeners. |
-  | `webhooks.tls` | `[api] tls` | `auto`, `files` (with `[api]`'s `tls_cert`/`tls_key`) or `off` (loopback listeners behind a proxy, with `api.trust_proxy`). |
-  | `webhooks.public_url` | the first listener | The base of each hook's URL. |
-  | `webhooks.max_body_kb` | `256` | Larger bodies get 413. |
-  | `webhooks.per_minute` | `30` | Deliveries one routine accepts per minute; more get 429. |
-  | `webhooks.tolerance_secs` | `300` | How far a signed timestamp may be from now. |
-  | `webhooks.header_timeout_secs` | `10` | Time for the TLS handshake and each request's headers, idle keep-alive included; slower connections are closed. Needs a restart. |
-  | `webhooks.body_timeout_secs` | `30` | Time for a body once its headers are in; slower gets 408. |
-  | `webhooks.max_connections` | `64` | Open connections at once, across the webhook listeners; more get 503 (closed under TLS). Needs a restart. |
-- **Its own secret.** Each routine has a secret (`tern_whk_…`), shown once when it's made or rotated. With `auth = "hmac"` (the default) senders sign the body with HMAC-SHA256: GitHub's `X-Hub-Signature-256: sha256=<hex>`, or `X-Tern-Signature: t=<unix seconds>,v1=<hex of HMAC("<t>.<body>")>`, whose timestamp must be within `tolerance_secs`. With `auth = "bearer"` they send `Authorization: Bearer <secret>`. **Device tokens are refused on webhook paths, and webhook secrets on the API**, whatever else the request carries. Management (`/v1/webhooks`) is owner-only.
-- **Refusals**: an unknown or revoked hook 404, a body over `max_body_kb` 413, a missing or bad signature or a stale timestamp 401, over `per_minute` 429, a paused routine 409. One address with 20 failures in a minute gets 429 until it passes. A body slower than `body_timeout_secs` 408; past `max_connections`, 503.
-- **Each delivery once.** A delivery is keyed by a hash of what was signed (the body, plus the timestamp for `X-Tern-Signature`), so a re-delivery or a captured request replayed starts nothing (`200 {"status": "duplicate"}`). Identical bodies count as one event under `X-Hub-Signature-256` and `bearer`.
-- **Untrusted.** The routine sees the event as `{"headers": {…}, "body": …}`: the body (parsed as JSON when it is), and only the headers that name the event (`content-type`, `user-agent`, `*-event`, `*-event-type`, `*-delivery`; never credentials). Its run starts [tainted](#taint) ("started by a webhook") with the event wrapped as untrusted, so writes ask or wait in the outbox. Payloads over 16 KB are cut.
-- **Gates filter first.** A gate sees `event` (and `routine`): false drops the delivery with no model call (`200 {"status": "ignored"}`), `true` keeps it, and a table replaces it, e.g. `event.headers['x-github-event'] == 'issues' and event.body.action == 'opened'`, or `return { title = event.body.issue.title }` to send the model only that.
-- **CLI**: `tern hooks create "<prompt>" [--auth hmac|bearer] [--gate …] [--gate-connector …] [--agent …] [--channel …] [--initiative …]` prints the URL and secret; `tern hooks list`, `rotate <id> [--auth]` (the old secret stops at once; also revives a revoked hook), `revoke <id>`, and `fire <id> [--body JSON | --file path]` (a local delivery: no secret, same gate, dedup and taint). `tern hook` works too.
-- **API** (`webhooks` in `/v1/health`, owner only): `GET /v1/webhooks`, `POST /v1/webhooks` (the fields of `POST /v1/schedules` without a trigger, plus `auth`) → `{schedule, webhook}` with the secret, `POST /v1/webhooks/{id}/rotate {auth?}`, `DELETE /v1/webhooks/{id}`, `POST /v1/webhooks/{id}/fire`. The prompt, gate and limits change through `PATCH /v1/schedules/{id}`; giving the routine another trigger there revokes its secret. The agent's `schedule_*` tools can't make webhook routines (that would put a secret in its context).
-- **Desktop**: **Webhook** in a new routine's editor (signed or secret-in-header); the secret is shown once with copy buttons. Editing one shows its URL, **Rotate secret…** and **Revoke**.
-- `tern doctor` says whether a webhook listener is on, whether it answers, whether it's loopback-only without a `public_url`, and (unless `--offline`) whether `public_url/healthz` reaches this core from outside.
 
 ## Channels
 
@@ -954,7 +919,7 @@ Design: [docs/quarantined-fetch-design.md](quarantined-fetch-design.md). The age
 
 A run is **tainted** once untrusted content reaches it (docs/personal-agent-tooling-spec.md §5.3):
 
-- **What taints**: the result of a tool marked untrusted (`http_fetch` when it returns free text (`answer`, `text`), or always with `fetch.taint = "legacy"`; `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`, and `shell` when the command could reach the network: it asked for it with `network: true`, `sandbox.network = true`, or no OS sandbox enforces the default `false`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (webhooks, watches, messages from people who aren't you) will taint it from the start once those exist.
+- **What taints**: the result of a tool marked untrusted (`http_fetch` when it returns free text (`answer`, `text`), or always with `fetch.taint = "legacy"`; `mcp_list`, Luau tools with `untrusted = true`, every tool of an MCP server with `untrusted = true`, and `shell` when the command could reach the network: it asked for it with `network: true`, `sandbox.network = true`, or no OS sandbox enforces the default `false`), mail from a tainted run (a sub-agent's report, `agent_send`), and being spawned by a tainted run. Untrusted input that starts a run (a watch's events) taints it from the start.
 - **It sticks** for the rest of the run, survives a crash and `tern resume` exactly (it's rebuilt from the journal), and doesn't carry to the next run in the conversation.
 - **What it changes**: every `write` and `destructive` call asks, even with an "always" grant or a pre-granted one (workspace writes, schedules), and "always" isn't offered. One exception: `write_file` and `edit_file` whose target resolves inside the agent's own workspace (canonical, no `..`, no symlink on the way, not protected) don't ask because of taint (`[taint] workspace_writes`, default on; each is a ledger row `tainted-write-in-workspace`); `workspace_writes = false` makes them ask again. A `shell` command that is only a pipeline of plain reading programs (`cat`, `head`, `tail`, `od`, `hexdump`, `wc`, `grep` without `-r`, `ls`, `stat`, `cut`, `tr`, `nl`, `tac`, `rev`) with no redirect, substitution, variable, glob or chaining, and every operand inside the workspace, is a `read` in a verified sandbox: it doesn't ask, tainted or not. The memory tools are the exception: they never ask, and a note saved in a tainted run is stored `unverified` instead (see [Memory for every agent](#memory-for-every-agent)). The prompt adds "this run read untrusted content (result of http_fetch)". Calls that coordinate sub-agents (`agent_spawn`, `agent_send`, `agent_cancel`, `agent_ask_parent`) and `channel_post` keep their grants, since what they reach is tainted too. With nobody to ask (a routine at night), the call goes to the [outbox](#outbox). A network read (`http_fetch`, also from a `python` script) to a host the run hasn't reached yet asks too, so a page can't have the agent send what it knows somewhere new; see [New sites in a tainted run](#new-sites-in-a-tainted-run) for saying yes once. A tainted run also skips the memory flush before compaction. Only `autonomy = "yolo"` turns this off.
 - <a id="new-sites-in-a-tainted-run"></a>**New sites in a tainted run.** The prompt for a site the run hasn't reached offers, besides **Allow once**: **Allow all sites for this run** (no more site prompts until the run ends; a resumed run remembers it; sub-agents and later runs ask again) and **Always allow <site>** (a standing grant for reads from that site, `host:<site>`; list and remove with `tern grants`). Neither ever covers a `write` or `destructive` call. A script can't ask, so its read from a new site is refused with a note to fetch it directly once (or after "all sites", allowed); sites a script reaches count for later calls. For agents meant to browse, turn the limit off: `[taint] egress = "allow"` in `config.toml`, or per agent (`egress` on `/v1/agents`, **Read any site without asking** in the app's agent editor), frozen on each run when it starts; sub-agents keep their parent's. API answers: `{"decision": "run" | "host"}`; requests carry `egress_host`.
@@ -1025,7 +990,7 @@ One list of everything running, queued, scheduled, waiting on you, or failed rec
 
 ### Activity ledger
 
-Every security-relevant change is appended to a ledger in the database (spec §8.1): approval decisions (and calls refused as `money_movement`/`trade`), outbox items queued, approved, rejected and expired, every `write` and `destructive` call that ran, every memory save, forget and edit (`memory.*`), `always` grants added and removed, connector activations, connections added, removed or made the default, webhook secrets created, rotated and revoked, devices paired and revoked, autonomy changes (`config.toml`'s, noted when tern next reads it, and each routine's), `egress` and `[sandbox] network`, and agents' tool scopes. Entries name who did it (`you`, `tern`, or the agent), and the run, channel, routine and connector they concern. Secret values never appear.
+Every security-relevant change is appended to a ledger in the database (spec §8.1): approval decisions (and calls refused as `money_movement`/`trade`), outbox items queued, approved, rejected and expired, every `write` and `destructive` call that ran, every memory save, forget and edit (`memory.*`), `always` grants added and removed, connector activations, connections added, removed or made the default, devices paired and revoked, autonomy changes (`config.toml`'s, noted when tern next reads it, and each routine's), `egress` and `[sandbox] network`, and agents' tool scopes. Entries name who did it (`you`, `tern`, or the agent), and the run, channel, routine and connector they concern. Secret values never appear.
 
 Each entry stores `sha256(previous hash || entry)`, so editing, deleting or reordering rows in `tern.db` shows: `tern ledger verify` recomputes the chain and exits `1` at the first entry that doesn't hold. It prints the head hash; note it somewhere else if you want to notice entries cut off the end, which a chain alone can't. The database also refuses `UPDATE` and `DELETE` on the table.
 
@@ -1042,11 +1007,11 @@ tern ledger verify [--json]
 
 | Area | Looks at |
 |---|---|
-| `listeners` | The API's TCP listeners (loopback or the network, TLS), `api.remote_mcp_stdio`, the host sandbox behind a network API, and the webhook listener. |
+| `listeners` | The API's TCP listeners (loopback or the network, TLS), `api.remote_mcp_stdio`, and the host sandbox behind a network API. |
 | `secrets` | `secrets.toml` readable by others (high). |
 | `devices` | Each paired device's scope, and devices unused for 90 days. |
 | `autonomy` | `autonomy = "yolo"` (high) or `"autonomous"` (medium), globally and per routine. |
-| `routines` | Watch and webhook routines, which start tainted, and their effective autonomy (high under `yolo`). |
+| `routines` | Watch routines, which start tainted, and their effective autonomy (high under `yolo`). |
 | `gateways` | Gateway connectors with `strangers = "taint"`. |
 | `connectors` | Legacy connectors that read secrets with `ctx.secret`. |
 | `sandbox` | No OS sandbox for shell commands, `confine = "off"`, and `[sandbox] network = true` (high with no OS sandbox). |

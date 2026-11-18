@@ -28,7 +28,7 @@ same list and a new config field appears in both without UI changes.
 | Secrets | the secrets editor (names and set/unset only; values are write-only) |
 | Permissions & Sandbox | default autonomy, taint egress, sandbox, scripts, bundles, outbox; security audit |
 | Limits & Budgets | iteration caps, spend/token budgets, sub-agent limits, timeouts, rate limits |
-| Servers | desktop's saved servers; API listeners, webhooks, devices |
+| Servers | desktop's saved servers; API listeners, devices |
 | MCP & gateways | MCP servers (own editor), Telegram/gateway connectors (own editor) |
 | Advanced | everything marked *adv*, plus the raw file (config.toml path, reveal, reload) |
 | About | app and core version, data location, config path, log location |
@@ -93,10 +93,6 @@ same list and a new config field appears in both without UI changes.
 | `python.enabled` | bool | true | config, desktop | yes | no | permissions | adv |
 | `python.allow_writes` | bool | false | config, desktop | yes | no | permissions | user |
 | `python.max_*` (seconds, turn, wall, memory, host calls, parallel, asks, writes) | int | 30/10/600/256/200/4/3/10 | config, desktop | yes | no | limits | adv |
-| `webhooks.listen` / `public_url` | list/text | `[]` / unset | config, desktop | yes | no | servers | user |
-| `webhooks.tls` | choice | unset | config, desktop | yes | no | servers | adv |
-| `webhooks.max_body_kb` / `per_minute` / `tolerance_secs` / `body_timeout_secs` | int | 256 / 30 / 300 / 30 | config, desktop | no | no | limits | adv |
-| `webhooks.header_timeout_secs` / `max_connections` | int | 10 / 64 | config, desktop | yes | no | limits | adv |
 | `api.listen` | list | `unix` | config, desktop | yes | no | servers | user |
 | `api.public_url` | text | unset | config, desktop | yes | no | servers | user |
 | `api.tls` / `tls_cert` / `tls_key` / `trust_proxy` | choice/text/bool | auto / unset / unset / false | config, desktop | yes | no | servers | adv |

@@ -35,7 +35,7 @@ pub enum RoutineFate {
     /// They become this agent's (id), with their results going to its DM
     /// when they went to the deleted agent's.
     Move(String),
-    /// They are deleted (with their webhooks).
+    /// They are deleted (with their events).
     Delete,
 }
 
