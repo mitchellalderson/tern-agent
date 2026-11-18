@@ -139,6 +139,10 @@ docker_pids = 512          # 0 for no limit
 # learn_approvals = true     # offer "Always allow this" only after you chose "Allow once" 3 times in 14 days
 # suggest_routines = true    # suggest a routine after you ask for the same kind of work 3 times in 14 days
 # away_brief = true          # "While you were away" on the first open of the day after 8 hours or more
+# new_topic = true           # a "New topic?" hint when the subject clearly changes (max 1 per conversation)
+# open_loops = true          # "I'll check back Friday" in a reply becomes a follow-up you can see and cancel
+# learn_facts = true         # save durable facts from your messages that the agent missed (max 3 each, 6 cards a day)
+# tidy_memory = true         # weekly: merge duplicate memories and flag contradictions; undo in Memory
 
 # A write nobody approves in time waits in the outbox (`tern outbox`) instead
 # of being denied.

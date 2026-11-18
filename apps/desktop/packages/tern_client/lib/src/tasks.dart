@@ -100,6 +100,7 @@ class Wait {
     this.until,
     this.expiresAt,
     this.lastCheck,
+    this.followup = false,
   });
 
   factory Wait.fromJson(Json j) => Wait(
@@ -115,6 +116,7 @@ class Wait {
       _ => null,
     },
     lastCheck: j['last_check'] as String?,
+    followup: j['followup'] as bool? ?? false,
   );
 
   final String id;
@@ -132,4 +134,9 @@ class Wait {
   /// When it gives up.
   final DateTime? expiresAt;
   final String? lastCheck;
+
+  /// A promise the agent made ("I'll check back Friday"), found by tern in
+  /// its reply. It is due at [expiresAt]; the agent picks the conversation up
+  /// then.
+  final bool followup;
 }

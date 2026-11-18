@@ -1,0 +1,1 @@
+- **Remembering**: durable facts in your messages that the agent missed are saved (up to three each), with a card to forget them.

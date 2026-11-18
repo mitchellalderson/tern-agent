@@ -142,9 +142,15 @@ impl Manager {
             if let Some(to) = reply_to {
                 return self.reply_in_main(channel, to, text, model).await;
             }
-            return self
+            let sent = self
                 .send_home(channel, text, new_topic, model, ws.as_ref())
-                .await;
+                .await?;
+            // A message that continues the conversation may change its
+            // subject: one cheap yes/no, in the background (P3).
+            if !sent.queued && !sent.new_segment && !new_topic {
+                self.consider_new_topic(channel, &sent.session_id, &sent.run_id, text);
+            }
+            return Ok(sent);
         }
         if let Some(ws) = &ws
             && self

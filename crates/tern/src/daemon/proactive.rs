@@ -14,6 +14,8 @@
 //! | POST | `/v1/proactive/cards/{id}/accept` | acts on the card (a message to its agent), closes it |
 //! | POST | `/v1/proactive/cards/{id}/dismiss` | closes it |
 //! | POST | `/v1/proactive/presence` | the desktop is open: `{brief}` says whether "While you were away" was posted |
+//! | GET | `/v1/memory-tidy` | the weekly memory tidy-up log, newest first: merges and flagged contradictions, each with the memories as they were |
+//! | POST | `/v1/memory-tidy/{id}/undo` | undo a merge (the removed memories come back), or dismiss a flag |
 //! | GET | `/v1/grants` | the standing "always" grants: `[{tool, pattern, note}]` |
 //! | POST | `/v1/grants/revoke` | `{tool, pattern}` |
 
@@ -39,6 +41,8 @@ pub fn routes() -> Router<Shared> {
         .route("/v1/proactive/cards/{id}/accept", post(accept))
         .route("/v1/proactive/cards/{id}/dismiss", post(dismiss))
         .route("/v1/proactive/presence", post(presence))
+        .route("/v1/memory-tidy", get(tidy_log))
+        .route("/v1/memory-tidy/{id}/undo", post(tidy_undo))
         .route("/v1/grants", get(grants))
         .route("/v1/grants/revoke", post(revoke))
 }
@@ -104,6 +108,25 @@ struct Presence {
 async fn presence(State(m): State<Shared>) -> ApiResult<Presence> {
     let brief = m.presence().map_err(internal)?;
     Ok(Json(Presence { brief }))
+}
+
+async fn tidy_log(State(m): State<Shared>) -> ApiResult<Vec<super::proactive_ai::Tidy>> {
+    let rows = m.rt.store.tidy_log(100).map_err(internal)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(super::proactive_ai::tidy_view)
+            .collect(),
+    ))
+}
+
+async fn tidy_undo(
+    State(m): State<Shared>,
+    UrlPath(id): UrlPath<i64>,
+) -> ApiResult<serde_json::Value> {
+    if !super::proactive_ai::tidy_undo(&m, id).map_err(internal)? {
+        return Err(not_found("tidy-up (or it was already undone)"));
+    }
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 #[derive(Serialize)]
@@ -189,7 +212,14 @@ impl Manager {
     /// for other agents come with it).
     fn publish_card(&self, card: &CardRow) -> anyhow::Result<()> {
         let store = &self.rt.store;
-        let Some(channel) = store.agent_channel(&card.agent_id)? else {
+        let own = match &card.channel_id {
+            Some(id) => store.channel(id)?,
+            None => None,
+        };
+        let Some(channel) = (match own {
+            Some(c) => Some(c),
+            None => store.agent_channel(&card.agent_id)?,
+        }) else {
             // An agent without a DM (archived): the card can't be seen.
             store.decide_card(card.id, "dismissed")?;
             return Ok(());
@@ -244,6 +274,13 @@ impl Manager {
     /// Accept: tell the agent, as the user, what the card proposed.
     pub async fn accept_card(self: &Arc<Self>, card: &CardRow) -> anyhow::Result<()> {
         self.finish_card(card, "accepted")?;
+        // Cards that undo or act on the host's own doing, not the agent's.
+        match card.kind.as_str() {
+            kind::NEW_TOPIC => return self.start_new_topic(card),
+            kind::MEMORY_LEARNED => return self.forget_learned(card),
+            kind::FOLLOW_UP => return self.cancel_followup(card),
+            _ => {}
+        }
         let Some(message) = card.accept_message.as_deref() else {
             return Ok(());
         };
@@ -379,7 +416,14 @@ impl Manager {
         match run.trigger.as_str() {
             "cron" => self.consider_fix(&run),
             "proactive" => self.finish_fix(&run),
-            "user" if run.status == "completed" => self.consider_suggestion(&run),
+            "user" if run.status == "completed" => {
+                self.after_run_ai(run_id);
+                self.consider_suggestion(&run)
+            }
+            "wait" if run.status == "completed" => {
+                self.after_run_ai(run_id);
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -604,6 +648,7 @@ impl Manager {
                 body: &body,
                 accept_label: Some("Set up routine"),
                 accept_message: Some(&message),
+                ..NewCard::default()
             },
             now - p::DAY,
             p::SUGGEST_PER_DAY,

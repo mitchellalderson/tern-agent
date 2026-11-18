@@ -7,7 +7,8 @@ import '../state/store.dart';
 import '../theme.dart';
 
 /// A quiet line above the composer for each `wait_until` this conversation
-/// is waiting on: "Waiting: `<note>`" and a Cancel link. The daemon polls the
+/// is waiting on: "Waiting: `<note>`" and a Cancel link. A follow-up the
+/// agent promised reads "Following up Fri: `<note>`". The daemon polls the
 /// check and continues the conversation by itself; nothing here needs doing.
 class WaitStrip extends StatefulWidget {
   const WaitStrip({
@@ -84,7 +85,7 @@ class _WaitStripState extends State<WaitStrip> {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    'Waiting: ${w.note}',
+                    waitLabel(w),
                     style: TextStyle(fontSize: 12, color: c.muted),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -105,4 +106,14 @@ class _WaitStripState extends State<WaitStrip> {
       ),
     );
   }
+}
+
+const _days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+/// "Waiting: note", or for a promised follow-up "Following up Fri: note".
+String waitLabel(Wait w) {
+  final due = w.expiresAt;
+  if (!w.followup) return 'Waiting: ${w.note}';
+  if (due == null) return 'Following up: ${w.note}';
+  return 'Following up ${_days[due.weekday - 1]}: ${w.note}';
 }

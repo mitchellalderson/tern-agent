@@ -88,6 +88,8 @@ class _FakeClient extends TernClient {
   final memoryScopes = <String?>[];
   final memoryEdits = <(int, String)>[];
   final memoryDeletes = <int>[];
+  final tidyUndos = <int>[];
+  var tidyApplied = true;
   final memoryClears = <String>[];
 
   /// Memory 2 of the open scope, when set: saved after untrusted input.
@@ -101,6 +103,34 @@ class _FakeClient extends TernClient {
 
   @override
   Future<void> deleteMemory(int id) async => memoryDeletes.add(id);
+
+  @override
+  Future<List<MemoryTidy>> memoryTidy() async => [
+    MemoryTidy(
+      id: 7,
+      at: _t0,
+      action: 'merge',
+      namespace: 'tern:research',
+      note: 'Acme runs Postgres 16.',
+      state: tidyApplied ? 'applied' : 'undone',
+      memories: const ['Acme runs Postgres 16.', 'Acme uses Postgres 16'],
+    ),
+    MemoryTidy(
+      id: 8,
+      at: _t0,
+      action: 'conflict',
+      namespace: 'shared',
+      note: 'Standup time differs',
+      state: 'applied',
+      memories: const ['Standup is at 9', 'Standup is at 10'],
+    ),
+  ];
+
+  @override
+  Future<void> undoMemoryTidy(int id) async {
+    tidyUndos.add(id);
+    tidyApplied = false;
+  }
 
   @override
   Future<int> clearMemories(String agent) async {
@@ -631,6 +661,26 @@ void main() {
     await tester.pump();
     expect(find.text('Morning brief'), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('the weekly tidy-up shows what it merged, with Undo', (
+    tester,
+  ) async {
+    final (store, client) = await _store();
+    await _pump(tester, store);
+    await tester.tap(find.text('Research').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('memory-header')));
+    await tester.pumpAndSettle();
+    // This scope's merge, not the shared scope's flagged pair.
+    expect(find.text('Tidied this week'), findsOneWidget);
+    expect(find.textContaining('Merged 2 into one'), findsOneWidget);
+    expect(find.textContaining('Standup time differs'), findsNothing);
+    await tester.tap(find.byKey(const Key('tidy-undo-7')));
+    await tester.pumpAndSettle();
+    expect(client.tidyUndos, [7]);
+    // Undone: it no longer shows.
+    expect(find.text('Tidied this week'), findsNothing);
   });
 
   testWidgets(

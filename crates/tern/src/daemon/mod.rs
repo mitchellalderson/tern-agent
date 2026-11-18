@@ -28,6 +28,7 @@ pub mod health;
 pub mod manager;
 pub mod outbox;
 pub mod proactive;
+pub mod proactive_ai;
 pub mod scheduler;
 pub mod suggestions;
 pub mod uploads;

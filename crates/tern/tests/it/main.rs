@@ -28,6 +28,7 @@ mod mcp_cli;
 mod memory_class;
 mod new_defaults;
 mod notes;
+mod proactive_ai;
 mod proactive_delegation;
 mod proactive_help;
 mod providers;

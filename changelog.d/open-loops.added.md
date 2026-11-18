@@ -1,0 +1,1 @@
+- **Follow-ups**: "I'll check back Friday" in a reply becomes a tracked follow-up the agent wakes for. Shown above the composer and in Tasks, and you can cancel it. Time waits now last up to 30 days.

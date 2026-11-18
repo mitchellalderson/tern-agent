@@ -403,6 +403,55 @@ class Memory {
   bool get unverified => source == 'unverified';
 }
 
+/// One thing the weekly memory tidy-up did (`GET /v1/memory-tidy`): two or
+/// more memories merged into one, or two that disagree flagged. A merge can
+/// be undone; a flag can only be dismissed. Nothing is ever lost: the
+/// memories are kept as they were.
+class MemoryTidy {
+  const MemoryTidy({
+    required this.id,
+    required this.at,
+    required this.action,
+    required this.namespace,
+    required this.note,
+    required this.state,
+    this.memories = const [],
+  });
+
+  factory MemoryTidy.fromJson(Json j) => MemoryTidy(
+    id: j['id'] as int,
+    at: DateTime.fromMillisecondsSinceEpoch(j['at'] as int),
+    action: j['action'] as String,
+    namespace: j['namespace'] as String,
+    note: j['note'] as String? ?? '',
+    state: j['state'] as String? ?? 'applied',
+    memories: [
+      for (final m in j['memories'] as List? ?? const [])
+        (m as Json)['content'] as String,
+    ],
+  );
+
+  final int id;
+  final DateTime at;
+
+  /// `merge` or `conflict`.
+  final String action;
+
+  /// `shared` or an agent id.
+  final String namespace;
+  final String note;
+
+  /// `applied`, `undone` or `dismissed`.
+  final String state;
+
+  /// The memories involved, as they were. For a merge, the one that stayed
+  /// first, then the ones that went.
+  final List<String> memories;
+
+  bool get isMerge => action == 'merge';
+  bool get applied => state == 'applied';
+}
+
 /// A line of an agent's recent work: a batch delegated to it, or a routine
 /// run (`GET /v1/agents/{id}/work`).
 class AgentWork {

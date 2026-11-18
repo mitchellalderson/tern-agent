@@ -27,10 +27,10 @@ and reuses what is already there: connector sandboxes, the checked public fetch,
 
 | Field | |
 |---|---|
-| `check` | One of `{connector, tool, args}` (a **read** tool of an active connector), `{url}` (a public JSON address, no credentials), or `{in: "20m"}` (check back after a delay; no `until`). |
+| `check` | One of `{connector, tool, args}` (a **read** tool of an active connector), `{url}` (a public JSON address, no credentials), or `{in: "20m"}` (check back after a delay, from 30s up to 30 days; no `until`). |
 | `until` | `{path, equals}` or `{path, in: [...]}`. `path` is dotted into the JSON result (`workflow_run.status`, `jobs.0.status`); empty means the whole result. Numbers, strings and booleans compare as written (`42` matches `"42"`). A missing field never matches. |
 | `every` | Gap between checks. At least 30s, default 1m. Never more than the timeout. |
-| `timeout` | How long to wait. Default 1h, at most 24h. |
+| `timeout` | How long to wait. Default 1h, at most 24h (a plain `in` delay may be up to 30 days). |
 | `note` | A line to the agent's future self: what this is and what to do next. Included in the continuation. |
 
 ## What the daemon does

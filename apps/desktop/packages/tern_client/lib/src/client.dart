@@ -423,6 +423,17 @@ class TernClient {
     ];
   }
 
+  /// What the weekly memory tidy-up did, newest first (merges and flagged
+  /// contradictions, each with the memories as they were).
+  Future<List<MemoryTidy>> memoryTidy() async => [
+    for (final t in await _json('GET', '/v1/memory-tidy') as List)
+      MemoryTidy.fromJson(t as Json),
+  ];
+
+  /// Undo a merge (the removed memories come back), or dismiss a flag.
+  Future<void> undoMemoryTidy(int id) =>
+      _json('POST', '/v1/memory-tidy/$id/undo', {});
+
   /// Rewrite a memory; it becomes yours (`source: user`).
   Future<Memory> editMemory(int id, String content) async => Memory.fromJson(
     await _json('PATCH', '/v1/memories/$id', {'content': content}),
