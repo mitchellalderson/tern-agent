@@ -166,7 +166,7 @@ async fn manage_mcp_servers_without_a_restart() {
     .await;
     assert_eq!(v["ok"], true, "{v}");
     assert_eq!(v["verified"]["tools"].as_array().unwrap().len(), 5);
-    assert!(!env.read("secrets.toml").contains("tok-123"));
+    assert!(!crate::read_secrets(&env.tern_home).contains("tok-123"));
     assert!(!env.read("config.toml").contains("mcp"));
 
     // Add: the secret goes to secrets.toml, the config to config.toml, and
@@ -179,7 +179,7 @@ async fn manage_mcp_servers_without_a_restart() {
     let running = wait_state(&http, "fx", |s| s["state"]["kind"] == "running").await;
     assert_eq!(running["state"]["tools"], 5);
     assert_eq!(running["server_info"], "fixture 1.0");
-    assert!(env.read("secrets.toml").contains("tok-123"));
+    assert!(crate::read_secrets(&env.tern_home).contains("tok-123"));
     let config = env.read("config.toml");
     assert!(
         config.contains("[mcp.servers.fx]") && config.contains("# my settings"),
@@ -250,7 +250,7 @@ async fn manage_mcp_servers_without_a_restart() {
     // Remove, with its secret.
     let (status, _) = send(http.delete("http://tern/v1/mcp/fx?remove_secrets=true")).await;
     assert_eq!(status, 200);
-    assert!(!env.read("secrets.toml").contains("tok-123"));
+    assert!(!crate::read_secrets(&env.tern_home).contains("tok-123"));
     assert!(!env.read("config.toml").contains("mcp.servers.fx"));
     let (status, _) = send(http.get("http://tern/v1/mcp/fx")).await;
     assert_eq!(status, 404);
@@ -388,5 +388,5 @@ async fn the_agent_adds_servers_with_approval_on_the_host() {
     session_text(&http, &run).await;
     let (status, _) = send(http.get("http://tern/v1/mcp/fx")).await;
     assert_eq!(status, 404);
-    assert!(!env.read("secrets.toml").contains("tok-123"));
+    assert!(!crate::read_secrets(&env.tern_home).contains("tok-123"));
 }

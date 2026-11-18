@@ -58,3 +58,22 @@ mod t6d;
 mod t8a;
 mod wait_until;
 mod workspaces;
+
+/// The secrets in `home` as `NAME = "value"` lines. The file itself holds
+/// them encrypted, so tests read them through tern's own loader.
+pub fn read_secrets(home: &std::path::Path) -> String {
+    let Ok(s) = tern_core::Secrets::load(&home.join("secrets.toml")) else {
+        return String::new();
+    };
+    s.file_names()
+        .iter()
+        .filter_map(|n| {
+            let key = if n.contains('/') {
+                format!("{n:?}")
+            } else {
+                n.clone()
+            };
+            Some(format!("{key} = {:?}\n", s.get(n)?))
+        })
+        .collect()
+}

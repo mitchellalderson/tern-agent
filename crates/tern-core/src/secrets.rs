@@ -3,6 +3,10 @@
 //! Secret values never appear in `Debug` output. `secrets.toml` must not be
 //! readable by group or others; loading refuses looser permissions.
 //!
+//! Values are encrypted at rest ([`vault`]): the file holds `enc:v1:…`
+//! strings bound to their names. A plaintext value, such as one pasted into
+//! the file by hand, still works and is encrypted on the next load.
+//!
 //! [`Secrets::set`] and [`Secrets::remove`] edit the file in place (keeping
 //! comments) and update every clone, so providers, connectors and MCP
 //! servers see the change on their next use without a restart.
@@ -15,6 +19,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
 pub mod keys;
+pub mod vault;
+
+use vault::{KeySource, Vault};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
@@ -35,6 +42,10 @@ pub enum SecretError {
     EmptyValue(String),
     #[error("these secrets were not loaded from a file, so they can't be edited")]
     NoFile,
+    #[error(
+        "can't decrypt {0}: the key that sealed it is missing or the value was moved; set it again"
+    )]
+    Decrypt(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +82,38 @@ pub struct Secrets {
     /// redaction covers secrets first used after startup (env-only ones a
     /// connector or MCP server reads later).
     seen: Arc<Mutex<BTreeSet<String>>>,
+    /// The key that seals the file's values, opened on first use.
+    vault: Arc<LazyVault>,
+}
+
+/// A [`Vault`] opened on first use, so reading a file with no encrypted
+/// values (or a missing one) never creates a key.
+struct LazyVault {
+    path: PathBuf,
+    source: KeySource,
+    cell: Mutex<Option<Vault>>,
+}
+
+impl LazyVault {
+    fn get(&self) -> Result<Vault, SecretError> {
+        let mut cell = self.cell.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(v) = cell.as_ref() {
+            return Ok(v.clone());
+        }
+        let v = Vault::open(&self.path, self.source)?;
+        *cell = Some(v.clone());
+        Ok(v)
+    }
+}
+
+impl Default for LazyVault {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+            source: KeySource::File,
+            cell: Mutex::new(None),
+        }
+    }
 }
 
 impl fmt::Debug for Secrets {
@@ -84,26 +127,41 @@ impl fmt::Debug for Secrets {
 impl Secrets {
     /// Load `secrets.toml` from `path`. A missing file is not an error; it
     /// is created by the first [`Secrets::set`].
+    ///
+    /// The key comes from [`vault::set_default_key_source`] (the file by
+    /// default). Plaintext values are encrypted in place.
     pub fn load(path: &Path) -> Result<Self, SecretError> {
-        let file = match read_checked(path)? {
-            Some(text) => parse(&text, path)?,
-            None => BTreeMap::new(),
-        };
-        Ok(Self {
-            path: Some(path.to_path_buf()),
-            file: Arc::new(RwLock::new(file)),
-            seen: Arc::default(),
-        })
+        Self::load_with(path, vault::default_key_source())
     }
 
-    /// Re-read `secrets.toml`, for every clone.
+    /// [`Secrets::load`] with an explicit key source.
+    pub fn load_with(path: &Path, source: KeySource) -> Result<Self, SecretError> {
+        let s = Self {
+            path: Some(path.to_path_buf()),
+            file: Arc::default(),
+            seen: Arc::default(),
+            vault: Arc::new(LazyVault {
+                path: path.to_path_buf(),
+                source,
+                cell: Mutex::new(None),
+            }),
+        };
+        s.reload()?;
+        Ok(s)
+    }
+
+    /// Re-read `secrets.toml`, for every clone. Plaintext values found are
+    /// encrypted in place.
     pub fn reload(&self) -> Result<(), SecretError> {
         let path = self.path.as_deref().ok_or(SecretError::NoFile)?;
-        let file = match read_checked(path)? {
-            Some(text) => parse(&text, path)?,
-            None => BTreeMap::new(),
+        let (file, plain) = match read_checked(path)? {
+            Some(text) => self.parse(&text, path)?,
+            None => (BTreeMap::new(), false),
         };
         self.replace(file);
+        if plain && let Err(e) = self.edit(|_| false) {
+            tracing::warn!("couldn't encrypt {}: {e}", path.display());
+        }
         Ok(())
     }
 
@@ -202,14 +260,15 @@ impl Secrets {
         let path = self.path.as_deref().ok_or(SecretError::NoFile)?;
         let text = read_checked(path)?.unwrap_or_default();
         // Validates the existing file; its entries must all be strings.
-        parse(&text, path)?;
+        self.parse(&text, path)?;
         let mut doc: toml_edit::DocumentMut =
             text.parse()
                 .map_err(|e: toml_edit::TomlError| SecretError::Parse {
                     path: path.to_path_buf(),
                     message: e.message().to_owned(),
                 })?;
-        let changed = change(&mut doc);
+        let mut changed = change(&mut doc);
+        changed |= self.seal_plaintext(&mut doc)?;
         let text = doc.to_string();
         if changed {
             write_private(path, &text).map_err(|source| SecretError::Io {
@@ -217,8 +276,61 @@ impl Secrets {
                 source,
             })?;
         }
-        self.replace(parse(&text, path)?);
+        self.replace(self.parse(&text, path)?.0);
         Ok(changed)
+    }
+
+    /// Encrypt every plaintext string in `doc`. Whether any was.
+    fn seal_plaintext(&self, doc: &mut toml_edit::DocumentMut) -> Result<bool, SecretError> {
+        let mut vault = None;
+        let mut any = false;
+        for (name, item) in doc.iter_mut() {
+            let Some(text) = item.as_str() else { continue };
+            if vault::is_sealed(text) {
+                continue;
+            }
+            if vault.is_none() {
+                vault = Some(self.vault.get()?);
+            }
+            if let Some(v) = &vault {
+                let sealed = v.seal(name.get(), text)?;
+                *item = toml_edit::value(sealed);
+                any = true;
+            }
+        }
+        Ok(any)
+    }
+
+    /// The file's entries decrypted, and whether any was plaintext. An entry
+    /// that can't be decrypted (lost key, value moved to another name) is
+    /// skipped with a warning, so it reads as unset and gets asked for again.
+    fn parse(
+        &self,
+        text: &str,
+        path: &Path,
+    ) -> Result<(BTreeMap<String, String>, bool), SecretError> {
+        let raw = parse(text, path)?;
+        let mut plain = false;
+        let mut out = BTreeMap::new();
+        let mut vault = None;
+        for (name, stored) in raw {
+            if !vault::is_sealed(&stored) {
+                plain = true;
+                out.insert(name, stored);
+                continue;
+            }
+            if vault.is_none() {
+                vault = Some(self.vault.get()?);
+            }
+            let Some(v) = &vault else { continue };
+            match v.open_value(&name, &stored) {
+                Ok(value) => {
+                    out.insert(name, value);
+                }
+                Err(e) => tracing::warn!("{e}"),
+            }
+        }
+        Ok((out, plain))
     }
 
     fn replace(&self, file: BTreeMap<String, String>) {
@@ -461,7 +573,19 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
 
 pub const REDACTED: &str = "[REDACTED]";
 
-/// Replace each of `values` (longest first) in `text`.
+/// Secrets at least this long (in characters) also have their fragments
+/// redacted: shorter ones would make a 4-character tail match ordinary text.
+pub const FRAGMENT_MIN_LEN: usize = 20;
+/// Masked echoes (`ck_**3pNe`) are caught from this length: they need a mask
+/// run right before the tail, so they rarely match anything else.
+const MASKED_MIN_LEN: usize = 12;
+const FRAGMENT_HEAD: usize = 8;
+const FRAGMENT_TAIL: usize = 4;
+
+/// Replace each of `values` (longest first) in `text`, and the fragments a
+/// service may echo back instead of the whole value: a masked form such as
+/// `ck_**3pNe` or `sk-…3pNe`, and a long secret's first 8 and last 4
+/// characters on their own.
 pub fn redact_with(values: &[String], text: &str) -> String {
     let mut out = text.to_owned();
     for v in values {
@@ -469,11 +593,79 @@ pub fn redact_with(values: &[String], text: &str) -> String {
             out = out.replace(v.as_str(), REDACTED);
         }
     }
+    for v in values {
+        let chars: Vec<char> = v.chars().collect();
+        if chars.len() >= MASKED_MIN_LEN {
+            let head: String = chars[..FRAGMENT_HEAD.min(chars.len())].iter().collect();
+            let tail: String = chars[chars.len() - FRAGMENT_TAIL..].iter().collect();
+            out = redact_masked(&out, &head, &tail);
+        }
+    }
+    for v in values {
+        let chars: Vec<char> = v.chars().collect();
+        if chars.len() >= FRAGMENT_MIN_LEN {
+            let head: String = chars[..FRAGMENT_HEAD].iter().collect();
+            let tail: String = chars[chars.len() - FRAGMENT_TAIL..].iter().collect();
+            for frag in [head, tail] {
+                if out.contains(frag.as_str()) {
+                    out = out.replace(frag.as_str(), REDACTED);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn is_mask_char(c: char) -> bool {
+    matches!(c, '*' | '•' | '●' | '∗' | '…' | '·' | '.')
+}
+
+/// Replace `[prefix of head][mask run]tail` with `[REDACTED]`, where the mask
+/// run is one or more mask characters directly before `tail`.
+fn redact_masked(text: &str, head: &str, tail: &str) -> String {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for (at, _) in text.match_indices(tail) {
+        let mut start = at;
+        for (i, c) in text[..at].char_indices().rev() {
+            if !is_mask_char(c) {
+                break;
+            }
+            start = i;
+        }
+        if start == at {
+            continue;
+        }
+        // Take the leading characters of the secret that precede the mask.
+        let before = &text[..start];
+        let head_chars: Vec<(usize, char)> = head.char_indices().collect();
+        for k in (1..=head_chars.len()).rev() {
+            let end = head_chars.get(k).map_or(head.len(), |(i, _)| *i);
+            let prefix = &head[..end];
+            if before.ends_with(prefix) {
+                start -= prefix.len();
+                break;
+            }
+        }
+        if spans.last().is_none_or(|(_, e)| start >= *e) {
+            spans.push((start, at + tail.len()));
+        }
+    }
+    if spans.is_empty() {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut pos = 0;
+    for (s, e) in spans {
+        out.push_str(&text[pos..s]);
+        out.push_str(REDACTED);
+        pos = e;
+    }
+    out.push_str(&text[pos..]);
     out
 }
 
 #[cfg(unix)]
-fn check_permissions(path: &Path, meta: &std::fs::Metadata) -> Result<(), SecretError> {
+pub(crate) fn check_permissions(path: &Path, meta: &std::fs::Metadata) -> Result<(), SecretError> {
     use std::os::unix::fs::PermissionsExt;
     let mode = meta.permissions().mode() & 0o777;
     if mode & 0o077 != 0 {
@@ -486,7 +678,10 @@ fn check_permissions(path: &Path, meta: &std::fs::Metadata) -> Result<(), Secret
 }
 
 #[cfg(not(unix))]
-fn check_permissions(_path: &Path, _meta: &std::fs::Metadata) -> Result<(), SecretError> {
+pub(crate) fn check_permissions(
+    _path: &Path,
+    _meta: &std::fs::Metadata,
+) -> Result<(), SecretError> {
     Ok(())
 }
 
@@ -584,7 +779,8 @@ mod tests {
 
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("# my keys"), "{text}");
-        assert!(text.contains("KEEP = \"keep-me\""), "{text}");
+        assert!(text.contains("KEEP = \"enc:v1:"), "{text}");
+        assert!(!text.contains("keep-me"), "{text}");
         assert!(Secrets::load(&p).is_ok(), "still 0600");
 
         assert!(s.remove("TERN_TEST_NEW").unwrap());
@@ -664,7 +860,11 @@ mod tests {
             text.contains("\"conn/connector:gmail/work/oauth/access_token\" = "),
             "{text}"
         );
-        assert!(text.contains("PLAIN = \"plain-value\""), "{text}");
+        assert!(text.contains("PLAIN = \"enc:v1:"), "{text}");
+        assert!(
+            !text.contains("plain-value") && !text.contains("refresh-work"),
+            "{text}"
+        );
         // Values are redacted like any other secret.
         assert_eq!(s.redact("t=1//refresh-work"), "t=[REDACTED]");
         // The Secrets view shows plain names only.
@@ -696,6 +896,150 @@ mod tests {
         }
         assert!(s.remove_prefix("conn/").is_ok());
         assert!(s.remove_prefix("PLAIN").is_err());
+    }
+
+    const KEY: &str = "ck_live_abcdef0123456789xyz3pNe";
+
+    fn one(v: &str) -> Vec<String> {
+        vec![v.to_owned()]
+    }
+
+    #[test]
+    fn masked_echoes_are_redacted() {
+        let v = one(KEY);
+        for echoed in [
+            "key ck_**3pNe rejected",
+            "key ck_live_****3pNe rejected",
+            "key sk-…3pNe rejected",
+            "key ****3pNe rejected",
+            "key ck_•••••3pNe rejected",
+            "key ck_...3pNe rejected",
+        ] {
+            let out = redact_with(&v, echoed);
+            assert!(!out.contains("3pNe"), "{echoed} -> {out}");
+            assert!(out.contains(REDACTED), "{out}");
+            assert!(out.ends_with(" rejected"), "{out}");
+        }
+        // The prefix is taken with the mask, not left behind.
+        assert_eq!(
+            redact_with(&v, "key ck_**3pNe rejected"),
+            "key [REDACTED] rejected"
+        );
+    }
+
+    #[test]
+    fn first_eight_and_last_four_are_redacted_alone() {
+        let v = one(KEY);
+        assert_eq!(redact_with(&v, "starts ck_live ok"), "starts ck_live ok");
+        let out = redact_with(&v, "it begins ck_live_ and ends in 3pNe");
+        assert_eq!(out, "it begins [REDACTED] and ends in [REDACTED]");
+        assert_eq!(redact_with(&v, "ends in 3pNe"), "ends in [REDACTED]");
+    }
+
+    #[test]
+    fn short_secrets_keep_fragments_and_plain_text_alone() {
+        // Under 20 characters, a 4-character tail would hit ordinary text.
+        let short = one("secretvalue1234");
+        assert_eq!(
+            redact_with(&short, "see 1234 and secretva"),
+            "see 1234 and secretva"
+        );
+        // Masked echoes still count from 12 characters.
+        assert_eq!(redact_with(&short, "x ***1234 y"), "x [REDACTED] y");
+        // A mask run not followed by the tail is left alone.
+        assert_eq!(redact_with(&one(KEY), "a ***** b 3pNx"), "a ***** b 3pNx");
+        // And a tail with no mask run in front isn't treated as masked.
+        let tiny = one("abcd1234");
+        assert_eq!(redact_with(&tiny, "x ***1234"), "x ***1234");
+    }
+
+    #[test]
+    fn secrets_redact_covers_fragments_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = write(tmp.path(), &format!("API = \"{KEY}\"\n"), 0o600);
+        let s = Secrets::load(&p).unwrap();
+        assert_eq!(s.redact("ends in ck_**3pNe."), "ends in [REDACTED].");
+    }
+
+    #[test]
+    fn values_are_encrypted_at_rest_and_plaintext_is_migrated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = write(
+            tmp.path(),
+            "# keep\nOLD = \"legacy-plaintext-value\"\n\"conn/connector:x/a/TOKEN\" = \"scoped-plain\"\n",
+            0o600,
+        );
+        let s = Secrets::load(&p).unwrap();
+        assert_eq!(s.get("OLD").as_deref(), Some("legacy-plaintext-value"));
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("legacy-plaintext-value"), "{text}");
+        assert!(!text.contains("scoped-plain"), "{text}");
+        assert!(
+            text.contains("# keep") && text.contains("enc:v1:"),
+            "{text}"
+        );
+        // New values are sealed too, and a fresh load reads them all.
+        s.set("NEWER", "brand-new-secret").unwrap();
+        assert!(
+            !std::fs::read_to_string(&p)
+                .unwrap()
+                .contains("brand-new-secret")
+        );
+        let again = Secrets::load(&p).unwrap();
+        assert_eq!(again.get("NEWER").as_deref(), Some("brand-new-secret"));
+        assert_eq!(
+            again.get("conn/connector:x/a/TOKEN").as_deref(),
+            Some("scoped-plain")
+        );
+        // A value pasted into the file by hand is picked up and sealed.
+        let mut text = std::fs::read_to_string(&p).unwrap();
+        text.push_str("PASTED = \"pasted-by-hand\"\n");
+        std::fs::write(&p, text).unwrap();
+        again.reload().unwrap();
+        assert_eq!(again.get("PASTED").as_deref(), Some("pasted-by-hand"));
+        assert!(
+            !std::fs::read_to_string(&p)
+                .unwrap()
+                .contains("pasted-by-hand")
+        );
+        // Names only in the status view, never values.
+        assert!(!format!("{again:?}").contains("brand-new"));
+    }
+
+    #[test]
+    fn a_value_moved_to_another_name_or_a_lost_key_reads_as_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("secrets.toml");
+        let s = Secrets::load(&p).unwrap();
+        s.set("A_KEY", "value-a-123").unwrap();
+        s.set("B_KEY", "value-b-456").unwrap();
+        // Swap the ciphertexts between names.
+        let doc: toml::Table = toml::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let (a, b) = (
+            doc["A_KEY"].as_str().unwrap(),
+            doc["B_KEY"].as_str().unwrap(),
+        );
+        std::fs::write(&p, format!("A_KEY = \"{b}\"\nB_KEY = \"{a}\"\n")).unwrap();
+        let swapped = Secrets::load(&p).unwrap();
+        assert_eq!((swapped.get("A_KEY"), swapped.get("B_KEY")), (None, None));
+        // A lost key: the values can't be opened, and setting again works.
+        std::fs::write(&p, format!("A_KEY = \"{a}\"\n")).unwrap();
+        std::fs::remove_file(tmp.path().join("secrets.key")).unwrap();
+        let lost = Secrets::load(&p).unwrap();
+        assert_eq!(lost.get("A_KEY"), None);
+        lost.set("A_KEY", "fresh-value-1").unwrap();
+        assert_eq!(
+            Secrets::load(&p).unwrap().get("A_KEY").as_deref(),
+            Some("fresh-value-1")
+        );
+    }
+
+    #[test]
+    fn reading_a_missing_or_empty_file_creates_no_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("secrets.toml");
+        Secrets::load(&p).unwrap();
+        assert!(!tmp.path().join("secrets.key").exists());
     }
 
     #[test]

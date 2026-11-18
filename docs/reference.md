@@ -574,7 +574,7 @@ curl --unix-socket ~/.tern/tern.sock -X PUT http://tern/v1/secrets/ANTHROPIC_API
   -H 'content-type: application/json' -d '{"value": "sk-ant-..."}'
 ```
 
-Both create `secrets.toml` with mode 0600 if needed, keep its comments, and take effect without a restart for providers, connectors, and newly started MCP servers. A secret set in the environment takes precedence over the file.
+Values are stored encrypted (AES-256-GCM, bound to the secret's name): the key is in the macOS keychain, or in `secrets.key` (mode 0600) beside the file when there is no keychain. A plaintext value you paste into the file is encrypted the next time tern reads it. Both create `secrets.toml` with mode 0600 if needed, keep its comments, and take effect without a restart for providers, connectors, and newly started MCP servers. A secret set in the environment takes precedence over the file.
 
 **The agent can ask you for a secret.** When a connector it wrote (or anything else) needs a key that isn't set, the agent calls `secret_request` with the name and a reason. You get a private prompt: inline in the TUI or as a card in the desktop app. The prompt shows what would read the secret, for example `connector weather (draft) · reaches api.weather.com`. The value goes straight into `secrets.toml`; the agent only learns whether each name was `set`, `already_set`, `skipped` or `timed_out`. Values that are already set aren't asked for again unless the agent asks to replace them. A prompt waits up to `secret_request_timeout_secs` (default 900); runs with nobody to ask (`tern run --yes`) skip it. API clients see prompts on `/v1/events` as `{"secret_requested": …}`, list them with `GET /v1/secret-requests`, and answer with `POST /v1/secret-requests/{id}` `{"values": {"NAME": "…"}}` (names left out are skipped; only names the request asked for are accepted; owner scope).
 
@@ -806,7 +806,7 @@ The `python` tool runs a script in [Monty](https://pydantic.dev/monty), a Python
 
 The threat model, what isn't covered, and how to report a vulnerability are in [SECURITY.md](../SECURITY.md). In short:
 
-- **Secrets** come from the environment or `~/.tern/secrets.toml`, which must be mode 0600. Every secret value tern reads is scrubbed from the journal, conversation history, and connector and MCP server logs, and none reach the shell's environment.
+- **Secrets** come from the environment or `~/.tern/secrets.toml`, which must be mode 0600. Every secret value tern reads is scrubbed from the journal, conversation history, and connector and MCP server logs, along with masked echoes of it (`ck_**3pNe`) and, for long secrets, its first 8 and last 4 characters on their own, and none reach the shell's environment.
 - **File tools** can't modify `~/.tern` and can't read `secrets.toml` or the database. They are bound to the run's workspace by a handle opened on it: a path outside it (absolute, `..`, a symlink or hardlink out, another spelling) is refused, never asked about ([Workspaces](#workspaces)).
 - **`http_fetch`** refuses loopback, private, link-local, and cloud-metadata addresses, checking every redirect hop and pinning DNS between the check and the connection.
 - **File tools** can't modify `~/.tern` and can't read `secrets.toml` or the database. Reads and writes outside the workspace need approval, and paths that escape the workspace through `..` or symlinks are refused.

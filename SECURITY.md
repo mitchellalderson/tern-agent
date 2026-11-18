@@ -64,7 +64,7 @@ workspace's hidden `.tern/` directory, so one workspace can't stage files for or
 macOS a command can still read outside your home folder (a later phase denies reads under `/Users` and `/Volumes`
 except the workspace, read-only folders and detected toolchains); `/tmp` stays shared. `http_fetch` (GET only) refuses loopback, private, link-local, CGNAT and
 cloud-metadata addresses, resolves DNS itself, pins the connection to the checked address, and checks every redirect
-hop. Secrets live in the environment or in `~/.tern/secrets.toml`, which tern refuses to load unless it is mode 0600.
+hop. Secrets live in the environment or in `~/.tern/secrets.toml`, which tern refuses to load unless it is mode 0600; values in it are encrypted at rest.
 `docker`, interpreters) or for activating connectors. The file tools work freely inside the workspace
 (`~/tern-workspace` by default) and ask before reading or writing anywhere else. They refuse paths that escape the
 workspace through `..`, symlinks or dangling symlinks, can never write inside `~/.tern`, and can never read

@@ -118,7 +118,7 @@ fn scenario(env: &Env) {
         "{out}"
     );
     assert!(out.contains("added fx"), "{out}");
-    assert!(env.read("secrets.toml").contains(TOKEN));
+    assert!(crate::read_secrets(&env.tern_home).contains(TOKEN));
     let config = env.read("config.toml");
     assert!(
         config.contains("[mcp.servers.fx]") && config.contains("LOG_LEVEL"),
@@ -171,7 +171,7 @@ fn scenario(env: &Env) {
 
     env.ok(&["mcp", "rm", "ghost"]);
     env.ok(&["mcp", "rm", "fx"]);
-    assert!(!env.read("secrets.toml").contains(TOKEN));
+    assert!(!crate::read_secrets(&env.tern_home).contains(TOKEN));
     assert!(env.ok(&["mcp", "list"]).contains("No MCP servers yet"));
 }
 
