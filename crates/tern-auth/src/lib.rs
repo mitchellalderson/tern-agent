@@ -23,7 +23,7 @@ pub mod tools;
 pub use connections::{Conn, ConnAuth, Connections, Kind, Resolved};
 pub use discover::{AuthPlan, ClientKind, Source};
 pub use error::AuthError;
-pub use flow::{Client, DeviceCode, OAuthConfig, PendingSignIn, TokenAuth, TokenSet};
+pub use flow::{Client, DeviceCode, Grant, OAuthConfig, PendingSignIn, TokenAuth, TokenSet};
 pub use http::Guard;
 pub use tokens::{ClientSecret, ConnKey, Tokens};
 

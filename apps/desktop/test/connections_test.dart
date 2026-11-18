@@ -145,6 +145,34 @@ void main() {
     expect(find.text('Open sign-in page'), findsNothing);
   });
 
+  testWidgets('a connector link card shows its real domain and an expiry', (
+    tester,
+  ) async {
+    final store = _store(_FakeClient())
+      ..authPrompts = [
+        _prompt(
+          AuthCard(
+            kind: 'link',
+            title: 'Connect Acme',
+            url: 'https://login.acme.com/c?t=1',
+            domain: 'login.acme.com',
+            expiresAt: DateTime.now().millisecondsSinceEpoch + 5 * 60 * 1000,
+          ),
+        ),
+      ];
+    await tester.pumpWidget(_app(AuthCardOverlay(store: store)));
+    expect(find.text('Connect Acme'), findsOneWidget);
+    expect(find.text('Opens login.acme.com'), findsOneWidget);
+    expect(find.textContaining('Expires in 4:'), findsOneWidget);
+    expect(find.text('Open sign-in page'), findsOneWidget);
+    expect(find.text("I've signed in"), findsOneWidget);
+    await tester.pump(const Duration(seconds: 2));
+    expect(find.textContaining('Expires in'), findsOneWidget);
+    store.onEventForTest(const AuthPromptClosed('a1'));
+    await tester.pump();
+    expect(find.text('Connect Acme'), findsNothing);
+  });
+
   testWidgets('a device card shows its code, and a new card replaces it', (
     tester,
   ) async {

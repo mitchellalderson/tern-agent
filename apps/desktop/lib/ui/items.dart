@@ -1014,17 +1014,20 @@ class _ApprovalCardState extends State<ApprovalCard> {
                         child: const Text('Allow for this conversation'),
                       ),
                     ),
-                    Tooltip(
-                      message:
-                          'Only ${grant.label} as shown (a change to it asks again); '
-                          'remove it with `tern grants`',
-                      child: TextButton(
-                        onPressed: _busy
-                            ? null
-                            : () => _answer(Decision.always),
-                        child: const Text('Always allow this'),
+                    // Offered once the same thing was allowed once three
+                    // times: "Allow once" is the way to teach tern.
+                    if (grant.always)
+                      Tooltip(
+                        message:
+                            'Only ${grant.label} as shown (a change to it asks again); '
+                            'revoke it in Settings › Permissions',
+                        child: TextButton(
+                          onPressed: _busy
+                              ? null
+                              : () => _answer(Decision.always),
+                          child: const Text('Always allow this'),
+                        ),
                       ),
-                    ),
                   ],
                 ],
               ),

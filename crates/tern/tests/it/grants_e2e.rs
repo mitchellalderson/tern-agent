@@ -18,6 +18,9 @@ fn test(tool: &str, n: u32) -> Value {
     json!({ "name": "connector_test", "input": { "name": "net", "tool": tool, "args": { "n": n } } })
 }
 
+/// "Always" on every card, as before it was learned (`[proactive] learn_approvals`).
+const LEGACY_ALWAYS: &str = "[subagents]\nenabled = true\n[proactive]\nlearn_approvals = false\n";
+
 fn script() -> Value {
     json!({ "turns": [
         { "tool_calls": [{ "name": "connector_write", "input": { "name": "net", "source": DRAFT } }] },
@@ -39,7 +42,7 @@ async fn next_approval(events: &mut Events, already: usize) -> Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_grant_stops_the_repeat_prompts_for_the_same_draft_tool_only() {
-    let env = Env::new(&script());
+    let env = Env::with_config(&script(), LEGACY_ALWAYS);
     let _daemon = env.daemon_with(None);
     let sock = env.socket();
     let mut events = Events::open(&sock).await;
@@ -92,7 +95,7 @@ async fn a_run_grant_stops_the_repeat_prompts_for_the_same_draft_tool_only() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unknown_decision_is_refused_and_session_is_accepted() {
-    let env = Env::new(&script());
+    let env = Env::with_config(&script(), LEGACY_ALWAYS);
     let _daemon = env.daemon_with(None);
     let sock = env.socket();
     let mut events = Events::open(&sock).await;
@@ -108,7 +111,7 @@ async fn an_unknown_decision_is_refused_and_session_is_accepted() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn always_stores_one_key_grant() {
-    let env = Env::new(&script());
+    let env = Env::with_config(&script(), LEGACY_ALWAYS);
     let _daemon = env.daemon_with(None);
     let sock = env.socket();
     let mut events = Events::open(&sock).await;

@@ -183,7 +183,25 @@ impl Tokens {
     ) -> Result<String, AuthError> {
         let lock = self.lock(key);
         let _held = lock.lock().await;
-        let Some(current) = self.load(key) else {
+        let app_only = cfg.grant == crate::flow::Grant::ClientCredentials;
+        let current = self.load(key);
+        if app_only {
+            // No user and no refresh token: ask for a new token when there
+            // is none, it is about to expire, or the service refused it.
+            if let Some(c) = &current {
+                let expiring = c
+                    .expires_at
+                    .is_some_and(|e| e - EARLY_MS <= tern_store::now_ms());
+                if !expiring && !rejected.is_some_and(|r| r == c.access_token) {
+                    return Ok(c.access_token.clone());
+                }
+            }
+            let fresh = self.client(key, cfg).client_credentials().await?;
+            self.save(key, &fresh)?;
+            tracing::info!(target = %key.target, connection = %key.slug, "fetched app-only OAuth token");
+            return Ok(fresh.access_token);
+        }
+        let Some(current) = current else {
             return Err(AuthError::NeedsReauth(format!(
                 "{} · {} isn't signed in",
                 key.target, key.slug

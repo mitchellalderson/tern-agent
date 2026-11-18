@@ -78,6 +78,9 @@ pub struct Host {
     /// `connector_test` saves a live call as a fixture (T4c,
     /// `[connectors] record_tests`).
     pub record_fixtures: bool,
+    /// Where a connector's `sign_in` link is shown as a card. `None`: no
+    /// one to show it to.
+    pub sign_in: Option<Arc<dyn tern_core::approval::ApprovalHandler>>,
 }
 
 impl Host {
@@ -91,6 +94,7 @@ impl Host {
             limiter: Arc::default(),
             connections: None,
             record_fixtures: true,
+            sign_in: None,
         })
     }
 }
@@ -545,10 +549,17 @@ fn make_ctx(lua: &Lua, host: &Host, net: Arc<Net>, spec: &ConnectorSpec) -> mlua
     ctx.raw_set("kv", kv)?;
 
     let (log_name, log_secrets) = (name.clone(), host.secrets.clone());
+    let log_tape = net.tape.clone();
     ctx.raw_set(
         "log",
         lua.create_function(move |_, (level, msg): (String, String)| {
             let msg = log_secrets.redact(&msg);
+            if let Some(t) = &log_tape {
+                t.note(crate::evidence::Event::Log {
+                    level: level.clone(),
+                    msg: msg.clone(),
+                });
+            }
             match level.as_str() {
                 "error" => tracing::error!(connector = %log_name, "{msg}"),
                 "warn" => tracing::warn!(connector = %log_name, "{msg}"),
@@ -817,7 +828,47 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// `ctx.http`, noting each call (and each refusal) on the tape's trace.
 async fn http_request(lua: &Lua, net: &Net, opts: Table) -> mlua::Result<Table> {
+    let Some(tape) = net.tape.clone() else {
+        return http_request_inner(lua, net, opts).await;
+    };
+    let raw = opts
+        .raw_get::<Option<String>>("url")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let method = opts
+        .raw_get::<Option<String>>("method")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "GET".into())
+        .to_ascii_uppercase();
+    let parsed = reqwest::Url::parse(&raw).ok();
+    let shown = match &parsed {
+        Some(u) => fixtures::clean_url(u, &|t: &str| net.secrets.redact(t)),
+        None => net.secrets.redact(&raw),
+    };
+    let refused = parsed
+        .as_ref()
+        .and_then(|u| check_target(&net.caps, u, false).err())
+        .map(|e| e.to_string());
+    let r = http_request_inner(lua, net, opts).await;
+    let (status, error) = match &r {
+        Ok(t) => (t.raw_get::<u16>("status").ok(), None),
+        Err(e) => (None, Some(net.secrets.redact(&e.to_string()))),
+    };
+    tape.note(crate::evidence::Event::Http {
+        method,
+        url: shown,
+        status,
+        error: if refused.is_some() { None } else { error },
+        refused,
+    });
+    r
+}
+
+async fn http_request_inner(lua: &Lua, net: &Net, opts: Table) -> mlua::Result<Table> {
     let url: String = opts
         .raw_get::<Option<String>>("url")?
         .ok_or_else(|| mlua::Error::runtime("http.request: `url` is required"))?;

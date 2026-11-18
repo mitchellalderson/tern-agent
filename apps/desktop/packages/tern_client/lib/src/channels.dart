@@ -254,6 +254,7 @@ class Post {
     this.approvalId,
     this.secretRequestId,
     this.suggestion,
+    this.card,
     required this.createdAt,
   });
 
@@ -283,6 +284,7 @@ class Post {
     suggestion: j['suggestion'] is Json
         ? ChannelSuggestion.fromJson(j['suggestion'] as Json)
         : null,
+    card: j['card'] is Json ? ProactiveCard.fromJson(j['card'] as Json) : null,
     createdAt: _time(j['created_at'] as int),
   );
 
@@ -338,6 +340,10 @@ class Post {
 
   /// A `channel_suggest` card (or its pointer): accept or decline it.
   final ChannelSuggestion? suggestion;
+
+  /// A proactive card (heartbeat, routine fix, routine suggestion, away
+  /// brief): dismiss it, or act on it when it offers to.
+  final ProactiveCard? card;
   final DateTime createdAt;
 
   /// Stands for an approval or a secret request.
@@ -374,7 +380,44 @@ class Post {
     secretRequestId: secretRequestId,
     createdAt: createdAt,
     suggestion: suggestion,
+    card: card,
   );
+}
+
+/// Something tern noticed and says once, in the agent's DM: always
+/// dismissible, never repeated past its cap. [acceptLabel] is set when it
+/// can also be acted on ("Apply fix", "Set up routine").
+class ProactiveCard {
+  const ProactiveCard({
+    required this.id,
+    required this.kind,
+    required this.title,
+    this.body = '',
+    this.acceptLabel,
+    this.state = 'pending',
+  });
+
+  factory ProactiveCard.fromJson(Json j) => ProactiveCard(
+    id: j['id'] as int,
+    kind: j['kind'] as String,
+    title: j['title'] as String,
+    body: j['body'] as String? ?? '',
+    acceptLabel: j['accept_label'] as String?,
+    state: j['state'] as String? ?? 'pending',
+  );
+
+  final int id;
+
+  /// `heartbeat`, `routine_fix`, `routine_suggestion` or `away_brief`.
+  final String kind;
+  final String title;
+  final String body;
+  final String? acceptLabel;
+
+  /// `pending`, `accepted` or `dismissed`.
+  final String state;
+
+  bool get pending => state == 'pending';
 }
 
 /// One entry of a main channel's stream.
