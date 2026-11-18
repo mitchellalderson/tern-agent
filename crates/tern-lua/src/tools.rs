@@ -830,7 +830,11 @@ impl ConnectorFromOpenapi {
         .await
         .map_err(|e| format!("fetching {url}: {e}"))?;
         if !fetched.status.is_success() {
-            return Err(format!("fetching {url}: HTTP {}", fetched.status));
+            return Err(format!(
+                "fetching {url}: HTTP {}. {}",
+                fetched.status,
+                crate::hints::fetch_hint(fetched.status.as_u16())
+            ));
         }
         if fetched.truncated {
             return Err(format!(
