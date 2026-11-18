@@ -210,8 +210,14 @@ impl Runtime {
         )));
         tools.register(Arc::new(tern_tools::channels::ChannelSuggest::new(
             store.clone(),
+            Some(announce(post_changes.clone(), store.clone())),
+        )));
+        // Agents working as a team: brief teammates, look at their own runs.
+        tools.register(Arc::new(crate::team_tools::BriefTeam::new(
+            store.clone(),
             Some(announce(post_changes, store.clone())),
         )));
+        tools.register(Arc::new(crate::team_tools::InspectWork::new(store.clone())));
         tools.register(Arc::new(tern_tools::secret_request::SecretRequest::new(
             approvals.clone(),
             secrets.clone(),
@@ -325,6 +331,7 @@ impl Runtime {
                 mock,
             ));
             host.set_driver(Arc::new(LocalDriver::new(&agent)));
+            host.set_announce(announce(changes.clone(), store.clone()));
             let p = prompts.clone();
             let st = store.clone();
             let h = home.clone();
@@ -409,6 +416,19 @@ impl Runtime {
             .unwrap_or(true);
         if has_others || had_deleted {
             return;
+        }
+        // A brand-new home's default agent is its Chief of Staff, handle
+        // `@chief`. An existing install keeps its name.
+        let renamed = self.store.update_agent(
+            "tern",
+            &tern_store::AgentChange {
+                name: Some("Chief".into()),
+                slug: Some("chief".into()),
+                ..tern_store::AgentChange::default()
+            },
+        );
+        if let Err(e) = renamed {
+            tracing::warn!(error = %e, "naming the default agent Chief failed");
         }
         let mut made = Vec::new();
         for id in tern_core::agents::SEEDED_STARTERS {
@@ -710,13 +730,19 @@ impl Runtime {
                 }
             }
         }
+        let lanes: Vec<String> = agents
+            .iter()
+            .map(|(a, _)| lane_line(&self.home, a))
+            .collect();
         let lines: Vec<_> = agents
             .iter()
-            .map(|(a, lead)| MemberLine {
+            .zip(&lanes)
+            .map(|((a, lead), lane)| MemberLine {
                 slug: &a.slug,
                 name: &a.name,
                 lead: *lead,
                 you: a.id == agent_id,
+                lane,
             })
             .collect();
         let wakes = self.store.channel_wakes(&c.id)?.agent_wakes;
@@ -1110,6 +1136,16 @@ fn use_for(home: &TernHome, a: &tern_store::AgentRow) -> String {
 /// An agent's persona text (empty when it has none).
 pub(crate) fn persona_text(home: &TernHome, agent_id: &str) -> String {
     std::fs::read_to_string(tern_core::agents::persona_path(home, agent_id)).unwrap_or_default()
+}
+
+/// What an agent is for, in one line, for a lead that splits work across
+/// its channel's members: its description (what channel routing reads), else
+/// the first line of its persona.
+pub(crate) fn lane_line(home: &TernHome, agent: &tern_store::AgentRow) -> String {
+    match agent.description.as_deref().map(str::trim) {
+        Some(d) if !d.is_empty() => d.to_owned(),
+        _ => persona_line(home, &agent.id),
+    }
 }
 
 /// The first line of an agent's persona, as a short description of it.
