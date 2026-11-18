@@ -373,7 +373,6 @@ class _AgentSheetState extends State<AgentSheet> {
       toolsText,
       '$_memory memory',
       ceiling == null ? 'no ceiling' : '$ceiling ceiling',
-      if (_bot != null) 'own bot',
     ].join(' · ');
   }
 
