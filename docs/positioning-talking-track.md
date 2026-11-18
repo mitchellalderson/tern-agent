@@ -309,7 +309,7 @@ Stories to tell in a demo, each under a minute, each exercising a killer feature
 | Sub-agents with delegation on by default | **built** (S0–S5) | DECISIONS.md S0–S5 |
 | Secrets editor, 0600 secrets file, redacted bug reports | **built** | README `/secrets`, `tern report` |
 | Anthropic + any OpenAI-compatible endpoint, switch per task | **built** (P0) | README "Models" |
-| Routines with watches, webhooks, zero-token idle | **built** (T1b, T1c) | tooling spec §3 |
+| Routines with watches, zero-token idle | **built** (T1b) | tooling spec §3 |
 | Initiative levels, digests, quiet hours, channels | **built** (T1, T2) | tooling spec §4 |
 | Effects, outbox with deferred approvals, taint, scoped grants | **built** (T0, T3, scoped grants) | tooling spec §5 |
 | Activity ledger, per-routine budgets, `tern security audit` | **built** (T1a, T6b) | tooling spec §8 |
@@ -338,7 +338,7 @@ quoting externally.
   read/write permissions outside the model; free, $20, $100 (press-reported); SMB expansion 2026-09-29 with
   QuickBooks, Shopify, Slack, Facebook/Instagram business and ad accounts; trust incidents widely reported.
 - **Grok Bot**: beta 2026-08-11; macOS, Windows, iPhone companion; one cloud VM per account shared by all bots;
-  routines on cron (≥5 min) or events (Slack, GitHub, Linear, Sentry, PagerDuty, email, webhook); Google, Microsoft
+  routines on cron (≥5 min) or events (Slack, GitHub, Linear, Sentry, PagerDuty, email); Google, Microsoft
   365, Salesforce, remote MCP; access via SuperGrok ($30) and higher or Cursor plans, usage metered after a weekly
   allowance, no per-bot spend cap documented; no independent business reviews found.
 - **OpenClaw family**: ClawHavoc (341 of the first 2,857 ClawHub skills malicious, later over 1,100);

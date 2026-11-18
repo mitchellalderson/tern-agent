@@ -67,16 +67,6 @@ fn export_contains_no_secrets() {
         tern_store::DEFAULT_AGENT,
     )
     .unwrap();
-    let hook = create_routine(
-        &store,
-        &TriggerArgs::webhook(),
-        "A webhook arrived",
-        None,
-        &ScheduleLimits::default(),
-        tern_store::DEFAULT_AGENT,
-    )
-    .unwrap();
-
     let key = SecretKey::generate().unwrap();
     let out = export(
         &home,
@@ -113,13 +103,6 @@ fn export_contains_no_secrets() {
     }
     assert!(out.notes.iter().any(|n| n.contains(".env")));
     assert!(out.notes.iter().any(|n| n.contains("client_secret.json")));
-    assert!(
-        out.notes
-            .iter()
-            .any(|n| n.contains(&hook.id) && n.contains("webhook")),
-        "{:?}",
-        out.notes
-    );
     let routines = String::from_utf8_lossy(&out.files["routines.toml"]).into_owned();
     assert!(routines.contains("cron = \"0 8 * * 1-5\""), "{routines}");
     assert!(routines.contains("runs_per_day = 3"), "{routines}");

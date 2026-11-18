@@ -49,7 +49,6 @@ mod starters;
 mod subagents_env;
 mod t1a;
 mod t1b;
-mod t1c;
 mod t2;
 mod t3;
 mod t3a;

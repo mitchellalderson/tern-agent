@@ -58,7 +58,6 @@ const ledgerFilters = <(String, String?)>[
   ('Connections', 'connection'),
   ('Connectors', 'connector'),
   ('Autonomy', 'autonomy'),
-  ('Webhooks', 'webhook'),
   ('Devices', 'device'),
 ];
 
@@ -278,7 +277,6 @@ IconData ledgerIcon(String kind) => switch (kind.split('.').first) {
   'connection' => Icons.link,
   'connector' => Icons.extension_outlined,
   'autonomy' || 'egress' || 'sandbox' => Icons.tune,
-  'webhook' => Icons.webhook_outlined,
   'device' => Icons.devices_outlined,
   _ => Icons.circle_outlined,
 };

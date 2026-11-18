@@ -351,32 +351,6 @@ fn meta(key: &str) -> Meta {
             risky: |v| v == &Value::Bool(true),
             ..m
         },
-        "webhooks.listen" => Meta {
-            security: Some(
-                "A listener lets anyone who can reach it knock; each routine still needs its own \
-                 secret. Webhook runs are tainted.",
-            ),
-            risky: |v| v.as_array().is_some_and(|a| !a.is_empty()),
-            ..m
-        },
-        "webhooks.tls" => Meta {
-            kind: Some(Kind::Choice),
-            choices: &["auto", "files", "off"],
-            risky: |v| v == "off",
-            ..m
-        },
-        "webhooks.public_url" => Meta {
-            kind: Some(Kind::Text),
-            ..m
-        },
-        "webhooks.max_body_kb"
-        | "webhooks.per_minute"
-        | "webhooks.tolerance_secs"
-        | "webhooks.body_timeout_secs" => Meta {
-            live: true,
-            ..at_least(1.0)
-        },
-        "webhooks.header_timeout_secs" | "webhooks.max_connections" => at_least(1.0),
         "python.allow_writes" => Meta {
             security: Some(
                 "On: a script can make changes in a loop, up to max_writes. Each one still asks \
@@ -491,19 +465,13 @@ fn placement(key: &str) -> (&'static str, bool) {
             || k.starts_with("python.")
             || k.starts_with("fetch.")
             || k.starts_with("sandbox.docker_")
-            || k.starts_with("webhooks.max_")
-            || k == "webhooks.per_minute"
             || k == "connectors.rate"
             || k == "schedules.max_events_per_poll" =>
         {
             ("limits", true)
         }
-        "api.listen" | "api.public_url" | "webhooks.listen" | "webhooks.public_url" => {
-            ("servers", false)
-        }
-        k if k.starts_with("api.") || k.starts_with("webhooks.") || k.starts_with("account.") => {
-            ("servers", true)
-        }
+        "api.listen" | "api.public_url" => ("servers", false),
+        k if k.starts_with("api.") || k.starts_with("account.") => ("servers", true),
         _ => ("advanced", true),
     }
 }
@@ -962,7 +930,6 @@ mod tests {
                 "auth",
                 "bundles",
                 "python",
-                "webhooks",
                 "account",
                 "api"
             ]

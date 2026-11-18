@@ -1755,3 +1755,11 @@ alone: tool-result cap (32 KiB), sub-agent budget (400k), fetch reader budget, m
 - **Sub-agents don't get the tools.** A wait continues a conversation; a sub-agent's session ends with its report.
 - **Busy conversation: wait.** A continuation never cuts off a run in progress; it starts on the first tick after the session is idle. Fire is at-least-once: the run starts, then the row is deleted, so a crash between them fires it again rather than losing it.
 - **Everything goes in the ledger**: `wait.create`, `wait.fire` (with how it ended) and `wait.cancel` (who, and why), appended in the same transaction as the change.
+
+## tern is local-only, single-player
+
+- **Decision (2026-11-18).** tern runs on one computer for one person. The daemon and the desktop app (or TUI) both run on this machine and talk over a Unix socket. There is no remote access, no user accounts, no hosted offering, no messaging gateways and no inbound webhooks.
+- **Why.** Every one of those opens a door from outside, and each needed its own auth, rate limits, TLS and audit story. The product is a personal agent that acts on your machine with your credentials; the safest and simplest way to ship that is to keep it off the network. Hosted, multi-person and chat-front-end ideas can come back as separate products, designed from scratch.
+- **Removed in three steps**: webhook routines (`tern hooks`, `/v1/webhooks`, the `[webhooks]` listener); remote cores, device pairing, Clerk accounts and the desktop's server switcher; Telegram, ntfy and Slack gateways with `tern gateway`. Approvals now happen only in the desktop app and the TUI.
+- **Kept.** The Unix-socket API, `tern mcp serve` over stdio, outbound connectors and watches (polling), MCP clients, OAuth with a loopback redirect, and agents' membership of channels.
+- **Old config loads.** Removed config sections (`webhooks`, and in later changes `gateway`, `account` and the `api` listener keys) are ignored with a one-line warning instead of a parse error. Their database tables are dropped by new migrations; old migrations are untouched.

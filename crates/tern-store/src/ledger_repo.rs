@@ -602,9 +602,6 @@ mod tests {
             .unwrap();
         s.set_default_connection(&c.id).unwrap();
         s.remove_connection(&c.id).unwrap();
-        s.set_webhook_secret("hook", "hmac", "tern_whk_1").unwrap();
-        s.set_webhook_secret("hook", "hmac", "tern_whk_2").unwrap();
-        s.revoke_webhook("hook").unwrap();
         s.set_schedule_autonomy("hook", Some("yolo")).unwrap();
         s.set_schedule_autonomy("hook", Some("yolo")).unwrap(); // unchanged: nothing
         let d = crate::DeviceRow {
@@ -631,9 +628,6 @@ mod tests {
                 "connection.add",
                 "connection.default",
                 "connection.remove",
-                "webhook.create",
-                "webhook.rotate",
-                "webhook.revoke",
                 "autonomy.routine",
                 "device.pair",
                 "device.revoke",
@@ -641,12 +635,7 @@ mod tests {
         );
         assert_eq!(rows[0].entry.connector.as_deref(), Some("gmail"));
         assert_eq!(rows[2].entry.summary, "added gmail · work (me@work.com)");
-        assert_eq!(rows[7].entry.routine_id.as_deref(), Some("hook"));
-        // Secrets never reach the ledger.
-        assert!(
-            rows.iter()
-                .all(|r| !format!("{:?}", r.entry).contains("tern_whk"))
-        );
+        assert_eq!(rows[5].entry.routine_id.as_deref(), Some("hook"));
         assert_eq!(s.ledger_verify().unwrap().broken, None);
     }
 }

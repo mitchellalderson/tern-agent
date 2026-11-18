@@ -13,7 +13,6 @@ mod doctor;
 mod fetcher;
 mod gateway_cmd;
 mod grants_cmd;
-mod hooks_cmd;
 mod inspect;
 mod ledger_cmd;
 mod lifecycle;
@@ -208,7 +207,6 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Some(Command::Outbox { command }) => outbox_cmd::run(&home, command),
-        Some(Command::Hooks { command }) => hooks_cmd::run(&home, command),
         Some(Command::Grants { command }) => grants_cmd::run(&home, command),
         Some(Command::Ledger { command }) => ledger_cmd::run(&home, command),
         Some(Command::Tasks { json }) => tasks_cmd::run(&home, json),

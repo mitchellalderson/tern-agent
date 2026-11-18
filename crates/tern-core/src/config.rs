@@ -62,7 +62,6 @@ pub struct Config {
     pub gateway: GatewayConfig,
     pub mcp: McpConfig,
     pub api: ApiConfig,
-    pub webhooks: WebhooksConfig,
     /// Hosted tern account sign-in (deployment spec §10.4a). Off by default.
     pub account: AccountConfig,
     pub subagents: SubagentsConfig,
@@ -384,7 +383,6 @@ impl Default for Config {
             gateway: GatewayConfig::default(),
             mcp: McpConfig::default(),
             api: ApiConfig::default(),
-            webhooks: WebhooksConfig::default(),
             account: AccountConfig::default(),
             subagents: SubagentsConfig::default(),
             schedules: SchedulesConfig::default(),
@@ -404,6 +402,42 @@ impl Default for Config {
     }
 }
 
+/// Settings from features tern no longer has (it is local-only and
+/// single-player). A config that still has them loads, with one warning,
+/// instead of failing on an unknown key. Dotted paths; a table name drops
+/// the whole table.
+const REMOVED: &[&str] = &["webhooks"];
+
+/// Remove the dotted `path` from `table`; whether it was there.
+fn remove_path(table: &mut toml::Table, path: &str) -> bool {
+    match path.split_once('.') {
+        Some((head, rest)) => table
+            .get_mut(head)
+            .and_then(toml::Value::as_table_mut)
+            .is_some_and(|t| remove_path(t, rest)),
+        None => table.remove(path).is_some(),
+    }
+}
+
+/// `text` as a table without the [`REMOVED`] settings, or `None` if it had
+/// none (or isn't valid TOML, which the caller reports).
+fn strip_removed(text: &str) -> Option<toml::Table> {
+    let mut table: toml::Table = text.parse().ok()?;
+    let found: Vec<&str> = REMOVED
+        .iter()
+        .copied()
+        .filter(|path| remove_path(&mut table, path))
+        .collect();
+    if found.is_empty() {
+        return None;
+    }
+    tracing::warn!(
+        "config.toml: ignoring {} (tern is local-only now; remove it to silence this)",
+        found.join(", ")
+    );
+    Some(table)
+}
+
 impl Config {
     /// Load `path`. A missing file yields the defaults and `false`.
     pub fn load(path: &Path) -> Result<(Self, bool), ConfigError> {
@@ -418,10 +452,14 @@ impl Config {
     }
 
     pub fn parse(text: &str, path: &Path) -> Result<Self, ConfigError> {
-        let c: Self = toml::from_str(text).map_err(|e| ConfigError::Parse {
+        let parse_err = |e: toml::de::Error| ConfigError::Parse {
             path: path.to_path_buf(),
             source: Box::new(e),
-        })?;
+        };
+        let c: Self = match strip_removed(text) {
+            Some(cleaned) => cleaned.try_into().map_err(parse_err)?,
+            None => toml::from_str(text).map_err(parse_err)?,
+        };
         // Existing files without the line keep the old default: only a new
         // install (no file, or one written with `autonomy = "autonomous"`)
         // starts autonomous.
@@ -988,55 +1026,6 @@ pub enum TlsMode {
     Off,
 }
 
-/// `[webhooks]`: the listener webhook routines are reached on (tooling
-/// spec §3.1, T1c). Its own port, never the device API's: the two take
-/// different credentials and are exposed to different networks.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct WebhooksConfig {
-    /// `"tcp://host:port"` listeners. Empty (the default): no webhook can
-    /// reach this core; `tern hooks fire` still works locally.
-    pub listen: Vec<String>,
-    /// TLS on those listeners; unset = `[api] tls`, with its certificate
-    /// files. `off` needs loopback listeners and `[api] trust_proxy`.
-    pub tls: Option<TlsMode>,
-    /// The URL senders use, shown with each hook's path. Defaults to the
-    /// first listener (this host's name for `0.0.0.0`).
-    pub public_url: Option<String>,
-    /// Largest body accepted, in KB.
-    pub max_body_kb: u64,
-    /// Deliveries one routine accepts per minute; more get 429.
-    pub per_minute: u32,
-    /// How far a signed timestamp (`X-Tern-Signature: t=`) may be from now.
-    pub tolerance_secs: u64,
-    /// How long a sender has to send a request's headers (and the TLS
-    /// handshake before them), timed from when the connection is waiting
-    /// for them: a client that dribbles or idles longer is cut off.
-    pub header_timeout_secs: u64,
-    /// How long a sender has to send a body once its headers are in; a
-    /// slower one gets 408.
-    pub body_timeout_secs: u64,
-    /// Open connections the listener holds at once, handshakes included;
-    /// more are refused (503 without TLS, closed with it).
-    pub max_connections: u32,
-}
-
-impl Default for WebhooksConfig {
-    fn default() -> Self {
-        Self {
-            listen: Vec::new(),
-            tls: None,
-            public_url: None,
-            max_body_kb: 256,
-            per_minute: 30,
-            tolerance_secs: 300,
-            header_timeout_secs: 10,
-            body_timeout_secs: 30,
-            max_connections: 64,
-        }
-    }
-}
-
 /// `[subagents]`: delegation to child runs (docs/subagents-design.md §1.6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -1537,6 +1526,24 @@ ask_parent_timeout_secs = 900
         assert_eq!(m.model, "qwen/qwen3-coder:free");
         assert!("nocolon".parse::<ModelRef>().is_err());
         assert!(":m".parse::<ModelRef>().is_err());
+    }
+
+    #[test]
+    fn settings_from_removed_features_are_ignored_not_errors() {
+        let c = Config::parse(
+            "max_iterations = 7\n[webhooks]\nlisten = [\"tcp://127.0.0.1:8712\"]\n",
+            Path::new("c.toml"),
+        )
+        .unwrap();
+        assert_eq!(c.max_iterations, 7);
+        // Typos elsewhere are still errors.
+        assert!(Config::parse("max_iteratons = 3\n[webhooks]\nx = 1", Path::new("c")).is_err());
+        let mut t: toml::Table = "[a]\nb = 1\nc = 2".parse().unwrap();
+        assert!(
+            remove_path(&mut t, "a.b")
+                && !remove_path(&mut t, "a.b")
+                && !remove_path(&mut t, "x.y")
+        );
     }
 
     #[test]

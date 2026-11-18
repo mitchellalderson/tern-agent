@@ -137,8 +137,7 @@ impl ScheduleLimits {
         }
         if row.gate.is_some() && row.trigger() == "watch" {
             return Err(
-                "a gate is for cron, once and webhook routines; a watch already decides when to run"
-                    .into(),
+                "a gate is for cron and once routines; a watch already decides when to run".into(),
             );
         }
         Ok(())
@@ -190,11 +189,6 @@ pub struct TriggerArgs {
     pub backfill: Option<bool>,
     /// Keep events the watch marks as caused by tern itself.
     pub include_self: Option<bool>,
-    /// Started by deliveries to its webhook (T1c). Never read from tool or
-    /// API input: only `POST /v1/webhooks` sets it, because a webhook
-    /// routine needs a secret, which the model must not see.
-    #[serde(skip)]
-    pub webhook: bool,
 }
 
 /// The shortest watch interval (tooling spec §3.2).
@@ -289,15 +283,7 @@ impl TriggerArgs {
     }
 
     fn is_empty(&self) -> bool {
-        self.cron.is_none() && self.at.is_none() && self.watch.is_none() && !self.webhook
-    }
-
-    /// A webhook trigger, for `POST /v1/webhooks`.
-    pub fn webhook() -> Self {
-        Self {
-            webhook: true,
-            ..Self::default()
-        }
+        self.cron.is_none() && self.at.is_none() && self.watch.is_none()
     }
 
     /// Check the trigger and set it on `row`, with its next run. A watch
@@ -309,12 +295,7 @@ impl TriggerArgs {
         if let Some(i) = self.include_self {
             row.include_self = i;
         }
-        let given = [
-            self.cron.is_some(),
-            self.at.is_some(),
-            self.watch.is_some(),
-            self.webhook,
-        ];
+        let given = [self.cron.is_some(), self.at.is_some(), self.watch.is_some()];
         if given.iter().filter(|g| **g).count() > 1 {
             return Err("give one of `cron`, `at` or `watch`".into());
         }
@@ -358,13 +339,6 @@ impl TriggerArgs {
             row.every_secs = Some(parse_every(self.every.as_deref().unwrap_or("5m"))?);
             // The first poll (a baseline) happens on the next tick.
             row.next_run_at = tern_store::now_ms();
-        } else if self.webhook {
-            row.trigger = "webhook".into();
-            row.cron = String::new();
-            row.watch = None;
-            row.every_secs = None;
-            // Never due: deliveries start its runs.
-            row.next_run_at = i64::MAX;
         } else if row.trigger.is_empty() {
             return Err("give `cron` (repeating), `at` (once) or `watch` (on events)".into());
         }
@@ -412,7 +386,6 @@ pub fn describe_trigger(s: &ScheduleRow) -> String {
             s.watch.as_deref().unwrap_or("?"),
             fmt_every(s.every_secs.unwrap_or(300))
         ),
-        "webhook" => "on webhook deliveries".into(),
         _ => s.cron.clone(),
     }
 }
@@ -647,7 +620,6 @@ pub fn update_schedule(
             }
             "once" => {}
             "watch" => s.next_run_at = tern_store::now_ms(),
-            "webhook" => s.next_run_at = i64::MAX,
             _ => {
                 s.next_run_at = s
                     .cron
@@ -659,11 +631,6 @@ pub fn update_schedule(
         }
     }
     store.update_schedule(&s).map_err(|e| e.to_string())?;
-    if retrigger && s.trigger() != "webhook" {
-        // A routine that stops being a webhook loses its secret, so turning
-        // it back into one later can't revive an old URL.
-        store.revoke_webhook(id).map_err(|e| e.to_string())?;
-    }
     if ch.resume || enabling {
         store
             .unpause_schedule(id, true)

@@ -24,7 +24,7 @@ Said first, because you'll find out anyway:
 - **No mobile app and no push notifications.** Telegram is the phone interface.
 - **No hosted version.** You run it. A hosted tier is an idea on the [roadmap](../ROADMAP.md), not a product.
 - **Approvals in a live run block.** A run waits on its approval, and if there's no attached client or Telegram chat
-  to ask, the answer is deny. Writes from unattended runs (routines, webhooks, a tainted run) don't block: they wait in
+  to ask, the answer is deny. Writes from unattended runs (routines, a tainted run) don't block: they wait in
   the **outbox** for you to approve or reject while the rest of the run carries on.
 - **Prompt-injection defence narrows the damage; it doesn't remove it.** Every tool has an effect, a run that reads
   untrusted content is tainted (its writes ask, new sites ask), and approvals, the workspace boundary and the SSRF
@@ -59,8 +59,8 @@ They're the two Rust claws, and both are good. Honestly:
   SOP engine with resumable runs. tern sandboxes shell commands with Seatbelt, Landlock or Docker, but has none of
   that channel breadth.
 - **IronClaw** has the agent build its own tools too (as WASM), injects credentials at the host boundary so tools never
-  see them, and has routines with webhooks. tern does both too: connectors declare their hosts and credentials and the
-  host injects them, and an outside event can start a routine through a webhook trigger.
+  see them, and has routines. tern does both too: connectors declare their hosts and credentials and the
+  host injects them, and a watch can start a routine when something changes.
 
 What tern does differently:
 
