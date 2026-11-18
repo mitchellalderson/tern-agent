@@ -280,15 +280,10 @@ impl Manager {
         let mut routed: Vec<(String, String)> = Vec::new();
         let mut quiet: Option<&str> = None;
         let agents: Vec<String> = if mentioned.is_empty() {
-            // @mentions and quotes always win. Otherwise, with two or more
-            // people here, agents answer only when mentioned; else a fresh
-            // post is routed (if the channel lets agents decide); a quote
-            // goes to whoever wrote what it answers.
+            // @mentions and quotes always win. Otherwise a fresh post is
+            // routed (if the channel lets agents decide); a quote goes to
+            // whoever wrote what it answers.
             let by_gate = match reply_to {
-                None if store.human_authors(&channel.id)? >= 2 => {
-                    quiet = Some("Agents here reply only when mentioned");
-                    None
-                }
                 None if wakes.let_agents_decide => self.route(channel, text, &wakes).await,
                 _ => None,
             };

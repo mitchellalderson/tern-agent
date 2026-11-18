@@ -799,17 +799,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// How many different people have posted in the channel: with two or
-    /// more, agents answer only when mentioned.
-    pub fn human_authors(&self, channel_id: &str) -> Result<usize> {
-        let n: i64 = self.conn()?.query_row(
-            "SELECT count(DISTINCT author_id) FROM posts WHERE channel_id = ?1 AND author_kind = 'user'",
-            [channel_id],
-            |r| r.get(0),
-        )?;
-        Ok(n as usize)
-    }
-
     pub fn last_post_id(&self, channel_id: &str) -> Result<Option<i64>> {
         Ok(self.conn()?.query_row(
             "SELECT max(id) FROM posts WHERE channel_id = ?1",
