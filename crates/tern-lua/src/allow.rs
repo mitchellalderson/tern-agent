@@ -1,5 +1,6 @@
-//! `capabilities.http` entries: a host (`api.example.com`, `*.example.com`),
-//! optionally followed by a path pattern (`api.example.com/v1/*`).
+//! `capabilities.http` entries: an exact host (`api.example.com`),
+//! optionally followed by a path pattern (`api.example.com/v1/*`). Hosts take
+//! no wildcards: a connector names every host it may reach.
 
 /// The most `*` a path pattern may have.
 const MAX_STARS: usize = 8;
@@ -16,15 +17,11 @@ fn entry_path(entry: &str) -> Option<&str> {
 }
 
 fn host_matches(pattern: &str, host: &str) -> bool {
-    let (pattern, host) = (pattern.to_ascii_lowercase(), host.to_ascii_lowercase());
-    match pattern.strip_prefix("*.") {
-        Some(suffix) => host.ends_with(&format!(".{suffix}")),
-        None => pattern == host,
-    }
+    pattern.eq_ignore_ascii_case(host)
 }
 
-/// `true` if `host` is allowed by an entry like `api.example.com` or
-/// `*.example.com` (with or without a path).
+/// `true` if `host` is allowed by an entry like `api.example.com`
+/// (with or without a path).
 pub fn host_allowed(allowed: &[String], host: &str) -> bool {
     allowed.iter().any(|a| host_matches(entry_host(a), host))
 }
@@ -80,7 +77,12 @@ fn glob(p: &[u8], s: &[u8]) -> bool {
 /// Validate one entry; the error says what is wrong with it.
 pub fn check_entry(entry: &str) -> Result<(), String> {
     let host = entry_host(entry);
-    let bare = host.strip_prefix("*.").unwrap_or(host);
+    if host.contains('*') {
+        return Err(format!(
+            "capabilities.http entry {entry:?}: hosts take no wildcards; list each host (like \"api.example.com\")"
+        ));
+    }
+    let bare = host;
     let valid_host = !bare.is_empty()
         && bare.contains('.')
         && bare
@@ -90,7 +92,7 @@ pub fn check_entry(entry: &str) -> Result<(), String> {
         || bare == "localhost";
     if !valid_host {
         return Err(format!(
-            "capabilities.http entry {entry:?} must be a host name like \"api.example.com\" or \"*.example.com\", optionally with a path like \"api.example.com/v1/*\" (no \"*\" on its own, schemes or ports)"
+            "capabilities.http entry {entry:?} must be a host name like \"api.example.com\", optionally with a path like \"api.example.com/v1/*\" (no wildcard hosts, schemes or ports)"
         ));
     }
     let Some(path) = entry_path(entry) else {
@@ -127,12 +129,17 @@ mod tests {
 
     #[test]
     fn host_allowlist() {
-        let allowed = list(&["api.linear.app", "*.example.com", "api.github.com/repos/*"]);
+        let allowed = list(&[
+            "api.linear.app",
+            "a.b.example.com",
+            "api.github.com/repos/*",
+        ]);
         assert!(host_allowed(&allowed, "api.linear.app"));
         assert!(host_allowed(&allowed, "API.Linear.app"));
         assert!(host_allowed(&allowed, "a.b.example.com"));
         assert!(host_allowed(&allowed, "api.github.com"));
         assert!(!host_allowed(&allowed, "example.com"));
+        assert!(!host_allowed(&list(&["*.example.com"]), "a.example.com"));
         assert!(!host_allowed(&allowed, "api.linear.app.evil.com"));
         assert!(!host_allowed(&allowed, "evillinear.app"));
         assert!(!host_allowed(&[], "anything"));
@@ -170,18 +177,19 @@ mod tests {
     fn entries_are_checked() {
         for good in [
             "api.linear.app",
-            "*.ghost.io",
             "127.0.0.1",
             "localhost",
             "api.x.com/v1",
             "api.x.com/v1/*",
-            "*.x.com/a/*/b",
+            "x.com/a/*/b",
         ] {
             assert!(check_entry(good).is_ok(), "{good:?} should be allowed");
         }
         for bad in [
             "*",
             "*.",
+            "*.ghost.io",
+            "*.x.com/a/*/b",
             "https://api.x.com",
             "x.com:443",
             "",

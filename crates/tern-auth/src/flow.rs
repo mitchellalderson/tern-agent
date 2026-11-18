@@ -17,6 +17,9 @@ use crate::pkce;
 /// The loopback path the provider redirects to. Anything else gets a 404.
 pub const CALLBACK_PATH: &str = "/callback";
 
+/// How long a sign-in's `state` stays valid.
+pub const STATE_TTL: Duration = Duration::from_secs(15 * 60);
+
 /// How tern authenticates itself at the token endpoint.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,12 +33,34 @@ pub enum TokenAuth {
     Basic,
 }
 
+/// Which OAuth grant gets the token.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Grant {
+    /// A person signs in (PKCE, or a device code); tokens refresh.
+    #[default]
+    AuthorizationCode,
+    /// App-only: tern's own client ID and secret get the token, with no
+    /// user and no refresh token (a new token is fetched when it expires).
+    ClientCredentials,
+}
+
+impl Grant {
+    pub fn is_default(&self) -> bool {
+        *self == Grant::AuthorizationCode
+    }
+}
+
 /// Where to sign in and as which client. Stored on the connection; holds
 /// no secret (a client secret is named, and lives in secrets.toml).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OAuthConfig {
     /// A built-in profile's id, or a name for a discovered server.
     pub provider: String,
+    /// How the token is got; the authorization code unless a connector
+    /// declares app-only access.
+    #[serde(default, skip_serializing_if = "Grant::is_default")]
+    pub grant: Grant,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
     pub authorize_url: String,
@@ -203,6 +228,27 @@ impl Client<'_> {
             ("redirect_uri", redirect_uri.to_owned()),
             ("code_verifier", verifier.to_owned()),
         ];
+        if let Some(r) = &self.cfg.resource {
+            form.push(("resource", r.clone()));
+        }
+        let json = self.token_request(&self.cfg.token_url, form).await?;
+        token_set(&json, None)
+    }
+
+    /// App-only access (RFC 6749 §4.4): tern's client ID and secret get a
+    /// token for the app itself. Needs a client secret; there is no
+    /// refresh token, so callers ask again when it expires.
+    pub async fn client_credentials(&self) -> Result<TokenSet, AuthError> {
+        if self.secret.is_none() {
+            return Err(AuthError::Invalid(format!(
+                "{} app-only sign-in needs a client secret",
+                self.cfg.provider
+            )));
+        }
+        let mut form = vec![("grant_type", "client_credentials".to_owned())];
+        if !self.cfg.scopes.is_empty() {
+            form.push(("scope", self.cfg.scopes.join(" ")));
+        }
         if let Some(r) = &self.cfg.resource {
             form.push(("resource", r.clone()));
         }
@@ -457,6 +503,9 @@ fn scrub_err(e: AuthError, values: &[String]) -> AuthError {
 pub struct PendingSignIn {
     url: String,
     state: String,
+    /// When `state` was made: it is good for [`STATE_TTL`] and one use.
+    started: std::time::Instant,
+    used: std::sync::atomic::AtomicBool,
     verifier: String,
     redirect_uri: String,
     listener: TcpListener,
@@ -531,6 +580,8 @@ pub fn begin_on(
     Ok(PendingSignIn {
         url: url.into(),
         state,
+        started: std::time::Instant::now(),
+        used: std::sync::atomic::AtomicBool::new(false),
         verifier,
         redirect_uri,
         listener,
@@ -567,11 +618,11 @@ impl PendingSignIn {
             .next()
             .unwrap_or_default()
             .to_owned();
+        let deadline = tokio::time::Instant::from_std(self.started + STATE_TTL);
         loop {
-            let (stream, _) = self
-                .listener
-                .accept()
+            let (stream, _) = tokio::time::timeout_at(deadline, self.listener.accept())
                 .await
+                .map_err(|_| AuthError::TimedOut)?
                 .map_err(|e| AuthError::Http(format!("sign-in listener: {e}")))?;
             let handled =
                 tokio::time::timeout(Duration::from_secs(5), self.handle(stream, &host)).await;
@@ -624,6 +675,26 @@ impl PendingSignIn {
             .await;
             return None;
         }
+        // The state is good for 15 minutes and one use: a replayed or late
+        // callback is refused, whatever it carries.
+        if self.started.elapsed() > STATE_TTL {
+            reply(
+                &mut stream,
+                400,
+                "This sign-in link expired. Start the sign-in again in tern.",
+            )
+            .await;
+            return Some(Err(AuthError::TimedOut));
+        }
+        if self.used.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            reply(
+                &mut stream,
+                400,
+                "This sign-in link was already used. You can close this tab.",
+            )
+            .await;
+            return None;
+        }
         // RFC 9207: a server that names itself must be the one we asked.
         if let (Some(iss), Some(expected)) = (get("iss"), &self.issuer)
             && iss.trim_end_matches('/') != expected.trim_end_matches('/')
@@ -671,6 +742,26 @@ impl PendingSignIn {
         )
         .await;
         Some(Ok(code.to_owned()))
+    }
+}
+
+#[cfg(test)]
+impl PendingSignIn {
+    /// Feed one callback request straight to the handler.
+    async fn handle_for_test(&self, host: &str, query: &str) -> Option<Result<String, AuthError>> {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let q = query.to_owned();
+        let h = host.to_owned();
+        tokio::spawn(async move {
+            let mut c = TcpStream::connect(addr).await.unwrap();
+            let req = format!("GET /callback?{q} HTTP/1.1\r\nHost: {h}\r\n\r\n");
+            c.write_all(req.as_bytes()).await.unwrap();
+            let mut out = String::new();
+            let _ = c.read_to_string(&mut out).await;
+        });
+        let (stream, _) = l.accept().await.unwrap();
+        self.handle(stream, host).await
     }
 }
 
@@ -730,5 +821,67 @@ mod tests {
         let gh = form_to_json("access_token=gho_x&scope=repo&token_type=bearer");
         assert_eq!(token_set(&gh, None).unwrap().access_token, "gho_x");
         assert_eq!(form_encode("a b:c"), "a+b%3Ac");
+    }
+
+    async fn callback(addr: &str, query: &str) -> String {
+        let mut c = TcpStream::connect(addr).await.unwrap();
+        let req = format!("GET /callback?{query} HTTP/1.1\r\nHost: {addr}\r\n\r\n");
+        c.write_all(req.as_bytes()).await.unwrap();
+        let mut out = String::new();
+        let _ = c.read_to_string(&mut out).await;
+        out
+    }
+
+    fn pending() -> (PendingSignIn, String) {
+        let cfg = OAuthConfig {
+            authorize_url: "https://idp.example.com/authorize".into(),
+            client_id: "c".into(),
+            ..Default::default()
+        };
+        let guard = Guard::new(&[]);
+        let rt = tokio::runtime::Handle::current();
+        let (l, uri) = tokio::task::block_in_place(|| rt.block_on(bind(None))).unwrap();
+        let addr = uri
+            .trim_start_matches("http://")
+            .trim_end_matches(CALLBACK_PATH)
+            .to_owned();
+        (begin_on(&cfg, &guard, l, uri).unwrap(), addr)
+    }
+
+    fn state_of(p: &PendingSignIn) -> String {
+        Url::parse(p.url())
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .unwrap()
+            .1
+            .into_owned()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn state_is_single_use() {
+        let (p, addr) = pending();
+        let q = format!("state={}&code=abc", state_of(&p));
+        let (host, h2) = (addr.clone(), addr.clone());
+        let first = tokio::spawn(async move { callback(&h2, &q).await });
+        let got = p.wait_for_code().await.unwrap();
+        assert_eq!(got, "abc");
+        assert!(first.await.unwrap().contains("200"));
+        // The listener is done; a replay with the same state is refused.
+        let replay = p
+            .handle_for_test(&host, &format!("state={}&code=again", state_of(&p)))
+            .await;
+        assert!(replay.is_none(), "a second use of the state is ignored");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn state_expires_after_fifteen_minutes() {
+        let (mut p, addr) = pending();
+        p.started = std::time::Instant::now() - STATE_TTL - Duration::from_secs(1);
+        let q = format!("state={}&code=abc", state_of(&p));
+        let (a2, q2) = (addr.clone(), q.clone());
+        tokio::spawn(async move { callback(&a2, &q2).await });
+        let err = p.wait_for_code().await.unwrap_err();
+        assert_eq!(err, AuthError::TimedOut);
     }
 }

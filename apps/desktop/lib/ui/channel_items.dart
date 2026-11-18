@@ -145,6 +145,7 @@ class PostCard extends StatelessWidget {
         post.kind == 'pointer' && (post.isRequest || post.outboxId != null);
     // A channel suggestion is decided with its own buttons, below.
     final suggestion = post.suggestion;
+    final card = post.card;
     return Container(
       decoration: BoxDecoration(
         color: c.card,
@@ -203,7 +204,7 @@ class PostCard extends StatelessWidget {
               ),
               // A pointer: go to what waits, or mark it done here. One to
               // a request or outbox item has its buttons under the text.
-              if (elsewhere || suggestion != null)
+              if (elsewhere || suggestion != null || card != null)
                 const SizedBox.shrink()
               else if (post.outboxId != null)
                 // Decided in the outbox cards above the composer.
@@ -276,6 +277,8 @@ class PostCard extends StatelessWidget {
             RoutineCard(item: RoutineItem(id), store: store),
           if (suggestion != null)
             SuggestionActions(suggestion: suggestion, store: store)
+          else if (card != null)
+            ProactiveActions(card: card, store: store)
           else if (elsewhere) ...[
             const SizedBox(height: 4),
             Wrap(spacing: 4, children: _waitingElsewhere(context)),
@@ -542,6 +545,86 @@ class _SuggestionActionsState extends State<SuggestionActions> {
             TextButton(
               onPressed: _busy ? null : () => _decide(false),
               child: const Text('Not now'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// A proactive card's choices: act on it (when it offers to) or dismiss it.
+/// Decided, it says how. Never more than these two.
+class ProactiveActions extends StatefulWidget {
+  const ProactiveActions({super.key, required this.card, required this.store});
+
+  final ProactiveCard card;
+  final TernStore store;
+
+  @override
+  State<ProactiveActions> createState() => _ProactiveActionsState();
+}
+
+class _ProactiveActionsState extends State<ProactiveActions> {
+  var _busy = false;
+  String? _error;
+  String? _done;
+
+  Future<void> _decide(bool accept) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final err = accept
+        ? await widget.store.acceptCard(widget.card)
+        : await widget.store.dismissCard(widget.card);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _error = err;
+      if (err == null) _done = accept ? 'Done ✓' : 'Dismissed';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final card = widget.card;
+    final settled = _done ??
+        switch (card.state) {
+          'accepted' => 'Done ✓',
+          'dismissed' => 'Dismissed',
+          _ => null,
+        };
+    if (settled != null) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: _CardButton(label: settled, onPressed: null),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_error case final e?)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(e, style: TextStyle(color: c.error, fontSize: 12)),
+          ),
+        const SizedBox(height: 4),
+        Wrap(
+          spacing: 6,
+          children: [
+            if (card.acceptLabel case final label?)
+              FilledButton(
+                onPressed: _busy ? null : () => _decide(true),
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
+                child: Text(label),
+              ),
+            TextButton(
+              onPressed: _busy ? null : () => _decide(false),
+              child: const Text('Dismiss'),
             ),
           ],
         ),

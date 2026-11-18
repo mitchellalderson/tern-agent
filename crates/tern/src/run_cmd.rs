@@ -282,10 +282,11 @@ impl ApprovalHandler for TerminalApprover {
     async fn ask(&self, req: &ApprovalRequest) -> Decision {
         let always = match (&req.pattern, &req.grant) {
             (Some(p), _) => format!(" / [a]lways ({} {p})", req.call.name),
-            (None, Some(g)) => format!(
+            (None, Some(g)) if g.always => format!(
                 " / this [r]un / this [c]onversation / [a]lways (just {})",
                 g.label
             ),
+            (None, Some(_)) => " / this [r]un / this [c]onversation".to_owned(),
             (None, None) => String::new(),
         };
         let who = req

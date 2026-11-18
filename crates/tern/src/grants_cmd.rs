@@ -39,7 +39,7 @@ pub fn run(home: &TernHome, command: Option<GrantsCommand>) -> anyhow::Result<Ex
     Ok(ExitCode::SUCCESS)
 }
 
-fn describe(pattern: &str) -> String {
+pub(crate) fn describe(pattern: &str) -> String {
     if let Some(key) = pattern.strip_prefix("key:") {
         return match key.strip_prefix("python script ") {
             Some(_) => format!(
