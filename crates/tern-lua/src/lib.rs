@@ -2,10 +2,12 @@
 //! `~/.tern/connectors/*.luau`, each in its own VM with declared capabilities.
 
 mod allow;
+pub mod evidence;
 pub mod fixtures;
 mod hints;
 mod host;
 mod limit;
+pub mod link;
 pub mod openapi;
 mod spec;
 pub mod tools;
@@ -313,7 +315,7 @@ impl Tool for LuaTool {
         ))
     }
 
-    async fn call(&self, _: &ToolCtx, mut args: Value) -> ToolResult {
+    async fn call(&self, ctx: &ToolCtx, mut args: Value) -> ToolResult {
         let conn = match self.route(&mut args) {
             Ok(c) => c,
             Err(e) => {
@@ -321,7 +323,28 @@ impl Tool for LuaTool {
             }
         };
         match self.vm.call_as(&self.def.name, &args, conn).await {
-            Ok(out) => ToolResult::ok(out),
+            Ok(out) => {
+                // A `sign_in` link becomes a card for the user; the model
+                // gets the rest of the result and what the user did.
+                let (mut out, link) =
+                    link::take_sign_in(&self.vm.spec.capabilities, &out, tern_store::now_ms());
+                let note = match link {
+                    link::Extracted::None => None,
+                    link::Extracted::Refused(why) => {
+                        Some(format!("[the sign-in link was refused: {why}]"))
+                    }
+                    link::Extracted::Link(l) => {
+                        Some(link::present(&self.vm.host, ctx, &self.vm.spec.name, &l).await)
+                    }
+                };
+                if let Some(n) = note {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(&n);
+                }
+                ToolResult::ok(out)
+            }
             Err(e) => ToolResult::error(format!("{}.{}: {e}", self.vm.spec.name, self.def.name)),
         }
     }

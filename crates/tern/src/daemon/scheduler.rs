@@ -41,6 +41,7 @@ pub async fn run(manager: Arc<Manager>, shutdown: CancellationToken) {
         if let Err(e) = super::waits::poll(&manager).await {
             tracing::error!(error = %e, "checking waits failed");
         }
+        manager.heartbeat();
     }
 }
 
@@ -443,7 +444,7 @@ async fn release_held(manager: &Manager) -> anyhow::Result<()> {
 
 /// One message for everything held for a target: a digest if any of it
 /// was held for one, else what quiet hours held.
-fn combine(items: &[&HeldDelivery]) -> String {
+pub(super) fn combine(items: &[&HeldDelivery]) -> String {
     let digest = items.iter().any(|h| h.kind == "digest");
     if let [one] = items {
         return match (&one.label, digest) {

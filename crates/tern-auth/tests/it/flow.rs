@@ -385,3 +385,48 @@ async fn forgetting_revokes_and_deletes() {
     assert!(!tokens.has(&key));
     assert_eq!(tokens.secrets().redact("RT-gone-01"), "[REDACTED]");
 }
+
+#[tokio::test]
+async fn client_credentials_fetch_an_app_only_token_and_ask_again_when_it_expires() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("grant_type=client_credentials"))
+        .and(body_string_contains("client_secret=APP-SECRET"))
+        .and(body_string_contains("scope=read+write"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "AT-app-0001", "token_type": "Bearer", "expires_in": 1
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let mut cfg = cfg(&server);
+    cfg.grant = flow::Grant::ClientCredentials;
+    cfg.token_auth = tern_auth::TokenAuth::Post;
+    cfg.client_secret_secret = Some("APP_SECRET".into());
+    let (dir, tokens) = tokens(&server);
+    tokens
+        .secrets()
+        .update(&[("APP_SECRET", "APP-SECRET")], &[])
+        .unwrap();
+    let key = ConnKey::new(tern_auth::Kind::Connector, "mock", "app");
+    // No sign-in step: the first ask fetches, a second (still valid) reuses.
+    // `expires_in: 1` is inside the early-refresh margin, so it asks again.
+    assert_eq!(
+        tokens.access_token(&key, &cfg, None).await.unwrap(),
+        "AT-app-0001"
+    );
+    assert!(tokens.load(&key).unwrap().refresh_token.is_none());
+    assert_eq!(
+        tokens.access_token(&key, &cfg, None).await.unwrap(),
+        "AT-app-0001"
+    );
+    drop(dir);
+
+    // Without a client secret it says so instead of sending a public client.
+    let mut bare = cfg.clone();
+    bare.client_secret_secret = None;
+    let (_d2, t2) = self::tokens(&server);
+    let err = t2.access_token(&key, &bare, None).await.unwrap_err();
+    assert!(err.to_string().contains("needs a client secret"), "{err}");
+}

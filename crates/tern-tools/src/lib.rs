@@ -2,11 +2,13 @@
 
 pub mod agents;
 pub mod channels;
+pub mod composio;
 pub mod documents;
 pub mod fs;
 pub mod history;
 pub mod http;
 pub mod memory;
+pub mod offer_connection;
 pub mod schedule;
 pub mod secret_request;
 pub mod shell;

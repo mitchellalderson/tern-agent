@@ -202,6 +202,15 @@ impl AuthHost {
         if let Some(c) = configured.filter(|_| bound) {
             cfg.client_id = c.client_id.clone();
             cfg.client_secret_secret = c.client_secret_secret.clone();
+            if c.app_only {
+                if c.client_secret_secret.is_none() {
+                    return Err(format!(
+                        "[auth.clients] {} is app_only, which needs client_secret_secret too",
+                        cfg.provider
+                    ));
+                }
+                cfg.grant = crate::flow::Grant::ClientCredentials;
+            }
             if cfg.client_secret_secret.is_some() && cfg.token_auth == crate::TokenAuth::None {
                 cfg.token_auth = crate::TokenAuth::Post;
             }

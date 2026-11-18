@@ -77,6 +77,24 @@ pub async fn oauth(
     let guard = &conns.tokens.guard;
     let deadline = tokio::time::Instant::now() + timeout;
     let mut client_secret = None;
+    if cfg.grant == flow::Grant::ClientCredentials {
+        // App-only: nobody signs in, so there is nothing to present.
+        if cfg.client_id.is_empty() {
+            return Err(AuthError::Invalid(format!(
+                "no OAuth client ID for {}: add the app's client ID and secret under [auth.clients.{}]",
+                cfg.provider, cfg.provider
+            )));
+        }
+        let c = crate::flow::Client {
+            cfg: &cfg,
+            secret: client_for(conns, &cfg, None),
+            guard,
+        };
+        let tokens = tokio::time::timeout_at(deadline, c.client_credentials())
+            .await
+            .map_err(|_| AuthError::TimedOut)??;
+        return finish(conns, cfg, None, tokens).await;
+    }
     let device_ok = cfg.device_url.is_some() && !cfg.client_id.is_empty();
     if !(prefer_device && device_ok) {
         // The loopback leg. A registered client must come back to the port

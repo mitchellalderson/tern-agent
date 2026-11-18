@@ -400,8 +400,10 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             if !grant.run_only {
                 options.push(Span::styled("[c]", warn));
                 options.push(Span::raw(" this conversation   "));
-                options.push(Span::styled("[a]", warn));
-                options.push(Span::raw(" always   "));
+                if grant.always {
+                    options.push(Span::styled("[a]", warn));
+                    options.push(Span::raw(" always   "));
+                }
             }
         }
         if let Some((n, tools)) = app.bulk_summary() {
@@ -513,11 +515,50 @@ fn auth_lines(
             }
             notes
         }
+        AuthCard::Link {
+            title,
+            url,
+            domain,
+            expires_at,
+            notes,
+        } => {
+            out.push(Line::from(Span::styled(format!("🔐 {title}"), head)));
+            out.push(Line::from(vec![
+                Span::raw("   Opens "),
+                Span::styled(domain.clone(), head),
+                Span::raw(match expires_at {
+                    Some(at) => format!(" · {}", expiry_text(*at)),
+                    None => String::new(),
+                }),
+            ]));
+            for l in wrap(url, width.saturating_sub(3)) {
+                out.push(Line::from(vec![Span::raw("   "), Span::styled(l, dim)]));
+            }
+            out.push(Line::from(vec![
+                Span::styled("   [Enter]", key),
+                Span::raw(" open in your browser   "),
+                Span::styled("[d]", key),
+                Span::raw(" I've signed in   "),
+                Span::styled("[Esc]", key),
+                Span::raw(" cancel"),
+            ]));
+            notes
+        }
     };
     for n in notes {
         for l in wrap(n, width.saturating_sub(3)) {
             out.push(Line::from(vec![Span::raw("   "), Span::styled(l, dim)]));
         }
+    }
+}
+
+/// "expires in 4:32", or "expired", from unix milliseconds.
+fn expiry_text(at_ms: i64) -> String {
+    let left = (at_ms - tern_store::now_ms()) / 1000;
+    if left <= 0 {
+        "expired".to_owned()
+    } else {
+        format!("expires in {}:{:02}", left / 60, left % 60)
     }
 }
 

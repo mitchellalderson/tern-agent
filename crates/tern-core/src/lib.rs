@@ -22,6 +22,7 @@ pub mod narrow;
 pub mod net;
 pub mod outbox;
 pub mod presets;
+pub mod proactive;
 pub mod prompt;
 pub mod quiet;
 pub mod role;

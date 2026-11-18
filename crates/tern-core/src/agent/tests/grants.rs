@@ -197,6 +197,7 @@ async fn a_run_grant_covers_only_the_same_key_in_that_run() {
             key: "target a#abc".into(),
             label: "target a".into(),
             run_only: false,
+            always: true,
         })
     );
     assert_eq!(asked[1].grant.as_ref().unwrap().label, "target b");

@@ -15,6 +15,7 @@ import 'lifecycle.dart';
 import 'local.dart';
 import 'mcp.dart';
 import 'outbox.dart';
+import 'proactive.dart';
 import 'models.dart';
 import 'providers.dart';
 import 'secret_requests.dart';
@@ -659,6 +660,33 @@ class TernClient {
 
   Future<void> declineSuggestion(int id) =>
       _json('POST', '/v1/suggestions/$id/decline');
+
+  /// Accept a proactive card: its agent is told what it proposed.
+  Future<void> acceptCard(int id) =>
+      _json('POST', '/v1/proactive/cards/$id/accept');
+
+  /// Close a proactive card.
+  Future<void> dismissCard(int id) =>
+      _json('POST', '/v1/proactive/cards/$id/dismiss');
+
+  /// Tell the core the app is open. It may answer with "While you were
+  /// away" as a card in Home (the first open of the day after 8 hours or
+  /// more); true if it did.
+  Future<bool> reportPresence() async =>
+      ((await _json('POST', '/v1/proactive/presence') as Json)['brief']
+          as bool?) ??
+      false;
+
+  /// The standing "always" approvals.
+  Future<List<Grant>> grants() async => [
+    for (final g in await _json('GET', '/v1/grants') as List)
+      Grant.fromJson(g as Json),
+  ];
+
+  Future<void> revokeGrant(Grant g) => _json('POST', '/v1/grants/revoke', {
+    'tool': g.tool,
+    'pattern': g.pattern,
+  });
 
   /// Mark a `needs_you` post or its pointer in Home done (both close).
   Future<void> resolvePost(int id) => _json('POST', '/v1/posts/$id/resolve');

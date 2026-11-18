@@ -489,6 +489,27 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Held deliveries of `kind` (`quiet` or `digest`) whether due or not.
+    pub fn held_deliveries_of_kind(&self, kind: &str) -> Result<Vec<HeldDelivery>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, target, run_id, label, text, release_at, kind FROM held_deliveries
+             WHERE kind = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([kind], |r| {
+            Ok(HeldDelivery {
+                id: r.get(0)?,
+                target: r.get(1)?,
+                run_id: r.get(2)?,
+                label: r.get(3)?,
+                text: r.get(4)?,
+                release_at: r.get(5)?,
+                kind: r.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn held_delivery_count(&self) -> Result<u32> {
         Ok(self
             .conn()?

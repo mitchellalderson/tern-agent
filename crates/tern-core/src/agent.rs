@@ -140,6 +140,9 @@ pub struct AgentConfig {
     pub reported_window: Option<ReportedWindow>,
     /// Flush durable facts to memory before compacting (`[memory].flush`).
     pub memory_flush: bool,
+    /// P7: offer "always" only after repeated "Allow once"
+    /// ([`crate::proactive`]). Off: "always" is on every card.
+    pub learn_approvals: bool,
     /// Stream the model's reasoning to front ends (`show_reasoning`). It is
     /// kept with the step either way: a provider may need it echoed back.
     pub show_reasoning: bool,
@@ -169,6 +172,7 @@ impl Default for AgentConfig {
             local_providers: std::collections::BTreeSet::new(),
             reported_window: None,
             memory_flush: false,
+            learn_approvals: false,
             show_reasoning: true,
             approval_wait: Duration::from_secs(120),
             outbox_expiry: Duration::from_secs(72 * 60 * 60),
@@ -176,6 +180,13 @@ impl Default for AgentConfig {
             checkpoints: None,
         }
     }
+}
+
+/// What P7 tracks for one approval prompt ([`Agent::learn_target`]).
+struct Learn {
+    agent: String,
+    target: String,
+    learned: bool,
 }
 
 /// Looks up the window a provider's model list gave for a model.
@@ -1319,6 +1330,48 @@ impl Agent {
         Ok((out.value, out.replayed))
     }
 
+    /// What P7 tracks for this call, or `None` when it doesn't apply: the
+    /// switch is off, the call is destructive, or the run is tainted or a
+    /// routine's. `learned`: "Allow once" was answered to exactly this
+    /// (agent, tool, target) [`crate::proactive::LEARN_TAPS`] times in the
+    /// last 14 days.
+    fn learn_target(
+        &self,
+        run: &RunRow,
+        call: &ToolCall,
+        grant_key: Option<&crate::tool::GrantKey>,
+        effect: crate::tool::Effect,
+        gate: Gate,
+    ) -> Result<Option<Learn>, StepError> {
+        if !self.cfg.learn_approvals || gate.tainted || effect == crate::tool::Effect::Destructive {
+            return Ok(None);
+        }
+        let root = self.root_run_id(run)?;
+        let routine = match self.store.run(&root)? {
+            Some(r) => r.trigger == "cron",
+            None => false,
+        };
+        let target = grant_key
+            .map(|k| k.key.clone())
+            .or_else(|| approval::pattern_for(call));
+        let (true, Some(target)) = (!routine, target) else {
+            return Ok(None);
+        };
+        let agent = self.store.run_agent(&run.id)?.0;
+        let since = crate::proactive::LEARN_WINDOW_MS;
+        let taps = self.store.approval_taps_since(
+            &agent,
+            &call.name,
+            &target,
+            tern_store::now_ms() - since,
+        )?;
+        Ok(Some(Learn {
+            agent,
+            target,
+            learned: crate::proactive::always_learned(taps),
+        }))
+    }
+
     /// The effect policy with the allowlist, the run's taint and autonomy,
     /// then ask; nobody answering in time sends a write to the outbox.
     /// Runs inside the approval step so the decision is journaled even when
@@ -1400,6 +1453,17 @@ impl Agent {
                 )
             }
         };
+        // P7: "always" is learned, not on every card. Never for a destructive
+        // call (no grant there anyway), a tainted run or a routine's run;
+        // elsewhere after three "Allow once" answers to exactly this in 14
+        // days. Off by `[proactive] learn_approvals`: as before.
+        let learn = self.learn_target(run, call, grant_key.as_ref(), effect, gate)?;
+        let learned = learn.as_ref().is_some_and(|l| l.learned);
+        let (always, offer_always) = match &learn {
+            Some(l) => (always && l.learned, l.learned),
+            None if self.cfg.learn_approvals => (false, false),
+            None => (always, true),
+        };
         // The tainted host limit: a standing grant for this host answers it.
         let egress = egress.filter(|_| effect == crate::tool::Effect::Read);
         if let Some(h) = egress
@@ -1425,6 +1489,7 @@ impl Agent {
                 key: approval::read_scope_key(&dir),
                 label: format!("read_file, list_dir, search_files in {}", dir.display()),
                 run_only: true,
+                always: true,
             });
         }
         let req = ApprovalRequest {
@@ -1448,6 +1513,11 @@ impl Agent {
             } else {
                 None
             }
+            .or_else(|| {
+                learned.then(|| {
+                    "You've allowed this 3 times in the last 2 weeks. Always allow it?".to_owned()
+                })
+            })
             .or_else(|| no_grant.filter(|_| !gate.tainted))
             .or_else(|| {
                 read_grant.as_ref().map(|_| {
@@ -1464,6 +1534,7 @@ impl Agent {
                         key: k.key,
                         label: k.label,
                         run_only: false,
+                        always: offer_always,
                     })
             }),
         };
@@ -1484,6 +1555,12 @@ impl Agent {
         let queued = deferrable && matches!(decision, Ok(Decision::Unanswered) | Err(_));
         if !queued {
             self.ledger_decision(run, &req, decision.as_ref().ok().copied())?;
+        }
+        // P7: remember an "Allow once" for exactly this, so the card can
+        // offer "always" the third time.
+        if let (Ok(Decision::AllowOnce), Some(l)) = (&decision, &learn) {
+            self.store
+                .record_approval_tap(&l.agent, &call.name, &l.target)?;
         }
         Ok(match decision {
             Ok(Decision::AllowOnce) => (ApprovalOutcome::Approved, String::new()),
@@ -1519,7 +1596,21 @@ impl Agent {
                 }
                 (ApprovalOutcome::Approved, String::new())
             }
+            // "Always" the card didn't offer (not learned yet): once.
+            Ok(Decision::AlwaysAllow)
+                if self.cfg.learn_approvals && !learn.as_ref().is_some_and(|l| l.learned) =>
+            {
+                if let Some(l) = &learn {
+                    self.store
+                        .record_approval_tap(&l.agent, &call.name, &l.target)?;
+                }
+                (ApprovalOutcome::Approved, String::new())
+            }
             Ok(Decision::AlwaysAllow) => {
+                if let Some(l) = &learn {
+                    self.store
+                        .clear_approval_taps(&l.agent, &call.name, &l.target)?;
+                }
                 // A grant offered means "always" is for exactly that key (the
                 // prompt says so); else the command pattern; with neither it
                 // can only mean "this once".

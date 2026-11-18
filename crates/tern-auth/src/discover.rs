@@ -124,6 +124,7 @@ impl AuthPlan {
     pub fn oauth_config(&self, client_id: &str, scopes: Vec<String>) -> Option<OAuthConfig> {
         Some(OAuthConfig {
             provider: self.provider.clone(),
+            grant: crate::flow::Grant::default(),
             issuer: self.issuer.clone(),
             authorize_url: self.authorize_url.clone()?,
             token_url: self.token_url.clone()?,
