@@ -184,6 +184,15 @@ class _ChannelViewState extends State<ChannelView> {
             padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
             child: Text(e, style: TextStyle(color: c.error, fontSize: 12.5)),
           ),
+        if (store.choosingWho)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 6),
+            child: Text(
+              'Choosing who replies…',
+              key: const Key('choosing-who'),
+              style: TextStyle(color: c.muted, fontSize: 12.5),
+            ),
+          ),
         Composer(store: store),
       ],
     );
@@ -960,6 +969,10 @@ class _ChannelDialogState extends State<ChannelDialog> {
       : widget.editing!.lead;
   late bool _wakes = widget.editing?.agents?.agentWakes ?? false;
   late bool _decide = widget.editing?.agents?.letAgentsDecide ?? false;
+  late String _routeMode = widget.editing?.agents?.routeMode ?? 'one';
+  late final _rule = TextEditingController(
+    text: widget.editing?.agents?.replyRule,
+  );
   late final _slugCtl = TextEditingController(text: widget.editing?.slug);
   String? _error;
   var _busy = false;
@@ -981,6 +994,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
   void dispose() {
     _title.dispose();
     _slugCtl.dispose();
+    _rule.dispose();
     _instructions.dispose();
     super.dispose();
   }
@@ -1020,6 +1034,16 @@ class _ChannelDialogState extends State<ChannelDialog> {
                     _decide == editing.agents!.letAgentsDecide
                 ? null
                 : _decide,
+            routeMode:
+                editing.agents == null ||
+                    _routeMode == editing.agents!.routeMode
+                ? null
+                : _routeMode,
+            replyRule:
+                editing.agents == null ||
+                    _rule.text.trim() == (editing.agents!.replyRule ?? '')
+                ? null
+                : _rule.text.trim(),
           );
     if (!mounted) return;
     if (err == null) {
@@ -1216,13 +1240,44 @@ class _ChannelDialogState extends State<ChannelDialog> {
                   title: const Text('Let agents decide'),
                   subtitle: Text(
                     _decide
-                        ? 'A post that mentions no one goes to the members it '
-                              'fits, picked by one cheap model call. If that '
-                              'fails, the lead answers.'
-                        : 'Off: a post that mentions no one always goes to '
-                              'the lead.',
+                        ? 'A post that mentions no one goes to the agent it '
+                              'fits. If unsure, the lead answers.'
+                        : 'Off: a post that mentions no one goes to the lead.',
                   ),
                 ),
+                if (_decide) ...[
+                  const SizedBox(height: 6),
+                  SegmentedButton<String>(
+                    key: const Key('route-mode'),
+                    showSelectedIcon: false,
+                    segments: const [
+                      ButtonSegment(value: 'one', label: Text('One agent')),
+                      ButtonSegment(
+                        value: 'all',
+                        label: Text('Every relevant agent'),
+                      ),
+                    ],
+                    selected: {_routeMode},
+                    onSelectionChanged: (s) =>
+                        setState(() => _routeMode = s.first),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const Key('reply-rule'),
+                    controller: _rule,
+                    maxLength: 300,
+                    decoration: InputDecoration(
+                      labelText: 'Reply rule (optional)',
+                      hintText: 'Only reply to questions',
+                      isDense: true,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      helperText: 'In plain words. Agents stay quiet when a '
+                          'post does not fit.',
+                    ),
+                  ),
+                ],
               ],
               if (_error case final e?) ...[
                 const SizedBox(height: 10),
