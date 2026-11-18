@@ -11,6 +11,7 @@
 pub mod install;
 pub mod ollama;
 pub mod pulls;
+pub mod starters;
 
 use std::sync::{Arc, Mutex};
 
@@ -74,6 +75,8 @@ pub struct Status {
     /// "Install for me": what it would do, and how far it has got.
     pub install: install::Plan,
     pub installing: install::State,
+    /// The model first run offers, sized to this Mac. Filled by [`Local`].
+    pub starter: Option<starters::Starter>,
 }
 
 /// One installed model.
@@ -197,6 +200,7 @@ impl Local {
     pub async fn status(&self) -> Status {
         let mut s = self.engine.status().await;
         s.engine = self.engine.id();
+        s.starter = Some(starters::starter_for(s.ram_bytes));
         s.install = self.installer.plan();
         s.installing = self.state();
         s
@@ -204,6 +208,20 @@ impl Local {
 
     pub async fn models(&self) -> Result<Vec<LocalModel>, Error> {
         self.engine.list().await
+    }
+
+    /// Make sure Ollama answers: reuse the running one, or start it when it
+    /// is installed. Never prompts. Called at daemon start, before a run on
+    /// an Ollama model, and during first-run setup.
+    pub async fn ensure_running(&self) -> Result<(), Error> {
+        let d = self.engine.detect().await;
+        if d.running {
+            return Ok(());
+        }
+        if !d.installed {
+            return Err(Error::NotInstalled("Ollama"));
+        }
+        self.start().await
     }
 
     pub async fn start(&self) -> Result<(), Error> {

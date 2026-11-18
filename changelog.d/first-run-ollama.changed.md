@@ -1,0 +1,1 @@
+- **First run leads with Ollama.** One prompt, "Set up with Ollama", installs it if needed, downloads a starter model sized to your Mac and makes it the default. "Use an API model instead" opens the usual provider setup. tern starts Ollama itself, with no prompt, at startup and before a run that uses it.

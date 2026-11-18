@@ -168,6 +168,11 @@ async fn a_running_ollama_is_reused_as_is() {
             .contains("checksum")
     );
     assert_eq!(s["installing"]["state"], "idle");
+    assert!(
+        s["starter"]["model"]
+            .as_str()
+            .is_some_and(|m| m.contains(':'))
+    );
     let m = api.ok(Method::GET, "/v1/local/models", None).await;
     assert_eq!(m[0]["name"], "qwen3:8b");
     assert_eq!(m[0]["tools"], true);

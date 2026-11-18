@@ -17,6 +17,17 @@ multi-step work. A model that can't use tools can chat but can't run tasks; tern
   Macs under 32 GB a quantized cache. It stops with the daemon. `POST /v1/local/stop` stops only a server tern started.
 - **No Ollama?** Link to ollama.com/download, or "Install for me" (below).
 
+## First run and auto-start
+
+First run in the desktop app is one prompt: **Set up with Ollama**, with a smaller "Use an API model instead" that opens
+the existing provider setup unchanged. One press installs Ollama if needed (after the consent sentence above it), starts
+it, downloads a starter model sized to this Mac (`local/starters.rs`, a data table; `status.starter`), and makes
+`ollama:<model>` the default. Only a step the person must take shows anything; a failed start shows one line and a retry.
+
+tern never prompts to start Ollama. `Local::ensure_running` reuses a server that answers, else starts the installed one
+(loopback only, managed). It runs at daemon start when an Ollama provider is configured, before each run on an Ollama
+model, and during first-run setup. Existing configs keep their providers; only a new install gets the Ollama default.
+
 ## Install for me
 
 Only after you press the button, under a sentence saying what it does. The daemon refuses without `{"consent": true}`.

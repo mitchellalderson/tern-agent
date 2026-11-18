@@ -63,6 +63,21 @@ class LocalInstalling {
       phase == 'downloading' && total > 0 ? completed / total : null;
 }
 
+/// The model first run offers, sized to this Mac.
+class LocalStarter {
+  const LocalStarter({required this.model, this.sizeGb = 0, this.blurb = ''});
+
+  factory LocalStarter.fromJson(Json j) => LocalStarter(
+    model: j['model'] as String,
+    sizeGb: (j['size_gb'] as num?)?.toDouble() ?? 0,
+    blurb: j['blurb'] as String? ?? '',
+  );
+
+  final String model;
+  final double sizeGb;
+  final String blurb;
+}
+
 /// The local engine (Ollama): `GET /v1/local/status`.
 class LocalStatus {
   const LocalStatus({
@@ -81,6 +96,7 @@ class LocalStatus {
     this.installPage = 'https://ollama.com/download',
     this.install = const LocalInstallPlan(),
     this.installing = const LocalInstalling(),
+    this.starter,
   });
 
   factory LocalStatus.fromJson(Json j) => LocalStatus(
@@ -103,6 +119,9 @@ class LocalStatus {
     installing: j['installing'] is Json
         ? LocalInstalling.fromJson(j['installing'] as Json)
         : const LocalInstalling(),
+    starter: j['starter'] is Json
+        ? LocalStarter.fromJson(j['starter'] as Json)
+        : null,
   );
 
   final String engine;
@@ -130,6 +149,9 @@ class LocalStatus {
   final String installPage;
   final LocalInstallPlan install;
   final LocalInstalling installing;
+
+  /// What first run downloads for this Mac.
+  final LocalStarter? starter;
 }
 
 /// One installed local model (`GET /v1/local/models`).
