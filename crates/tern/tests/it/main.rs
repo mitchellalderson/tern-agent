@@ -56,6 +56,7 @@ mod t6a;
 mod t6b;
 mod t6d;
 mod t8a;
+mod team_tools;
 mod wait_until;
 mod workspaces;
 

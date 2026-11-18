@@ -22,6 +22,17 @@ pub const FINISHED_PREFIX: &str = "finished:";
 /// parent cut to this many characters (about 2,000 tokens); the rest stays
 /// in the child's session and is fetched with `agent_result`.
 pub const DEFAULT_RESULT_CHARS: usize = 8_000;
+/// The most characters of reports one call (`agent_wait`, `delegate_team`)
+/// puts in the caller's context, all reports together. Each report is also
+/// cut to `max_result_chars`; when together they'd go over, the longer ones
+/// are cut further so every report still arrives.
+pub const FANOUT_RESULT_CHARS: usize = 24_000;
+/// Label prefix of the sub-agents a `delegate_team` call starts.
+pub const TEAM_LABEL_PREFIX: &str = "team-";
+/// The fewest characters of a report a fan-out budget leaves it.
+const FANOUT_MIN_SHARE: usize = 600;
+/// A team call splits a question across this many teammates, at most.
+pub const MAX_TEAM_LANES: usize = 3;
 /// How much of the brief events and status lists carry.
 pub const TASK_PREVIEW: usize = 500;
 /// Session source of a child's session.
@@ -41,6 +52,8 @@ pub const AGENT_TOOLS: &[&str] = &[
     "agent_cancel",
     "agent_status",
     "agent_result",
+    "read_report",
+    "delegate_team",
 ];
 /// Tools only sub-agents get; top-level runs never see them.
 pub const CHILD_ONLY_TOOLS: &[&str] = &["agent_ask_parent"];
@@ -65,6 +78,7 @@ pub const CHILD_EXCLUDED_TOOLS: &[&str] = &[
     "connector_activate",
     "profile_edit",
     "role_set",
+    "brief_team",
 ];
 
 /// Numeric limits from `[subagents]`.
@@ -172,6 +186,26 @@ pub struct ResultRequest {
     /// At most this many characters (default and ceiling: `max_result_chars`).
     #[serde(default)]
     pub limit: Option<usize>,
+}
+
+/// One teammate's part of a `delegate_team` call.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lane {
+    /// The teammate (its name, e.g. `scout`).
+    pub agent: String,
+    /// The complete brief for that part: it sees nothing else.
+    pub task: String,
+}
+
+/// `delegate_team` arguments.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamRequest {
+    /// Two or three lanes, each for a different teammate.
+    pub lanes: Vec<Lane>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 /// `agent_cancel` arguments.
@@ -311,6 +345,15 @@ pub trait SubagentHost: Send + Sync {
     async fn wait(&self, ctx: &ToolCtx, req: WaitRequest) -> Result<Value, String>;
     /// A finished child's full report, a slice at a time (`agent_result`).
     async fn result(&self, ctx: &ToolCtx, req: ResultRequest) -> Result<Value, String>;
+    /// Hand each lane to its teammate, wait for all, and return their
+    /// reports together (`delegate_team`), keyed by `call_id` so a
+    /// re-execution doesn't start them twice.
+    async fn delegate_team(
+        &self,
+        ctx: &ToolCtx,
+        call_id: &str,
+        req: TeamRequest,
+    ) -> Result<Value, String>;
     /// Cancel a child and its subtree.
     async fn cancel(&self, ctx: &ToolCtx, req: CancelRequest) -> Result<Value, String>;
     /// Every child of `ctx.run_id` with status, activity and usage.
@@ -389,6 +432,9 @@ pub fn render_mail(m: &MailRow) -> String {
     if m.kind == "finished"
         && let Ok(f) = serde_json::from_value::<Finished>(body.clone())
     {
+        let next = unfinished_guidance(&f)
+            .map(|g| format!("\n\n{g}"))
+            .unwrap_or_default();
         let detail = match f.status.as_str() {
             "completed" | "stopped" => f.result.unwrap_or_default(),
             _ => f.error.or(f.result).unwrap_or_default(),
@@ -397,7 +443,7 @@ pub fn render_mail(m: &MailRow) -> String {
             "cancelled" => format!("[sub-agent {} was cancelled]", f.agent),
             s => format!("[sub-agent {} {s}]", f.agent),
         };
-        return format!("{head}\n{}", detail.trim_end());
+        return format!("{head}\n{}{next}", detail.trim_end());
     }
     if m.kind == "question"
         && let Ok(q) = serde_json::from_value::<Question>(body.clone())
@@ -428,6 +474,108 @@ pub fn render_mail(m: &MailRow) -> String {
     }
 }
 
+/// What the caller should do about a hand-off that didn't finish, and what
+/// got done: why it ended (`stopped` ran out of steps or tokens, `failed`,
+/// `cancelled` by the user or by the caller), what it left, and the next
+/// step. The host decides this; the model only reads it. `None` for a
+/// `completed` hand-off.
+pub fn unfinished_guidance(f: &Finished) -> Option<String> {
+    let done = match f.result.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        Some(_) => format!(
+            "What got done: its partial report is above ({} steps, {} tokens).",
+            f.iterations, f.tokens
+        ),
+        None if f.iterations > 0 => format!(
+            "What got done: {} steps, but it left no report.",
+            f.iterations
+        ),
+        None => "What got done: nothing; it never got going.".to_owned(),
+    };
+    let by_user = f
+        .error
+        .as_deref()
+        .is_some_and(|e| e.starts_with("cancelled by the user"));
+    Some(match f.status.as_str() {
+        "completed" => return None,
+        "stopped" => format!(
+            "It stopped: it ran out of steps or tokens before it was done. {done} Next: ask the user whether to continue, with a larger budget or a narrower brief, or to leave it there. Don't start it again on your own."
+        ),
+        "cancelled" if by_user => format!(
+            "The user stopped it. {done} Next: don't restart it. Tell the user what got done and ask what they want."
+        ),
+        "cancelled" => format!("It was cancelled. {done} Next: only redo it if you still need it."),
+        _ => format!(
+            "It failed{}. {done} Next: try once more, differently (a clearer brief, another teammate or another approach), or take the part over yourself. If that fails too, tell the user why and what got done.",
+            f.error
+                .as_deref()
+                .map(|e| format!(": {}", e.trim()))
+                .unwrap_or_default()
+        ),
+    })
+}
+
+/// Cut the reports in `entries` (the `agent_wait`/`delegate_team` result
+/// entries: `agent`, `result`, optional `result_chars`) so together they hold
+/// at most `budget` characters. Short reports stay whole; the budget left is
+/// shared evenly among the longer ones, each keeping at least a few hundred
+/// characters. A cut report ends in a marker saying how to read on. Returns
+/// whether any was cut.
+pub fn share_budget(entries: &mut [Value], budget: usize) -> bool {
+    let lens: Vec<usize> = entries
+        .iter()
+        .map(|e| {
+            e.get("result")
+                .and_then(Value::as_str)
+                .map_or(0, |r| r.chars().count())
+        })
+        .collect();
+    if lens.iter().sum::<usize>() <= budget {
+        return false;
+    }
+    // Water-filling: the shortest take what they need, the rest split what
+    // is left.
+    let mut order: Vec<usize> = (0..lens.len()).filter(|i| lens[*i] > 0).collect();
+    order.sort_by_key(|i| lens[*i]);
+    let mut left = budget;
+    let mut share = vec![0usize; lens.len()];
+    for (n, &i) in order.iter().enumerate() {
+        let fair = (left / (order.len() - n)).max(FANOUT_MIN_SHARE);
+        share[i] = lens[i].min(fair);
+        left = left.saturating_sub(share[i]);
+    }
+    let mut cut = false;
+    for (i, e) in entries.iter_mut().enumerate() {
+        if share[i] == 0 || share[i] >= lens[i] {
+            continue;
+        }
+        let Some(result) = e.get("result").and_then(Value::as_str) else {
+            continue;
+        };
+        let agent = e
+            .get("agent")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_owned();
+        let total = e
+            .get("result_chars")
+            .and_then(Value::as_u64)
+            .map_or(lens[i], |t| t as usize);
+        let end = result
+            .char_indices()
+            .nth(share[i])
+            .map_or(result.len(), |(b, _)| b);
+        e["result"] = format!(
+            "{}\n[... cut to share this call's {budget}-character report budget: showing the first {} of {total} characters. Read on with read_report {{\"agent\": \"{agent}\", \"offset\": {}}}]",
+            &result[..end],
+            share[i],
+            share[i]
+        )
+        .into();
+        cut = true;
+    }
+    cut
+}
+
 /// `text` cut to at most `max` characters for the parent's context. When it
 /// was longer, the cut text ends in a marker that says how much was shown,
 /// of how many, and how to get the rest. Returns the text and, when cut, the
@@ -440,7 +588,7 @@ pub fn cap_report(text: &str, max: usize, agent: &str) -> (String, Option<usize>
     let end = text.char_indices().nth(max).map_or(text.len(), |(i, _)| i);
     (
         format!(
-            "{}\n[... report truncated: showing the first {max} of {total} characters. Fetch the rest with agent_result {{\"agent\": \"{agent}\", \"offset\": {max}}}]",
+            "{}\n[... report truncated: showing the first {max} of {total} characters. Fetch the rest with read_report {{\"agent\": \"{agent}\", \"offset\": {max}}}]",
             &text[..end]
         ),
         Some(total),
@@ -509,10 +657,14 @@ mod tests {
                 Some("cancelled by the parent agent: enough"),
             ),
         );
-        assert_eq!(
-            render_mail(&m),
-            "[sub-agent research-1 was cancelled]\ncancelled by the parent agent: enough"
+        let text = render_mail(&m);
+        assert!(
+            text.starts_with(
+                "[sub-agent research-1 was cancelled]\ncancelled by the parent agent: enough"
+            ),
+            "{text}"
         );
+        assert!(text.contains("only redo it if you still need it"), "{text}");
         let m = mail("message", None, serde_json::json!({"text": "hurry up"}));
         assert_eq!(
             render_mail(&m),
@@ -535,6 +687,93 @@ mod tests {
             render_mail(&m),
             "[sub-agent scan asks (q_1)]\nPrivate too?\nIts recommendation: no\nIt is blocked until you answer with agent_send."
         );
+    }
+
+    fn finished(status: &str, result: Option<&str>, error: Option<&str>) -> Finished {
+        Finished {
+            agent: "scout".into(),
+            run_id: "c".into(),
+            status: status.into(),
+            result: result.map(Into::into),
+            result_chars: None,
+            error: error.map(Into::into),
+            iterations: 7,
+            tokens: 1200,
+        }
+    }
+
+    #[test]
+    fn an_unfinished_hand_off_says_what_got_done_and_what_next() {
+        assert!(unfinished_guidance(&finished("completed", Some("x"), None)).is_none());
+        // A stop (limits): ask the user, partial work named.
+        let g = unfinished_guidance(&finished("stopped", Some("half"), None)).unwrap();
+        assert!(g.contains("ran out of steps or tokens"), "{g}");
+        assert!(g.contains("partial report is above (7 steps"), "{g}");
+        assert!(g.contains("ask the user"), "{g}");
+        // The user's own stop: don't restart, ask.
+        let g = unfinished_guidance(&finished("cancelled", None, Some("cancelled by the user")))
+            .unwrap();
+        assert!(g.contains("The user stopped it"), "{g}");
+        assert!(
+            g.contains("don't restart it") && g.contains("ask what they want"),
+            "{g}"
+        );
+        // A failure: the error, once more differently, then tell the user.
+        let g = unfinished_guidance(&finished("failed", None, Some("provider down"))).unwrap();
+        assert!(g.contains("It failed: provider down"), "{g}");
+        assert!(g.contains("left no report"), "{g}");
+        assert!(g.contains("try once more, differently"), "{g}");
+        assert!(g.contains("tell the user why"), "{g}");
+        // It reaches the caller in the mail it reads.
+        let m = mail(
+            "finished",
+            Some("c"),
+            serde_json::to_value(finished("failed", None, Some("provider down"))).unwrap(),
+        );
+        assert!(render_mail(&m).contains("try once more, differently"));
+    }
+
+    #[test]
+    fn reports_that_arrive_together_share_one_budget() {
+        let entry =
+            |agent: &str, n: usize| serde_json::json!({ "agent": agent, "result": "x".repeat(n) });
+        // Within the budget: untouched.
+        let mut small = vec![entry("a", 100), entry("b", 200)];
+        assert!(!share_budget(&mut small, 24_000));
+        // Three long reports share it; a short one stays whole.
+        let mut v = vec![
+            entry("a", 8_000),
+            entry("b", 8_000),
+            entry("short", 500),
+            entry("c", 8_000),
+        ];
+        assert!(share_budget(&mut v, 20_000));
+        let len = |i: usize| v[i]["result"].as_str().unwrap().chars().count();
+        assert_eq!(
+            v[2]["result"].as_str().unwrap().chars().count(),
+            500,
+            "short stays whole"
+        );
+        let shown: usize = [0, 1, 3]
+            .iter()
+            .map(|&i| {
+                v[i]["result"]
+                    .as_str()
+                    .unwrap()
+                    .split("\n[...")
+                    .next()
+                    .unwrap()
+                    .len()
+            })
+            .sum();
+        assert!(shown + 500 <= 20_000, "{shown}");
+        assert!(len(0) < 8_000 && len(1) < 8_000 && len(3) < 8_000);
+        let r = v[0]["result"].as_str().unwrap();
+        assert!(
+            r.contains("read_report {\"agent\": \"a\", \"offset\":"),
+            "{r}"
+        );
+        assert!(r.contains("of 8000 characters"), "{r}");
     }
 
     #[test]
