@@ -48,6 +48,9 @@ pub struct Wait {
     pub last_check: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tainted: bool,
+    /// A promise the agent made ("I'll check back Friday"), found by the host.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub followup: bool,
 }
 
 pub fn view(store: &tern_store::Store, w: &WaitRow) -> Wait {
@@ -78,6 +81,7 @@ pub fn view(store: &tern_store::Store, w: &WaitRow) -> Wait {
         checks: w.checks,
         last_check: w.last_check.clone(),
         tainted: w.tainted,
+        followup: w.followup,
     }
 }
 
@@ -103,6 +107,7 @@ async fn cancel(State(m): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiRes
             .end_wait(&id, "wait.cancel", tern_store::ACTOR_OWNER, "cancelled")
             .map_err(internal)?;
     if ended {
+        m.followup_ended(&id);
         Ok(Json(json!({ "ok": true })))
     } else {
         Err(not_found("wait"))

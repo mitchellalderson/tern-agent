@@ -393,7 +393,11 @@ fn placement(key: &str) -> (&'static str, bool) {
         | "proactive.fix_routines"
         | "proactive.learn_approvals"
         | "proactive.suggest_routines"
-        | "proactive.away_brief" => ("general", false),
+        | "proactive.away_brief"
+        | "proactive.new_topic"
+        | "proactive.open_loops"
+        | "proactive.learn_facts"
+        | "proactive.tidy_memory" => ("general", false),
         "memory.user_md_tokens" | "memory.memory_md_tokens" | "skills.capture_min_tool_calls" => {
             ("general", true)
         }

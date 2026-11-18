@@ -24,6 +24,9 @@ class _MemorySectionState extends State<MemorySection> {
   String? _scope;
   String? _loadedFor;
   List<Memory>? _memories;
+
+  /// What the weekly tidy-up did, newest first (applied ones only show).
+  List<MemoryTidy> _tidy = const [];
   String? _error;
   bool _showAll = false;
 
@@ -52,9 +55,16 @@ class _MemorySectionState extends State<MemorySection> {
     _loadedFor = scope;
     try {
       final m = await widget.store.client.memories(agent: scope);
+      var tidy = const <MemoryTidy>[];
+      try {
+        tidy = await widget.store.client.memoryTidy();
+      } on TernException {
+        // An older core has no tidy-up; show none.
+      }
       if (!mounted || _loadedFor != scope) return;
       setState(() {
         _memories = m;
+        _tidy = tidy;
         _error = null;
       });
     } on TernException catch (e) {
@@ -72,6 +82,9 @@ class _MemorySectionState extends State<MemorySection> {
     }
     if (mounted) await _load(scope);
   }
+
+  Future<void> _undoTidy(String scope, MemoryTidy t) =>
+      _change(scope, () => widget.store.client.undoMemoryTidy(t.id));
 
   Future<void> _edit(String scope, Memory m) async {
     final controller = TextEditingController(text: m.content);
@@ -154,6 +167,53 @@ class _MemorySectionState extends State<MemorySection> {
     );
     if (ok != true || !mounted) return;
     await _change(scope, () => widget.store.client.clearMemories(scope));
+  }
+
+  /// This scope's tidy-ups still in force: a merge offers Undo, a pair that
+  /// disagrees offers Dismiss.
+  List<Widget> _tidyRows(String scope, TernColors c) {
+    final mine = [
+      for (final t in _tidy)
+        if (t.applied && t.namespace == scope) t,
+    ];
+    if (mine.isEmpty) return const [];
+    return [
+      const SizedBox(height: 10),
+      Text('Tidied this week', style: Theme.of(context).textTheme.labelSmall),
+      for (final t in mine.take(5))
+        Padding(
+          key: Key('tidy-${t.id}'),
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  t.isMerge
+                      ? 'Merged ${t.memories.length} into one: ${t.note}'
+                      : 'These disagree: ${t.note}',
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: c.muted),
+                ),
+              ),
+              TextButton(
+                key: Key('tidy-undo-${t.id}'),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  minimumSize: const Size(0, 24),
+                ),
+                onPressed: () => _undoTidy(scope, t),
+                child: Text(
+                  t.isMerge ? 'Undo' : 'Dismiss',
+                  style: const TextStyle(fontSize: 11.5),
+                ),
+              ),
+            ],
+          ),
+        ),
+    ];
   }
 
   @override
@@ -298,6 +358,7 @@ class _MemorySectionState extends State<MemorySection> {
                 ),
               ),
             ),
+          ..._tidyRows(scope, c),
         ],
       ],
     );

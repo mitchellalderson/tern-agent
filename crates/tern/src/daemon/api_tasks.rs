@@ -359,7 +359,11 @@ pub fn collect(m: &Manager) -> anyhow::Result<Tasks> {
             section: "scheduled".into(),
             kind: "wait".into(),
             id: w.id.clone(),
-            title: format!("Waiting: {}", w.note),
+            title: if w.followup {
+                format!("Following up: {}", w.note)
+            } else {
+                format!("Waiting: {}", w.note)
+            },
             detail: Some(detail),
             at: Some(w.expires_at),
             session_id: Some(w.session_id.clone()),

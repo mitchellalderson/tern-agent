@@ -42,6 +42,7 @@ pub async fn run(manager: Arc<Manager>, shutdown: CancellationToken) {
             tracing::error!(error = %e, "checking waits failed");
         }
         manager.heartbeat();
+        manager.tidy_tick();
     }
 }
 

@@ -634,7 +634,7 @@ A routine's own history is separate: see [A routine's previous report](#a-routin
 
 ### Proactive help
 
-tern speaks first in five ways, each a **card** in the agent's DM you can dismiss, each with a switch under `[proactive]`
+tern speaks first in nine ways, each a **card** in the agent's DM you can dismiss, each with a switch under `[proactive]`
 (all default on) and a hard cap. The host decides, not the model: none of them calls a model unless something changed,
 and none changes anything by itself. `GET /v1/proactive/cards[?state=]`, `POST /v1/proactive/cards/{id}/accept` and
 `.../dismiss`; accepting a card tells its agent, as you, what it proposed.
@@ -656,6 +656,25 @@ and none changes anything by itself. `GET /v1/proactive/cards[?state=]`, `POST /
 - **While you were away** (`away_brief`). The desktop reports it is open (`POST /v1/proactive/presence`). On the first
   open of the day after 8 hours or more, Home gets one brief: held digest results, the outbox, what is open, routine
   reports that came in. Nothing to say: no card.
+- **New topic?** (`new_topic`). In Home or a DM, when your message clearly changes the subject, a card offers **New topic**
+  (the usual cut with carry-over). One `decide()` yes/no per message, only once the conversation has two exchanges, at
+  most one hint per conversation and six a day. It never switches by itself; the message you sent stays where it is.
+- **Open loops** (`open_loops`). "I'll check back Friday" or "waiting on Riley" in the agent's own reply becomes a
+  follow-up: a `decide()` yes/no, then one fast-model read that picks a date (two days out when there is none, never
+  past 30 days). It is a time wait (`wait_until` accepts `check.in` up to 30 days now; polling waits still stop at 24 h),
+  so the agent wakes by itself when it is due. It shows above the composer as "Following up Fri: …" and in Tasks, and
+  its card has **Cancel**. Five open per agent, five new a day; not from a tainted run; not when the agent already
+  set a wait in that run.
+- **Remembering** (`learn_facts`). After each message of yours, a `decide()` yes/no ("a durable fact worth keeping?"),
+  then one fast-model pass that saves up to three the agent missed, skipping what memory already says. Saved through
+  the same caps as `memory_save` (so the run's write limit applies), tagged `auto`, never from a tainted run. A card
+  lists what was saved with **Forget**. Six cards a day. The pre-compaction flush is separate and unchanged.
+- **Memory tidy-up** (`tidy_memory`). Once a week (the first week starts when the daemon first checks), per namespace
+  that changed since the last pass and has at least six memories: a `decide()` yes/no, then one fast-model pass that
+  merges duplicates (at most 8) and flags contradictions (at most 4). Reversible: every change is logged with the
+  memories as they were, and the **Memory** section of the side panel shows **Undo** (a merge) or **Dismiss** (a flag).
+  An unverified memory never replaces or removes a verified one, and your own words are never rewritten. Flagged pairs are
+  never changed. `GET /v1/memory-tidy`, `POST /v1/memory-tidy/{id}/undo`.
 
 ### Skill capture
 

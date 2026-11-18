@@ -30,6 +30,9 @@ pub struct WaitRow {
     pub last_checked_at: Option<i64>,
     pub last_check: Option<String>,
     pub last_value: Option<String>,
+    /// An open loop the agent promised ("I'll check back Friday"), found
+    /// by the host in a reply; the app calls it a follow-up.
+    pub followup: bool,
 }
 
 /// A wait to create; the ids and times come from the caller.
@@ -48,11 +51,12 @@ pub struct NewWait<'a> {
     pub expires_at: i64,
     pub tainted: bool,
     pub deliver_to: Option<&'a str>,
+    pub followup: bool,
 }
 
 const COLS: &str = "id, session_id, run_id, agent_id, note, check_kind, check_spec, until_spec,
     every_secs, next_check_at, expires_at, tainted, deliver_to, created_at, checks,
-    last_checked_at, last_check, last_value";
+    last_checked_at, last_check, last_value, followup";
 
 fn wait_row(r: &Row<'_>) -> rusqlite::Result<WaitRow> {
     Ok(WaitRow {
@@ -74,6 +78,7 @@ fn wait_row(r: &Row<'_>) -> rusqlite::Result<WaitRow> {
         last_checked_at: r.get(15)?,
         last_check: r.get(16)?,
         last_value: r.get(17)?,
+        followup: r.get(18)?,
     })
 }
 
@@ -93,8 +98,8 @@ impl Store {
         }
         conn.execute(
             "INSERT INTO waits (id, session_id, run_id, agent_id, note, check_kind, check_spec,
-               until_spec, every_secs, next_check_at, expires_at, tainted, deliver_to, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+               until_spec, every_secs, next_check_at, expires_at, tainted, deliver_to, created_at, followup)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 w.id,
                 w.session_id,
@@ -109,7 +114,8 @@ impl Store {
                 w.expires_at,
                 w.tainted,
                 w.deliver_to,
-                now_ms()
+                now_ms(),
+                w.followup
             ],
         )?;
         let e = LedgerEntry::new("wait.create", w.id, format!("waiting: {}", w.note))
@@ -124,6 +130,15 @@ impl Store {
         crate::ledger_repo::append_on(&conn, &e)?;
         let sql = format!("SELECT {COLS} FROM waits WHERE id = ?1");
         Ok(conn.query_row(&sql, [w.id], wait_row).optional()?)
+    }
+
+    /// Open follow-ups of `agent`.
+    pub fn followups_open(&self, agent: &str) -> Result<u32> {
+        Ok(self.conn()?.query_row(
+            "SELECT count(*) FROM waits WHERE agent_id = ?1 AND followup = 1",
+            [agent],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn wait(&self, id: &str) -> Result<Option<WaitRow>> {

@@ -28,6 +28,8 @@ pub struct CardRow {
     pub post_id: Option<i64>,
     pub created_at: i64,
     pub decided_at: Option<i64>,
+    /// Where the card is posted, when not the agent's DM.
+    pub channel_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -39,10 +41,12 @@ pub struct NewCard<'a> {
     pub body: &'a str,
     pub accept_label: Option<&'a str>,
     pub accept_message: Option<&'a str>,
+    /// Post it here instead of in the agent's DM.
+    pub channel_id: Option<&'a str>,
 }
 
 const COLS: &str = "id, kind, subject, agent_id, title, body, accept_label, accept_message, state, \
-    post_id, created_at, decided_at";
+    post_id, created_at, decided_at, channel_id";
 
 fn row(r: &Row<'_>) -> rusqlite::Result<CardRow> {
     Ok(CardRow {
@@ -58,6 +62,7 @@ fn row(r: &Row<'_>) -> rusqlite::Result<CardRow> {
         post_id: r.get(9)?,
         created_at: r.get(10)?,
         decided_at: r.get(11)?,
+        channel_id: r.get(12)?,
     })
 }
 
@@ -84,8 +89,8 @@ impl Store {
         }
         conn.execute(
             "INSERT INTO proactive_cards
-               (kind, subject, agent_id, title, body, accept_label, accept_message, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+               (kind, subject, agent_id, title, body, accept_label, accept_message, created_at, channel_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 c.kind,
                 c.subject,
@@ -94,7 +99,8 @@ impl Store {
                 c.body,
                 c.accept_label,
                 c.accept_message,
-                now_ms()
+                now_ms(),
+                c.channel_id
             ],
         )?;
         let sql = format!("SELECT {COLS} FROM proactive_cards WHERE id = ?1");
@@ -114,6 +120,18 @@ impl Store {
     pub fn card_of_post(&self, post_id: i64) -> Result<Option<CardRow>> {
         let sql = format!("SELECT {COLS} FROM proactive_cards WHERE post_id = ?1");
         Ok(self.conn()?.query_row(&sql, [post_id], row).optional()?)
+    }
+
+    /// The pending card of `kind` about `subject`, if any.
+    pub fn pending_card_for(&self, kind: &str, subject: &str) -> Result<Option<CardRow>> {
+        let sql = format!(
+            "SELECT {COLS} FROM proactive_cards
+             WHERE kind = ?1 AND subject = ?2 AND state = 'pending' ORDER BY id DESC LIMIT 1"
+        );
+        Ok(self
+            .conn()?
+            .query_row(&sql, params![kind, subject], row)
+            .optional()?)
     }
 
     pub fn set_card_post(&self, id: i64, post_id: i64) -> Result<()> {

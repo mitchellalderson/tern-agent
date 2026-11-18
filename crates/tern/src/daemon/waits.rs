@@ -201,6 +201,7 @@ async fn finish(
             // A crash before this line fires it again: twice at worst,
             // never lost.
             store.end_wait(&w.id, "wait.fire", tern_store::ACTOR_TERN, why)?;
+            manager.followup_ended(&w.id);
             tracing::info!(wait = %w.id, session = %w.session_id, run = %run.run_id, why, "wait ended; conversation continued");
         }
         Err(e) => {
