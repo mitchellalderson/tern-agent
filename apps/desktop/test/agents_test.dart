@@ -681,6 +681,7 @@ void main() {
     expect(client.tidyUndos, [7]);
     // Undone: it no longer shows.
     expect(find.text('Tidied this week'), findsNothing);
+    debugDefaultTargetPlatformOverride = null;
   });
 
   testWidgets(
