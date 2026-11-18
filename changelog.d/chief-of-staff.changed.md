@@ -1,0 +1,2 @@
+- **The default agent is a Chief of Staff.** New installs name it Chief (`@chief`); an existing install keeps its name and persona. It plans, hands work to the teammate whose job it is, and tells the team when a plan changes.
+- **A channel's lead is told who is in which lane.** It hands the parts of a question that spans lanes to those teammates with `delegate_team`, does its own, and answers once with credit. Simple questions stay with one agent.
