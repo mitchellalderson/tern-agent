@@ -1537,7 +1537,7 @@ ask_parent_timeout_secs = 900
         .unwrap();
         assert_eq!(c.max_iterations, 7);
         // Typos elsewhere are still errors.
-        assert!(Config::parse("[webhooks]\nx = 1\nmax_iteratons = 3", Path::new("c")).is_err());
+        assert!(Config::parse("max_iteratons = 3\n[webhooks]\nx = 1", Path::new("c")).is_err());
         let mut t: toml::Table = "[a]\nb = 1\nc = 2".parse().unwrap();
         assert!(
             remove_path(&mut t, "a.b")
