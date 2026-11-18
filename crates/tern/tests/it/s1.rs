@@ -746,7 +746,7 @@ fn a_noisy_child_does_not_fill_the_parents_context() {
     assert!(all.contains(&format!(
         "report truncated: showing the first 8000 of {NOISY_TOTAL} characters"
     )));
-    assert!(all.contains("agent_result"));
+    assert!(all.contains("read_report"));
     assert!(!all.contains("TAIL-MARKER"), "the cut tail stays out");
     assert!(!all.contains("big1.txt big1.txt"), "tool output stays out");
 }

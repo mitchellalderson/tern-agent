@@ -863,6 +863,7 @@ class Transcript {
           AgentsChanged() ||
           OutboxChanged() ||
           SchedulesChanged() ||
+          NotificationRequested() ||
           AuthPromptOpened() ||
           AuthPromptClosed() ||
           ConnectionsChanged():
