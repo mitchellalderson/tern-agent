@@ -29,7 +29,6 @@ class McpView extends StatelessWidget {
     final open = store.mcpServers
         .where((s) => s.name == store.mcpSelected)
         .firstOrNull;
-    final owner = store.health?.isOwner ?? false;
     return Column(
       children: [
         WindowDragArea(
@@ -56,7 +55,7 @@ class McpView extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (open == null && owner) ...[
+                if (open == null) ...[
                   TextButton.icon(
                     onPressed: () => showMcpPaste(context, store),
                     icon: const Icon(Icons.content_paste, size: 15),
@@ -220,13 +219,11 @@ class _ServerRow extends StatelessWidget {
               ),
               Switch(
                 value: s.config.enabled,
-                onChanged: (store.health?.isOwner ?? false)
-                    ? (on) => _write(
-                        context,
-                        store,
-                        (c) => c.patchMcp(s.name, enabled: on),
-                      )
-                    : null,
+                onChanged: (on) => _write(
+                  context,
+                  store,
+                  (c) => c.patchMcp(s.name, enabled: on),
+                ),
               ),
             ],
           ),
@@ -361,7 +358,6 @@ class _McpDetailState extends State<McpDetail> {
     final c = context.colors;
     final s = _server;
     final cfg = s.config;
-    final owner = widget.store.health?.isOwner ?? false;
     final labels = Theme.of(context).textTheme.labelSmall;
     final summary = <(String, String)>[
       if (cfg.transport == McpTransport.stdio) ...[
@@ -403,24 +399,22 @@ class _McpDetailState extends State<McpDetail> {
                         style: TextStyle(fontSize: 12.5, color: c.muted),
                       ),
                     ),
-                    if (owner) ...[
-                      TextButton(
-                        onPressed: () =>
-                            showMcpSheet(context, widget.store, editing: s),
-                        child: const Text('Edit'),
-                      ),
-                      TextButton(
-                        onPressed: _restarting || !cfg.enabled
-                            ? null
-                            : _restart,
-                        child: Text(_restarting ? 'Restarting…' : 'Restart'),
-                      ),
-                      TextButton(
-                        onPressed: _remove,
-                        style: TextButton.styleFrom(foregroundColor: c.error),
-                        child: const Text('Remove'),
-                      ),
-                    ],
+                    TextButton(
+                      onPressed: () =>
+                          showMcpSheet(context, widget.store, editing: s),
+                      child: const Text('Edit'),
+                    ),
+                    TextButton(
+                      onPressed: _restarting || !cfg.enabled
+                          ? null
+                          : _restart,
+                      child: Text(_restarting ? 'Restarting…' : 'Restart'),
+                    ),
+                    TextButton(
+                      onPressed: _remove,
+                      style: TextButton.styleFrom(foregroundColor: c.error),
+                      child: const Text('Remove'),
+                    ),
                   ],
                 ),
                 if (s.state case McpUnavailable(:final error, :final retryAt))
@@ -533,9 +527,7 @@ class _McpDetailState extends State<McpDetail> {
                           ),
                           Switch(
                             value: !t.disabled,
-                            onChanged: owner
-                                ? (on) => _toggleTool(t, on)
-                                : null,
+                            onChanged: (on) => _toggleTool(t, on),
                           ),
                         ],
                       ),

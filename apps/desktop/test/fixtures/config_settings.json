@@ -669,7 +669,7 @@
   {
    "id": "home",
    "title": "Home",
-   "description": "Home (and each Telegram chat) is one stream cut into sessions. A message starts a new one, with a summary of the last carried over, after:",
+   "description": "Home is one stream cut into sessions. A message starts a new one, with a summary of the last carried over, after:",
    "settings": [
     {
      "key": "home.idle_hours",
@@ -702,138 +702,6 @@
      "editable": true,
      "group": "general",
      "advanced": false,
-     "restart_required": false
-    }
-   ]
-  },
-  {
-   "id": "api",
-   "title": "API & devices",
-   "description": "Where the API listens, for the desktop app on other devices and the phone (docs/deployment-spec.md). The Unix socket is always on.",
-   "settings": [
-    {
-     "key": "api.listen",
-     "kind": "list",
-     "optional": false,
-     "value": [
-      "unix"
-     ],
-     "default": [
-      "unix"
-     ],
-     "set": false,
-     "description": "add tcp:// listeners for paired devices",
-     "applies": "restart",
-     "restart_pending": false,
-     "security": "A tcp:// listener lets paired devices reach tern over the network.",
-     "risky": false,
-     "editable": true,
-     "group": "servers",
-     "advanced": false,
-     "restart_required": true
-    },
-    {
-     "key": "api.tls",
-     "kind": "choice",
-     "choices": [
-      "auto",
-      "files",
-      "off"
-     ],
-     "optional": false,
-     "value": "auto",
-     "default": "auto",
-     "set": false,
-     "description": "\"auto\": a self-signed certificate devices pin; \"files\": tls_cert and tls_key; \"off\": plain HTTP",
-     "applies": "restart",
-     "restart_pending": false,
-     "security": "Off sends device tokens and messages unencrypted: only behind a TLS proxy on this machine.",
-     "risky": false,
-     "editable": true,
-     "group": "servers",
-     "advanced": true,
-     "restart_required": true
-    },
-    {
-     "key": "api.tls_cert",
-     "kind": "text",
-     "optional": true,
-     "value": null,
-     "default": null,
-     "set": false,
-     "description": "certificate chain (PEM), for tls = \"files\"",
-     "applies": "restart",
-     "restart_pending": false,
-     "risky": false,
-     "editable": true,
-     "group": "servers",
-     "advanced": true,
-     "restart_required": true
-    },
-    {
-     "key": "api.tls_key",
-     "kind": "text",
-     "optional": true,
-     "value": null,
-     "default": null,
-     "set": false,
-     "description": "its private key (PEM), for tls = \"files\"",
-     "applies": "restart",
-     "restart_pending": false,
-     "risky": false,
-     "editable": true,
-     "group": "servers",
-     "advanced": true,
-     "restart_required": true
-    },
-    {
-     "key": "api.trust_proxy",
-     "kind": "bool",
-     "optional": false,
-     "value": false,
-     "default": false,
-     "set": false,
-     "description": "trust X-Forwarded-For from a reverse proxy on loopback",
-     "applies": "restart",
-     "restart_pending": false,
-     "security": "On: tern believes the client address a local proxy reports. Only with a reverse proxy in front.",
-     "risky": false,
-     "editable": true,
-     "group": "servers",
-     "advanced": true,
-     "restart_required": true
-    },
-    {
-     "key": "api.public_url",
-     "kind": "text",
-     "optional": true,
-     "value": null,
-     "default": null,
-     "set": false,
-     "description": "put in pairing links; default: the first tcp listener",
-     "applies": "restart",
-     "restart_pending": false,
-     "risky": false,
-     "editable": true,
-     "group": "servers",
-     "advanced": false,
-     "restart_required": true
-    },
-    {
-     "key": "api.remote_mcp_stdio",
-     "kind": "bool",
-     "optional": false,
-     "value": false,
-     "default": false,
-     "set": false,
-     "description": "let paired devices add stdio MCP servers (they run on this host)",
-     "applies": "live",
-     "restart_pending": false,
-     "security": "On: paired devices can add MCP servers that run commands on this computer, outside the sandbox.",
-     "risky": false,
-     "editable": true,
-     "group": "servers",
-     "advanced": true,
      "restart_required": false
     }
    ]

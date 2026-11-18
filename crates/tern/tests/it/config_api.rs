@@ -25,7 +25,6 @@ struct Env {
     home: PathBuf,
     tern_home: PathBuf,
     script: PathBuf,
-    port: u16,
 }
 
 impl Env {
@@ -34,17 +33,9 @@ impl Env {
         let home = tmp.path().join("home");
         let tern_home = home.join(".tern");
         std::fs::create_dir_all(&tern_home).unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
         std::fs::write(
             tern_home.join("config.toml"),
-            format!(
-                "# my settings\n[api]\nlisten = [\"unix\", \"tcp://127.0.0.1:{port}\"]\n\n\
-                 [sandbox]\n# I want this on\nnetwork = true # for now\n"
-            ),
+            "# my settings\n[sandbox]\n# I want this on\nnetwork = true # for now\n",
         )
         .unwrap();
         let script = tmp.path().join("script.json");
@@ -53,7 +44,6 @@ impl Env {
             script,
             home,
             tern_home,
-            port,
             _tmp: tmp,
         }
     }
@@ -70,16 +60,6 @@ impl Env {
         c
     }
 
-    fn ok(&self, args: &[&str]) -> String {
-        let out = self.cmd(args).output().unwrap();
-        assert!(
-            out.status.success(),
-            "tern {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout).unwrap().trim().to_owned()
-    }
-
     fn daemon(&self) -> Killed {
         let child = self
             .cmd(&["daemon"])
@@ -88,9 +68,7 @@ impl Env {
             .spawn()
             .unwrap();
         let end = Instant::now() + Duration::from_secs(10);
-        while std::net::TcpStream::connect(("127.0.0.1", self.port)).is_err()
-            || !self.tern_home.join("tern.sock").exists()
-        {
+        while !self.tern_home.join("tern.sock").exists() {
             assert!(Instant::now() < end, "daemon did not start");
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -201,7 +179,6 @@ async fn read_change_and_reset_settings() {
         ("schedules.quiet_hours", json!("late"), 400),
         ("sandbox.netwrk", json!(true), 404),
         ("providers.anthropic.base_url", json!("http://x"), 404),
-        ("gateway.telegram.bot_token_secret", json!("X"), 400),
     ] {
         let (status, e) = send(
             http.put(format!("{URL}/{key}"))
@@ -244,7 +221,6 @@ async fn platform_settings_carry_groups_flags_and_validation() {
         ("sandbox.network", "permissions", false),
         ("subagents.max_result_chars", "limits", false),
         ("schedules.usd_per_day", "limits", false),
-        ("api.listen", "servers", false),
         ("python.max_memory_mb", "limits", true),
     ] {
         let s = setting(&view, key);
@@ -284,37 +260,4 @@ async fn platform_settings_carry_groups_flags_and_validation() {
     }
     assert_eq!(env.config(), kept);
     assert_ne!(before, kept);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn only_the_owner_sees_or_changes_config() {
-    let env = Env::new();
-    let _daemon = env.daemon();
-    let http = reqwest::Client::builder()
-        .tls_danger_accept_invalid_certs(true)
-        .build()
-        .unwrap();
-    let url = |p: &str| format!("https://127.0.0.1:{}{p}", env.port);
-    for scope in ["chat", "read", "owner"] {
-        let link = env.ok(&["devices", "pair", "--scope", scope, "--name", scope]);
-        let token = env.ok(&["devices", "join", &link]);
-        let auth = format!("Bearer {token}");
-        let (get, e) = send(
-            http.get(url("/v1/config/settings"))
-                .header("authorization", &auth),
-        )
-        .await;
-        let (put, _) = send(
-            http.put(url("/v1/config/settings/max_iterations"))
-                .header("authorization", &auth)
-                .json(&json!({ "value": 12 })),
-        )
-        .await;
-        if scope == "owner" {
-            assert_eq!((get, put), (200, 200), "{e}");
-        } else {
-            assert_eq!((get, put), (403, 403), "{scope}: {e}");
-        }
-    }
-    assert!(env.config().contains("max_iterations = 12"));
 }

@@ -29,24 +29,32 @@ pub struct Sent {
     pub woke: Vec<super::wakes::Woken>,
 }
 
-/// The text of a run's last assistant message.
+/// A run's answer: its last assistant message, with a substantive answer
+/// written next to a tool call in an earlier turn kept ahead of a short
+/// afterword (see `tern_core::agent::answer_text`).
 pub fn final_text(store: &Store, run: &RunRow) -> anyhow::Result<String> {
-    let messages = store.session_messages(&run.session_id)?;
-    Ok(messages
+    let turns: Vec<(String, bool)> = store
+        .session_messages(&run.session_id)?
         .iter()
-        .rev()
-        .find(|m| m.run_id.as_deref() == Some(run.id.as_str()) && m.role == "assistant")
-        .and_then(|m| serde_json::from_str::<Vec<ContentBlock>>(&m.content_json).ok())
+        .filter(|m| m.run_id.as_deref() == Some(run.id.as_str()) && m.role == "assistant")
+        .filter_map(|m| serde_json::from_str::<Vec<ContentBlock>>(&m.content_json).ok())
         .map(|blocks| {
-            blocks
+            let calls = blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+            let text = blocks
                 .into_iter()
                 .filter_map(|b| match b {
                     ContentBlock::Text { text } => Some(text),
                     _ => None,
                 })
-                .collect::<String>()
+                .collect::<String>();
+            (text, calls)
         })
-        .unwrap_or_default())
+        .collect();
+    Ok(tern_core::agent::answer_text(
+        turns.iter().map(|(t, c)| (t.as_str(), *c)),
+    ))
 }
 
 /// A post as clients see it, with a pointer's target channel.

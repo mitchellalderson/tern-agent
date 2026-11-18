@@ -400,6 +400,10 @@ impl Provider for OpenAiCompat {
         if self.ollama {
             adapt_for_ollama(&mut body, &req);
         }
+        // Quick calls (decisions, short summaries) don't think first.
+        if req.cache.quick && self.attribution {
+            body["reasoning"] = json!({ "enabled": false });
+        }
         let mut builder = self
             .client
             .post(format!("{}/chat/completions", self.base_url))

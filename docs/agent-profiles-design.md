@@ -1,5 +1,7 @@
 # tern agent profiles: several agents, each with its own job
 
+> **Partly superseded (2026-11).** tern is local-only and single-player: messaging gateways (Telegram, ntfy, Slack) were removed; see [DECISIONS.md](../DECISIONS.md#tern-is-local-only-single-player). Kept as history.
+
 Status: AP0, AP1, AP2 and AP3 built (2026-11-04; DECISIONS.md "Agent profiles AP0", "AP1", "AP2", "Agent profiles: delegation" and "Agent profiles AP3"). AP3 is built in the API, CLI and daemon; its desktop controls (autonomy picker, "Let agents decide", an agent's bot, agents in the bundle dialog) are not. Open questions (§9) were built with their recommended answers, still to be confirmed. This is the detailed design for agent profiles, which were only sketched in
 [gui-spec.md](gui-spec.md) §7.2 (phase G5, open question 1) and in the "Later" row of
 [channels-design.md](channels-design.md) §6. It builds on channels C0–C2 (Home's stream, topic channels, posts) and

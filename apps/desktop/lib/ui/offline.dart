@@ -1,29 +1,20 @@
 import 'package:flutter/material.dart';
-import 'package:tern_client/tern_client.dart';
 
 import '../state/daemon.dart';
 import '../state/store.dart';
 import '../theme.dart';
 import 'widgets.dart';
 
-/// Shown until the app has reached the daemon once: a calm setup screen on a
-/// first launch, a plain "can't reach" note when a saved server is down.
+/// Shown until the app has reached the daemon once: a calm setup screen that
+/// starts tern on this Mac.
 class OfflineView extends StatefulWidget {
   const OfflineView({
     super.key,
     required this.store,
-    this.onSettings,
-    this.onConnectRemote,
     this.locateBin = findTern,
   });
 
   final TernStore store;
-
-  /// Settings, to change server or go back to this computer.
-  final VoidCallback? onSettings;
-
-  /// Opens the servers list, to add or pick a remote server.
-  final VoidCallback? onConnectRemote;
 
   /// Finds the `tern` binary; replaceable in tests.
   final String? Function() locateBin;
@@ -57,22 +48,15 @@ class _OfflineViewState extends State<OfflineView> {
   Widget build(BuildContext context) {
     final c = context.colors;
     final store = widget.store;
-    final remote = store.client.endpoint is RemoteEndpoint;
     final connecting = store.link == Link.connecting;
     final failed = _error != null;
     final detail = _error ?? store.linkError;
-    final title = connecting
-        ? 'Connecting…'
-        : remote
-        ? "Can't reach this server"
-        : 'Welcome to tern';
+    final title = connecting ? 'Connecting…' : 'Welcome to tern';
     final body = connecting
         ? null
-        : remote
-        ? 'Check that it is running and that you are online.'
         : failed
-        ? "tern didn't start. Try again, or connect to a server instead."
-        : 'Run tern on this Mac, or connect to a server you already have.';
+        ? "tern didn't start. Try again."
+        : 'Start tern on this Mac to get going.';
     return WindowDragArea(
       child: Container(
         color: c.background,
@@ -101,56 +85,30 @@ class _OfflineViewState extends State<OfflineView> {
               ],
               if (store.link == Link.offline) ...[
                 const SizedBox(height: 28),
-                if (remote) ...[
+                if (_bin != null)
                   FilledButton(
-                    onPressed: widget.onSettings,
+                    onPressed: _starting ? null : _start,
                     style: FilledButton.styleFrom(
                       backgroundColor: c.accent,
                       foregroundColor: c.onAccent,
+                      minimumSize: const Size(220, 44),
                     ),
-                    child: const Text('Change server…'),
+                    child: Text(_starting ? 'Starting…' : 'Start on this Mac'),
+                  )
+                else
+                  SelectableText(
+                    "Couldn't find tern on this Mac. Start it yourself:\n"
+                    'tern start',
+                    textAlign: TextAlign.center,
+                    style: mono.copyWith(color: c.muted),
                   ),
-                  const SizedBox(height: 8),
+                if (failed) ...[
+                  const SizedBox(height: 4),
                   TextButton(
-                    onPressed: store.connect,
+                    onPressed: _starting ? null : _start,
                     style: TextButton.styleFrom(foregroundColor: c.muted),
                     child: const Text('Try again'),
                   ),
-                ] else ...[
-                  if (_bin != null)
-                    FilledButton(
-                      onPressed: _starting ? null : _start,
-                      style: FilledButton.styleFrom(
-                        backgroundColor: c.accent,
-                        foregroundColor: c.onAccent,
-                        minimumSize: const Size(220, 44),
-                      ),
-                      child: Text(_starting ? 'Starting…' : 'Start on this Mac'),
-                    )
-                  else
-                    SelectableText(
-                      "Couldn't find tern on this Mac. Start it yourself:\n"
-                      'tern start',
-                      textAlign: TextAlign.center,
-                      style: mono.copyWith(color: c.muted),
-                    ),
-                  const SizedBox(height: 10),
-                  OutlinedButton(
-                    onPressed: widget.onConnectRemote ?? widget.onSettings,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: c.text,
-                      minimumSize: const Size(220, 44),
-                    ),
-                    child: const Text('Connect to a remote server…'),
-                  ),
-                  if (failed) ...[
-                    const SizedBox(height: 4),
-                    TextButton(
-                      onPressed: _starting ? null : _start,
-                      style: TextButton.styleFrom(foregroundColor: c.muted),
-                      child: const Text('Try again'),
-                    ),
-                  ],
                 ],
                 const SizedBox(height: 12),
                 TextButton(
