@@ -22,8 +22,8 @@ void main() {
     tmp = await Directory.systemTemp.createTemp('tern-live');
     final home = '${tmp.path}/.tern';
     await Directory(home).create();
-    // Supervised, so the shell asks: autonomous mode refuses an unconfined
-    // command before asking (CI has no sandbox).
+    // A new install is autonomous, which doesn't ask before a sandboxed
+    // command. This test answers an approval, so it pins the supervised level.
     await File('$home/config.toml').writeAsString('autonomy = "supervised"\n');
     final script = File('${tmp.path}/script.json');
     await script.writeAsString(
@@ -138,10 +138,11 @@ void main() {
     final set = await client.setSecret('DART_TEST_TOKEN', 'dart-secret-value');
     expect(set.inFile, isTrue);
     final file = File('${tmp.path}/.tern/secrets.toml');
-    // Stored encrypted at rest, never in the clear.
+    // Secrets are encrypted at rest: the name is in the file, the value isn't.
     final stored = await file.readAsString();
     expect(stored, contains('DART_TEST_TOKEN'));
     expect(stored, isNot(contains('dart-secret-value')));
+    expect(stored, contains('enc:v1:'));
     expect(
       jsonEncode((await client.secrets()).map((s) => s.name).toList()),
       contains('DART_TEST_TOKEN'),
