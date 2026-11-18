@@ -3,9 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod account;
 mod ap0;
-mod ap1;
 mod ap2;
 mod ap3;
 mod bundles;
@@ -13,7 +11,6 @@ mod c5;
 mod code_auto;
 mod config_api;
 mod connections;
-mod d1;
 mod delegation;
 mod documents;
 mod edit_delete;
@@ -30,6 +27,7 @@ mod mcp_api;
 mod mcp_cli;
 mod memory_class;
 mod new_defaults;
+mod notes;
 mod proactive_delegation;
 mod providers;
 mod py0;
@@ -52,7 +50,6 @@ mod t1b;
 mod t2;
 mod t3;
 mod t3a;
-mod t4b_gateways;
 mod t4c;
 mod t5b;
 mod t6a;

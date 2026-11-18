@@ -5,7 +5,7 @@
 //! shows up without changes here; [`meta`] only adds what the defaults
 //! can't say (choices, ranges, live, security notes).
 //!
-//! Providers, MCP servers and the Telegram gateway have their own editors
+//! Providers and MCP servers have their own editors
 //! and hold secret names, so they're left out; secret values never pass
 //! through here.
 
@@ -19,7 +19,7 @@ use super::edit::{ConfigFile, EditError};
 use super::{Config, ModelRef};
 
 /// Sections with editors of their own.
-const ELSEWHERE: &[&str] = &["providers", "mcp", "gateway"];
+const ELSEWHERE: &[&str] = &["providers", "mcp"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,7 +75,7 @@ pub struct Setting {
     pub risky: bool,
     pub editable: bool,
     /// Which part of the platform Settings window it belongs in: one of
-    /// `general`, `models`, `permissions`, `limits`, `servers`, `advanced`.
+    /// `general`, `models`, `permissions`, `limits`, `advanced`.
     /// Providers, Secrets and About have their own endpoints.
     #[serde(default = "default_group")]
     pub group: String,
@@ -320,32 +320,6 @@ fn meta(key: &str) -> Meta {
             ..at_least(0.0)
         },
         "home.day_starts" => Meta { live: true, ..m },
-        "api.listen" => Meta {
-            security: Some("A tcp:// listener lets paired devices reach tern over the network."),
-            risky: |v| v.as_array().is_some_and(|a| a.iter().any(|l| l != "unix")),
-            ..m
-        },
-        "api.tls" => Meta {
-            choices: &["auto", "files", "off"],
-            security: Some(
-                "Off sends device tokens and messages unencrypted: only behind a TLS proxy on \
-                 this machine.",
-            ),
-            risky: |v| v == "off",
-            ..m
-        },
-        "api.tls_cert" | "api.tls_key" | "api.public_url" => Meta {
-            kind: Some(Kind::Text),
-            ..m
-        },
-        "api.trust_proxy" => Meta {
-            security: Some(
-                "On: tern believes the client address a local proxy reports. Only with a \
-                 reverse proxy in front.",
-            ),
-            risky: |v| v == &Value::Bool(true),
-            ..m
-        },
         "python.allow_writes" => Meta {
             security: Some(
                 "On: a script can make changes in a loop, up to max_writes. Each one still asks \
@@ -385,15 +359,6 @@ fn meta(key: &str) -> Meta {
             risky: |v| v == "autonomous" || v == "yolo",
             ..m
         },
-        "api.remote_mcp_stdio" => Meta {
-            live: true,
-            security: Some(
-                "On: paired devices can add MCP servers that run commands on this computer, \
-                 outside the sandbox.",
-            ),
-            risky: |v| v == &Value::Bool(true),
-            ..m
-        },
         _ => m,
     }
 }
@@ -404,7 +369,6 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("models", "Models"),
     ("permissions", "Permissions & sandbox"),
     ("limits", "Limits & budgets"),
-    ("servers", "Servers & devices"),
     ("advanced", "Advanced"),
 ];
 
@@ -467,13 +431,11 @@ fn placement(key: &str) -> (&'static str, bool) {
         {
             ("limits", true)
         }
-        "api.listen" | "api.public_url" => ("servers", false),
-        k if k.starts_with("api.") || k.starts_with("account.") => ("servers", true),
         _ => ("advanced", true),
     }
 }
 
-/// Display order; sections not listed go before `api`, in file order.
+/// Display order; sections not listed go last, in file order.
 const SECTIONS: &[(&str, &str)] = &[
     ("general", "General"),
     ("models", "Models"),
@@ -487,7 +449,6 @@ const SECTIONS: &[(&str, &str)] = &[
 fn title(id: &str) -> String {
     match SECTIONS.iter().find(|(s, _)| *s == id) {
         Some((_, t)) => (*t).to_owned(),
-        None if id == "api" => "API & devices".into(),
         None => {
             let words = id.replace('_', " ");
             let mut c = words.chars();
@@ -707,7 +668,6 @@ pub fn view(file: &ConfigFile, running: &Config) -> ConfigView {
     }
     let rank = |id: &str| match SECTIONS.iter().position(|(s, _)| *s == id) {
         Some(i) => i,
-        None if id == "api" => usize::MAX,
         None => SECTIONS.len(),
     };
     sections.sort_by_key(|s| rank(&s.id));
@@ -926,9 +886,7 @@ mod tests {
                 "connectors",
                 "auth",
                 "bundles",
-                "python",
-                "account",
-                "api"
+                "python"
             ]
         );
         let s = by_key(&v);
@@ -1064,7 +1022,7 @@ mod tests {
             SettingError::Unknown(_)
         ));
         assert!(matches!(
-            err(&mut f, "gateway.telegram.bot_token_secret", json!("x")),
+            err(&mut f, "providers.x.api_key_secret", json!("x")),
             SettingError::Secret(_)
         ));
         assert!(matches!(
@@ -1112,7 +1070,6 @@ mod tests {
         assert!(!by("autonomy").advanced);
         assert_eq!(by("subagents.max_result_chars").group, "limits");
         assert_eq!(by("schedules.usd_per_day").group, "limits");
-        assert_eq!(by("api.listen").group, "servers");
         // Unset by default, but still editable numbers in the Models group.
         for key in ["context_window", "max_tokens"] {
             assert_eq!(by(key).group, "models", "{key}");

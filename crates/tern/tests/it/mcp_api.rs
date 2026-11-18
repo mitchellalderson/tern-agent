@@ -25,7 +25,6 @@ struct Env {
     home: PathBuf,
     tern_home: PathBuf,
     script: PathBuf,
-    port: u16,
 }
 
 impl Env {
@@ -34,23 +33,11 @@ impl Env {
         let home = tmp.path().join("home");
         let tern_home = home.join(".tern");
         std::fs::create_dir_all(&tern_home).unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        std::fs::write(
-            tern_home.join("config.toml"),
-            format!(
-                "# my settings\n[api]\nlisten = [\"unix\", \"tcp://127.0.0.1:{port}\"]\ntls = \"auto\"\n"
-            ),
-        )
-        .unwrap();
+        std::fs::write(tern_home.join("config.toml"), "# my settings\n").unwrap();
         Self {
             script: tmp.path().join("script.json"),
             home,
             tern_home,
-            port,
             _tmp: tmp,
         }
     }
@@ -67,16 +54,6 @@ impl Env {
         c
     }
 
-    fn ok(&self, args: &[&str]) -> String {
-        let out = self.cmd(args).output().unwrap();
-        assert!(
-            out.status.success(),
-            "tern {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout).unwrap().trim().to_owned()
-    }
-
     fn daemon(&self) -> Killed {
         let child = self
             .cmd(&["daemon"])
@@ -85,9 +62,7 @@ impl Env {
             .spawn()
             .unwrap();
         let end = Instant::now() + Duration::from_secs(10);
-        while std::net::TcpStream::connect(("127.0.0.1", self.port)).is_err()
-            || !self.tern_home.join("tern.sock").exists()
-        {
+        while !self.tern_home.join("tern.sock").exists() {
             assert!(Instant::now() < end, "daemon did not start");
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -283,58 +258,6 @@ async fn manage_mcp_servers_without_a_restart() {
     assert_eq!(status, 404);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn paired_devices_cannot_add_stdio_servers() {
-    let env = Env::new();
-    std::fs::write(&env.script, json!({ "turns": [] }).to_string()).unwrap();
-    let _daemon = env.daemon();
-    let link = env.ok(&["devices", "pair", "--scope", "owner", "--name", "laptop"]);
-    let token = env.ok(&["devices", "join", &link]);
-    let http = reqwest::Client::builder()
-        .tls_danger_accept_invalid_certs(true)
-        .build()
-        .unwrap();
-    let url = |p: &str| format!("https://127.0.0.1:{}{p}", env.port);
-    let auth = format!("Bearer {token}");
-
-    let (status, e) = send(
-        http.post(url("/v1/mcp"))
-            .header("authorization", &auth)
-            .json(&json!({ "name": "fx", "config": fx_config() })),
-    )
-    .await;
-    assert_eq!(status, 403, "{e}");
-    assert!(e["error"].as_str().unwrap().contains("remote_mcp_stdio"));
-    let (status, _) = send(
-        http.post(url("/v1/mcp/verify"))
-            .header("authorization", &auth)
-            .json(&json!({ "name": "fx", "config": fx_config() })),
-    )
-    .await;
-    assert_eq!(status, 403);
-
-    // HTTP servers and reads are fine from a device.
-    let (status, s) = send(
-        http.post(url("/v1/mcp"))
-            .header("authorization", &auth)
-            .json(&json!({ "name": "remote", "config": {
-                "transport": "http", "url": "https://mcp.example.invalid/mcp"
-            }})),
-    )
-    .await;
-    assert_eq!(status, 201, "{s}");
-    let (status, list) = send(http.get(url("/v1/mcp")).header("authorization", &auth)).await;
-    assert_eq!(status, 200);
-    assert_eq!(list[0]["name"], "remote");
-
-    // The local owner can add stdio servers.
-    let (status, s) = send(env.local().post("http://tern/v1/mcp").json(&json!({
-        "name": "fx", "config": fx_config(), "secrets": {"FIXTURE_TOKEN": "t"}
-    })))
-    .await;
-    assert_eq!(status, 201, "{s}");
-}
-
 /// Wait for the next approval, as `/v1/approvals` lists it.
 async fn next_approval(http: &reqwest::Client) -> Value {
     let end = Instant::now() + Duration::from_secs(15);
@@ -397,16 +320,8 @@ async fn the_agent_adds_servers_with_approval_on_the_host() {
     let http = env.local();
     // Approvals go to listening clients; with none they're denied at once.
     let _events = http.get("http://tern/v1/events").send().await.unwrap();
-    let link = env.ok(&["devices", "pair", "--scope", "owner", "--name", "phone"]);
-    let token = env.ok(&["devices", "join", &link]);
-    let device = reqwest::Client::builder()
-        .tls_danger_accept_invalid_certs(true)
-        .build()
-        .unwrap();
-
     let mut session = None;
-    // Run 1: approval is asked every time, can't be "always", and a paired
-    // device can't give it for a command.
+    // Run 1: approval is asked every time and can't be "always".
     let run = start(&http, &mut session).await;
     let a = next_approval(&http).await;
     assert_eq!(a["tool"], "mcp_add");
@@ -419,14 +334,6 @@ async fn the_agent_adds_servers_with_approval_on_the_host() {
         "{summary}"
     );
     let id = a["id"].as_str().unwrap();
-    let (status, e) = send(
-        device
-            .post(format!("https://127.0.0.1:{}/v1/approvals/{id}", env.port))
-            .header("authorization", format!("Bearer {token}"))
-            .json(&json!({ "decision": "once" })),
-    )
-    .await;
-    assert_eq!(status, 403, "{e}");
     send(
         http.post(format!("http://tern/v1/approvals/{id}"))
             .json(&json!({ "decision": "once" })),

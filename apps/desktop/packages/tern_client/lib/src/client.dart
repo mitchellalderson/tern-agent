@@ -42,32 +42,6 @@ class TernException implements Exception {
   String toString() => message;
 }
 
-/// HTTP 401 from a remote core: the device token was revoked or never
-/// valid. Show "Signed out of <core>" with re-pair; retrying won't help.
-class SignedOutException extends TernException {
-  const SignedOutException(super.message, {required this.core})
-    : super(status: 401);
-
-  final String core;
-}
-
-/// What redeeming a pairing link returns.
-class Pairing {
-  const Pairing({
-    required this.deviceId,
-    required this.scope,
-    required this.endpoint,
-  });
-
-  final String deviceId;
-
-  /// `owner`, `chat` or `read`.
-  final String scope;
-
-  /// Ready to use; keep its token in the Keychain, not in preferences.
-  final RemoteEndpoint endpoint;
-}
-
 class TernClient {
   TernClient(this.endpoint) : _http = endpoint.httpClient();
 
@@ -75,74 +49,6 @@ class TernClient {
   final HttpClient _http;
 
   void close() => _http.close(force: true);
-
-  /// Redeem a pairing link (deployment spec §6.2 step 2), pinning the
-  /// core's certificate when the link has a fingerprint.
-  static Future<Pairing> pair(
-    PairingLink link, {
-    required String deviceName,
-    String? platform,
-  }) async {
-    final problem = remoteUrlProblem(link.url);
-    if (problem != null) throw TernException(problem);
-    // A throwaway token: pairing is the one route that needs none.
-    final bootstrap = RemoteEndpoint(
-      link.url,
-      token: '',
-      pin: link.fingerprint,
-    );
-    final client = TernClient(bootstrap);
-    try {
-      final j =
-          await client._request('POST', '/v1/auth/pair', {
-                'code': link.code,
-                'device_name': deviceName,
-                'platform': ?platform,
-              }, auth: false)
-              as Json;
-      return Pairing(
-        deviceId: j['device_id'] as String,
-        scope: j['scope'] as String,
-        endpoint: RemoteEndpoint(
-          link.url,
-          token: j['token'] as String,
-          pin: link.fingerprint,
-        ),
-      );
-    } on SignedOutException catch (e) {
-      // On this route a 401 means the code, not a token.
-      throw TernException(e.message, status: 401);
-    } finally {
-      client.close();
-    }
-  }
-
-  /// Whether a tern server answers at [url] (its `/healthz`, which needs no
-  /// token), checking its certificate against [pin] when given. Sends no
-  /// credentials, so it is safe to try before anything is saved. Throws
-  /// [TernException]: unreachable (status null), a bad certificate, or an
-  /// answer that isn't tern's.
-  static Future<void> probe(
-    Uri url, {
-    String? pin,
-    Duration timeout = const Duration(seconds: 8),
-  }) async {
-    final problem = remoteUrlProblem(url);
-    if (problem != null) throw TernException(problem);
-    final client = TernClient(RemoteEndpoint(url, token: '', pin: pin));
-    try {
-      await client
-          ._request('GET', '/healthz', null, auth: false)
-          .timeout(
-            timeout,
-            onTimeout: () => throw TernException(
-              "can't reach tern at ${client.endpoint.describe()}: timed out",
-            ),
-          );
-    } finally {
-      client.close();
-    }
-  }
 
   Future<Health> health() async =>
       Health.fromJson(await _json('GET', '/v1/health'));
@@ -155,7 +61,7 @@ class TernClient {
 
   /// Stop tern (exit code 0, so a service manager doesn't restart it).
   /// Runs in progress stay paused and resume on the next start. With
-  /// [dryRun], only list them, for the confirmation. Owner-only remotely.
+  /// [dryRun], only list them, for the confirmation.
   Future<ShutdownReply> shutdown({bool dryRun = false}) async =>
       ShutdownReply.fromJson(
         await _json('POST', dryRun ? '/v1/shutdown?dry_run=1' : '/v1/shutdown'),
@@ -271,8 +177,7 @@ class TernClient {
       McpStatus.fromJson(await _json('GET', '/v1/mcp/${_seg(name)}'));
 
   /// Test-connect a draft with `secrets` typed but not yet saved. Saves
-  /// nothing; a failed connection is a result, not an exception. A paired
-  /// device gets 403 for a stdio config unless the host allows it.
+  /// nothing; a failed connection is a result, not an exception.
   Future<McpVerifyResult> verifyMcp(
     String name,
     McpServerConfig config, {
@@ -468,14 +373,6 @@ class TernClient {
   Future<RunChanges> undoRun(String runId) async => RunChanges.fromJson(
     await _json('POST', '/v1/runs/${_seg(runId)}/undo', {'confirm': true}),
   );
-
-  /// Give an agent a Telegram bot of its own, by the NAME of the secret that
-  /// holds its token (never the token), or remove it with null. Throws
-  /// [TernException] (400) when the name is bad or another bot uses it.
-  /// Applies when the daemon restarts.
-  Future<Agent> setAgentTelegram(String id, String? secret) => updateAgent(id, {
-    'telegram': secret == null ? null : {'bot_token_secret': secret},
-  });
 
   /// What `id` did lately: delegated batches and routine runs.
   Future<List<AgentWork>> agentWork(String id, {int limit = 10}) async => [
@@ -1041,8 +938,8 @@ class TernClient {
       Schedule.fromJson(s as Json),
   ];
 
-  /// `deliverTo`: null keeps results in the routine's session; else
-  /// `telegram:<chat_id>`.
+  /// `deliverTo`: null puts results where the routine lives; else `none`,
+  /// `home`, `dm` or `channel:<id>`.
   Future<Schedule> createSchedule({
     required String cron,
     required String prompt,
@@ -1354,27 +1251,8 @@ class TernClient {
     return (j as Json)['path'] as String;
   }
 
-  /// Owner only: paired devices.
-  Future<List<Device>> devices() async => [
-    for (final d in await _json('GET', '/v1/devices') as List)
-      Device.fromJson(d as Json),
-  ];
-
-  /// Owner only: a pairing link for a new device (the app's Add device).
-  Future<PairingOffer> offerPairing({
-    String scope = 'chat',
-    String? name,
-  }) async => PairingOffer.fromJson(
-    await _json('POST', '/v1/devices/pair', {'scope': scope, 'name': ?name}),
-  );
-
-  /// Owner only: sign a device out at once.
-  Future<void> revokeDevice(String id) => _json('DELETE', '/v1/devices/$id');
-
   /// The live event stream. It ends (with an error) when the connection
-  /// drops; callers reconnect and resync, except after a
-  /// [SignedOutException], which no retry fixes. Cancelling closes the
-  /// connection.
+  /// drops; callers reconnect and resync. Cancelling closes the connection.
   Stream<TernEvent> events() {
     // Its own HttpClient: cancelling an open response doesn't return until
     // the server ends it, so the connection is force-closed instead.
@@ -1440,15 +1318,8 @@ class TernClient {
     String path,
     Object? body, {
     ContentType? contentType,
-    bool auth = true,
   }) async {
-    final res = await _send(
-      method,
-      path,
-      body,
-      contentType: contentType,
-      auth: auth,
-    );
+    final res = await _send(method, path, body, contentType: contentType);
     final text = await res.transform(utf8.decoder).join();
     Object? decoded;
     try {
@@ -1466,23 +1337,8 @@ class TernClient {
     return decoded;
   }
 
-  TernException _error(int status, String? msg) {
-    if (status == HttpStatus.unauthorized && endpoint is RemoteEndpoint) {
-      return SignedOutException(
-        'Signed out of ${endpoint.describe()}: ${msg ?? 'the device token was revoked'}',
-        core: endpoint.describe(),
-      );
-    }
-    if (status >= 300 && status < 400) {
-      return TernException(
-        'the server at ${endpoint.describe()} redirected the request '
-        '(HTTP $status); not followed, so the device token stays with the '
-        'address it was paired with',
-        status: status,
-      );
-    }
-    return TernException(msg ?? 'HTTP $status', status: status);
-  }
+  TernException _error(int status, String? msg) =>
+      TernException(msg ?? 'HTTP $status', status: status);
 
   Future<HttpClientResponse> _send(
     String method,
@@ -1491,18 +1347,13 @@ class TernClient {
     HttpClient? client,
     String accept = 'application/json',
     ContentType? contentType,
-    bool auth = true,
   }) async {
     try {
       final req = await (client ?? _http).openUrl(
         method,
         endpoint.base.resolve(path),
       );
-      // A server that answers with a redirect isn't followed: the token is
-      // for the address that was paired, never for wherever it points.
-      if (endpoint is RemoteEndpoint) req.followRedirects = false;
       req.headers.set(HttpHeaders.acceptHeader, accept);
-      if (auth) endpoint.headers.forEach(req.headers.set);
       if (body is List<int> && contentType != null) {
         req.headers.contentType = contentType;
         req.contentLength = body.length;
@@ -1516,13 +1367,6 @@ class TernClient {
       throw TernException(
         "can't reach tern at ${endpoint.describe()}: "
         '${e.osError?.message ?? e.message}',
-      );
-    } on TlsException catch (e) {
-      // With a pin, this is also what a different certificate looks like.
-      throw TernException(
-        "can't establish a secure connection to ${endpoint.describe()}: "
-        '${e.osError?.message ?? e.message} '
-        "(the core's certificate isn't the one this device paired with?)",
       );
     } on HttpException catch (e) {
       throw TernException(e.message);

@@ -623,56 +623,22 @@ class _RoutineSheetState extends State<RoutineSheet> {
     text: widget.editing?.cron ?? _presets.first.cron,
   );
 
-  /// `<gateway>:<chat>`: Telegram or a gateway connector (ntfy, Slack).
-  late final _chat = TextEditingController(
-    text: switch (widget.editing?.deliverTo?.indexOf(':')) {
-      final i? when i > 0 => widget.editing!.deliverTo!.substring(i + 1),
-      _ => null,
-    },
-  );
-  late var _push = widget.editing?.deliverTo != null;
-  late var _gateway = switch (widget.editing?.deliverTo?.indexOf(':')) {
-    final i? when i > 0 => widget.editing!.deliverTo!.substring(0, i),
-    _ => _gateways.first.name,
+  /// Where a pushed result goes: `lives` (where the routine lives, the
+  /// default), `home`, `dm`, `none`, or a stored `channel:<id>`. A saved
+  /// routine reads back its stored target; no target means none.
+  late var _notify = switch (widget.editing) {
+    null => 'lives',
+    final e => e.deliverTo ?? 'none',
   };
 
-  /// The daemon's gateways, Telegram alone for an older daemon. A routine
-  /// that delivers somewhere no longer configured keeps showing it.
-  List<({String name, String kind})> get _gateways {
-    final known = widget.store.info?.gateways ?? const [];
-    final list = known.isEmpty
-        ? [(name: 'telegram', kind: 'telegram')]
-        : [...known];
-    final current = widget.editing?.deliverTo?.split(':').first;
-    if (current != null &&
-        current.isNotEmpty &&
-        !list.any((g) => g.name == current)) {
-      list.add((name: current, kind: current));
-    }
-    return list;
-  }
-
-  String get _kind =>
-      _gateways.where((g) => g.name == _gateway).firstOrNull?.kind ?? _gateway;
-
-  static String _title(String kind) => switch (kind) {
-    'telegram' => 'Telegram',
-    'ntfy' => 'ntfy',
-    'slack' => 'Slack',
-    final k => k,
-  };
-
-  String get _chatHint => switch (_kind) {
-    'telegram' => 'Telegram chat id',
-    'ntfy' => 'ntfy topic',
-    'slack' => 'Slack channel id (C0123…)',
-    final k => '${_title(k)} chat',
-  };
-
-  bool get _chatValid {
-    final chat = _chat.text.trim();
-    if (_kind == 'telegram') return int.tryParse(chat) != null;
-    return chat.isNotEmpty && !chat.contains(RegExp(r'\s'));
+  /// What to send: nothing for a new routine's default; a saved one needs
+  /// the place spelled out.
+  String? get _deliverTo {
+    if (_notify != 'lives') return _notify;
+    if (widget.editing == null) return null;
+    if (_channel == TernStore.homeId) return 'home';
+    if (_channel.startsWith('dm:')) return 'dm';
+    return 'channel:$_channel';
   }
 
   /// `cron`, `once` or `watch`.
@@ -768,7 +734,6 @@ class _RoutineSheetState extends State<RoutineSheet> {
     _debounce?.cancel();
     _prompt.dispose();
     _cron.dispose();
-    _chat.dispose();
     for (final c in [
       _quiet,
       _runs,
@@ -867,7 +832,6 @@ class _RoutineSheetState extends State<RoutineSheet> {
   bool get _valid =>
       _prompt.text.trim().isNotEmpty &&
       _triggerValid &&
-      (!_push || _chatValid) &&
       _limitsValid;
 
   Future<void> _save() async {
@@ -879,7 +843,7 @@ class _RoutineSheetState extends State<RoutineSheet> {
       id: widget.editing?.id,
       cron: _trigger == 'cron' ? _cron.text.trim() : '',
       prompt: _prompt.text.trim(),
-      deliverTo: _push ? '$_gateway:${_chat.text.trim()}' : null,
+      deliverTo: _deliverTo,
       limits: _newLimits,
       channel: widget.store.hasChannels ? _channel : null,
       agent: widget.store.hasAgents ? _agent : null,
@@ -1196,53 +1160,31 @@ class _RoutineSheetState extends State<RoutineSheet> {
                 ),
                 const SizedBox(height: 8),
               ],
-              UnderlineTabs(
-                tabs: [
-                  UnderlineTab(
-                    label: 'Keep in tern',
-                    selected: !_push,
-                    onTap: () => setState(() => _push = false),
+              DropdownButtonFormField<String>(
+                key: const Key('routine-notify'),
+                initialValue: _notify,
+                isDense: true,
+                isExpanded: true,
+                decoration: _box(context).copyWith(labelText: 'Notify me'),
+                items: [
+                  const DropdownMenuItem(
+                    value: 'lives',
+                    child: Text('Where it lives'),
                   ),
-                  UnderlineTab(
-                    label: _gateways.length == 1
-                        ? 'Also send to ${_title(_gateways.first.kind)}'
-                        : 'Also send to…',
-                    selected: _push,
-                    onTap: () => setState(() => _push = true),
+                  const DropdownMenuItem(value: 'home', child: Text('Home')),
+                  const DropdownMenuItem(
+                    value: 'dm',
+                    child: Text("Agent's DM"),
+                  ),
+                  if (_notify.startsWith('channel:'))
+                    DropdownMenuItem(value: _notify, child: const Text('Channel')),
+                  const DropdownMenuItem(
+                    value: 'none',
+                    child: Text('Not at all'),
                   ),
                 ],
+                onChanged: (v) => setState(() => _notify = v ?? _notify),
               ),
-              if (_push) ...[
-                const SizedBox(height: 8),
-                if (_gateways.length > 1) ...[
-                  DropdownButtonFormField<String>(
-                    key: const Key('routine-gateway'),
-                    initialValue: _gateway,
-                    isDense: true,
-                    isExpanded: true,
-                    decoration: _box(context),
-                    items: [
-                      for (final g in _gateways)
-                        DropdownMenuItem(
-                          value: g.name,
-                          child: Text(
-                            g.name == g.kind
-                                ? _title(g.kind)
-                                : '${g.name} (${_title(g.kind)})',
-                          ),
-                        ),
-                    ],
-                    onChanged: (v) => setState(() => _gateway = v ?? _gateway),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-                TextField(
-                  key: const Key('routine-chat'),
-                  controller: _chat,
-                  onChanged: (_) => setState(() {}),
-                  decoration: _box(context, hint: _chatHint),
-                ),
-              ],
               const SizedBox(height: 8),
               DropdownButtonFormField<String?>(
                 key: const Key('routine-initiative'),

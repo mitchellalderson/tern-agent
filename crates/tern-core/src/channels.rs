@@ -294,11 +294,14 @@ pub fn where_section(
 }
 
 /// "Where you are" for a routine's run: its result goes to `posted_to`
-/// (a place name) and, when it has a push target, `delivered_to`.
-pub fn routine_where_section(title: &str, posted_to: &str, delivered_to: Option<&str>) -> String {
-    let push = delivered_to
-        .map(|d| format!(" and sent to {d}"))
-        .unwrap_or_default();
+/// (a place name) and, when it has a push target (`notifies`), may raise a
+/// desktop notification.
+pub fn routine_where_section(title: &str, posted_to: &str, notifies: bool) -> String {
+    let push = if notifies {
+        " (and a desktop notification, if it's worth one)"
+    } else {
+        ""
+    };
     format!(
         "\n\n## Where you are\n\nThis is a run of the routine \"{title}\". Your result is posted to {posted_to}{push} by itself: write it as the result, and don't offer to post or send it."
     )
@@ -318,7 +321,7 @@ pub fn subagent_where_section(caller: &str, place: Option<&str>, can_post: bool)
     )
 }
 
-/// `[home]`: when Home's stream (and each Telegram chat's) is cut into a
+/// `[home]`: when Home's stream is cut into a
 /// new segment (docs/channels-design.md §2.6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -756,8 +759,8 @@ mod tests {
         let s = where_section(&Place::Dm("Research"), &[], false, None);
         assert!(s.contains("You're in Research's DM"));
         // A routine, and a sub-agent.
-        let s = routine_where_section("Morning brief", "#finances", Some("Telegram"));
-        assert!(s.contains("Your result is posted to #finances and sent to Telegram by itself"));
+        let s = routine_where_section("Morning brief", "#finances", true);
+        assert!(s.contains("Your result is posted to #finances (and a desktop notification"));
         let s = subagent_where_section("tern", Some("#grokbot-research"), false);
         assert!(s.contains("You're working for tern in #grokbot-research."));
         assert!(s.contains("goes back to tern, not to the user or the channel. Don't post"));
