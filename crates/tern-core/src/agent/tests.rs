@@ -15,6 +15,8 @@ use crate::types::{EventStream, StopReason, ToolSpec};
 enum Reply {
     Text(&'static str),
     Tool(&'static str, Value),
+    /// Text written next to a tool call.
+    TextTool(&'static str, &'static str, Value),
     /// A tool call whose arguments the output limit cut off.
     CutOff(&'static str, &'static str),
     /// Reasoning (with a signature) streamed ahead of a text answer.
@@ -227,6 +229,19 @@ impl Provider for Script {
             Reply::Text(t) => {
                 evs.push(Ok(StreamEvent::TextDelta(t.into())));
                 StopReason::EndTurn
+            }
+            Reply::TextTool(text, name, input) => {
+                evs.push(Ok(StreamEvent::TextDelta(text.into())));
+                let id = format!("call_{n}");
+                evs.push(Ok(StreamEvent::ToolUseStart {
+                    id: id.clone(),
+                    name: name.into(),
+                }));
+                evs.push(Ok(StreamEvent::ToolUseInputDelta {
+                    id,
+                    partial_json: input.to_string(),
+                }));
+                StopReason::ToolUse
             }
             Reply::Tool(name, input) => {
                 let id = format!("call_{n}");
@@ -1019,6 +1034,21 @@ async fn gives_up_after_max_attempts() {
 }
 
 #[tokio::test]
+async fn a_failed_run_keeps_a_plain_sentence_not_the_raw_error() {
+    let h = Harness::new();
+    let mut script = Script::new(vec![Reply::Text("never")]);
+    script.fail_first.store(99, Ordering::SeqCst);
+    script.fail_status = 401;
+    let agent = h.agent(Arc::new(script), vec![], Arc::new(AutoApprove));
+    let run = h.start(&agent, "go");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    let saved = h.store.run(&run).unwrap().unwrap().error.unwrap();
+    assert!(saved.contains("rejected the API key"), "{saved}");
+    assert!(!saved.contains("HTTP 401"), "{saved}");
+    assert_eq!(out.error.as_deref(), Some(saved.as_str()));
+}
+
+#[tokio::test]
 async fn cancellation_interrupts_a_streaming_call() {
     let h = Harness::new();
     let mut script = Script::new(vec![Reply::Text("slow")]);
@@ -1039,6 +1069,16 @@ async fn cancellation_interrupts_a_streaming_call() {
         1,
         "partial text is discarded"
     );
+    // The step cut off is interrupted, not failed; the run cannot be resumed
+    // back to work, and the store refuses to flip it.
+    let steps = h.store.steps(&run).unwrap();
+    assert_eq!(steps[0].status, "interrupted");
+    assert!(matches!(
+        agent.resume(&run, CancellationToken::new()).await,
+        Err(AgentError::NotResumable(..))
+    ));
+    h.store.set_run_status(&run, "running", None).unwrap();
+    assert_eq!(h.store.run(&run).unwrap().unwrap().status, "interrupted");
 }
 
 #[tokio::test]
@@ -4103,4 +4143,34 @@ async fn a_forked_flush_keeps_the_parents_tools_and_only_saves_memory() {
         seen.iter()
             .all(|r| r.system != crate::memory::FLUSH_SYSTEM_PROMPT)
     );
+}
+
+const LONG_ANSWER: &str = "Northwind renewed on 3 March for 24 months at $48k a year, with a 5% uplift in year two. \
+    Their champion is Dana Okafor; legal wants the data-processing addendum signed before the 20th. \
+    Open risk: procurement asked about a price lock, which we have not answered.";
+
+#[tokio::test]
+async fn an_answer_written_next_to_a_tool_call_survives_the_afterword() {
+    let h = Harness::new();
+    let script = Arc::new(Script::new(vec![
+        Reply::TextTool(LONG_ANSWER, "count", json!({})),
+        Reply::Text("I saved the details."),
+    ]));
+    let tool = Counter::new("count", true, false);
+    let agent = h.agent(script, vec![Arc::new(tool)], Arc::new(AutoApprove));
+    let run = h.start(&agent, "what happened with Northwind?");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(
+        out.final_text,
+        format!("{LONG_ANSWER}\n\nI saved the details.")
+    );
+}
+
+#[test]
+fn narration_before_a_tool_call_is_not_part_of_the_answer() {
+    let got = crate::agent::answer_text([("Let me check.", true), ("It is 42.", false)]);
+    assert_eq!(got, "It is 42.");
+    // A closing answer that is itself substantive stands alone.
+    let got = crate::agent::answer_text([(LONG_ANSWER, true), (LONG_ANSWER, false)]);
+    assert_eq!(got, LONG_ANSWER);
 }

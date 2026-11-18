@@ -1086,6 +1086,12 @@ impl Manager {
                 a.remove(&session_id);
             }
             me.delegation_changed(&run_id);
+            // A parent stopped while a child works cancels the child with it
+            // (a queued one never drives, so nothing else would refresh its
+            // pointer): "Working for…" becomes "Worked for…".
+            for kid in me.rt.store.children(&run_id).unwrap_or_default() {
+                me.delegation_changed(&kid.id);
+            }
             let _ = done_tx.send(true);
             if let Err(e) = me.follow_up_queued(&run_id).await {
                 tracing::warn!(run = %run_id, error = %e, "answering queued messages failed");

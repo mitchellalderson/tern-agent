@@ -56,6 +56,54 @@ pub const TRUNCATED_TOOL_MESSAGE: &str = "not run: your reply hit the output tok
 pub const INTERRUPTED_TOOL_MESSAGE: &str = "interrupted: this call may have partially executed before a crash; verify state before retrying";
 /// Starts the note appended to the final text of a run stopped by a limit.
 pub const STOPPED_MARKER: &str = "[stopped: ";
+
+/// A run's failure as one plain sentence for the person: a known model-call
+/// error is explained (`friendly_call_error`); anything else stays as is. The
+/// raw text goes to the log.
+fn plain_error(run: &RunRow, e: &AgentError) -> String {
+    let raw = e.to_string();
+    let label = run
+        .model
+        .as_deref()
+        .and_then(|m| m.split_once(':'))
+        .map_or("The model provider", |(p, _)| p);
+    match crate::models::friendly_call_error(&raw, label) {
+        Some(f) => {
+            tracing::warn!(run = %run.id, error = %raw, "run failed");
+            f.message
+        }
+        None => raw,
+    }
+}
+
+/// Shortest text written next to tool calls that still counts as an answer
+/// (not "Let me check").
+const CARRIED_ANSWER_MIN: usize = 200;
+
+/// A run's answer from its turns' text, in order, each flagged with whether
+/// that turn also made tool calls. A model often writes the real answer next
+/// to a tool call (say `memory_save`) and ends on a short afterword ("I saved
+/// it"). The last turn alone would lose it, so a substantive earlier text
+/// that is longer than the closing one is posted first, the afterword after.
+pub fn answer_text<'a>(turns: impl IntoIterator<Item = (&'a str, bool)>) -> String {
+    let mut carry = "";
+    let mut last = "";
+    for (text, with_calls) in turns {
+        last = text;
+        let t = text.trim();
+        if with_calls && t.len() >= CARRIED_ANSWER_MIN && t.len() > carry.trim().len() {
+            carry = text;
+        }
+    }
+    let (c, l) = (carry.trim(), last.trim());
+    if c.is_empty() || l.len() >= c.len() || l.contains(c) {
+        return last.to_string();
+    }
+    if l.is_empty() {
+        return c.to_string();
+    }
+    format!("{c}\n\n{l}")
+}
 /// Sent with the closing turn of a run that reached a limit, so it reports
 /// what it has instead of stopping mid-task with nothing to show.
 pub const WRAP_UP_MESSAGE: &str = "You have used up your {limit}, so you can't call any more tools. Write your final reply now from what you have: lead with the answer or result in the shape you were asked for, then say what you checked, what is unfinished and what you would do next.";
@@ -575,7 +623,7 @@ impl Agent {
             .store
             .run(run_id)?
             .ok_or_else(|| AgentError::RunNotFound(run_id.into()))?;
-        if run.status == RunStatus::Completed.as_str() {
+        if run.status == RunStatus::Completed.as_str() || crate::subagent::was_cancelled(&run) {
             return Err(AgentError::NotResumable(run.id, run.status));
         }
         self.store
@@ -618,7 +666,7 @@ impl Agent {
             Ok(status) => outcome.status = status,
             Err(e) => {
                 outcome.status = RunStatus::Failed;
-                outcome.error = Some(e.to_string());
+                outcome.error = Some(plain_error(&run, &e));
             }
         }
         let host = self.subagents.get();
@@ -713,6 +761,7 @@ impl Agent {
             .map_or(max_tokens, |cap| max_tokens.min(cap));
         let mut idx: u32 = 0;
         let mut iterations: u32 = 0;
+        let mut carried: Vec<(String, bool)> = Vec::new();
         // Provider-reported tokens / our estimate for the last request; used
         // to correct the chars/4 estimate. Derived from journaled usage, so
         // replay makes the same compaction decisions.
@@ -835,10 +884,18 @@ impl Agent {
             // This call's input: the least the next one costs.
             let last_input = reported;
             add_usage(&mut outcome.usage, &turn.value.usage);
-            outcome.final_text = turn.value.message.text();
+            let turn_text = turn.value.message.text();
+            let with_calls = turn.value.message.tool_uses().next().is_some();
+            outcome.final_text = answer_text(
+                carried
+                    .iter()
+                    .map(|(t, c)| (t.as_str(), *c))
+                    .chain([(turn_text.as_str(), with_calls)]),
+            );
+            carried.push((turn_text.clone(), with_calls));
             self.emit(AgentEvent::AssistantMessage {
                 run_id: run.id.clone(),
-                text: outcome.final_text.clone(),
+                text: turn_text,
                 replayed: turn.replayed,
             });
             if !turn.replayed {
@@ -2014,6 +2071,8 @@ pub fn triage_running_runs(store: &Store, max_age: Duration) -> Result<Vec<RunRo
             )?;
         }
     }
+    // Steps a stop or crash left `started` under runs that are not coming back.
+    store.close_dangling_steps()?;
     Ok(resumable)
 }
 
