@@ -8,6 +8,7 @@ pub mod checkpoint;
 pub mod compaction;
 pub mod config;
 pub mod cron;
+pub mod decide;
 pub mod events;
 pub mod fetch;
 pub mod home;

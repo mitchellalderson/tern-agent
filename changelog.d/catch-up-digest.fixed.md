@@ -1,0 +1,1 @@
+- **Channel catch-up no longer loses a trailing question:** the newest three posts are shown in full (up to 2,000 characters), older ones at 500, and run byproducts such as "memory saved" and "handed to" notes are left out.

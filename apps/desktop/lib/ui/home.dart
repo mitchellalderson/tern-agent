@@ -4,9 +4,7 @@ import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:tern_client/tern_client.dart';
 
-import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
 import '../theme.dart';
@@ -21,7 +19,6 @@ import 'offline.dart';
 import 'preferences.dart';
 import 'quit.dart';
 import 'routines.dart';
-import 'servers.dart';
 import '../state/documents.dart';
 import 'documents/documents_panel.dart';
 import 'side_panel.dart';
@@ -29,17 +26,10 @@ import 'sidebar.dart';
 import 'tasks.dart';
 import 'thread_pane.dart';
 import 'version_banner.dart';
-import 'where_to_run.dart';
 import 'widgets.dart';
 
 class Home extends StatefulWidget {
-  const Home({
-    super.key,
-    required this.store,
-    this.prefs,
-    this.connections,
-    this.documents,
-  });
+  const Home({super.key, required this.store, this.prefs, this.documents});
 
   final TernStore store;
 
@@ -49,10 +39,6 @@ class Home extends StatefulWidget {
 
   /// Loaded from disk when not given (tests).
   final AppPrefs? prefs;
-
-  /// Where tern runs and switching it; without it the app stays on this
-  /// computer and doesn't ask.
-  final Connections? connections;
 
   @override
   State<Home> createState() => _HomeState();
@@ -70,12 +56,6 @@ class _HomeState extends State<Home> {
   final _control = TernControl(bin: findTern());
   late final _prefs = widget.prefs ?? AppPrefs.load();
 
-  /// On a tern server: nothing here to start, stop or start at login
-  /// (spec §11.5, "Remote cores").
-  bool get _remote =>
-      widget.connections?.isRemote ??
-      widget.store.client.endpoint is RemoteEndpoint;
-
   @override
   void initState() {
     super.initState();
@@ -90,22 +70,14 @@ class _HomeState extends State<Home> {
     _touches = widget.store.documentTouches.listen(_onTouch);
     widget.store.addListener(_loadDocuments);
     _loadDocuments();
-    final connections = widget.connections;
-    if (connections != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) maybeAskWhereToRun(context, _control, connections);
-      });
-    }
   }
 
   /// Closing the window quits the app; Settings decides whether tern
   /// stops with it.
   Future<AppExitResponse> _onExit() async {
-    if (_remote) return AppExitResponse.exit;
     if (_prefs.onClose != OnClose.quitTern) {
       // Leaving tern running with nothing in the menu bar: say so once, here.
-      if ((widget.store.health?.isLocal ?? false) &&
-          await daemonHasNoTray(_control)) {
+      if (await daemonHasNoTray(_control)) {
         if (!mounted) return AppExitResponse.exit;
         switch (await askCloseTrayless(context)) {
           case CloseChoice.cancel:
@@ -131,7 +103,7 @@ class _HomeState extends State<Home> {
 
   void _quitCompletely() => quitTernCompletely(context, widget.store, _control);
 
-  bool get _canRestart => !_remote && _control.bin != null;
+  bool get _canRestart => _control.bin != null;
 
   /// For settings that apply at a restart; the app reconnects by itself.
   Future<void> _restartTern() async {
@@ -145,7 +117,6 @@ class _HomeState extends State<Home> {
         control: _control,
         prefs: _prefs,
         store: widget.store,
-        connections: widget.connections,
         onRestart: _canRestart ? _restartTern : null,
         section: section,
       );
@@ -205,13 +176,7 @@ class _HomeState extends State<Home> {
               listenable: store,
               builder: (context, _) {
                 if (store.health == null) {
-                  return OfflineView(
-                    store: store,
-                    onSettings: _settings,
-                    onConnectRemote: widget.connections == null
-                        ? null
-                        : () => showServersDialog(context, widget.connections!),
-                  );
+                  return OfflineView(store: store);
                 }
                 final content = LayoutBuilder(
                   builder: (context, box) {
@@ -222,10 +187,7 @@ class _HomeState extends State<Home> {
                       children: [
                         SizedBox(
                           width: 260,
-                          child: Sidebar(
-                            store: store,
-                            connections: widget.connections,
-                          ),
+                          child: Sidebar(store: store),
                         ),
                         const Hairline(vertical: true),
                         Expanded(
@@ -358,12 +320,11 @@ class _HomeState extends State<Home> {
           const SingleActivator(LogicalKeyboardKey.comma, control: true): () {
             if (store.health != null) _settings();
           },
-          if (!_remote)
-            const SingleActivator(
-              LogicalKeyboardKey.keyQ,
-              control: true,
-              alt: true,
-            ): _quitCompletely,
+          const SingleActivator(
+            LogicalKeyboardKey.keyQ,
+            control: true,
+            alt: true,
+          ): _quitCompletely,
         },
         child: Focus(autofocus: true, child: body),
       );
@@ -408,17 +369,15 @@ class _HomeState extends State<Home> {
                   type: PlatformProvidedMenuItemType.quit,
                 ),
                 // Stops tern too (spec §11.5a); ⌘Q only closes the window.
-                // A server's tern isn't the app's to stop.
-                if (!_remote)
-                  PlatformMenuItem(
-                    label: 'Quit tern completely',
-                    shortcut: const SingleActivator(
-                      LogicalKeyboardKey.keyQ,
-                      meta: true,
-                      alt: true,
-                    ),
-                    onSelected: _quitCompletely,
+                PlatformMenuItem(
+                  label: 'Quit tern completely',
+                  shortcut: const SingleActivator(
+                    LogicalKeyboardKey.keyQ,
+                    meta: true,
+                    alt: true,
                   ),
+                  onSelected: _quitCompletely,
+                ),
               ],
             ),
           ],

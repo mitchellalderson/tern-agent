@@ -72,7 +72,7 @@ async fn a_read_scope_answer_releases_other_read_tools_and_sub_agents_of_the_sam
     let write = ask_in(w, None);
     settle().await;
     assert_eq!(api.pending().len(), 5);
-    assert!(api.answer("a1", Decision::AllowRun, false));
+    assert!(api.answer("a1", Decision::AllowRun));
     assert_eq!(first.await.unwrap(), Decision::AllowRun);
     assert_eq!(child.await.unwrap(), Decision::CoveredByGrant);
     settle().await;
@@ -80,7 +80,7 @@ async fn a_read_scope_answer_releases_other_read_tools_and_sub_agents_of_the_sam
     left.sort();
     assert_eq!(left, ["a3", "a4", "a5"]);
     for id in ["a3", "a4", "a5"] {
-        assert!(api.answer(id, Decision::Deny, false));
+        assert!(api.answer(id, Decision::Deny));
     }
     let _ = (other_dir.await, other_tree.await, write.await);
 }
@@ -113,7 +113,7 @@ async fn identical_requests_share_one_card_and_one_answer_covers_them() {
     let second = rx.recv().await.unwrap();
     assert_eq!((first.id.as_str(), first.count), ("a1", 1));
     assert_eq!((second.id.as_str(), second.count), ("a1", 2));
-    assert!(api.answer("a1", Decision::AllowOnce, false));
+    assert!(api.answer("a1", Decision::AllowOnce));
     assert_eq!(t1.await.unwrap(), Decision::AllowOnce);
     assert_eq!(t2.await.unwrap(), Decision::AllowOnce);
     assert!(api.pending().is_empty());
@@ -146,7 +146,7 @@ async fn a_scoped_answer_releases_queued_requests_with_that_key_only() {
     let tainted = ask(&api, req("a5", "r1", "s", "x", 5, false));
     settle().await;
     assert_eq!(api.pending().len(), 5);
-    assert!(api.answer("a1", Decision::AllowRun, false));
+    assert!(api.answer("a1", Decision::AllowRun));
     assert_eq!(first.await.unwrap(), Decision::AllowRun);
     assert_eq!(same_key.await.unwrap(), Decision::CoveredByGrant);
     settle().await;
@@ -155,42 +155,16 @@ async fn a_scoped_answer_releases_queued_requests_with_that_key_only() {
     assert_eq!(left, ["a3", "a4", "a5"]);
 
     // A conversation grant also releases the other run in that session.
-    assert!(api.answer("a3", Decision::AllowSession, false));
+    assert!(api.answer("a3", Decision::AllowSession));
     assert_eq!(other_run.await.unwrap(), Decision::AllowSession);
     settle().await;
     assert_eq!(api.pending().len(), 2);
     // "Once" releases nothing else.
-    assert!(api.answer("a4", Decision::AllowOnce, false));
+    assert!(api.answer("a4", Decision::AllowOnce));
     assert_eq!(other_target.await.unwrap(), Decision::AllowOnce);
     assert_eq!(api.pending().len(), 1);
-    assert!(api.answer("a5", Decision::Deny, false));
+    assert!(api.answer("a5", Decision::Deny));
     assert_eq!(tainted.await.unwrap(), Decision::Deny);
-}
-
-#[tokio::test]
-async fn a_remote_answer_never_releases_a_local_only_card() {
-    let api = Arc::new(ApiApprovals::default());
-    let _rx = api.subscribe();
-    let first = ask(&api, req("a1", "r1", "s", "x", 1, true));
-    let mut local = req("a2", "r1", "s", "x", 2, true);
-    local.local_only = true;
-    let local = ask(&api, local);
-    settle().await;
-    // A paired device answers: the local-only card stays for this host.
-    assert!(api.answer("a1", Decision::AllowRun, true));
-    assert_eq!(first.await.unwrap(), Decision::AllowRun);
-    settle().await;
-    assert_eq!(api.pending().len(), 1);
-    // The same answer from this host's socket releases it, as covered.
-    let again = ask(&api, req("a3", "r1", "s", "x", 3, true));
-    let mut local2 = req("a4", "r1", "s", "x", 4, true);
-    local2.local_only = true;
-    let local2 = ask(&api, local2);
-    settle().await;
-    assert!(api.answer("a3", Decision::AllowRun, false));
-    assert_eq!(again.await.unwrap(), Decision::AllowRun);
-    assert_eq!(local2.await.unwrap(), Decision::CoveredByGrant);
-    assert_eq!(local.await.unwrap(), Decision::CoveredByGrant);
 }
 
 #[tokio::test]

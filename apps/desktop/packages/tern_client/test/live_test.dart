@@ -16,19 +16,12 @@ void main() {
   late Directory tmp;
   late Process daemon;
   late TernClient client;
-  late int port;
 
   setUpAll(() async {
     if (bin == null) return;
     tmp = await Directory.systemTemp.createTemp('tern-live');
     final home = '${tmp.path}/.tern';
     await Directory(home).create();
-    final free = await ServerSocket.bind('127.0.0.1', 0);
-    port = free.port;
-    await free.close();
-    await File(
-      '$home/config.toml',
-    ).writeAsString('[api]\nlisten = ["unix", "tcp://127.0.0.1:$port"]\n');
     final script = File('${tmp.path}/script.json');
     await script.writeAsString(
       jsonEncode({
@@ -166,7 +159,6 @@ void main() {
     final set = await client.setSetting('sandbox.network', true);
     expect((set.value, set.changed, set.restartPending), (true, true, true));
     expect(set.risky, isTrue);
-    expect(await file.readAsString(), contains('[api]'));
     expect(await file.readAsString(), contains('network = true'));
     await expectLater(
       client.setSetting('max_iterations', 'lots'),
@@ -175,39 +167,6 @@ void main() {
     final reset = await client.resetSetting('sandbox.network');
     expect((reset.value, reset.set), (false, false));
   }, skip: bin == null ? 'set TERN_BIN to run' : false);
-
-  test(
-    'pairs over TLS with a pinned certificate, then is signed out',
-    () async {
-      final offer = await client.offerPairing(scope: 'chat', name: 'dart test');
-      expect(offer.link, contains('127.0.0.1%3A$port'));
-      final paired = await TernClient.pair(
-        PairingLink.parse(offer.link!),
-        deviceName: 'ignored: the offer named it',
-        platform: 'test',
-      );
-      expect(paired.scope, 'chat');
-      final remote = TernClient(paired.endpoint);
-      addTearDown(remote.close);
-
-      final health = await remote.health();
-      expect(health.deployment, 'server');
-      expect(health.scope, 'chat');
-      expect(await remote.sessions(), isNotEmpty);
-      await expectLater(
-        remote.devices(),
-        throwsA(isA<TernException>().having((e) => e.status, 'status', 403)),
-      );
-
-      final device = (await client.devices()).firstWhere(
-        (d) => d.id == paired.deviceId,
-      );
-      expect(device.name, 'dart test');
-      await client.revokeDevice(paired.deviceId);
-      await expectLater(remote.sessions(), throwsA(isA<SignedOutException>()));
-    },
-    skip: bin == null ? 'set TERN_BIN to run' : false,
-  );
 
   // Last: it stops the daemon.
   test('status, a dry run, then shutdown exits 0', () async {

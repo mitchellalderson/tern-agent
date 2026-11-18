@@ -344,11 +344,14 @@ pub fn where_section(
 }
 
 /// "Where you are" for a routine's run: its result goes to `posted_to`
-/// (a place name) and, when it has a push target, `delivered_to`.
-pub fn routine_where_section(title: &str, posted_to: &str, delivered_to: Option<&str>) -> String {
-    let push = delivered_to
-        .map(|d| format!(" and sent to {d}"))
-        .unwrap_or_default();
+/// (a place name) and, when it has a push target (`notifies`), may raise a
+/// desktop notification.
+pub fn routine_where_section(title: &str, posted_to: &str, notifies: bool) -> String {
+    let push = if notifies {
+        " (and a desktop notification, if it's worth one)"
+    } else {
+        ""
+    };
     format!(
         "\n\n## Where you are\n\nThis is a run of the routine \"{title}\". Your result is posted to {posted_to}{push} by itself: write it as the result, and don't offer to post or send it."
     )
@@ -368,7 +371,7 @@ pub fn subagent_where_section(caller: &str, place: Option<&str>, can_post: bool)
     )
 }
 
-/// `[home]`: when Home's stream (and each Telegram chat's) is cut into a
+/// `[home]`: when Home's stream is cut into a
 /// new segment (docs/channels-design.md §2.6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -521,9 +524,13 @@ pub const DIGEST_HEADER: &str = "[Posts in ";
 /// At most this many posts per digest, newest kept.
 pub const DIGEST_MAX_POSTS: usize = 20;
 /// At most this many bytes of post text per digest.
-pub const DIGEST_MAX_BYTES: usize = 6 * 1024;
-/// Each post is cut to this many characters.
-pub const DIGEST_POST_CHARS: usize = 600;
+pub const DIGEST_MAX_BYTES: usize = 12 * 1024;
+/// The newest this many posts are shown in full, up to [`DIGEST_NEWEST_CHARS`]:
+/// a trailing question is usually in the latest.
+pub const DIGEST_NEWEST_POSTS: usize = 3;
+pub const DIGEST_NEWEST_CHARS: usize = 2000;
+/// Older posts are cut to this many characters.
+pub const DIGEST_POST_CHARS: usize = 500;
 
 /// One post as a digest shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -541,14 +548,20 @@ pub struct DigestPost {
 }
 
 /// Choose what a digest shows from `newest_first` posts (`total` in all):
-/// the newest that fit [`DIGEST_MAX_POSTS`] and [`DIGEST_MAX_BYTES`], each
-/// cut to [`DIGEST_POST_CHARS`], oldest first, and how many were left out.
+/// the newest that fit [`DIGEST_MAX_POSTS`] and [`DIGEST_MAX_BYTES`], the
+/// newest [`DIGEST_NEWEST_POSTS`] cut to [`DIGEST_NEWEST_CHARS`] and older
+/// ones to [`DIGEST_POST_CHARS`], oldest first, and how many were left out.
 pub fn pick_digest(newest_first: Vec<DigestPost>, total: usize) -> (Vec<DigestPost>, usize) {
     let mut kept = Vec::new();
     let mut bytes = 0;
-    for mut p in newest_first.into_iter().take(DIGEST_MAX_POSTS) {
-        if p.text.chars().count() > DIGEST_POST_CHARS {
-            p.text = p.text.chars().take(DIGEST_POST_CHARS).collect::<String>() + "…";
+    for (i, mut p) in newest_first.into_iter().take(DIGEST_MAX_POSTS).enumerate() {
+        let cap = if i < DIGEST_NEWEST_POSTS {
+            DIGEST_NEWEST_CHARS
+        } else {
+            DIGEST_POST_CHARS
+        };
+        if p.text.chars().count() > cap {
+            p.text = p.text.chars().take(cap).collect::<String>() + "…";
         }
         if !kept.is_empty() && bytes + p.text.len() > DIGEST_MAX_BYTES {
             break;
@@ -602,6 +615,26 @@ pub fn render_digest(place: &str, posts: &[DigestPost], left_out: usize) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_digest_keeps_the_newest_three_long_and_older_ones_short() {
+        let long = format!("{} Which year?", "x".repeat(1800));
+        let posts: Vec<DigestPost> = (0..5).map(|i| dp(5 - i, &long, false)).collect(); // newest first
+        let (kept, left) = pick_digest(posts, 5);
+        assert_eq!(left, 0);
+        // Oldest first: two cut at 500, then the newest three whole.
+        assert_eq!(kept[0].text.chars().count(), DIGEST_POST_CHARS + 1);
+        assert_eq!(kept[1].text.chars().count(), DIGEST_POST_CHARS + 1);
+        for p in &kept[2..] {
+            assert!(
+                p.text.ends_with("Which year?"),
+                "the trailing question survives"
+            );
+        }
+        let huge = "y".repeat(5000);
+        let (kept, _) = pick_digest(vec![dp(1, &huge, false)], 1);
+        assert_eq!(kept[0].text.chars().count(), DIGEST_NEWEST_CHARS + 1);
+    }
 
     #[test]
     fn slugs() {
@@ -723,10 +756,13 @@ mod tests {
             .map(|i| dp(i, &"y".repeat(2000), false))
             .collect();
         let (kept, left) = pick_digest(big, 5);
+        // Newest first in `big`: the oldest two are short, the newest three long.
         assert!(
-            kept.iter()
+            kept[..2]
+                .iter()
                 .all(|p| p.text.chars().count() == DIGEST_POST_CHARS + 1)
         );
+        assert!(kept[2..].iter().all(|p| p.text.chars().count() == 2000));
         assert!(kept.iter().map(|p| p.text.len()).sum::<usize>() <= DIGEST_MAX_BYTES);
         assert_eq!(kept.last().unwrap().id, 5, "newest kept");
         assert_eq!(kept.len() + left, 5);
@@ -806,8 +842,8 @@ mod tests {
         let s = where_section(&Place::Dm("Research"), &[], false, None);
         assert!(s.contains("You're in Research's DM"));
         // A routine, and a sub-agent.
-        let s = routine_where_section("Morning brief", "#finances", Some("Telegram"));
-        assert!(s.contains("Your result is posted to #finances and sent to Telegram by itself"));
+        let s = routine_where_section("Morning brief", "#finances", true);
+        assert!(s.contains("Your result is posted to #finances (and a desktop notification"));
         let s = subagent_where_section("tern", Some("#grokbot-research"), false);
         assert!(s.contains("You're working for tern in #grokbot-research."));
         assert!(s.contains("goes back to tern, not to the user or the channel. Don't post"));

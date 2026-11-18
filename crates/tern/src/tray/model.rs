@@ -10,8 +10,6 @@ pub struct Summary {
     pub running_runs: usize,
     pub pending_approvals: usize,
     pub active_schedules: usize,
-    /// Gateways by name, and whether each is still connected.
-    pub gateways: Vec<(String, bool)>,
 }
 
 impl From<&Status> for Summary {
@@ -20,7 +18,6 @@ impl From<&Status> for Summary {
             running_runs: s.running_runs,
             pending_approvals: s.pending_approvals,
             active_schedules: s.active_schedules,
-            gateways: s.gateways.iter().map(|g| (g.name.clone(), g.ok)).collect(),
         }
     }
 }
@@ -113,33 +110,13 @@ pub struct Menu {
 pub struct Context {
     /// Whether tern (and the tray) start at login; `None` if unknown.
     pub at_login: Option<bool>,
-    /// Gateway names seen while tern ran, so the stopped state can say
-    /// what's paused.
-    pub gateways: Vec<String>,
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// "Telegram" for the gateway `telegram`.
-fn gateway_name(name: &str) -> String {
-    let mut c = name.chars();
-    c.next()
-        .map(|f| f.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
-}
-
-/// "A", "A and B", "A, B and C".
-fn and_list(items: &[String]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    }
-}
-
-fn status_text(health: &Health, cx: &Context) -> String {
+fn status_text(health: &Health) -> String {
     match health {
         Health::Running(s) => {
             let mut parts = vec!["tern — running".to_owned()];
@@ -158,35 +135,24 @@ fn status_text(health: &Health, cx: &Context) -> String {
                     plural(s.active_schedules, "routine", "routines")
                 ));
             }
-            for (name, ok) in &s.gateways {
-                if !ok {
-                    parts.push(format!("{} disconnected", gateway_name(name)));
-                }
-            }
             parts.join(" · ")
         }
         Health::Unreachable => "tern isn't answering…".to_owned(),
         Health::Starting => "Starting tern…".to_owned(),
         Health::Stopping => "Quitting tern…".to_owned(),
-        Health::Stopped => {
-            let mut paused = vec!["Routines".to_owned()];
-            paused.extend(cx.gateways.iter().map(|g| gateway_name(g)));
-            format!("tern is stopped. {} are paused.", and_list(&paused))
-        }
+        Health::Stopped => "tern is stopped. Routines are paused.".to_owned(),
     }
 }
 
 /// The "Quit tern?" question when tasks are in progress (§11.5a).
-pub fn quit_prompt(runs: &[String], gateways: &[String]) -> String {
+pub fn quit_prompt(runs: &[String]) -> String {
     let names: Vec<String> = runs
         .iter()
         .map(|t| format!("\u{201c}{t}\u{201d}"))
         .collect();
-    let mut paused = vec!["Routines".to_owned()];
-    paused.extend(gateways.iter().map(|g| gateway_name(g)));
     format!(
         "{} in progress ({}). {} will pick up where {} left off next time tern starts.\n\
-         {} will be paused until then.",
+         Routines will be paused until then.",
         if runs.len() == 1 {
             "1 task is".to_owned()
         } else {
@@ -195,7 +161,6 @@ pub fn quit_prompt(runs: &[String], gateways: &[String]) -> String {
         names.join(", "),
         if runs.len() == 1 { "It" } else { "They" },
         if runs.len() == 1 { "it" } else { "they" },
-        and_list(&paused),
     )
 }
 
@@ -222,7 +187,7 @@ fn glyph(icon: Icon) -> char {
 /// DECISIONS.md, T8b.
 pub fn menu(health: &Health, cx: &Context) -> Menu {
     let icon = icon(health);
-    let text = status_text(health, cx);
+    let text = status_text(health);
     let button = |action, label, enabled, key| Item::Button {
         action,
         label,
@@ -419,7 +384,7 @@ mod tests {
 
     #[test]
     fn underscores_in_labels_are_literal() {
-        assert_eq!(escape_mnemonic("my_gateway down"), "my__gateway down");
+        assert_eq!(escape_mnemonic("my_tern down"), "my__tern down");
         assert_eq!(escape_mnemonic("Open tern"), "Open tern");
     }
 
@@ -446,7 +411,6 @@ mod tests {
             running_runs: runs,
             pending_approvals: approvals,
             active_schedules: routines,
-            gateways: vec![("telegram".into(), true)],
         })
     }
 
@@ -473,7 +437,6 @@ mod tests {
     fn running_menu_opens_and_quits() {
         let cx = Context {
             at_login: Some(true),
-            gateways: vec![],
         };
         let m = menu(&running(0, 0, 3), &cx);
         assert_eq!(m.icon, Icon::Running);
@@ -512,29 +475,13 @@ mod tests {
     }
 
     #[test]
-    fn a_disconnected_gateway_is_named() {
-        let h = Health::Running(Summary {
-            gateways: vec![("telegram".into(), false), ("slack".into(), true)],
-            ..Summary::default()
-        });
-        assert_eq!(
-            menu(&h, &Context::default()).tooltip,
-            "tern — running · Telegram disconnected"
-        );
-    }
-
-    #[test]
     fn stopped_menu_starts_or_closes_and_says_what_is_paused() {
         let cx = Context {
             at_login: Some(false),
-            gateways: vec!["telegram".into()],
         };
         let m = menu(&Health::Stopped, &cx);
         assert_eq!(m.icon, Icon::Stopped);
-        assert_eq!(
-            first_line(&m),
-            "○ tern is stopped. Routines and Telegram are paused."
-        );
+        assert_eq!(first_line(&m), "○ tern is stopped. Routines are paused.");
         assert_eq!(
             actions(&m),
             [
@@ -546,14 +493,6 @@ mod tests {
         assert_eq!(
             menu(&Health::Stopped, &Context::default()).tooltip,
             "tern is stopped. Routines are paused."
-        );
-        let three = Context {
-            at_login: None,
-            gateways: vec!["telegram".into(), "slack".into()],
-        };
-        assert_eq!(
-            menu(&Health::Stopped, &three).tooltip,
-            "tern is stopped. Routines, Telegram and Slack are paused."
         );
     }
 
@@ -579,12 +518,12 @@ mod tests {
     #[test]
     fn quit_prompt_names_the_tasks() {
         assert_eq!(
-            quit_prompt(&["Summarize the Q3 report".into()], &["telegram".into()]),
+            quit_prompt(&["Summarize the Q3 report".into()]),
             "1 task is in progress (\u{201c}Summarize the Q3 report\u{201d}). It will pick up \
-             where it left off next time tern starts.\nRoutines and Telegram will be paused \
-             until then."
+             where it left off next time tern starts.\nRoutines will be paused until \
+             then."
         );
-        assert!(quit_prompt(&["a".into(), "b".into()], &[]).starts_with(
+        assert!(quit_prompt(&["a".into(), "b".into()]).starts_with(
             "2 tasks are in progress (\u{201c}a\u{201d}, \u{201c}b\u{201d}). They will"
         ));
     }

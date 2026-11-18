@@ -95,6 +95,8 @@ class ChannelAgents {
     this.maxHops = 2,
     this.wakesPerHour = 6,
     this.letAgentsDecide = false,
+    this.routeMode = 'one',
+    this.replyRule,
   });
 
   factory ChannelAgents.fromJson(Json j) => ChannelAgents(
@@ -106,6 +108,8 @@ class ChannelAgents {
     maxHops: j['max_hops'] as int? ?? 2,
     wakesPerHour: j['wakes_per_hour'] as int? ?? 6,
     letAgentsDecide: j['let_agents_decide'] as bool? ?? false,
+    routeMode: j['route_mode'] as String? ?? 'one',
+    replyRule: j['reply_rule'] as String?,
   );
 
   /// Lead first.
@@ -119,6 +123,13 @@ class ChannelAgents {
   /// "Let agents decide": a post that mentions no one is routed to the
   /// members it fits (one cheap model call), not always to the lead.
   final bool letAgentsDecide;
+
+  /// With [letAgentsDecide]: `one` (the best fit; ties go to the lead) or
+  /// `all` (every relevant agent, at most 3).
+  final String routeMode;
+
+  /// A plain-English rule for when agents reply here. Null: none.
+  final String? replyRule;
 }
 
 /// What adding several agents to a channel at once did.

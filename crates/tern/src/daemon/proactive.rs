@@ -317,8 +317,9 @@ impl Manager {
                 1,
                 true,
             )?;
-            if made.is_some() {
+            if let Some(card) = made {
                 store.set_proactive_state(&fp_key, &fp)?;
+                self.notify_card(&card);
             }
         }
         Ok(())
@@ -379,7 +380,16 @@ impl Manager {
         match run.trigger.as_str() {
             "cron" => self.consider_fix(&run),
             "proactive" => self.finish_fix(&run),
-            "user" if run.status == "completed" => self.consider_suggestion(&run),
+            "user" if run.status == "completed" => {
+                // Asks the decision model, so off this task.
+                let me = self.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = me.consider_suggestion(&run).await {
+                        tracing::warn!(error = %e, "routine suggestion failed");
+                    }
+                });
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -539,13 +549,32 @@ impl Manager {
         )?;
         if let Some(row) = store.card(id)? {
             self.publish_card(&row)?;
+            self.notify_card(&row);
         }
         Ok(())
     }
 
+    /// Ask the app to notify about a card that needs a look (the heartbeat,
+    /// a routine fix): the same `Change::Notification` local delivery uses.
+    /// The brief and suggestions wait quietly to be read.
+    fn notify_card(&self, card: &CardRow) {
+        let Ok(Some(channel)) = self.rt.store.agent_channel(&card.agent_id) else {
+            return;
+        };
+        let _ = self.rt.changes.send(Change::Notification {
+            title: card.title.clone(),
+            body: cut(&card.body, 240),
+            channel_id: Some(channel.id),
+            run_id: None,
+        });
+    }
+
     /// P1: the same kind of ask three times in 14 days: suggest a routine.
-    /// Host-side word overlap; `similar_asks` may overrule it later.
-    fn consider_suggestion(&self, run: &RunRow) -> anyhow::Result<()> {
+    /// Host-side word overlap finds them; only then one yes/no through
+    /// `decide()` asks whether they are one repeatable job (unanswered: the
+    /// host's count stands). The cheap caps come first, so the model is asked
+    /// at most when a card is about to be made.
+    async fn consider_suggestion(&self, run: &RunRow) -> anyhow::Result<()> {
         if !self.rt.live().proactive.suggest_routines || run.taint.is_some() {
             return Ok(());
         }
@@ -562,13 +591,6 @@ impl Manager {
         if p::similar_asks(&ask, &earlier) < p::SUGGEST_ASKS {
             return Ok(());
         }
-        if let Some(hook) = self.similar_asks.get() {
-            let mut asks = earlier.clone();
-            asks.push(ask.clone());
-            if hook.repeatable(&asks) == Some(false) {
-                return Ok(());
-            }
-        }
         // Already a routine for it, or told about it lately: stay quiet.
         let mine = p::tokens(&ask);
         if store
@@ -584,6 +606,34 @@ impl Manager {
             .and_then(|v| v.parse::<i64>().ok())
             && now - at < p::SUGGEST_WINDOW_MS
         {
+            return Ok(());
+        }
+        if store.cards_since(kind::ROUTINE_SUGGESTION, None, now - p::DAY)? >= p::SUGGEST_PER_DAY {
+            return Ok(());
+        }
+        let alike_asks: Vec<&String> = std::iter::once(&ask)
+            .chain(earlier.iter().filter(|e| p::alike(&mine, &p::tokens(e))))
+            .take(5)
+            .collect();
+        let state = format!(
+            "The user asked for the same kind of work several times:\n{}",
+            alike_asks
+                .iter()
+                .map(|a| format!("- {}", cut(a, 160)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let answers = self
+            .rt
+            .decide(
+                &state,
+                vec![(
+                    "repeat".into(),
+                    tern_core::decide::Question::yes_no(p::REPEAT_QUESTION),
+                )],
+            )
+            .await;
+        if answers["repeat"].is_yes(p::REPEAT_THRESHOLD) == Some(false) {
             return Ok(());
         }
         let title = "Make this a routine?";

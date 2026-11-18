@@ -14,7 +14,6 @@ import 'code_auto.dart';
 import 'manage.dart';
 import 'model_chain_editor.dart';
 import 'model_picker.dart' show ModelList;
-import 'secrets.dart' show showSecretsDialog;
 import 'widgets.dart';
 import 'workspace_ui.dart';
 
@@ -90,6 +89,12 @@ class _AgentSheetState extends State<AgentSheet> {
   late final _name = TextEditingController(text: widget.editing?.name);
   final _persona = TextEditingController();
 
+  /// The one line channel routing reads; empty = written from its role.
+  late final _description = TextEditingController(
+    text: widget.editing?.description,
+  );
+  late bool _replies = widget.editing?.replyWhenRelevant ?? true;
+
   /// The model chain (T6a): empty = the default model.
   late List<String> _model = [...?widget.editing?.model];
   late List<String> _subagentModel = [...?widget.editing?.subagentModel];
@@ -126,14 +131,6 @@ class _AgentSheetState extends State<AgentSheet> {
   /// The ceiling before `Code` was picked, for the confirm dialog's "this
   /// raises the ceiling from ..." line.
   String? _ceilingBeforeCode;
-
-  /// The NAME of the secret holding its own Telegram bot's token; null =
-  /// no bot of its own.
-  late String? _bot = widget.editing?.telegramSecret;
-
-  /// The user's secrets (names and status; never values), for the bot field.
-  List<SecretStatus>? _secrets;
-  String? _secretsError;
 
   /// The scope being edited; null = everything (the default agent's).
   late ToolScope? _tools = widget.editing == null
@@ -179,23 +176,8 @@ class _AgentSheetState extends State<AgentSheet> {
     _load();
   }
 
-  Future<void> _loadSecrets() async {
-    try {
-      final list = await widget.store.client.secrets();
-      if (mounted) {
-        setState(() {
-          _secrets = list;
-          _secretsError = null;
-        });
-      }
-    } on TernException catch (e) {
-      if (mounted) setState(() => _secretsError = e.message);
-    }
-  }
-
   Future<void> _load() async {
     final client = widget.store.client;
-    if (widget.editing case final a? when !a.isDefault) _loadSecrets();
     try {
       if (widget.editing case final a?) {
         final p = await client.persona(a.id);
@@ -282,7 +264,6 @@ class _AgentSheetState extends State<AgentSheet> {
     });
     final avatar = AvatarSpec(glyph: _glyph, color: _color);
     final String? err;
-    var botChanged = false;
     if (widget.editing case final a?) {
       final model = _model;
       // The default agent's fallbacks changed: written to `default_model`.
@@ -301,6 +282,11 @@ class _AgentSheetState extends State<AgentSheet> {
         if (_subagentModel.join(',') != a.subagentModel.join(','))
           'subagent_model': _wire(_subagentModel),
         if (!_isDefault) 'memory': _memory,
+        if (_description.text.trim() != (a.description ?? ''))
+          'description': _description.text.trim().isEmpty
+              ? null
+              : _description.text.trim(),
+        if (_replies != a.replyWhenRelevant) 'reply_when_relevant': _replies,
         if (_browse != (a.egress == 'allow'))
           'egress': _browse ? 'allow' : null,
         if (!_isDefault || _tools != null) 'tools': _tools?.toJson(),
@@ -309,10 +295,7 @@ class _AgentSheetState extends State<AgentSheet> {
         if (_autonomy != a.autonomy) 'autonomy': _autonomy,
         // Sent with the ceiling in one request, so the raise is visible.
         if (_codeAuto != a.codeAuto) 'code_auto': _codeAuto,
-        if (!_isDefault && _bot != a.telegramSecret)
-          'telegram': _bot == null ? null : {'bot_token_secret': _bot},
       };
-      botChanged = !_isDefault && _bot != a.telegramSecret;
       err = await store.updateAgent(
         a,
         fields: fields,
@@ -339,18 +322,7 @@ class _AgentSheetState extends State<AgentSheet> {
     }
     if (!mounted) return;
     if (err == null) {
-      final messenger = ScaffoldMessenger.maybeOf(context);
       Navigator.of(context).pop();
-      if (botChanged) {
-        messenger?.showSnackBar(
-          const SnackBar(
-            content: Text(
-              'The bot change applies when the daemon restarts '
-              '(Restart daemon, at the bottom of the sidebar).',
-            ),
-          ),
-        );
-      }
     } else {
       setState(() {
         _busy = false;
@@ -739,6 +711,36 @@ class _AgentSheetState extends State<AgentSheet> {
                               'knows somewhere new.',
                             ),
                           ),
+                          if (widget.editing != null) ...[
+                            _section('In channels'),
+                            TextField(
+                              key: const Key('agent-description'),
+                              controller: _description,
+                              maxLength: 120,
+                              decoration: InputDecoration(
+                                hintText: 'Written from its role if empty',
+                                isDense: true,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                helperText: 'One line. What a channel reads to '
+                                    'pick who answers.',
+                              ),
+                            ),
+                            SwitchListTile(
+                              key: const Key('reply-when-relevant'),
+                              contentPadding: EdgeInsets.zero,
+                              dense: true,
+                              value: _replies,
+                              onChanged: (v) => setState(() => _replies = v),
+                              title: const Text('Reply when relevant'),
+                              subtitle: Text(
+                                _replies
+                                    ? 'Can be picked to answer in channels.'
+                                    : 'Answers only when you @mention it.',
+                              ),
+                            ),
+                          ],
                           _section('How much it does on its own'),
                           AutonomyPicker(
                             value: _autonomy,
@@ -771,22 +773,6 @@ class _AgentSheetState extends State<AgentSheet> {
                               ],
                               chosen: _delegates,
                               onChanged: (v) => setState(() => _delegates = v),
-                            ),
-                          ],
-                          if (widget.editing case final a?
-                              when !a.isDefault) ...[
-                            _section('Telegram bot'),
-                            TelegramBotField(
-                              agent: a,
-                              agents: widget.store.agents,
-                              secrets: _secrets,
-                              loadError: _secretsError,
-                              value: _bot,
-                              onChanged: (v) => setState(() => _bot = v),
-                              onSetSecret: () async {
-                                await showSecretsDialog(context, widget.store);
-                                if (mounted) _loadSecrets();
-                              },
                             ),
                           ],
                           const SizedBox(height: 8),
@@ -865,6 +851,7 @@ class _AgentSheetState extends State<AgentSheet> {
     _name.dispose();
     _slugCtl.dispose();
     _persona.dispose();
+    _description.dispose();
     super.dispose();
   }
 }
