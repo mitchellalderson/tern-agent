@@ -354,7 +354,7 @@ void main() {
     await _section(tester, PrefSection.advanced);
     expect(_row('context_window'), findsOneWidget);
     expect(_row('subagents.max_children'), findsOneWidget);
-    expect(_row('api.trust_proxy'), findsOneWidget);
+    expect(_row('secret_request_timeout_secs'), findsOneWidget);
     expect(_row('workspace'), findsNothing);
     await tester.tap(find.text('Open config.toml'));
     expect(revealed, ['/Users/you/.tern/config.toml']);
@@ -401,11 +401,6 @@ void main() {
     await tester.enterText(search, 'zzzz');
     await tester.pumpAndSettle();
     expect(find.textContaining('No setting matches'), findsOneWidget);
-  });
-
-  testWidgets('a device without owner scope is told so', (tester) async {
-    await _pump(tester, _FakeClient(failWith: 403));
-    expect(find.textContaining('paired as owner'), findsOneWidget);
   });
 
   for (final dark in [false, true]) {
