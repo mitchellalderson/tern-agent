@@ -25,7 +25,6 @@ use super::manager::Manager;
 pub enum OutboxError {
     NotFound,
     /// Only a client on this host may decide it.
-    LocalOnly,
     /// Already decided, or expired.
     NotPending(String),
     Bad(String),
@@ -48,10 +47,6 @@ impl std::fmt::Display for OutboxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OutboxError::NotFound => f.write_str("no such outbox item"),
-            OutboxError::LocalOnly => f.write_str(
-                "this item runs a command on the host outside the sandbox; decide it in the TUI or \
-                 desktop app on that machine",
-            ),
             OutboxError::NotPending(state) => write!(f, "this item is already {state}"),
             OutboxError::Bad(m) => f.write_str(m),
             OutboxError::Internal(e) => write!(f, "{e:#}"),
@@ -68,32 +63,27 @@ const EXPIRY_TICK: Duration = Duration::from_secs(60);
 impl Manager {
     /// An item that can still be decided. `discard`: a stale item may be
     /// rejected too, but never approved.
-    fn pending_item(&self, id: i64, remote: bool, discard: bool) -> Result<OutboxRow, OutboxError> {
+    fn pending_item(&self, id: i64, discard: bool) -> Result<OutboxRow, OutboxError> {
         let item = self
             .rt
             .store
             .outbox_item(id)?
             .ok_or(OutboxError::NotFound)?;
-        if remote && item.local_only {
-            return Err(OutboxError::LocalOnly);
-        }
         if item.state != "pending" && !(discard && item.state == "stale") {
             return Err(OutboxError::NotPending(item.state));
         }
         Ok(item)
     }
 
-    /// Approve item `id` (`remote`: asked over TCP or from a chat, so not a
-    /// local-only item), with `input` replacing its arguments, and start
+    /// Approve item `id` with `input` replacing its arguments, and start
     /// the run that executes it. Exactly once: a second approval is
     /// refused.
     pub fn approve_outbox(
         self: &Arc<Self>,
         id: i64,
         input: Option<Value>,
-        remote: bool,
     ) -> Result<OutboxItem, OutboxError> {
-        let item = self.pending_item(id, remote, false)?;
+        let item = self.pending_item(id, false)?;
         // Its file changed since it was queued: don't run it, and say so
         // once for the batch.
         if outbox::file_changed(item.file_path.as_deref(), item.file_hash.as_deref()) {
@@ -199,23 +189,13 @@ impl Manager {
             let text = outbox::stale_summary(&file, items.len());
             let first = &items[0];
             self.outbox_post(first, &text, &format!("outbox-stale:{}", first.id));
-            if let Some(target) = self.outbox_target(first)
-                && let Err(e) = self.send_to(&target, None, &text).await
-            {
-                tracing::warn!(target, error = %e, "outbox summary delivery failed");
-            }
         }
     }
 
     /// Reject item `id`, with an optional note the run that queued it gets
     /// if it is still working.
-    pub fn reject_outbox(
-        &self,
-        id: i64,
-        note: Option<&str>,
-        remote: bool,
-    ) -> Result<OutboxItem, OutboxError> {
-        self.pending_item(id, remote, true)?;
+    pub fn reject_outbox(&self, id: i64, note: Option<&str>) -> Result<OutboxItem, OutboxError> {
+        self.pending_item(id, true)?;
         let note = note.map(str::trim).filter(|n| !n.is_empty());
         if !self.rt.store.reject_outbox(id, note)? {
             return Err(OutboxError::NotPending("decided".into()));
@@ -313,11 +293,6 @@ impl Manager {
             }
         );
         self.outbox_post(item, &text, &format!("outbox-done:{}", item.id));
-        if let Some(target) = self.outbox_target(item)
-            && let Err(e) = self.send_to(&target, None, &text).await
-        {
-            tracing::warn!(target, error = %e, "outbox result delivery failed");
-        }
         self.outbox_changed(item);
     }
 
@@ -371,13 +346,6 @@ impl Manager {
         }
     }
 
-    /// The chat the run tree that queued `item` reports to, if any.
-    fn outbox_target(&self, item: &OutboxRow) -> Option<String> {
-        let store = &self.rt.store;
-        let root = store.root_run(&item.run_id).ok()?;
-        store.run_deliver_to(&root).ok().flatten()
-    }
-
     /// A new item: its `needs_you` post (and Home pointer), clients, and
     /// the chat its run reports to. A routine's chat gets no card now: the
     /// routine's own delivery, which keeps its quiet hours and initiative,
@@ -386,24 +354,7 @@ impl Manager {
         let Ok(Some(item)) = self.rt.store.outbox_item(id) else {
             return;
         };
-        if !self.queued_by_routine(&item)
-            && let Some(target) = self.outbox_target(&item)
-            && let Some((name, chat)) = target.split_once(':')
-            && let Some(g) = self.gateway(name)
-        {
-            g.outbox_notice(chat, &self.outbox_view(item.clone())).await;
-        }
         self.outbox_changed(&item);
-    }
-
-    /// Whether the run tree that queued `item` is a routine's.
-    fn queued_by_routine(&self, item: &OutboxRow) -> bool {
-        let store = &self.rt.store;
-        store
-            .root_run(&item.run_id)
-            .ok()
-            .and_then(|r| store.run(&r).ok().flatten())
-            .is_some_and(|r| r.trigger == "cron")
     }
 
     /// Every change to an item goes through here: its `needs_you` post
@@ -414,17 +365,6 @@ impl Manager {
             self.open_needs_you(item);
         } else {
             self.resolve_needs_you(item);
-            let view = self.outbox_view(item.clone());
-            for g in self
-                .routes
-                .gateways
-                .get()
-                .into_iter()
-                .flat_map(|g| g.values())
-            {
-                let (g, view) = (g.clone(), view.clone());
-                tokio::spawn(async move { g.outbox_resolved(&view).await });
-            }
         }
         let _ = self.rt.changes.send(Change::OutboxChanged {
             id: item.id,

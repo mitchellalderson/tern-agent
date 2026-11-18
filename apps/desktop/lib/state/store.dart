@@ -609,13 +609,11 @@ class TernStore extends ChangeNotifier {
   /// Whether the core manages accounts per connector or MCP server.
   bool get hasConnections => health?.features.contains('connections') ?? false;
 
-  /// The Connections page is owner-only.
-  bool get canManageConnections => hasConnections && (health?.isOwner ?? false);
+  /// The Connections page.
+  bool get canManageConnections => hasConnections;
 
-  /// Whether the core installs bundles (tooling spec §6.5). Owner-only.
-  bool get canManageBundles =>
-      (health?.features.contains('bundles') ?? false) &&
-      (health?.isOwner ?? false);
+  /// Whether the core installs bundles (tooling spec §6.5).
+  bool get canManageBundles => health?.features.contains('bundles') ?? false;
 
   /// Whether the core defers unanswered writes to an outbox.
   bool get hasOutbox => health?.features.contains('outbox') ?? false;
@@ -685,19 +683,12 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// `tern security audit` on the core (tooling spec §8.4): owner-only.
+  /// `tern security audit` on the core (tooling spec §8.4).
   bool get hasSecurityAudit =>
-      (health?.features.contains('security_audit') ?? false) &&
-      (health?.isOwner ?? false);
+      health?.features.contains('security_audit') ?? false;
 
-  /// The activity ledger (tooling spec §8.1): owner-only.
-  bool get hasLedger =>
-      (health?.features.contains('ledger') ?? false) &&
-      (health?.isOwner ?? false);
-
-  /// Reached as a paired device rather than the local owner socket, so the
-  /// core refuses stdio MCP servers unless `api.remote_mcp_stdio` is set.
-  bool get remoteCore => health != null && health!.authKind != 'owner';
+  /// The activity ledger (tooling spec §8.1).
+  bool get hasLedger => health?.features.contains('ledger') ?? false;
 
   /// The session's own model, else its agent's, else the default.
   String? modelFor(String? session) {
@@ -740,11 +731,7 @@ class TernStore extends ChangeNotifier {
   String? get coreSkew {
     final h = health;
     if (h == null) return null;
-    return coreSkewMessage(
-      appVersion: appVersion,
-      coreVersion: h.version,
-      local: h.isLocal,
-    );
+    return coreSkewMessage(appVersion: appVersion, coreVersion: h.version);
   }
 
   static const daemonTooOldMessage =
@@ -1814,6 +1801,9 @@ class TernStore extends ChangeNotifier {
       case SchedulesChanged():
         unawaited(refreshSchedules());
         return;
+      case NotificationRequested():
+        _notifyRoutine(e);
+        return;
       case UnknownEvent() || EventsDropped():
         return;
     }
@@ -1887,6 +1877,22 @@ class TernStore extends ChangeNotifier {
       (selected != session &&
           thread != session &&
           !(streamOpen && _streamSessions.contains(session)));
+
+  /// A routine result the daemon pushed: already posted in its channel, so
+  /// notify unless the window is focused on that channel.
+  void _notifyRoutine(NotificationRequested n) {
+    final ch = n.channelId;
+    if (appActive && ch != null && ch == channel) return;
+    unawaited(
+      notifier.show(
+        id: '$_routineNotePrefix${ch ?? ''}',
+        title: n.title,
+        body: n.body,
+      ),
+    );
+  }
+
+  static const _routineNotePrefix = 'channel:';
 
   void _notifyApproval(Approval a) {
     if (!_unseen(a.sessionId)) return;
@@ -2003,6 +2009,18 @@ class TernStore extends ChangeNotifier {
   }
 
   void _onNotification(String id, NotificationAction action) {
+    if (id.startsWith(_routineNotePrefix)) {
+      if (action != NotificationAction.open) return;
+      final ch = id.substring(_routineNotePrefix.length);
+      unawaited(
+        ch.isEmpty || ch == homeId
+            ? openHome()
+            : ch.startsWith('dm:')
+            ? openStream(ch)
+            : openChannelView(ch),
+      );
+      return;
+    }
     if (action == NotificationAction.open) {
       // An approval id opens the conversation it belongs to.
       final session =
@@ -2487,7 +2505,9 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Create or edit a routine. Returns the daemon's reason on failure.
+  /// Create or edit a routine. `deliverTo`: null leaves the target alone
+  /// (a new routine's is where it lives); else `none`, `home`, `dm` or
+  /// `channel:<id>`. Returns the daemon's reason on failure.
   Future<String?> saveSchedule({
     String? id,
     required String cron,
@@ -2514,7 +2534,7 @@ class TernStore extends ChangeNotifier {
           id,
           cron: cron,
           prompt: prompt,
-          deliverTo: deliverTo ?? 'none',
+          deliverTo: deliverTo,
           limits: limits,
           channel: channel,
           agent: agent,

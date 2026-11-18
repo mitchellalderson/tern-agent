@@ -1,18 +1,15 @@
 //! T1b end-to-end (docs/personal-agent-tooling-spec.md §3, §4.1, §12.2):
 //! routines with watch triggers (cursors, dedup, taint, no model call when
 //! nothing happened), gates, and initiative levels with digests, against
-//! the daemon, a fake Telegram, and the mock provider.
+//! the daemon, the notifications the desktop app would raise, and the mock provider.
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 #![cfg(unix)]
 
-use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-
-const CHAT: i64 = 5151;
 
 fn tern_bin() -> PathBuf {
     std::env::var_os("TERN_TEST_BIN").map_or_else(|| env!("CARGO_BIN_EXE_tern").into(), Into::into)
@@ -27,83 +24,17 @@ impl Drop for Killed {
     }
 }
 
-struct FakeTelegram {
-    _proc: Killed,
-    url: String,
-    http: reqwest::Client,
-}
-
-impl FakeTelegram {
-    fn start() -> Self {
-        let script =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_telegram.py");
-        let mut child = Command::new("python3")
-            .arg(script)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut line = String::new();
-        std::io::BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let port: u16 = line.trim().parse().unwrap();
-        Self {
-            _proc: Killed(child),
-            url: format!("http://127.0.0.1:{port}"),
-            http: reqwest::Client::new(),
-        }
-    }
-
-    async fn texts(&self) -> Vec<String> {
-        let all: Vec<Value> = self
-            .http
-            .get(format!("{}/control/messages", self.url))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        all.iter()
-            .map(|m| m["text"].as_str().unwrap_or_default().to_owned())
-            .collect()
-    }
-
-    async fn count(&self, needle: &str) -> usize {
-        self.texts()
-            .await
-            .iter()
-            .filter(|t| t.contains(needle))
-            .count()
-    }
-
-    /// Wait for a bot message containing `needle`; returns its text.
-    async fn wait_for(&self, needle: &str, secs: u64) -> String {
-        let end = Instant::now() + Duration::from_secs(secs);
-        loop {
-            if let Some(t) = self.texts().await.into_iter().find(|t| t.contains(needle)) {
-                return t;
-            }
-            assert!(
-                Instant::now() < end,
-                "no bot message containing {needle:?}; got {:#?}",
-                self.texts().await
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-}
+use super::notes::Notes;
 
 struct Env {
     _tmp: tempfile::TempDir,
     home: PathBuf,
     tern_home: PathBuf,
     script: PathBuf,
-    telegram_url: String,
 }
 
 impl Env {
-    fn new(tg: Option<&FakeTelegram>, extra_config: &str) -> Self {
+    fn new(tg: Option<&Notes>, extra_config: &str) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let tern_home = home.join(".tern");
@@ -112,27 +43,17 @@ impl Env {
             script: tmp.path().join("script.json"),
             home,
             tern_home,
-            telegram_url: tg.map(|t| t.url.clone()).unwrap_or_default(),
             _tmp: tmp,
         };
         env.config(extra_config);
+        if let Some(tg) = tg {
+            tg.watch(env.socket());
+        }
         env
     }
 
     fn config(&self, extra: &str) {
-        let telegram = if self.telegram_url.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "[gateway.telegram]\nenabled = true\nbot_token_secret = \"TELEGRAM_BOT_TOKEN\"\napi_url = \"{}\"\n\n",
-                self.telegram_url
-            )
-        };
-        std::fs::write(
-            self.tern_home.join("config.toml"),
-            format!("{telegram}{extra}"),
-        )
-        .unwrap();
+        std::fs::write(self.tern_home.join("config.toml"), extra).unwrap();
     }
 
     /// Install an active connector.
@@ -154,7 +75,6 @@ impl Env {
             .env("HOME", &self.home)
             .env("TERN_HOME", &self.tern_home)
             .env("TERN_PROVIDER", format!("mock:{}", self.script.display()))
-            .env("TELEGRAM_BOT_TOKEN", "TEST:TOKEN")
             .env("TERN_SCHEDULER_TICK_MS", "200")
             .stdin(Stdio::null());
         c
@@ -253,7 +173,7 @@ impl Env {
 }
 
 fn target() -> String {
-    format!("telegram:{CHAT}")
+    "home".to_owned()
 }
 
 /// Let a few scheduler ticks pass.
@@ -453,7 +373,7 @@ async fn a_gate_skips_runs_without_a_model_call() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn initiative_levels_decide_the_push_and_the_dial_quiets_them() {
-    let tg = FakeTelegram::start();
+    let tg = Notes::start();
     let env = Env::new(Some(&tg), "[schedules]\nquiet_hours = \"none\"\n");
     env.script(json!({ "conversations": [
         // The gate model's question names the routine's prompt.

@@ -15,10 +15,7 @@ under "Next" is built; order can change, and items may be cut. The tooling spec'
   servers, schedules from natural language.
 - Luau connectors the agent writes, tests and activates only with your approval of their hosts and secrets.
 - The agent can ask you for a secret without seeing it ([secret-requests-spec.md](docs/secret-requests-spec.md)).
-- Telegram with pairing and approval buttons.
 - Sub-agents: delegation, fan-out and coordination ([subagents-design.md](docs/subagents-design.md)).
-- Remote core over TCP with TLS, QR device pairing and scoped tokens (D1 in
-  [deployment-spec.md](docs/deployment-spec.md)).
 - A macOS desktop app (download, daemon included): conversations, approvals, routines, run inspector, provider and secret
   settings (G0–G2 in [gui-spec.md](docs/gui-spec.md)).
 
@@ -30,7 +27,7 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 - **Effects on every tool** (`read`, `write`, `destructive`) enforced by the host, and a money-movement deny (T0).
 - **Untrusted content is tracked** (T3a): a run that reads outside content is marked, its output is wrapped as data, and
   it can't act on its own. Shell has no network by default.
-- **Outbox and autonomy** (T3): writes from unattended runs wait for your approval as cards in Home, on Telegram and in
+- **Outbox and autonomy** (T3): writes from unattended runs wait for your approval as cards in Home and in
   the TUI (`/outbox`); autonomy profiles set how much a run may do alone. Approving `http_fetch` for a run, or for a
   site for good, is one click.
 - **Credentials stay out of connectors** (T4b-i): the host injects them, and connectors get path allowlists and rate
@@ -63,18 +60,18 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 **Start, stop and tray**
 - **Start and stop without a terminal**: `tern service install`, `tern start` / `stop`, "Quit tern completely" (T8a).
 - **Menu-bar icon on macOS** (`tern tray`): status, Open, Start/Quit, Start at login through System Settings › Login
-  Items (T8b). **Tray icon on Linux** (StatusNotifierItem via `ksni`, XDG autostart; T8c). The desktop app's first launch asks where tern runs: this Mac, or a tern server you pair with.
+  Items (T8b). **Tray icon on Linux** (StatusNotifierItem via `ksni`, XDG autostart; T8c).
 
 **Channels and agents**
 - **Channels** ([channels-design.md](docs/channels-design.md) C0–C5): Home as one stream, topic channels in the desktop
   app, agents that share a channel and read each other's posts, sub-agents that post, "needs you" pointers into Home,
   and moving conversations into channels. Agents can suggest a channel for a piece of work (you accept or decline), the
-  TUI has `/channels` and `/channel`, and Telegram channels are topics or `#slug` prefixes. Conversations are flat
+  TUI has `/channels` and `/channel`. Conversations are flat
   everywhere: no reply threads or side chats. Every run is told where it is and where its reply goes.
 - **Agent profiles** ([agent-profiles-design.md](docs/agent-profiles-design.md) AP0–AP3): several configurable agents,
-  each with its own DM, persona, model list, tools, memory and routines, in the desktop app and Telegram; agents in topic
+  each with its own DM, persona, model list, tools, memory and routines, in the desktop app; agents in topic
   channels that wake on `@mention`; delegating work to another agent; a per-agent autonomy ceiling; "Let agents decide"
-  routing in a channel; a Telegram bot per agent; and agent templates as signed bundles. The desktop app has controls for
+  routing in a channel; and agent templates as signed bundles. The desktop app has controls for
   all of it. Agents can be renamed, edited, archived and deleted in the desktop app, the TUI and `tern agents`.
 - **Starter agents**: a catalog of 25 (Everyday, Coding, Writing & Content, Research & Learning, Business, Data &
   Finance), each with a conservative autonomy ceiling, in a searchable picker on the agent sheet and `tern agents
@@ -89,7 +86,6 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 - **Connectors from OpenAPI documents and recorded test fixtures** (T4c): `tern connectors from-openapi` generates a
   draft with one tool per operation; tests can replay recorded calls offline.
 - **`tern mcp serve`** (T6d): tern's tools offered to other agents over MCP, under tern's own approval and taint policy.
-- **Chat gateways as connectors** (T4b-ii): ntfy and Slack, written in Luau, built in.
 - **MCP management** from the TUI (`/mcp`), the CLI (`tern mcp`), the desktop app and chat, with no restart and no
   `config.toml` editing ([mcp-management-spec.md](docs/mcp-management-spec.md) M0–M2).
 
@@ -109,14 +105,10 @@ From [personal-agent-tooling-spec.md](docs/personal-agent-tooling-spec.md) §12.
 |---|---|---|
 | 5. Ecosystem | Recipes (morning brief, follow-ups, meeting prep) and goals (T6c). Native browser behind a feature flag (T7b). | tooling §6.5, §9, §10 |
 | Compute | The rest of `python`: reusing identical reads in a run (`reuse_reads`), a stub list of tools in the prompt, streamed `print`, sub-steps nested in the run inspector, and PY3. | [python-tool-spec.md](docs/python-tool-spec.md) §9 |
-| 6. Multiplayer | Group rooms with guests (M0), then several members on one core (M1), then hosted workspaces (M2). | tooling §15 |
 
-**Running it elsewhere** ([deployment-spec.md](docs/deployment-spec.md) §12): event replay and an async store (D0),
-container image and server guides (D2), Postgres (D3), a mobile app with push (D4), a hosted tier with export and
-leave (D5), and a relay so a home core gets phone reach without port forwarding (D6).
+**Not planned.** Remote access, accounts, a hosted tier, messaging gateways and inbound webhooks were removed: tern is local-only and single-player ([DECISIONS.md](DECISIONS.md#tern-is-local-only-single-player)).
 
-**Desktop app** ([gui-spec.md](docs/gui-spec.md) §10): several saved servers, a quick switcher, a Telegram pairing
-screen with a QR code, a skills view and a visual editor for fallback model lists. Packaging (G6): built are
+**Desktop app** ([gui-spec.md](docs/gui-spec.md) §10): a skills view and a visual editor for fallback model lists. Packaging (G6): built are
 `scripts/release-macos.sh` (sign, notarize, staple, dmg and zip) and `scripts/package-linux-app.sh` (`.tar.gz`, `.deb`),
 run by `desktop-release.yml`; left are your Apple credentials for the first notarized run and a real Linux build
 ([docs/desktop-release.md](docs/desktop-release.md)).

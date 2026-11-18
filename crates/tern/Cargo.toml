@@ -31,7 +31,6 @@ python = ["dep:tern-python", "dep:monty-alloc"]
 tern-auth.workspace = true
 tern-bundle.workspace = true
 tern-core.workspace = true
-tern-gateway.workspace = true
 tern-lua.workspace = true
 tern-mcp.workspace = true
 tern-store.workspace = true
@@ -44,27 +43,19 @@ tern-tui.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
-aws-lc-rs.workspace = true
 axum.workspace = true
 blake3.workspace = true
 chrono.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 futures.workspace = true
-hyper.workspace = true
-jsonwebtoken.workspace = true
-hyper-util.workspace = true
-qrcode.workspace = true
-rcgen.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 # `tern mcp serve` (T6d): an MCP server over stdio.
 rmcp = { workspace = true, features = ["server", "transport-io"] }
-rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tokio-rustls.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
 toml_edit.workspace = true

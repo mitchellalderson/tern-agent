@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:tern_client/tern_client.dart';
 
-import '../state/connection.dart';
 import '../state/daemon.dart';
 import '../state/store.dart';
 import '../state/version.dart';
@@ -12,7 +11,6 @@ import 'config_editor.dart';
 import 'providers.dart';
 import 'secrets.dart';
 import 'security.dart';
-import 'servers.dart';
 import 'settings.dart';
 import 'uninstall.dart';
 import 'workspace_ui.dart';
@@ -26,7 +24,7 @@ enum PrefSection {
     'General',
     Icons.tune,
     'launch login startup close window quit tray menu bar workspace quiet '
-        'hours initiative digest memory skills where tern runs',
+        'hours initiative digest memory skills',
   ),
   folders(
     'Folders',
@@ -55,11 +53,6 @@ enum PrefSection {
     Icons.speed,
     'budget spend cap usd tokens timeout iterations sub-agents result size',
   ),
-  servers(
-    'Servers',
-    Icons.dns_outlined,
-    'saved servers remote listen api devices tls address',
-  ),
   advanced(
     'Advanced',
     Icons.settings_suggest_outlined,
@@ -85,7 +78,6 @@ enum PrefSection {
     models => 'models',
     permissions => 'permissions',
     limits => 'limits',
-    servers => 'servers',
     _ => null,
   };
 }
@@ -95,14 +87,12 @@ const _groupTitles = {
   'models': 'Models',
   'permissions': 'Permissions & sandbox',
   'limits': 'Limits & budgets',
-  'servers': 'Servers & devices',
   'advanced': 'Other',
 };
 
 const _intro = {
   PrefSection.general:
-      'How tern behaves day to day: where it runs, when it speaks up, what '
-      'it remembers.',
+      'How tern behaves day to day: when it speaks up, what it remembers.',
   PrefSection.folders:
       'The folder an agent works in, and the only place its file tools '
       'reach. Each topic, channel and agent can choose its own.',
@@ -116,8 +106,6 @@ const _intro = {
       'confined. These apply to every agent that does not set its own.',
   PrefSection.limits:
       'Caps on how long and how much tern works before it stops or asks.',
-  PrefSection.servers:
-      'Where tern runs, and how other devices reach it.',
   PrefSection.advanced:
       'Tuning knobs most people never touch, and the raw file. Each change '
       'is checked and saved right away, keeping config.toml\'s comments.',
@@ -147,7 +135,7 @@ Future<void> openPreferences(
 }
 
 /// Who can open Settings: [Home] provides it, knowing the app's control,
-/// preferences, connections and how to restart tern.
+/// preferences and how to restart tern.
 class PreferencesScope extends InheritedWidget {
   const PreferencesScope({super.key, required this.open, required super.child});
 
@@ -162,7 +150,6 @@ Future<void> showPreferences(
   required TernControl control,
   required AppPrefs prefs,
   TernStore? store,
-  Connections? connections,
   Future<void> Function()? onRestart,
   PrefSection section = PrefSection.general,
 }) => showDialog<void>(
@@ -171,7 +158,6 @@ Future<void> showPreferences(
     control: control,
     prefs: prefs,
     store: store,
-    connections: connections,
     onRestart: onRestart,
     section: section,
   ),
@@ -179,7 +165,7 @@ Future<void> showPreferences(
 
 /// One window for everything that is a platform setting: a sidebar of
 /// sections, a search over all of them, and each section's content. It embeds
-/// the providers, secrets and servers editors rather than copying them, and
+/// the providers and secrets editors rather than copying them, and
 /// shows every `config.toml` setting the daemon describes in the section it
 /// belongs to.
 class PreferencesDialog extends StatefulWidget {
@@ -188,7 +174,6 @@ class PreferencesDialog extends StatefulWidget {
     required this.control,
     required this.prefs,
     this.store,
-    this.connections,
     this.onRestart,
     this.section = PrefSection.general,
     this.reveal = revealFile,
@@ -198,7 +183,6 @@ class PreferencesDialog extends StatefulWidget {
   final TernControl control;
   final AppPrefs prefs;
   final TernStore? store;
-  final Connections? connections;
 
   /// Restarts tern; without it the restart hint only explains.
   final Future<void> Function()? onRestart;
@@ -229,11 +213,6 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
   bool _shows(PrefSection s) =>
       s != PrefSection.folders || widget.store?.workspaces != null;
 
-  bool get _local =>
-      widget.connections?.isRemote == false ||
-      (widget.connections == null &&
-          widget.store?.client.endpoint is! RemoteEndpoint);
-
   @override
   void initState() {
     super.initState();
@@ -258,12 +237,7 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
       });
     } on TernException catch (e) {
       if (!mounted) return;
-      setState(
-        () => _error = e.status == 403
-            ? 'Only a device paired as owner can see or change the '
-                  'configuration.'
-            : e.message,
-      );
+      setState(() => _error = e.message);
     }
   }
 
@@ -535,9 +509,7 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
             control: widget.control,
             prefs: widget.prefs,
             store: store,
-            connections: widget.connections,
             embedded: true,
-            onOpenServers: () => _go(PrefSection.servers),
           ),
           heading('Behavior'),
           ..._rows('general'),
@@ -582,18 +554,6 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
         ];
       case PrefSection.limits:
         return _rows('limits');
-      case PrefSection.servers:
-        return [
-          if (widget.connections case final conns?)
-            ServersDialog(connections: conns, embedded: true)
-          else
-            Text(
-              'This app is not set up to switch servers.',
-              style: TextStyle(color: c.muted),
-            ),
-          heading('Listeners'),
-          ..._rows('servers'),
-        ];
       case PrefSection.advanced:
         return _advanced(context, heading);
       case PrefSection.about:
@@ -607,7 +567,7 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
   ) {
     final v = _view;
     return [
-      if (v != null && _local)
+      if (v != null)
         Align(
           alignment: Alignment.centerLeft,
           child: TextButton.icon(
@@ -654,7 +614,7 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
       line('App', 'tern desktop ${appVersionLabel()}'),
       line('Core', health == null ? 'Not connected' : 'tern ${health.version}'),
       if (health != null) line('Core API', '${health.api}'),
-      if (_local) line('Core program', widget.control.bin ?? 'not found'),
+      line('Core program', widget.control.bin ?? 'not found'),
       if (widget.store?.coreSkew case final skew?)
         Padding(
           padding: const EdgeInsets.only(top: 4, bottom: 4),
@@ -679,7 +639,7 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
       line(
         'Data folder',
         dir,
-        trailing: dir != null && _local
+        trailing: dir != null
             ? Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -705,35 +665,25 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
       ),
       line('Config file', path),
       line('Logs', dir == null ? null : '$dir/logs'),
-      if (_local) line('This app\'s settings', AppPrefs.dir()),
-      if (!_local)
-        Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: Text(
-            'These are on the server, not on this computer.',
-            style: TextStyle(fontSize: 12, color: c.muted),
-          ),
+      line('This app\'s settings', AppPrefs.dir()),
+      heading('Back up and uninstall'),
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Text(
+          'Everything tern keeps is in the data folder above, API keys '
+          'included. To back it up, stop tern, then copy the folder. '
+          'Dragging this app to the Trash does not stop tern or remove '
+          'its login items: run `tern uninstall` first (it keeps your '
+          'data; add --purge to delete it), use Uninstall tern… above, or '
+          'tern › Quit tern completely.',
+          key: const Key('about-uninstall'),
+          style: TextStyle(fontSize: 12.5, color: c.muted),
         ),
-      if (_local) ...[
-        heading('Back up and uninstall'),
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Text(
-            'Everything tern keeps is in the data folder above, API keys '
-            'included. To back it up, stop tern, then copy the folder. '
-            'Dragging this app to the Trash does not stop tern or remove '
-            'its login items: run `tern uninstall` first (it keeps your '
-            'data; add --purge to delete it), use Uninstall tern… above, or '
-            'tern › Quit tern completely.',
-            key: const Key('about-uninstall'),
-            style: TextStyle(fontSize: 12.5, color: c.muted),
-          ),
-        ),
-        SelectableText(
-          'tern stop\ncp -R "${dir ?? '~/.tern'}" ~/tern-backup\ntern uninstall',
-          style: mono.copyWith(fontSize: 12),
-        ),
-      ],
+      ),
+      SelectableText(
+        'tern stop\ncp -R "${dir ?? '~/.tern'}" ~/tern-backup\ntern uninstall',
+        style: mono.copyWith(fontSize: 12),
+      ),
       heading('Privacy and updates'),
       Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
@@ -749,7 +699,7 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
   }
 
   /// Search: settings across every section, and sections whose own editors
-  /// match (Secrets, Providers, Servers and so on).
+  /// match (Secrets, Providers and so on).
   Widget _results(BuildContext context, String q) {
     final c = context.colors;
     final v = _view;

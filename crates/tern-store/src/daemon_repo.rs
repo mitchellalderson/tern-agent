@@ -1,4 +1,4 @@
-//! Schedules, gateway pairing, chat sessions, and run delivery targets.
+//! Schedules, routine events, held deliveries and run delivery targets.
 
 use rusqlite::{OptionalExtension, Row, params};
 
@@ -661,7 +661,7 @@ impl Store {
         Ok(s)
     }
 
-    /// The most recently active session for a chat (e.g. a Telegram chat id).
+    /// The most recently active session for a source and external ref.
     pub fn latest_session_for(
         &self,
         source: &str,
@@ -699,45 +699,6 @@ impl Store {
             })
             .optional()?
             .flatten())
-    }
-
-    // ---- pairing ----
-
-    pub fn create_pairing_code(&self, code: &str, ttl_ms: i64) -> Result<()> {
-        let now = now_ms();
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM pairing_codes WHERE expires_at < ?1", [now])?;
-        conn.execute(
-            "INSERT INTO pairing_codes (code, expires_at) VALUES (?1, ?2)",
-            params![code, now + ttl_ms],
-        )?;
-        Ok(())
-    }
-
-    /// Consume a pairing code: true if it existed and had not expired.
-    pub fn consume_pairing_code(&self, code: &str) -> Result<bool> {
-        let conn = self.conn()?;
-        let n = conn.execute(
-            "DELETE FROM pairing_codes WHERE code = ?1 AND expires_at >= ?2",
-            params![code, now_ms()],
-        )?;
-        Ok(n > 0)
-    }
-
-    pub fn pair_telegram_user(&self, user_id: i64) -> Result<()> {
-        self.conn()?.execute(
-            "INSERT OR IGNORE INTO telegram_pairings (user_id, paired_at) VALUES (?1, ?2)",
-            params![user_id, now_ms()],
-        )?;
-        Ok(())
-    }
-
-    pub fn is_telegram_user_paired(&self, user_id: i64) -> Result<bool> {
-        Ok(self.conn()?.query_row(
-            "SELECT EXISTS (SELECT 1 FROM telegram_pairings WHERE user_id = ?1)",
-            [user_id],
-            |r| r.get(0),
-        )?)
     }
 }
 
@@ -785,7 +746,7 @@ mod tests {
             cron: "0 8 * * 1-5".into(),
             prompt: "p".into(),
             session_id: "sess".into(),
-            deliver_to: Some("telegram:1".into()),
+            deliver_to: Some("home".into()),
             enabled: true,
             next_run_at: next,
             usd_per_day: Some(0.5),
@@ -849,29 +810,14 @@ mod tests {
         assert!(row.budget_since.is_some());
         assert_eq!(s.scheduled_runs_since("sess", 0).unwrap(), 0);
 
-        s.hold_delivery("telegram:1", Some("r1"), Some("p"), "one", 100)
+        s.hold_delivery("home", Some("r1"), Some("p"), "one", 100)
             .unwrap();
-        s.hold_delivery("telegram:1", None, None, "two", 900)
-            .unwrap();
+        s.hold_delivery("home", None, None, "two", 900).unwrap();
         let due = s.due_held_deliveries(500).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].text, "one");
         s.delete_held_deliveries(&[due[0].id]).unwrap();
         assert_eq!(s.held_delivery_count().unwrap(), 1);
-    }
-
-    #[test]
-    fn pairing_codes_are_single_use_and_expire() {
-        let s = Store::open_in_memory().unwrap();
-        s.create_pairing_code("ABC", 60_000).unwrap();
-        s.create_pairing_code("OLD", -1).unwrap();
-        assert!(s.consume_pairing_code("ABC").unwrap());
-        assert!(!s.consume_pairing_code("ABC").unwrap());
-        assert!(!s.consume_pairing_code("OLD").unwrap());
-        assert!(!s.is_telegram_user_paired(42).unwrap());
-        s.pair_telegram_user(42).unwrap();
-        s.pair_telegram_user(42).unwrap();
-        assert!(s.is_telegram_user_paired(42).unwrap());
     }
 
     #[test]
@@ -1015,9 +961,9 @@ mod tests {
     #[test]
     fn digests_are_held_with_their_kind() {
         let s = Store::open_in_memory().unwrap();
-        s.hold_delivery_as("telegram:1", None, None, "d", 10, "digest")
+        s.hold_delivery_as("home", None, None, "d", 10, "digest")
             .unwrap();
-        s.hold_delivery("telegram:1", None, None, "q", 10).unwrap();
+        s.hold_delivery("home", None, None, "q", 10).unwrap();
         let kinds: Vec<String> = s
             .due_held_deliveries(20)
             .unwrap()

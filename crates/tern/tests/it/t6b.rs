@@ -135,7 +135,7 @@ async fn the_tasks_view_collects_every_source() {
              INSERT INTO routine_events (routine_id, event_key, payload, state, created_at)
                VALUES ('{capped_id}', 'e1', '{{}}', 'pending', 0);
              INSERT INTO held_deliveries (target, run_id, label, text, release_at, created_at)
-               VALUES ('telegram:1', 'broken', 'Morning brief', 'hi', {far}, 0);",
+               VALUES ('home', 'broken', 'Morning brief', 'hi', {far}, 0);",
             now = tern_store::now_ms(),
         ))
         .unwrap();
@@ -219,10 +219,6 @@ fn the_security_audit_reports_each_condition() {
         &json!({}),
         r#"autonomy = "yolo"
 
-[api]
-listen = ["unix", "tcp://0.0.0.0:7420"]
-remote_mcp_stdio = true
-
 [sandbox]
 network = true
 confine = "off"
@@ -230,9 +226,6 @@ confine = "off"
 [taint]
 egress = "allow"
 
-[gateway.connectors.ntfy]
-enabled = true
-strangers = "taint"
 "#,
     );
     let t = &env.tern_home;
@@ -245,21 +238,6 @@ strangers = "taint"
         std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
     let store = tern_store::Store::open(&t.join("tern.db")).unwrap();
-    store
-        .create_device(
-            &tern_store::DeviceRow {
-                id: "d1".into(),
-                name: "old phone".into(),
-                platform: None,
-                scope: "owner".into(),
-                created_at: 0,
-                last_seen_at: None,
-                last_ip: None,
-                revoked_at: None,
-            },
-            "h",
-        )
-        .unwrap();
     store
         .add_connection(&tern_store::NewConnection {
             kind: "connector".into(),
@@ -294,12 +272,6 @@ strangers = "taint"
             .find(|f| f["area"] == area && f["title"].as_str().unwrap().contains(needle))
             .unwrap_or_else(|| panic!("no {area} finding with {needle:?} in {report:#}"))
     };
-    assert_eq!(find("listeners", "tcp://0.0.0.0:7420")["severity"], "low");
-    assert_eq!(find("listeners", "remote_mcp_stdio")["severity"], "high");
-    assert_eq!(
-        find("devices", "old phone (owner scope)")["severity"],
-        "low"
-    );
     assert_eq!(
         find("autonomy", "autonomy = \"yolo\": nothing asks")["severity"],
         "high"
@@ -314,10 +286,6 @@ strangers = "taint"
             "\"Inbox sweep\" starts tainted from what its watch finds"
         )["severity"],
         "high"
-    );
-    assert_eq!(
-        find("gateways", "ntfy: messages from anyone")["severity"],
-        "low"
     );
     assert_eq!(
         find("connectors", "weather reads WEATHER_API_KEY")["severity"],
@@ -353,12 +321,5 @@ async fn the_security_audit_over_the_api() {
     let (code, report) = get(&env.socket(), "/v1/security/audit").await;
     assert_eq!(code, 200, "{report}");
     assert_eq!(report["high"], 0, "{report:#}");
-    assert!(
-        report["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|f| f["title"] == "API: the local socket only (no TCP listener)"),
-        "{report:#}"
-    );
+    assert!(report["findings"].is_array(), "{report:#}");
 }

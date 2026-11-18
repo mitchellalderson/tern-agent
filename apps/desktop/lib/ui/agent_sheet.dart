@@ -14,7 +14,6 @@ import 'code_auto.dart';
 import 'manage.dart';
 import 'model_chain_editor.dart';
 import 'model_picker.dart' show ModelList;
-import 'secrets.dart' show showSecretsDialog;
 import 'widgets.dart';
 import 'workspace_ui.dart';
 
@@ -133,14 +132,6 @@ class _AgentSheetState extends State<AgentSheet> {
   /// raises the ceiling from ..." line.
   String? _ceilingBeforeCode;
 
-  /// The NAME of the secret holding its own Telegram bot's token; null =
-  /// no bot of its own.
-  late String? _bot = widget.editing?.telegramSecret;
-
-  /// The user's secrets (names and status; never values), for the bot field.
-  List<SecretStatus>? _secrets;
-  String? _secretsError;
-
   /// The scope being edited; null = everything (the default agent's).
   late ToolScope? _tools = widget.editing == null
       ? _narrow()
@@ -185,23 +176,8 @@ class _AgentSheetState extends State<AgentSheet> {
     _load();
   }
 
-  Future<void> _loadSecrets() async {
-    try {
-      final list = await widget.store.client.secrets();
-      if (mounted) {
-        setState(() {
-          _secrets = list;
-          _secretsError = null;
-        });
-      }
-    } on TernException catch (e) {
-      if (mounted) setState(() => _secretsError = e.message);
-    }
-  }
-
   Future<void> _load() async {
     final client = widget.store.client;
-    if (widget.editing case final a? when !a.isDefault) _loadSecrets();
     try {
       if (widget.editing case final a?) {
         final p = await client.persona(a.id);
@@ -288,7 +264,6 @@ class _AgentSheetState extends State<AgentSheet> {
     });
     final avatar = AvatarSpec(glyph: _glyph, color: _color);
     final String? err;
-    var botChanged = false;
     if (widget.editing case final a?) {
       final model = _model;
       // The default agent's fallbacks changed: written to `default_model`.
@@ -320,10 +295,7 @@ class _AgentSheetState extends State<AgentSheet> {
         if (_autonomy != a.autonomy) 'autonomy': _autonomy,
         // Sent with the ceiling in one request, so the raise is visible.
         if (_codeAuto != a.codeAuto) 'code_auto': _codeAuto,
-        if (!_isDefault && _bot != a.telegramSecret)
-          'telegram': _bot == null ? null : {'bot_token_secret': _bot},
       };
-      botChanged = !_isDefault && _bot != a.telegramSecret;
       err = await store.updateAgent(
         a,
         fields: fields,
@@ -350,18 +322,7 @@ class _AgentSheetState extends State<AgentSheet> {
     }
     if (!mounted) return;
     if (err == null) {
-      final messenger = ScaffoldMessenger.maybeOf(context);
       Navigator.of(context).pop();
-      if (botChanged) {
-        messenger?.showSnackBar(
-          const SnackBar(
-            content: Text(
-              'The bot change applies when the daemon restarts '
-              '(Restart daemon, at the bottom of the sidebar).',
-            ),
-          ),
-        );
-      }
     } else {
       setState(() {
         _busy = false;
@@ -812,22 +773,6 @@ class _AgentSheetState extends State<AgentSheet> {
                               ],
                               chosen: _delegates,
                               onChanged: (v) => setState(() => _delegates = v),
-                            ),
-                          ],
-                          if (widget.editing case final a?
-                              when !a.isDefault) ...[
-                            _section('Telegram bot'),
-                            TelegramBotField(
-                              agent: a,
-                              agents: widget.store.agents,
-                              secrets: _secrets,
-                              loadError: _secretsError,
-                              value: _bot,
-                              onChanged: (v) => setState(() => _bot = v),
-                              onSetSecret: () async {
-                                await showSecretsDialog(context, widget.store);
-                                if (mounted) _loadSecrets();
-                              },
                             ),
                           ],
                           const SizedBox(height: 8),

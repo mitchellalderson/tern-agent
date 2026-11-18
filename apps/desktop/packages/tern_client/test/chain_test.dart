@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:tern_client/tern_client.dart';
 import 'package:test/test.dart';
+import 'support/unix_server.dart';
 
 ProviderModels _p(String name, List<String> ids, {String? label}) =>
     ProviderModels(
@@ -124,6 +125,7 @@ void main() {
 
   group('default_model chain over the config API', () {
     late HttpServer server;
+    late Endpoint endpoint;
     final bodies = <Map<String, dynamic>>[];
     final paths = <String>[];
     var status = 200;
@@ -138,7 +140,9 @@ void main() {
         'kind': 'model',
         'value': ['a:1', 'b:2'],
       };
-      server = await HttpServer.bind('127.0.0.1', 0);
+      final (srv, ep) = await bindUnixServer();
+      server = srv;
+      endpoint = ep;
       server.listen((req) async {
         final text = await utf8.decoder.bind(req).join();
         paths.add('${req.method} ${req.uri.path}');
@@ -153,9 +157,7 @@ void main() {
     });
     tearDown(() => server.close(force: true));
 
-    TernClient client() => TernClient(
-      Endpoint.remote(Uri.parse('http://127.0.0.1:${server.port}'), token: 't'),
-    );
+    TernClient client() => TernClient(endpoint);
 
     test('writes the same setting the config editor does', () async {
       final c = client();

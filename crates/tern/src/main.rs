@@ -1,4 +1,3 @@
-mod account_cmd;
 mod agents_cmd;
 mod bundle_cmd;
 mod channels_cmd;
@@ -9,10 +8,8 @@ mod connectors_cmd;
 mod crash;
 mod daemon;
 mod decide;
-mod devices_cmd;
 mod doctor;
 mod fetcher;
-mod gateway_cmd;
 mod grants_cmd;
 mod inspect;
 mod ledger_cmd;
@@ -87,12 +84,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     // logging starts so their first invocation is logged too.
     if matches!(
         cli.command,
-        None | Some(
-            Command::Run { .. }
-                | Command::Resume { .. }
-                | Command::Daemon
-                | Command::Gateway { .. }
-        )
+        None | Some(Command::Run { .. } | Command::Resume { .. } | Command::Daemon)
     ) {
         home.ensure_layout()?;
     }
@@ -115,29 +107,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        None => {
-            let remote = match cli.remote {
-                Some(url) => Some(tui_backend::RemoteTarget {
-                    url,
-                    token: std::env::var("TERN_REMOTE_TOKEN")
-                        .ok()
-                        .filter(|t| !t.is_empty())
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "--remote needs a device token in $TERN_REMOTE_TOKEN (get one with `tern devices join <link>`)"
-                            )
-                        })?,
-                    pin: cli
-                        .pin
-                        .or_else(|| std::env::var("TERN_REMOTE_PIN").ok().filter(|p| !p.is_empty())),
-                }),
-                None => None,
-            };
-            tui_backend::run(&home, remote, None)
-        }
+        None => tui_backend::run(&home, None),
         Some(Command::Setup) => {
             home.ensure_layout()?;
-            tui_backend::run(&home, None, Some("/setup"))
+            tui_backend::run(&home, Some("/setup"))
         }
         Some(Command::Providers { command }) => {
             home.ensure_layout()?;
@@ -152,8 +125,6 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             refresh,
             json,
         }) => providers_cmd::models(&home, provider, refresh, json),
-        Some(Command::Account { command }) => account_cmd::run(&home, command),
-        Some(Command::Devices { command }) => devices_cmd::run(&home, command),
         Some(Command::Run {
             prompt,
             session,
@@ -187,16 +158,6 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Report { output, run }) => {
             report_cmd::run(&home, output.as_deref(), run.as_deref())
         }
-        Some(Command::Gateway { command }) => match command {
-            cli::GatewayCommand::Pair => gateway_cmd::pair(&home),
-            cli::GatewayCommand::Add {
-                kind,
-                server,
-                channel,
-                force,
-            } => gateway_cmd::add(&home, &kind, server.as_deref(), channel.as_deref(), force),
-            cli::GatewayCommand::List => gateway_cmd::list(&home),
-        },
         Some(Command::Agents { command }) => agents_cmd::run(&home, command),
         Some(Command::Channels { command }) => channels_cmd::run(&home, command),
         Some(Command::Workspace { command }) => workspaces_cmd::run(&home, command),

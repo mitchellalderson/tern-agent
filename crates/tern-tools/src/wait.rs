@@ -792,8 +792,14 @@ mod tests {
     }
 
     fn ctx(store: &Store, run: &str, taint: Option<&str>) -> ToolCtx {
+        store.create_session("chat", "api", None).ok();
         store
-            .create_session_with_ref("chat", "telegram", "555", None)
+            .conn()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET channel_id = 'home' WHERE id = 'chat'",
+                [],
+            )
             .ok();
         let taint = taint.map_or("NULL".to_owned(), |t| format!("'{t}'"));
         store
@@ -856,8 +862,8 @@ mod tests {
 
         let rows = store.waits(None).unwrap();
         assert_eq!(rows.len(), 2);
-        // Made in a Telegram chat: the continuation answers there too.
-        assert_eq!(rows[0].deliver_to.as_deref(), Some("telegram:555"));
+        // Made in Home: the continuation is delivered there too.
+        assert_eq!(rows[0].deliver_to.as_deref(), Some("home"));
         assert!(!rows[0].tainted);
 
         let list = WaitList {
