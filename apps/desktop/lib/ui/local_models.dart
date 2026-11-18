@@ -52,6 +52,7 @@ class _LocalModelsDialogState extends State<LocalModelsDialog> {
   LocalStatus? _status;
   List<LocalModel> _models = const [];
   List<LocalPull> _pulls = const [];
+  LocalCatalog _catalog = const LocalCatalog();
   final _name = TextEditingController();
   String? _error;
   var _busy = false;
@@ -80,8 +81,12 @@ class _LocalModelsDialogState extends State<LocalModelsDialog> {
       final models = status.running
           ? await _client.localModels()
           : const <LocalModel>[];
+      final catalog = status.running
+          ? await _client.localCatalog().catchError((Object _) => _catalog)
+          : _catalog;
       if (!mounted) return;
       setState(() {
+        _catalog = catalog;
         _status = status;
         _pulls = pulls;
         _models = models;
@@ -139,15 +144,13 @@ class _LocalModelsDialogState extends State<LocalModelsDialog> {
     await _run(() => _client.localDelete(m.name));
   }
 
-  Future<void> _useAsDefault(LocalModel m) => _run(() async {
-    final provider = (await _client.providers())
-        .where((p) => p.preset == 'ollama')
-        .firstOrNull;
-    if (provider == null) {
-      throw const TernException('Connect Ollama first (Models › Connect).');
-    }
-    await _client.setDefaultModel('${provider.name}:${m.name}');
+  Future<void> _useFor(LocalTier tier, String model) => _run(() async {
+    await _client.localUseTier(tier, model);
     await widget.store.refreshInfo();
+  });
+
+  Future<void> _get(String model) => _run(() async {
+    await _client.localPull(model);
   });
 
   @override
@@ -257,6 +260,19 @@ class _LocalModelsDialogState extends State<LocalModelsDialog> {
             padding: const EdgeInsets.only(bottom: 8),
             child: Text(w, style: TextStyle(fontSize: 12.5, color: c.warn)),
           ),
+        if (_catalog.tiers.isNotEmpty) ...[
+          _RecommendedSection(
+            catalog: _catalog,
+            busy: _busy,
+            downloading: _pulls.where((p) => !p.finished).map((p) => p.model),
+            onGet: _get,
+            onUse: _useFor,
+            onSetUpAll: () => _run(() async {
+              await _client.localSetUpAll();
+            }),
+          ),
+          const SizedBox(height: 12),
+        ],
         Row(
           children: [
             Expanded(
@@ -303,7 +319,7 @@ class _LocalModelsDialogState extends State<LocalModelsDialog> {
           _ModelRow(
             model: m,
             note: modelNote(m, ramBytes: s.ramBytes),
-            onUse: () => _useAsDefault(m),
+            onUse: (tier) => _useFor(tier, m.name),
             onRemove: () => _remove(m),
           ),
       ],
@@ -387,7 +403,7 @@ class _ModelRow extends StatelessWidget {
 
   final LocalModel model;
   final String? note;
-  final VoidCallback onUse;
+  final void Function(LocalTier tier) onUse;
   final VoidCallback onRemove;
 
   @override
@@ -432,16 +448,128 @@ class _ModelRow extends StatelessWidget {
             icon: Icon(Icons.more_horiz, size: 18, color: c.muted),
             onSelected: (f) => f(),
             itemBuilder: (_) => [
-              if (model.tools != false)
+              for (final tier in LocalTier.values)
                 PopupMenuItem(
-                  value: onUse,
-                  child: const Text('Use as default'),
+                  value: () => onUse(tier),
+                  enabled: !(tier.needsTools && model.tools == false),
+                  child: Text('Use for ${tier.label}'),
                 ),
               PopupMenuItem(value: onRemove, child: const Text('Remove…')),
             ],
           ),
         ],
       ),
+    );
+  }
+}
+
+/// "Recommended for this Mac": one model per tier, with what is in use.
+class _RecommendedSection extends StatelessWidget {
+  const _RecommendedSection({
+    required this.catalog,
+    required this.busy,
+    required this.downloading,
+    required this.onGet,
+    required this.onUse,
+    required this.onSetUpAll,
+  });
+
+  final LocalCatalog catalog;
+  final bool busy;
+  final Iterable<String> downloading;
+  final void Function(String model) onGet;
+  final void Function(LocalTier tier, String model) onUse;
+  final VoidCallback onSetUpAll;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final all = catalog.tiers.every((t) => t.inUse);
+    final loading = downloading.toSet();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Recommended for this Mac',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+            ),
+            if (!all)
+              TextButton(
+                key: const ValueKey('local-setup-all'),
+                onPressed: busy || catalog.settingUp ? null : onSetUpAll,
+                child: Text(
+                  catalog.settingUp ? 'Setting up…' : 'Set up all three',
+                ),
+              ),
+          ],
+        ),
+        if (catalog.error case final e?)
+          Text(e, style: TextStyle(fontSize: 12.5, color: c.error)),
+        for (final t in catalog.tiers)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 5),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Tooltip(
+                        message: t.tier.hint,
+                        child: Text(
+                          '${t.tier.label} · ${t.model} · ${t.sizeGb} GB',
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      Text(
+                        t.blurb,
+                        style: TextStyle(fontSize: 11.5, color: c.muted),
+                      ),
+                      if (t.note case final n?)
+                        Text(
+                          n,
+                          style: TextStyle(fontSize: 11.5, color: c.warn),
+                        ),
+                    ],
+                  ),
+                ),
+                if (t.inUse)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'In use',
+                      style: TextStyle(fontSize: 12, color: c.ok),
+                    ),
+                  )
+                else if (t.installed)
+                  TextButton(
+                    key: ValueKey('use-${t.tier.wire}'),
+                    onPressed: busy ? null : () => onUse(t.tier, t.model),
+                    child: Text('Use for ${t.tier.label}'),
+                  )
+                else if (loading.contains(t.model))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'Downloading…',
+                      style: TextStyle(fontSize: 12, color: c.muted),
+                    ),
+                  )
+                else
+                  TextButton(
+                    key: ValueKey('get-${t.tier.wire}'),
+                    onPressed: busy ? null : () => onGet(t.model),
+                    child: const Text('Download'),
+                  ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 }
