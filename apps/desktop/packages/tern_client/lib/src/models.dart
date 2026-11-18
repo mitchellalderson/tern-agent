@@ -24,9 +24,7 @@ class Health {
     pid: j['pid'] as int,
     version: j['version'] as String,
     api: j['api'] as int? ?? 1,
-    features: {
-      for (final f in j['features'] as List? ?? const []) f as String,
-    },
+    features: {for (final f in j['features'] as List? ?? const []) f as String},
   );
 
   final int pid;

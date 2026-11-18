@@ -8,6 +8,9 @@
 //! | GET | `/v1/local/pulls` | model downloads, running and recent: `{id, model, phase, completed, total, error}` |
 //! | POST | `/v1/local/pull` | `{model}`: start a download (one at a time; needs Ollama running and 10 GB to spare); answers the download |
 //! | POST | `/v1/local/pulls/{id}/cancel` | stop a download (a later pull resumes it) |
+//! | GET | `/v1/local/catalog` | the recommended model per tier (agent, fast, decision) for this Mac: `{ram_bytes, tiers: [{tier, model, size_gb, blurb, note, installed, current}], setting_up, error}` |
+//! | POST | `/v1/local/tiers` | `{tier, model}`: use an installed model for a tier (refused when it can't use tools and the tier needs them); answers the catalog |
+//! | POST | `/v1/local/setup` | download what's missing from the recommended set, one at a time, then use each for its tier; progress is in `/pulls` and `setting_up` |
 //! | POST | `/v1/local/start` | start the engine unless one already answers (a running one is reused as is) |
 //! | POST | `/v1/local/stop` | stop an engine tern started; one the user runs is left alone |
 //! | POST | `/v1/local/install` | `{consent: true}`: download, verify and install Ollama in the background; progress is in `status.installing` |
@@ -25,7 +28,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::api::{ApiError, ApiResult, Shared};
+use crate::local::catalog::Tier;
 use crate::local::pulls::Pull;
+use crate::local::tiers;
 use crate::local::{Error, LocalModel, Status};
 
 pub fn routes() -> Router<Shared> {
@@ -33,6 +38,9 @@ pub fn routes() -> Router<Shared> {
         .route("/v1/local/status", get(status))
         .route("/v1/local/models", get(models))
         .route("/v1/local/models/{*name}", axum::routing::delete(delete))
+        .route("/v1/local/catalog", get(catalog))
+        .route("/v1/local/tiers", post(use_for))
+        .route("/v1/local/setup", post(set_up))
         .route("/v1/local/pulls", get(pulls))
         .route("/v1/local/pull", post(pull))
         .route("/v1/local/pulls/{id}/cancel", post(cancel))
@@ -133,4 +141,33 @@ async fn refresh_lists(m: &Shared) {
     for n in names {
         let _ = m.rt.models(Some(&n), true).await;
     }
+}
+
+async fn catalog(State(m): State<Shared>) -> Json<tiers::Catalog> {
+    Json(tiers::catalog(&m.rt).await)
+}
+
+#[derive(Deserialize)]
+struct UseBody {
+    tier: Tier,
+    model: String,
+}
+
+async fn use_for(State(m): State<Shared>, Json(b): Json<UseBody>) -> ApiResult<tiers::Catalog> {
+    tiers::use_for(&m.rt, b.tier, &b.model)
+        .await
+        .map_err(fail)?;
+    Ok(Json(tiers::catalog(&m.rt).await))
+}
+
+async fn set_up(State(m): State<Shared>) -> ApiResult<tiers::Catalog> {
+    if m.rt.local.preset_state().0 {
+        return Err(fail(Error::Unavailable("already setting up".into())));
+    }
+    let rt = m.rt.clone();
+    tokio::spawn(async move { tiers::set_up_all(rt).await });
+    // The flag is set by the task; show it as running at once.
+    let mut c = tiers::catalog(&m.rt).await;
+    c.setting_up = true;
+    Ok(Json(c))
 }

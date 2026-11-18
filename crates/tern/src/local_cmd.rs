@@ -155,10 +155,67 @@ pub fn run(home: &TernHome, command: Option<LocalCommand>) -> anyhow::Result<Exi
                 println!("removed {model}");
                 Ok(ExitCode::SUCCESS)
             }
+            LocalCommand::Recommended { json } => recommended(&target, json).await,
+            LocalCommand::Use { tier, model } => {
+                need_daemon(&target, "choose tiers")?;
+                target
+                    .call(
+                        reqwest::Method::POST,
+                        "/v1/local/tiers",
+                        Some(json!({ "tier": tier, "model": model })),
+                    )
+                    .await?;
+                println!("{tier} now uses {model}");
+                Ok(ExitCode::SUCCESS)
+            }
+            LocalCommand::Setup => {
+                need_daemon(&target, "set up the recommended models")?;
+                target
+                    .call(reqwest::Method::POST, "/v1/local/setup", None)
+                    .await?;
+                println!("Downloading the recommended models. Watch with `tern local list`.");
+                Ok(ExitCode::SUCCESS)
+            }
             LocalCommand::Start => start_stop(&target, "start").await,
             LocalCommand::Stop => start_stop(&target, "stop").await,
         }
     })
+}
+
+fn need_daemon(target: &Target, what: &str) -> anyhow::Result<()> {
+    if matches!(target, Target::Direct(_)) {
+        bail!("tern changes config through its daemon to {what}. Run `tern start` first.");
+    }
+    Ok(())
+}
+
+async fn recommended(target: &Target, json: bool) -> anyhow::Result<ExitCode> {
+    need_daemon(target, "read the catalog")?;
+    let c = target
+        .call(reqwest::Method::GET, "/v1/local/catalog", None)
+        .await?;
+    if json {
+        println!("{c}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    for t in c["tiers"].as_array().into_iter().flatten() {
+        let state = match (t["current"].as_str(), t["installed"].as_bool()) {
+            (Some(cur), _) => format!("uses {cur}"),
+            (None, Some(true)) => "downloaded".into(),
+            _ => "not downloaded".into(),
+        };
+        println!(
+            "{:<9} {:<18} {:>5.1} GB  {}  ({state})",
+            t["tier"].as_str().unwrap_or(""),
+            t["model"].as_str().unwrap_or(""),
+            t["size_gb"].as_f64().unwrap_or(0.0),
+            t["blurb"].as_str().unwrap_or(""),
+        );
+        if let Some(n) = t["note"].as_str() {
+            println!("          note: {n}");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn start_stop(target: &Target, what: &str) -> anyhow::Result<ExitCode> {

@@ -97,6 +97,26 @@ class TernClient {
       LocalModel.fromJson(m as Json),
   ];
 
+  /// The recommended model per tier for this Mac, and what each tier uses.
+  Future<LocalCatalog> localCatalog() async =>
+      LocalCatalog.fromJson(await _json('GET', '/v1/local/catalog') as Json);
+
+  /// Use an installed model for a tier. The daemon refuses a model that
+  /// can't use tools where the tier needs them.
+  Future<LocalCatalog> localUseTier(LocalTier tier, String model) async =>
+      LocalCatalog.fromJson(
+        await _json('POST', '/v1/local/tiers', {
+              'tier': tier.wire,
+              'model': model,
+            })
+            as Json,
+      );
+
+  /// Download what is missing from the recommended set, then use each model
+  /// for its tier.
+  Future<LocalCatalog> localSetUpAll() async =>
+      LocalCatalog.fromJson(await _json('POST', '/v1/local/setup') as Json);
+
   /// Model downloads, running and recent.
   Future<List<LocalPull>> localPulls() async => [
     for (final p in await _json('GET', '/v1/local/pulls') as List)

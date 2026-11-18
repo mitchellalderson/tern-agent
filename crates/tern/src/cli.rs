@@ -244,6 +244,16 @@ pub enum LocalCommand {
     },
     /// Remove an installed model.
     Rm { model: String },
+    /// The recommended model per tier for this Mac, and what each tier uses.
+    Recommended {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Use an installed model for a tier: agent, fast or decision.
+    Use { tier: String, model: String },
+    /// Download the recommended set and use it (needs the daemon).
+    Setup,
     /// Start Ollama (needs the tern daemon; one already running is reused).
     Start,
     /// Stop an Ollama that tern started.
