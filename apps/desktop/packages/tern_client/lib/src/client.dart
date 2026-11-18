@@ -592,6 +592,9 @@ class TernClient {
     int? maxHops,
     int? wakesPerHour,
     bool? letAgentsDecide,
+    String? routeMode,
+    String? replyRule,
+    bool clearReplyRule = false,
   }) async => Channel.fromJson(
     await _json('PATCH', '/v1/channels/${_seg(id)}', {
       'slug': ?slug,
@@ -606,6 +609,8 @@ class TernClient {
       'max_hops': ?maxHops,
       'wakes_per_hour': ?wakesPerHour,
       'let_agents_decide': ?letAgentsDecide,
+      'route_mode': ?routeMode,
+      if (clearReplyRule) 'reply_rule': null else 'reply_rule': ?replyRule,
     }),
   );
 

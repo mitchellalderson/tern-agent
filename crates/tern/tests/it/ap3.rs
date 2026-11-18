@@ -177,15 +177,15 @@ async fn send(s: &Path, channel: &str, text: &str) -> Value {
 async fn let_agents_decide_routes_a_post_to_the_right_members() {
     let env = Env::with_config(
         &json!({ "conversations": [
-            // The routing call (it carries "Message:"); a real
+            // The routing call (it carries "New message:"); a real
             // run's first message never does.
-            { "matches": "Message:\nWhat does Acme charge", "turns": [
+            { "matches": "New message:\nWhat does Acme charge", "turns": [
                 { "text": "{\"answers\": {\"who\": {\"research\": 0.9, \"ops\": 0.1}}}" }] },
-            { "matches": "Message:\nBoth please", "turns": [
+            { "matches": "New message:\nBoth please", "turns": [
                 { "text": "Sure: {\"answers\": {\"who\": {\"ops\": 0.6, \"ghost\": 0.9, \"research\": 0.4}}}" }] },
-            { "matches": "Message:\nGarbled", "turns": [
+            { "matches": "New message:\nGarbled", "turns": [
                 { "text": "I think research." }] },
-            { "matches": "Message:\nOutsider", "turns": [
+            { "matches": "New message:\nOutsider", "turns": [
                 { "text": "{\"answers\": {\"who\": {\"outsider\": 1}}}" }] },
             { "matches": "What does Acme charge", "turns": [{ "text": "Research: $15." }] },
             { "matches": "Both please", "turns": [{ "text": "On it." }] },
@@ -247,7 +247,8 @@ async fn let_agents_decide_routes_a_post_to_the_right_members() {
     assert!(
         posts
             .iter()
-            .any(|p| p["kind"] == "note" && p["text"] == "Sent to @research"),
+            .any(|p| p["kind"] == "note"
+                && p["text"].as_str().unwrap().starts_with("Sent to @research")),
         "{posts:#?}"
     );
 
@@ -272,6 +273,119 @@ async fn let_agents_decide_routes_a_post_to_the_right_members() {
     assert_eq!(sent["woke"][0]["agent_id"], ops.as_str());
     let sent = send(&s, "plain", "What does Acme charge?").await;
     assert_eq!(sent["woke"][0]["agent_id"], "tern", "{sent:#}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn routing_modes_the_reply_rule_the_per_agent_switch_and_recent_posts() {
+    let who = |p: Value| json!({ "answers": { "who": p } }).to_string();
+    let env = Env::with_config(
+        &json!({ "conversations": [
+            { "matches": "New message:\nBoth topics", "turns": [
+                { "text": who(json!({ "research": 0.5, "ops": 0.45, "tern": 0.05 })) }] },
+            // A follow-up: the router sees the agent's last post and picks it.
+            { "matches": "Recent posts:\n[you] Both topics", "turns": [
+                { "text": who(json!({ "ops": 0.9, "research": 0.1 })) }] },
+            { "matches": "New message:\nthanks", "turns": [
+                { "text": json!({ "answers": { "who": { "research": 1 }, "rule": 0.1 } }).to_string() }] },
+            { "matches": "Both topics", "turns": [{ "text": "Answered." }] },
+            { "matches": "thanks", "turns": [{ "text": "Welcome." }] }
+        ]}),
+        "",
+    );
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    let research = agent(
+        &s,
+        json!({ "name": "Research", "persona": "You research." }),
+    )
+    .await;
+    let ops = agent(&s, json!({ "name": "Ops", "persona": "You run ops." })).await;
+    let (code, _) = post(&s, "/v1/channels", json!({ "slug": "ask" })).await;
+    assert_eq!(code, 201);
+    for a in ["research", "ops"] {
+        post(&s, "/v1/channels/ask/agents", json!({ "agent": a })).await;
+    }
+    let (code, c) = patch(
+        &s,
+        "/v1/channels/ask",
+        json!({ "let_agents_decide": true, "route_mode": "all" }),
+    )
+    .await;
+    assert_eq!(code, 200, "{c}");
+    assert_eq!(c["agents"]["route_mode"], "all");
+    let (code, _) = patch(&s, "/v1/channels/ask", json!({ "route_mode": "some" })).await;
+    assert_eq!(code, 400);
+
+    // Every relevant agent, most likely first (tern is under 0.3).
+    let sent = send(&s, "ask", "Both topics").await;
+    let ids: Vec<_> = sent["woke"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["agent_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids, vec![research.clone(), ops.clone()], "{sent:#}");
+    posts_until(&s, "ask", |p| {
+        p.iter().any(|p| p["author_id"] == ops.as_str())
+            && p.iter().any(|p| p["author_id"] == research.as_str())
+    })
+    .await;
+
+    // One agent mode: the follow-up sees the recent posts; the switch off
+    // takes an agent out of routing.
+    patch(&s, "/v1/channels/ask", json!({ "route_mode": "one" })).await;
+    let sent = send(&s, "ask", "And the second part?").await;
+    assert_eq!(sent["woke"][0]["agent_id"], ops.as_str(), "{sent:#}");
+    let (code, a) = patch(
+        &s,
+        "/v1/agents/ops",
+        json!({ "reply_when_relevant": false }),
+    )
+    .await;
+    assert_eq!(code, 200);
+    assert_eq!(a["reply_when_relevant"], false);
+    let sent = send(&s, "ask", "And the second part?").await;
+    assert_ne!(
+        sent["woke"][0]["agent_id"],
+        ops.as_str(),
+        "ops answers only when mentioned"
+    );
+    let sent = send(&s, "ask", "@ops Both topics").await;
+    assert_eq!(sent["woke"][0]["agent_id"], ops.as_str());
+
+    // The reply rule: judged no, nobody replies and a note says why.
+    patch(
+        &s,
+        "/v1/channels/ask",
+        json!({ "reply_rule": "Only reply to questions" }),
+    )
+    .await;
+    let sent = send(&s, "ask", "thanks").await;
+    assert_eq!(sent["woke"].as_array().map_or(0, Vec::len), 0, "{sent:#}");
+    let posts = posts_until(&s, "ask", |p| {
+        p.iter()
+            .any(|p| p["kind"] == "note" && p["text"].as_str().unwrap().contains("reply rule"))
+    })
+    .await;
+    assert!(!posts.is_empty());
+    // A one-line description can be set, and is capped.
+    let (code, a) = patch(
+        &s,
+        "/v1/agents/ops",
+        json!({ "description": "Runs the calendar" }),
+    )
+    .await;
+    assert_eq!(
+        (code, a["description"].as_str()),
+        (200, Some("Runs the calendar"))
+    );
+    let (code, _) = patch(
+        &s,
+        "/v1/agents/ops",
+        json!({ "description": "x".repeat(200) }),
+    )
+    .await;
+    assert_eq!(code, 400);
 }
 
 // ---- 4. a Telegram bot per agent ----

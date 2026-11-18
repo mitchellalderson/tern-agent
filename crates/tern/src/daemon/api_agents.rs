@@ -107,6 +107,14 @@ pub struct Agent {
     /// does. Absent: reached through the main bot's `/agent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telegram: Option<AgentTelegram>,
+    /// One line on what it is for: what channel routing reads (never the
+    /// persona). Absent until written, once, from its role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// "Reply when relevant": a channel may pick it to answer. Off: it
+    /// answers only when @mentioned. On by default.
+    #[serde(default = "yes")]
+    pub reply_when_relevant: bool,
     /// Its DM: `home` for the default agent.
     pub main_channel_id: Option<String>,
     #[serde(default)]
@@ -201,6 +209,8 @@ pub(super) fn agent_view(m: &Shared, a: AgentRow) -> Agent {
         autonomy: a.autonomy.as_deref().and_then(Autonomy::parse),
         code_auto: a.code_auto,
         telegram: AgentTelegram::parse(a.telegram.as_deref()),
+        description: a.description.clone(),
+        reply_when_relevant: !a.mention_only,
         archived: a.archived_at.is_some(),
         deleted: a.deleted_at.is_some(),
         is_default: a.is_default(),
@@ -253,6 +263,10 @@ fn double<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
 ) -> Result<Option<Option<T>>, D::Error> {
     Option::<T>::deserialize(d).map(Some)
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -396,6 +410,11 @@ struct UpdateBody {
     /// Applies when the daemon restarts.
     #[serde(default, deserialize_with = "double")]
     telegram: Option<Option<AgentTelegram>>,
+    /// The one-line description channel routing reads; `null` clears it
+    /// (it is written again from the role); at most 120 characters.
+    #[serde(default, deserialize_with = "double")]
+    description: Option<Option<String>>,
+    reply_when_relevant: Option<bool>,
     archived: Option<bool>,
 }
 
@@ -443,7 +462,20 @@ async fn update(
             Some(Some(serde_json::to_string(t).map_err(internal)?))
         }
     };
+    let description = match &b.description {
+        Some(Some(d)) => {
+            let d = d.trim();
+            if d.chars().count() > 120 || d.contains('\n') {
+                return Err(bad("description is one line of at most 120 characters"));
+            }
+            Some((!d.is_empty()).then(|| d.to_owned()))
+        }
+        Some(None) => Some(None),
+        None => None,
+    };
     let mut ch = AgentChange {
+        description,
+        mention_only: b.reply_when_relevant.map(|v| !v),
         telegram,
         slug: b.slug.clone(),
         name,
@@ -671,6 +703,13 @@ async fn set_persona(
         .update_agent(&a.id, &AgentChange::default())
         .map_err(internal)?;
     changed(&m);
+    // A role saved with no description yet: write one, once.
+    if a.description.is_none() {
+        let (rt, a) = (m.rt.clone(), a.clone());
+        tokio::spawn(async move {
+            rt.ensure_description(&a).await;
+        });
+    }
     Ok(Json(Persona {
         persona: b.persona.trim().to_owned(),
         system_sections: None,

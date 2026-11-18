@@ -21,6 +21,14 @@ pub struct Woken {
     pub queued: bool,
 }
 
+/// What routing decided for a post.
+enum Routing {
+    /// `(agent id, why)`, most likely first.
+    Agents(Vec<(String, String)>),
+    /// Nobody replies (the channel's reply rule said no).
+    Nobody,
+}
+
 /// How long the hourly wake budget looks back.
 const HOUR_MS: i64 = 60 * 60 * 1000;
 
@@ -56,50 +64,92 @@ impl Manager {
         Ok(s.id)
     }
 
-    /// "Let agents decide" (§5.2): one call on the gate model picks who
-    /// answers `text` from the channel's members (the lead first), by
-    /// their persona lines. Only members can be picked, so nothing in the
+    /// "Let agents decide" (§5.2): one `decide()` call picks who answers
+    /// `text` from the channel's members (the lead first), by their
+    /// one-line descriptions and the last three posts, and judges the
+    /// channel's reply rule. Only members can be picked, so nothing in the
     /// message can send it elsewhere. `None` (any failure, a single member,
-    /// no clear pick) means the lead answers, as without the setting.
-    async fn route(&self, channel: &ChannelRow, text: &str) -> Option<Vec<String>> {
+    /// no clear pick) means the lead answers, as without the setting. An
+    /// unanswered question is never "no".
+    async fn route(
+        &self,
+        channel: &ChannelRow,
+        text: &str,
+        wakes: &tern_store::ChannelWakes,
+    ) -> Option<Routing> {
+        use tern_core::agents::{Candidate, Routed};
         let store = &self.rt.store;
         let members = store.channel_members(channel).ok()?;
-        let candidates: Vec<(String, String, String)> = members
+        let rows: Vec<AgentRow> = members
             .iter()
             .filter_map(|m| store.agent(&m.agent_id).ok().flatten())
-            .filter(|a| a.archived_at.is_none())
-            .map(|a| {
-                let line = crate::runtime::persona_line(&self.rt.home, &a.id);
-                (a.slug, a.name, line)
-            })
+            .filter(|a| a.archived_at.is_none() && !a.mention_only)
             .collect();
-        if candidates.len() < 2 {
+        // Posts the router may read: what people and agents said.
+        let mut recent: Vec<(String, String)> = store
+            .posts(&channel.id, None, 12)
+            .ok()?
+            .into_iter()
+            .filter(|p| {
+                !p.tainted
+                    && matches!(p.author_kind.as_str(), "user" | "agent")
+                    && matches!(p.kind.as_str(), "message" | "answer")
+            })
+            .take(tern_core::agents::ROUTER_RECENT_POSTS)
+            .map(|p| (p.author, p.text))
+            .collect();
+        recent.reverse();
+        let last_agent = store
+            .posts(&channel.id, None, 12)
+            .ok()?
+            .into_iter()
+            .find(|p| !p.tainted && matches!(p.kind.as_str(), "message" | "answer"))
+            .filter(|p| p.author_kind == "agent")
+            .map(|p| p.author_id);
+        let mut candidates = Vec::with_capacity(rows.len());
+        for a in &rows {
+            candidates.push(Candidate {
+                slug: a.slug.clone(),
+                name: a.name.clone(),
+                description: self.rt.ensure_description(a).await,
+            });
+        }
+        let questions =
+            tern_core::agents::router_questions(&candidates, wakes.reply_rule.as_deref());
+        if questions.is_empty() {
             return None;
         }
         let answers = self
             .rt
-            .decide(
-                &tern_core::agents::router_state(text),
-                vec![(
-                    "who".into(),
-                    tern_core::agents::router_question(&candidates),
-                )],
-            )
+            .decide(&tern_core::agents::router_state(&recent, text), questions)
             .await;
-        let picked: Vec<String> = answers["who"]
-            .picked()
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        if picked.is_empty() {
-            tracing::info!(channel = %channel.id, "no clear pick; the lead answers");
+        let every = wakes.route_mode == tern_store::RouteMode::All;
+        match tern_core::agents::route_outcome(&answers, every) {
+            Routed::Nobody => Some(Routing::Nobody),
+            Routed::Lead => {
+                tracing::info!(channel = %channel.id, "no clear pick; the lead answers");
+                None
+            }
+            Routed::Agents(slugs) => {
+                let picked: Vec<(String, String)> = slugs
+                    .iter()
+                    .filter_map(|slug| rows.iter().find(|a| a.slug.eq_ignore_ascii_case(slug)))
+                    .map(|a| {
+                        let why = if last_agent.as_deref() == Some(a.id.as_str()) {
+                            "it spoke last".to_owned()
+                        } else {
+                            candidates
+                                .iter()
+                                .find(|c| c.slug == a.slug)
+                                .map(|c| c.description.chars().take(60).collect())
+                                .unwrap_or_default()
+                        };
+                        (a.id.clone(), why)
+                    })
+                    .collect();
+                (!picked.is_empty()).then_some(Routing::Agents(picked))
+            }
         }
-        let ids: Vec<String> = picked
-            .iter()
-            .filter_map(|slug| store.agent(slug).ok().flatten())
-            .map(|a| a.id)
-            .collect();
-        (!ids.is_empty()).then_some(ids)
     }
 
     /// Who answers a reply to post `to` that mentions no one: the agent
@@ -225,19 +275,33 @@ impl Manager {
         for a in &mentioned {
             self.join(channel, a)?;
         }
-        let mut routed = false;
+        let wakes = store.channel_wakes(&channel.id)?;
+        // Routed picks with their why, and why nobody answers, if so.
+        let mut routed: Vec<(String, String)> = Vec::new();
+        let mut quiet: Option<&str> = None;
         let agents: Vec<String> = if mentioned.is_empty() {
-            // Only a fresh post with no mention is routed: a reply goes to
-            // whoever wrote what it answers.
+            // @mentions and quotes always win. Otherwise, with two or more
+            // people here, agents answer only when mentioned; else a fresh
+            // post is routed (if the channel lets agents decide); a quote
+            // goes to whoever wrote what it answers.
             let by_gate = match reply_to {
-                None if store.channel_wakes(&channel.id)?.let_agents_decide => {
-                    self.route(channel, text).await
+                None if store.human_authors(&channel.id)? >= 2 => {
+                    quiet = Some("Agents here reply only when mentioned");
+                    None
                 }
+                None if wakes.let_agents_decide => self.route(channel, text, &wakes).await,
                 _ => None,
             };
-            routed = by_gate.is_some();
             match by_gate {
-                Some(ids) => ids,
+                Some(Routing::Agents(picked)) => {
+                    routed = picked;
+                    routed.iter().map(|(id, _)| id.clone()).collect()
+                }
+                Some(Routing::Nobody) => {
+                    quiet = Some("Nobody replied: the channel's reply rule said no");
+                    Vec::new()
+                }
+                None if quiet.is_some() => Vec::new(),
                 None => vec![match reply_to {
                     Some(to) => self.replier(channel, to)?,
                     None => self.answering_lead(channel)?,
@@ -268,11 +332,32 @@ impl Manager {
             dedupe_key: Some(&key),
             ..NewPost::default()
         })?;
-        if routed {
-            let names: Vec<String> = threads
+        if let Some(why) = quiet {
+            self.note(&channel.id, why, &format!("routed:{}", row.id))?;
+            let post = store.post(row.id)?.map(|r| view(store, r));
+            if let Some(p) = &post {
+                self.publish(p.clone());
+            }
+            return Ok(Sent {
+                post,
+                run_id: String::new(),
+                session_id: String::new(),
+                queued: false,
+                new_segment: false,
+                woke: Vec::new(),
+            });
+        }
+        if !routed.is_empty() {
+            let names: Vec<String> = routed
                 .iter()
-                .filter_map(|(a, _)| store.agent(a).ok().flatten())
-                .map(|a| format!("@{}", a.slug))
+                .filter_map(|(id, why)| {
+                    let a = store.agent(id).ok().flatten()?;
+                    Some(if why.is_empty() {
+                        format!("@{}", a.slug)
+                    } else {
+                        format!("@{} ({why})", a.slug)
+                    })
+                })
                 .collect();
             self.note(
                 &channel.id,

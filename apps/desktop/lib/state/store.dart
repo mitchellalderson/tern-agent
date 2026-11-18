@@ -167,6 +167,10 @@ class TernStore extends ChangeNotifier {
   /// The model a new conversation will use, when chosen before sending.
   String? draftModel;
   String? error;
+
+  /// A send into a channel that lets agents decide is waiting for the
+  /// choice of who replies.
+  bool choosingWho = false;
   var _badge = 0;
 
   StreamSubscription<TernEvent>? _events;
@@ -1495,6 +1499,8 @@ class TernStore extends ChangeNotifier {
     String? lead,
     bool? agentWakes,
     bool? letAgentsDecide,
+    String? routeMode,
+    String? replyRule,
   }) async {
     try {
       await client.updateChannel(
@@ -1508,6 +1514,9 @@ class TernStore extends ChangeNotifier {
         lead: lead,
         agentWakes: agentWakes,
         letAgentsDecide: letAgentsDecide,
+        routeMode: routeMode,
+        replyRule: replyRule?.trim().isEmpty ?? false ? null : replyRule,
+        clearReplyRule: replyRule?.trim().isEmpty ?? false,
       );
       channels = await client.channels();
       notifyListeners();
@@ -1566,23 +1575,33 @@ class TernStore extends ChangeNotifier {
   Future<bool> _sendChannel(String text) async {
     error = null;
     final id = channel!;
+    choosingWho = openChannel?.agents?.letAgentsDecide ?? false;
+    if (choosingWho) notifyListeners();
     try {
       final sent = await client.sendToChannel(id, text);
-      _runSession[sent.runId] = sent.sessionId;
-      _runChannel[sent.runId] = id;
+      choosingWho = false;
+      // Nobody replied (a reply rule said no): the post is all there is.
+      final replied = sent.runId.isNotEmpty;
+      if (replied) {
+        _runSession[sent.runId] = sent.sessionId;
+        _runChannel[sent.runId] = id;
+      }
       if (sent.post case final p?) {
         final list = posts.putIfAbsent(id, () => []);
         if (!list.any((x) => x.id == p.id)) list.add(p);
         _markRead(id, p.id);
       }
-      if (selected != sent.sessionId) {
+      if (replied && selected != sent.sessionId) {
         // The main thread was just created.
         channels = await client.channels();
         selected = sent.sessionId;
       }
-      transcripts.putIfAbsent(sent.sessionId, Transcript.new).activeRun ??=
-          sent.runId;
+      if (replied) {
+        transcripts.putIfAbsent(sent.sessionId, Transcript.new).activeRun ??=
+            sent.runId;
+      }
     } on TernException catch (e) {
+      choosingWho = false;
       error = e.message;
       notifyListeners();
       return false;

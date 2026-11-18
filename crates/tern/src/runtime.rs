@@ -1116,6 +1116,11 @@ fn use_for(home: &TernHome, a: &tern_store::AgentRow) -> String {
     line.chars().take(160).collect()
 }
 
+/// An agent's persona text (empty when it has none).
+pub(crate) fn persona_text(home: &TernHome, agent_id: &str) -> String {
+    std::fs::read_to_string(tern_core::agents::persona_path(home, agent_id)).unwrap_or_default()
+}
+
 /// The first line of an agent's persona, as a short description of it.
 pub(crate) fn persona_line(home: &TernHome, agent_id: &str) -> String {
     std::fs::read_to_string(tern_core::agents::persona_path(home, agent_id))
