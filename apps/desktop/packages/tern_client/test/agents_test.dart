@@ -159,19 +159,17 @@ void main() {
     expect((gone.deleted, gone.archived), (true, true));
   });
 
-  test('an agent carries its autonomy ceiling and its own bot', () {
+  test('an agent carries its autonomy ceiling', () {
     final a = Agent.fromJson({
       'id': 'tern:ops',
       'slug': 'ops',
       'name': 'Ops',
       'memory': 'private',
       'autonomy': 'supervised',
-      'telegram': {'bot_token_secret': 'OPS_BOT'},
       'updated_at': 0,
     });
     expect(a.autonomy, 'supervised');
     expect(a.autonomyLevel, AutonomyLevel.supervised);
-    expect(a.telegramSecret, 'OPS_BOT');
     final none = Agent.fromJson({
       'id': 'tern:x',
       'slug': 'x',
@@ -180,7 +178,6 @@ void main() {
     });
     expect(none.autonomy, isNull);
     expect(none.autonomyLevel, isNull);
-    expect(none.telegramSecret, isNull);
     // The core still accepts `read_only`; the client says `readonly`.
     final old = Agent.fromJson({
       'id': 'tern:y',
@@ -208,5 +205,28 @@ void main() {
       }).letAgentsDecide,
       isTrue,
     );
+  });
+
+  test('routing fields default to one agent, replying when relevant', () {
+    final a = Agent.fromJson({'id': 'tern:x', 'slug': 'x', 'name': 'X'});
+    expect(a.replyWhenRelevant, isTrue);
+    expect(a.description, isNull);
+    final b = Agent.fromJson({
+      'id': 'tern:y',
+      'slug': 'y',
+      'name': 'Y',
+      'description': 'Runs the calendar',
+      'reply_when_relevant': false,
+    });
+    expect(b.replyWhenRelevant, isFalse);
+    expect(b.description, 'Runs the calendar');
+    final none = ChannelAgents.fromJson({'members': <Object>[]});
+    expect((none.routeMode, none.replyRule), ('one', null));
+    final c = ChannelAgents.fromJson({
+      'members': <Object>[],
+      'route_mode': 'all',
+      'reply_rule': 'Only questions',
+    });
+    expect((c.routeMode, c.replyRule), ('all', 'Only questions'));
   });
 }

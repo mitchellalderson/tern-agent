@@ -206,7 +206,7 @@ async fn add_use_and_remove_a_provider_without_restarting() {
         !added.to_string().contains("sk-good"),
         "key leaked: {added}"
     );
-    let secrets = std::fs::read_to_string(d.tern_home().join("secrets.toml")).unwrap();
+    let secrets = crate::read_secrets(&d.tern_home());
     assert!(secrets.contains("FAKE_API_KEY = \"sk-good\""), "{secrets}");
     let config = std::fs::read_to_string(d.tern_home().join("config.toml")).unwrap();
     assert!(config.contains("[providers.fake]"), "{config}");
@@ -294,7 +294,7 @@ async fn add_use_and_remove_a_provider_without_restarting() {
     let info = api.ok(Method::GET, "/v1/info", None).await;
     assert_eq!(info["setup_needed"], true);
     assert!(info["default_model"].is_null());
-    let secrets = std::fs::read_to_string(d.tern_home().join("secrets.toml")).unwrap();
+    let secrets = crate::read_secrets(&d.tern_home());
     assert!(!secrets.contains("FAKE_API_KEY"), "{secrets}");
 }
 
@@ -435,7 +435,7 @@ async fn a_key_in_the_environment_wins() {
     assert_eq!(added["provider"]["key_source"], "env", "{added}");
     assert_eq!(added["provider"]["secret"], "FAKE_API_KEY");
     // The environment's key is used, not copied into secrets.toml.
-    let secrets = std::fs::read_to_string(d.tern_home().join("secrets.toml")).unwrap_or_default();
+    let secrets = crate::read_secrets(&d.tern_home());
     assert!(!secrets.contains("sk-good"), "{secrets}");
     let info = api.ok(Method::GET, "/v1/info", None).await;
     assert_eq!(info["setup_needed"], false);
@@ -597,7 +597,7 @@ async fn providers_from_the_command_line() {
 
     let (ok, out, _) = cli(&home, &["providers", "rm", "fake"], "");
     assert!(ok, "{out}");
-    let secrets = std::fs::read_to_string(home.join("secrets.toml")).unwrap();
+    let secrets = crate::read_secrets(&home);
     assert!(!secrets.contains("FAKE_API_KEY"), "{secrets}");
     let (_, out, _) = cli(&home, &["providers"], "");
     assert!(out.contains("No providers yet"), "{out}");
@@ -633,7 +633,7 @@ async fn the_command_line_goes_through_a_running_daemon() {
     assert!(ok);
     let info = api.ok(Method::GET, "/v1/info", None).await;
     assert_eq!(info["setup_needed"], true);
-    let secrets = std::fs::read_to_string(home.join("secrets.toml")).unwrap();
+    let secrets = crate::read_secrets(&home);
     assert!(
         secrets.contains("FAKE_API_KEY"),
         "--keep-key kept it: {secrets}"

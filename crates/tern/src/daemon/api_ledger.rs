@@ -29,7 +29,7 @@ async fn audit(State(m): State<Shared>) -> ApiResult<crate::security_cmd::Audit>
     let home = m.rt.home.clone();
     let config = m.rt.live();
     let store = m.rt.store.clone();
-    // Loading connectors and gateways blocks; keep it off the runtime.
+    // Loading connectors blocks; keep it off the runtime.
     tokio::task::spawn_blocking(move || crate::security_cmd::audit(&home, &config, Some(&store)))
         .await
         .map(Json)

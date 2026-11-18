@@ -642,3 +642,96 @@ async fn activation_shows_new_capabilities_and_what_changed() {
         .to_string();
     assert!(err.contains("changed since you approved it"), "{err}");
 }
+
+#[tokio::test]
+async fn echoed_fragments_of_an_injected_key_never_reach_the_script() {
+    const KEY: &str = "ck_live_abcdef0123456789xyz3pNe";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .insert_header("x-hint", "key ck_**3pNe")
+                .set_body_string("bad key ck_live_****3pNe (sk-…3pNe), begins ck_live_ ends 3pNe"),
+        )
+        .mount(&server)
+        .await;
+    let (host, _tmp) = host_with(&[("SERVICE_KEY", KEY)]);
+    let src = connector(
+        "svc",
+        r#"http = { "127.0.0.1" }, auth = { secret = "SERVICE_KEY" }"#,
+        &format!(
+            r#"go = {{ description = "d", run = function(ctx)
+                local res = ctx.http.get("{}/v1/x")
+                return {{ body = res.body, hint = res.headers["x-hint"] }}
+              end }}"#,
+            server.uri()
+        ),
+    );
+    let vm = load(&host, &src);
+    let out = match vm.call("go", &json!({})).await {
+        Ok(o) | Err(o) => o,
+    };
+    assert!(
+        !out.contains("3pNe"),
+        "a fragment reached the script: {out}"
+    );
+    assert!(
+        !out.contains("ck_live_"),
+        "a fragment reached the script: {out}"
+    );
+    assert!(out.contains("[REDACTED]"), "{out}");
+}
+
+async fn failing_call(status: u16, retry_after: Option<&str>) -> String {
+    let server = MockServer::start().await;
+    let mut t = ResponseTemplate::new(status).set_body_string("nope");
+    if let Some(r) = retry_after {
+        t = t.insert_header("retry-after", r);
+    }
+    Mock::given(method("GET"))
+        .respond_with(t)
+        .mount(&server)
+        .await;
+    let (host, _tmp) = host_with(&[("SERVICE_KEY", "key-value-0001")]);
+    let src = connector(
+        "svc",
+        r#"http = { "127.0.0.1" }, auth = { secret = "SERVICE_KEY" }"#,
+        &format!(
+            r#"go = {{ description = "d", run = function(ctx)
+                local res = ctx.http.get("{}/v1/x")
+                if not res.ok then error("HTTP " .. res.status) end
+                return "ok"
+              end }}"#,
+            server.uri()
+        ),
+    );
+    let vm = load(&host, &src);
+    vm.call("go", &json!({})).await.unwrap_err()
+}
+
+#[tokio::test]
+async fn a_rejected_api_key_tells_the_agent_to_replace_it() {
+    for status in [401, 403] {
+        let err = failing_call(status, None).await;
+        assert!(
+            err.contains(&format!("HTTP {status}. The service")),
+            "{err}"
+        );
+        assert!(err.contains("secret_request"), "{err}");
+        assert!(err.contains("replace true"), "{err}");
+        assert!(err.contains("\"SERVICE_KEY\""), "{err}");
+        assert!(!err.contains("key-value-0001"), "{err}");
+    }
+}
+
+#[tokio::test]
+async fn a_rate_limited_call_tells_the_agent_to_wait() {
+    let err = failing_call(429, Some("30")).await;
+    assert!(
+        err.contains("rate limiting") && err.contains("30s"),
+        "{err}"
+    );
+    assert!(!err.contains("secret_request"), "{err}");
+    // Other failures stay bare: there is nothing the agent can fix.
+    assert!(failing_call(404, None).await.ends_with("HTTP 404"));
+}

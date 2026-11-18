@@ -25,8 +25,8 @@ use tern_core::subagent::{
     WaitMode, WaitRequest,
 };
 use tern_core::tool::{ToolCtx, ToolRegistry, consume_mail, progress_sink};
+use tern_core::types::Message;
 use tern_core::types::Usage;
-use tern_core::types::{ContentBlock, Message};
 use tern_store::{MailRow, NewMail, NewRun, RunRow, Store, now_ms};
 use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
@@ -1503,25 +1503,8 @@ fn is_ended(run: &RunRow) -> bool {
     matches!(run.status.as_str(), "completed" | "failed") || subagent::was_cancelled(run)
 }
 
-/// The text of a run's last assistant message.
 fn final_text(store: &Store, run: &RunRow) -> anyhow::Result<String> {
-    let last = store
-        .session_messages(&run.session_id)?
-        .into_iter()
-        .rev()
-        .find(|m| m.run_id.as_deref() == Some(run.id.as_str()) && m.role == "assistant");
-    Ok(last
-        .and_then(|m| serde_json::from_str::<Vec<ContentBlock>>(&m.content_json).ok())
-        .map(|blocks| {
-            blocks
-                .into_iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text),
-                    _ => None,
-                })
-                .collect::<String>()
-        })
-        .unwrap_or_default())
+    crate::daemon::channels::final_text(store, run)
 }
 
 #[async_trait]
@@ -1792,6 +1775,7 @@ fn limits_section(max_iterations: u32, budget: Option<u64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tern_core::types::ContentBlock;
 
     #[test]
     fn spawn_limits_default_and_ceiling() {

@@ -1,0 +1,2 @@
+- **Better channel routing:** the router reads each agent's one-line description (written once from its role, editable in the agent sheet), never its persona, and sees the last three posts, so a reply to an agent's question goes back to it. "Sent to @x" now says why.
+- **Reply when relevant** per agent (off: only when @mentioned), **One agent / Every relevant agent** per channel (up to 3), and an optional plain-English **reply rule**. The desktop app shows "Choosing who replies…".

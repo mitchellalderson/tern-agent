@@ -108,5 +108,29 @@ async fn the_channel_lead_is_told_who_is_in_which_lane_and_to_split_work() {
         "{sys}"
     );
     assert!(sys.contains("`delegate_team`"), "{sys}");
+    // Once it has a description, that is its lane.
+    let (code, _) = crate::subagents_env::api(&s)
+        .patch("http://tern/v1/agents/scout")
+        .json(&json!({ "description": "Competitor pricing." }))
+        .send()
+        .await
+        .map(|r| (r.status().as_u16(), ()))
+        .unwrap();
+    assert_eq!(code, 200);
+    let (_, sent) = post(
+        &s,
+        "/v1/channels/launch/posts",
+        json!({ "text": "Plan more" }),
+    )
+    .await;
+    let run = sent["run_id"].as_str().unwrap().to_owned();
+    get(&s, &format!("/v1/runs/{run}/wait")).await;
+    let sys: String = env.query(&format!(
+        "SELECT system_prompt FROM runs WHERE id = '{run}'"
+    ));
+    assert!(
+        sys.contains("- @scout (Scout): Competitor pricing."),
+        "{sys}"
+    );
     assert!(sys.contains("answer once"), "{sys}");
 }

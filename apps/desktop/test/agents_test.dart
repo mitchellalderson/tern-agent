@@ -111,7 +111,7 @@ class _FakeClient extends TernClient {
   @override
   Future<List<Agent>> agents({bool archived = false}) async => agentList;
 
-  /// What the bot field offers; `secretsError` makes the listing fail.
+  /// What `secrets()` returns; `secretsError` makes the listing fail.
   var secretList = <SecretStatus>[
     const SecretStatus(
       name: 'ANTHROPIC_API_KEY',
@@ -123,7 +123,7 @@ class _FakeClient extends TernClient {
       name: 'MAIN_BOT',
       inFile: true,
       inEnv: false,
-      usedBy: ['telegram'],
+      usedBy: ['web_search'],
     ),
     const SecretStatus(name: 'OPS_BOT', inFile: true, inEnv: false, usedBy: []),
     const SecretStatus(
@@ -1569,28 +1569,12 @@ void main() {
       avatar: AvatarSpec(glyph: '★', color: 'blue'),
       mainChannelId: 'dm:research',
       autonomy: 'supervised',
-      telegramSecret: 'RESEARCH_BOT',
-    );
-    const noBot = Agent(
-      id: 'tern:research',
-      slug: 'research',
-      name: 'Research',
-      avatar: AvatarSpec(glyph: '★', color: 'blue'),
-      mainChannelId: 'dm:research',
-      autonomy: 'supervised',
     );
     const uncapped = Agent(
       id: 'tern:research',
       slug: 'research',
       name: 'Research',
       mainChannelId: 'dm:research',
-    );
-    const ops = Agent(
-      id: 'tern:ops',
-      slug: 'ops',
-      name: 'Ops',
-      mainChannelId: 'dm:ops',
-      telegramSecret: 'OPS_BOT',
     );
 
     Finder sheetScroll() => find
@@ -1673,7 +1657,6 @@ void main() {
       await save(tester);
       final fields = client.updated.single.$2;
       expect(fields.containsKey('autonomy'), isFalse);
-      expect(fields.containsKey('telegram'), isFalse);
     });
 
     ap3Test('a starter pre-selects its ceiling, which the user can change', (
@@ -1918,8 +1901,6 @@ void main() {
       await _pump(tester, store);
       await tester.tap(find.byTooltip('New agent'));
       await tester.pumpAndSettle();
-      // No bot field until the agent exists.
-      expect(find.text('Telegram bot'), findsNothing);
       await openAdvanced(tester);
       await show(tester, find.byKey(const Key('autonomy-autonomous')));
       await tester.tap(find.byKey(const Key('autonomy-autonomous')));
@@ -1949,7 +1930,6 @@ void main() {
       await openAdvanced(tester);
       await show(tester, find.byKey(const Key('autonomy-none')));
       expect(find.text('How much it does on its own'), findsOneWidget);
-      expect(find.text('Telegram bot'), findsNothing);
     });
 
     ap3Test('the header shows the ceiling, and nothing without one', (
@@ -2051,98 +2031,6 @@ void main() {
         t.items.whereType<PillItem>().single.text,
         contains('Snapshot saved'),
       );
-    });
-
-    ap3Test('the bot field lists secrets by name and says why not', (
-      tester,
-    ) async {
-      await editing(tester, noBot, others: [ops]);
-      await show(tester, find.byKey(const Key('agent-bot')));
-      expect(find.text('Telegram bot'), findsOneWidget);
-      expect(find.byKey(const Key('agent-bot-restart-note')), findsOneWidget);
-      expect(
-        find.textContaining('applies when the daemon restarts'),
-        findsOneWidget,
-      );
-      await tester.tap(find.byKey(const Key('agent-bot')));
-      await tester.pumpAndSettle();
-      expect(find.text('No bot of its own'), findsWidgets);
-      expect(find.text("the main bot's token"), findsOneWidget);
-      expect(find.text("@ops's bot"), findsOneWidget);
-      expect(find.text('not set'), findsOneWidget);
-      // A taken name can't be picked: the menu stays open.
-      await tester.tap(find.text('MAIN_BOT'), warnIfMissed: false);
-      await tester.pumpAndSettle();
-      expect(find.text('NEW_BOT'), findsOneWidget);
-    });
-
-    ap3Test('picking a secret sends its NAME and says when it applies', (
-      tester,
-    ) async {
-      final (_, client) = await editing(tester, noBot, others: [ops]);
-      await show(tester, find.byKey(const Key('agent-bot')));
-      await tester.tap(find.byKey(const Key('agent-bot')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('NEW_BOT'));
-      await tester.pumpAndSettle();
-      await save(tester);
-      expect(
-        client.updated.single.$2,
-        containsPair('telegram', {'bot_token_secret': 'NEW_BOT'}),
-      );
-      expect(find.byType(AgentSheet), findsNothing);
-      expect(
-        find.textContaining('bot change applies when the daemon restarts'),
-        findsOneWidget,
-      );
-    });
-
-    ap3Test('No bot of its own removes it', (tester) async {
-      final (_, client) = await editing(tester, capped);
-      await show(tester, find.byKey(const Key('agent-bot')));
-      // Its current secret is shown.
-      expect(find.text('RESEARCH_BOT'), findsWidgets);
-      await tester.tap(find.byKey(const Key('agent-bot')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('No bot of its own').last);
-      await tester.pumpAndSettle();
-      await save(tester);
-      expect(client.updated.single.$2, containsPair('telegram', null));
-    });
-
-    ap3Test('the daemon refusing the secret shows and keeps the sheet', (
-      tester,
-    ) async {
-      final (_, client) = await editing(tester, noBot);
-      client.updateError =
-          "NEW_BOT is the main bot's token; an agent's bot needs its own";
-      await show(tester, find.byKey(const Key('agent-bot')));
-      await tester.tap(find.byKey(const Key('agent-bot')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('NEW_BOT'));
-      await tester.pumpAndSettle();
-      await save(tester);
-      expect(find.byType(AgentSheet), findsOneWidget);
-      expect(find.textContaining("main bot's token; an agent's"), findsWidgets);
-      expect(
-        find.textContaining('bot change applies'),
-        findsNothing,
-        reason: 'nothing was saved',
-      );
-    });
-
-    ap3Test('a secrets listing that fails says so', (tester) async {
-      final (store, client) = await _store();
-      client.secretsError = 'owner scope needed';
-      client.agentList = [_tern, capped];
-      store.agents = client.agentList;
-      await store.openAgent(capped);
-      await _pump(tester, store);
-      await tester.tap(find.byTooltip('Edit Research'));
-      await tester.pumpAndSettle();
-      await openAdvanced(tester);
-      await show(tester, find.byKey(const Key('agent-bot-set-secret')));
-      expect(find.textContaining("Couldn't list your secrets"), findsOneWidget);
     });
   });
 

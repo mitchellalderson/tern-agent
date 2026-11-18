@@ -699,20 +699,10 @@ impl Runtime {
                 Some(c) => self.place_name(&c)?,
                 None => "Home".into(),
             };
-            let delivered = s
-                .deliver_to
-                .as_deref()
-                .map(|t| t.split(':').next().unwrap_or(t))
-                .map(|g| {
-                    let mut c = g.chars();
-                    c.next()
-                        .map(|f| f.to_uppercase().chain(c).collect::<String>())
-                        .unwrap_or_default()
-                });
             return Ok(Some(routine_where_section(
                 &crate::daemon::scheduler::title(&s),
                 &posted_to,
-                delivered.as_deref(),
+                s.deliver_to.is_some(),
             )));
         }
         let Some(c) = self.store.session_channel(&session.id)? else {
@@ -884,6 +874,15 @@ impl Runtime {
             self.store
                 .set_session_model(&session.id, &model.to_string())?;
         }
+        // Taint outlives the run that caused it: a conversation that read
+        // untrusted text stays tainted for its later runs (each batch still
+        // answers for its own messages). A routine starts clean each time;
+        // its carry-over is handled where it is built.
+        let inherited = (taint.is_none() && trigger != "cron")
+            .then(|| self.store.session_taint(&session.id))
+            .transpose()?
+            .flatten();
+        let taint = taint.or(inherited.as_deref());
         let role = if trigger == "cron" {
             AgentRole::Scheduled
         } else {
@@ -971,11 +970,22 @@ impl Runtime {
         // Code auto mode is for the user's own conversations: only a "user"
         // trigger lifts an opted-in agent to it; a routine or a woken run
         // stays at the plain effective level (docs/alpha-coding-agent.md §3.1).
-        self.store.set_run_autonomy(
-            &run.id,
-            self.autonomy_for_run(&agent, None, trigger == "user")
-                .as_str(),
-        )?;
+        let mut autonomy = self.autonomy_for_run(&agent, None, trigger == "user");
+        // In a tainted conversation the ceiling carries too: a later run is
+        // never freer than the least free run before it.
+        if inherited.is_some() {
+            for earlier in self.store.runs_for_session(&session.id)? {
+                if earlier.id != run.id
+                    && let Some(a) = earlier
+                        .autonomy
+                        .as_deref()
+                        .and_then(tern_core::approval::Autonomy::parse)
+                {
+                    autonomy = autonomy.min(a);
+                }
+            }
+        }
+        self.store.set_run_autonomy(&run.id, autonomy.as_str())?;
         // The tainted host limit: the agent's own setting, else the
         // config's; frozen like autonomy.
         let egress = agent
@@ -1025,7 +1035,7 @@ pub(crate) fn agent_frame(
     home: &TernHome,
     store: &Store,
     agent: &tern_store::AgentRow,
-    task: Option<&str>,
+    _task: Option<&str>,
 ) -> (
     Option<tern_core::prompt::AgentPrompt>,
     Option<tern_core::agents::ToolScope>,
@@ -1047,8 +1057,10 @@ pub(crate) fn agent_frame(
             }
         });
     let active = store.agents(false).unwrap_or_default();
-    // Everyone else, best match for `task` first (then the most recently
-    // edited), capped: the roster is bounded however many agents exist.
+    // Everyone else, by slug, capped: the roster is bounded however many
+    // agents exist, and its text is the same on every run until an agent is
+    // added, removed or renamed, so the prompt cache holds. Neither the task
+    // nor edit times reorder it.
     let mut ranked: Vec<&tern_store::AgentRow> =
         active.iter().filter(|a| a.id != agent.id).collect();
     if ranked.is_empty() && agent.is_default() {
@@ -1058,12 +1070,7 @@ pub(crate) fn agent_frame(
         .iter()
         .map(|a| (a.id.as_str(), use_for(home, a)))
         .collect();
-    let words = task.map(words_of).unwrap_or_default();
-    let score = |a: &tern_store::AgentRow| {
-        let hay = words_of(&format!("{} {} {}", a.slug, a.name, jobs[a.id.as_str()]));
-        words.intersection(&hay).count()
-    };
-    ranked.sort_by_key(|a| (std::cmp::Reverse(score(a)), std::cmp::Reverse(a.updated_at)));
+    ranked.sort_by(|a, b| a.slug.cmp(&b.slug).then_with(|| a.id.cmp(&b.id)));
     let cap = tern_core::prompt::ROSTER_CAP;
     let others: Vec<String> = ranked
         .iter()
@@ -1125,20 +1132,19 @@ fn use_for(home: &TernHome, a: &tern_store::AgentRow) -> String {
     line.chars().take(160).collect()
 }
 
-/// Lowercase words of `text` longer than three letters, for matching a
-/// request against what an agent is for.
-fn words_of(text: &str) -> std::collections::HashSet<String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.chars().count() > 3)
-        .map(str::to_lowercase)
-        .collect()
+/// An agent's persona text (empty when it has none).
+pub(crate) fn persona_text(home: &TernHome, agent_id: &str) -> String {
+    std::fs::read_to_string(tern_core::agents::persona_path(home, agent_id)).unwrap_or_default()
 }
 
 /// What an agent is for, in one line, for a lead that splits work across
-/// its channel's members. Today the first line of its persona; the one place
-/// to swap for the agent's own description once agents carry one.
+/// its channel's members: its description (what channel routing reads), else
+/// the first line of its persona.
 pub(crate) fn lane_line(home: &TernHome, agent: &tern_store::AgentRow) -> String {
-    persona_line(home, &agent.id)
+    match agent.description.as_deref().map(str::trim) {
+        Some(d) if !d.is_empty() => d.to_owned(),
+        _ => persona_line(home, &agent.id),
+    }
 }
 
 /// The first line of an agent's persona, as a short description of it.

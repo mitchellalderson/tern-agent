@@ -12,7 +12,6 @@ class OutboxItem {
     required this.summary,
     this.effect = 'write',
     this.taint,
-    this.localOnly = false,
     required this.state,
     required this.createdAt,
     required this.expiresAt,
@@ -37,7 +36,6 @@ class OutboxItem {
       summary: j['summary'] as String,
       effect: j['effect'] as String? ?? 'write',
       taint: j['taint'] as String?,
-      localOnly: j['local_only'] as bool? ?? false,
       state: j['state'] as String,
       createdAt: DateTime.fromMillisecondsSinceEpoch(j['created_at'] as int),
       expiresAt: DateTime.fromMillisecondsSinceEpoch(j['expires_at'] as int),
@@ -66,9 +64,6 @@ class OutboxItem {
 
   /// Why the run that queued it was tainted, if it was.
   final String? taint;
-
-  /// Only a client on this computer may decide it.
-  final bool localOnly;
 
   /// `pending`, `approved`, `done`, `failed`, `rejected`, `expired` or
   /// `stale` (its file changed, so it was skipped).

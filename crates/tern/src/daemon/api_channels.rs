@@ -7,7 +7,7 @@
 //! | POST | `/v1/channels` | create `{slug, title?, kind?: "topic", instructions?}` |
 //! | DELETE | `/v1/channels/{id}?confirm=true` | delete a topic channel: its posts go, its conversations stay in History (under Home), routines posting there post to their agent's DM; refused (409) for Home and DMs and while a run is in progress there |
 //! | GET | `/v1/channels/{id}/impact` | what deleting it touches: `{posts, conversations, routines, members, running_runs, blockers}` |
-//! | PATCH | `/v1/channels/{id}` | `{slug?, title?, instructions?, archived?, lead?, agent_wakes?, max_hops?, wakes_per_hour?, let_agents_decide?}` (`instructions: null` clears them; the last five: topic channels) |
+//! | PATCH | `/v1/channels/{id}` | `{slug?, title?, instructions?, archived?, lead?, agent_wakes?, max_hops?, wakes_per_hour?, let_agents_decide?, route_mode?, reply_rule?}` (`instructions: null` clears them; the last five: topic channels) |
 //! | GET | `/v1/channels/{id}/agents` | a topic channel's `{members: [{agent_id, lead?, added_at}], agent_wakes, max_hops, wakes_per_hour}` (also on `Channel` as `agents`) |
 //! | POST | `/v1/channels/{id}/agents` | add `{agent}` (id or slug), with a "Name joined" note; or `{agents: [..]}` → the members plus `added`, `already` and `failed: [{agent, error}]` (200; one that can't join doesn't stop the rest) |
 //! | DELETE | `/v1/channels/{id}/agents/{agent}` | take an agent out (not the lead or `tern`) |
@@ -92,6 +92,13 @@ pub struct ChannelAgents {
     /// right members by the gate model, not always to the lead.
     #[serde(default)]
     pub let_agents_decide: bool,
+    /// With "Let agents decide": `one` (the best fit; ties go to the lead,
+    /// the default) or `all` (every relevant agent, at most 3).
+    pub route_mode: String,
+    /// A plain-English rule for when agents reply here, judged as an extra
+    /// yes/no. Absent: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_rule: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +128,8 @@ fn channel_agents(m: &Shared, c: &ChannelRow) -> Option<ChannelAgents> {
         max_hops: w.max_hops,
         wakes_per_hour: w.wakes_per_hour,
         let_agents_decide: w.let_agents_decide,
+        route_mode: w.route_mode.as_str().to_owned(),
+        reply_rule: w.reply_rule,
     })
 }
 
@@ -277,6 +286,10 @@ struct UpdateBody {
     max_hops: Option<i64>,
     wakes_per_hour: Option<i64>,
     let_agents_decide: Option<bool>,
+    route_mode: Option<String>,
+    /// `null` or empty clears it; at most 300 characters.
+    #[serde(default, deserialize_with = "double_option")]
+    reply_rule: Option<Option<String>>,
 }
 
 async fn update(
@@ -304,7 +317,9 @@ async fn update(
         || b.agent_wakes.is_some()
         || b.max_hops.is_some()
         || b.wakes_per_hour.is_some()
-        || b.let_agents_decide.is_some();
+        || b.let_agents_decide.is_some()
+        || b.route_mode.is_some()
+        || b.reply_rule.is_some();
     if agents_change && c.kind != "topic" {
         return Err(bad("only topic channels have a lead and wake settings"));
     }
@@ -312,6 +327,25 @@ async fn update(
         Some(l) => Some(active_agent(&m, l)?),
         None => None,
     };
+    let route_mode = match b.route_mode.as_deref() {
+        Some(v) => Some(
+            tern_store::RouteMode::parse(v)
+                .ok_or_else(|| bad("route_mode is \"one\" or \"all\""))?,
+        ),
+        None => None,
+    };
+    let reply_rule = b.reply_rule.as_ref().map(|r| {
+        r.as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+    });
+    if reply_rule
+        .as_ref()
+        .is_some_and(|r| r.as_ref().is_some_and(|t| t.chars().count() > 300))
+    {
+        return Err(bad("reply_rule is at most 300 characters"));
+    }
     if b.max_hops.is_some_and(|h| !(1..=10).contains(&h)) {
         return Err(bad("max_hops is 1 to 10"));
     }
@@ -335,6 +369,10 @@ async fn update(
         w.max_hops = b.max_hops.unwrap_or(w.max_hops);
         w.wakes_per_hour = b.wakes_per_hour.unwrap_or(w.wakes_per_hour);
         w.let_agents_decide = b.let_agents_decide.unwrap_or(w.let_agents_decide);
+        w.route_mode = route_mode.unwrap_or(w.route_mode);
+        if let Some(r) = reply_rule {
+            w.reply_rule = r;
+        }
         m.rt.store.set_channel_wakes(&c.id, &w).map_err(internal)?;
     }
     m.channels_changed();
