@@ -38,7 +38,7 @@ pub fn run(home: &TernHome, keep_config: bool, yes: bool) -> anyhow::Result<Exit
     }
 
     if lifecycle::running_pid(home).is_some() {
-        lifecycle::stop(home)?;
+        let _ = lifecycle::stop(home)?;
     }
 
     // A long data directory keeps its socket outside it.

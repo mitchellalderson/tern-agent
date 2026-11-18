@@ -3,7 +3,7 @@
 //!
 //! | Method | Path | |
 //! |---|---|---|
-//! | GET | `/v1/health` | pid, version, and capabilities (see `auth::health`) |
+//! | GET | `/v1/health` | pid, version, and capabilities (see `health::health`) |
 //! | GET | `/v1/info` | default model and tools |
 //! | GET | `/v1/tools` | full tool specs: `[{name, description, input_schema, effect, untrusted}]` |
 //! | POST | `/v1/models/check` | validate `{model}` |
@@ -26,7 +26,7 @@
 //! | POST | `/v1/approvals/{id}` | answer `{decision: "once" \| "always" \| "deny"}` |
 //! | GET / POST | `/v1/outbox[/{id}[/approve\|/reject]]` | deferred approvals (`api_outbox.rs`) |
 //! | GET / POST | `/v1/secret-requests[/{id}]` | the agent's prompts for secrets (`api_secrets.rs`) |
-//! | GET | `/v1/status` | version, uptime, counts, gateway health (`api_lifecycle.rs`) |
+//! | GET | `/v1/status` | version, uptime, counts (`api_lifecycle.rs`) |
 //! | POST | `/v1/shutdown[?dry_run=1]` | stop with exit code 0 (`api_lifecycle.rs`) |
 //! | GET / POST | `/v1/mcp-serve/{tools,call}` | what `tern mcp serve` offers, and its calls (`api_mcp_serve.rs`) |
 //!
@@ -210,11 +210,11 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_workspaces::routes())
         .merge(super::api_config::routes())
         .merge(super::api_schedules::routes())
-        .merge(super::api_webhooks::routes())
         .merge(super::api_outbox::routes())
         .merge(super::api_ledger::routes())
         .merge(super::api_tasks::routes())
         .merge(super::api_waits::routes())
+        .merge(super::api_documents::routes())
         .merge(super::api_skills::routes())
         .merge(super::api_runs::routes())
         .merge(super::api_subagents::routes())
@@ -225,12 +225,12 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_mcp::routes())
         .merge(super::api_mcp_serve::routes())
         .merge(super::api_lifecycle::routes())
-        .merge(super::auth::routes())
+        .merge(super::health::routes())
         .with_state(manager)
 }
 
-async fn health(auth: Option<axum::Extension<super::auth::Auth>>) -> Json<Value> {
-    Json(super::auth::health(auth.as_ref().map(|a| &a.0)))
+async fn health() -> Json<Value> {
+    Json(super::health::health())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -240,10 +240,6 @@ pub struct Info {
     #[serde(default)]
     pub setup_needed: bool,
     pub tools: Vec<(String, String)>,
-    /// Gateways routines can deliver to (`<name>:<chat>`), Telegram and
-    /// gateway connectors alike, by name.
-    #[serde(default)]
-    pub gateways: Vec<InfoGateway>,
     /// Whether the OS sandbox is confirmed active for shell commands. Script
     /// grants ("allow this python script for this run") apply only then.
     #[serde(default)]
@@ -257,28 +253,7 @@ pub struct InfoSandbox {
     pub detail: String,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct InfoGateway {
-    pub name: String,
-    /// `telegram`, `ntfy`, `slack`, … (a connector's `gateway.kind`).
-    pub kind: String,
-}
-
 async fn info(State(m): State<Shared>) -> Json<Info> {
-    let mut gateways: Vec<InfoGateway> = m
-        .routes
-        .gateways
-        .get()
-        .map(|g| {
-            g.values()
-                .map(|g| InfoGateway {
-                    name: g.name().to_owned(),
-                    kind: g.kind().to_owned(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    gateways.sort_by(|a, b| a.name.cmp(&b.name));
     let sandbox = {
         let (config, home) = (m.rt.config.clone(), m.rt.home.clone());
         tokio::task::spawn_blocking(move || crate::runtime::shell_sandbox_status(&config, &home))
@@ -291,7 +266,6 @@ async fn info(State(m): State<Shared>) -> Json<Info> {
     };
     Json(Info {
         sandbox,
-        gateways,
         default_model: m.rt.pick_model(None, None).ok().map(|x| x.to_string()),
         setup_needed: m.rt.setup_needed(),
         tools: m
@@ -953,18 +927,9 @@ pub struct ApproveBody {
 
 async fn approve(
     State(m): State<Shared>,
-    auth: Option<axum::Extension<super::auth::Auth>>,
     UrlPath(id): UrlPath<String>,
     Json(b): Json<ApproveBody>,
 ) -> ApiResult<Value> {
-    if auth.is_some() && m.routes.api.is_local_only(&id) {
-        return Err(ApiError(
-            axum::http::StatusCode::FORBIDDEN,
-            "this approval runs a command on the host outside the sandbox; answer it in the \
-             TUI or desktop app on that machine"
-                .into(),
-        ));
-    }
     let decision = match b.decision.as_str() {
         "once" => Decision::AllowOnce,
         "always" => Decision::AlwaysAllow,
@@ -978,7 +943,7 @@ async fn approve(
             )));
         }
     };
-    if m.routes.api.answer(&id, decision, auth.is_some()) {
+    if m.routes.api.answer(&id, decision) {
         Ok(Json(json!({ "ok": true })))
     } else {
         Err(not_found("pending approval"))

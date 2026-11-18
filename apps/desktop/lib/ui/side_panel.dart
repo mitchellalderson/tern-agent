@@ -13,10 +13,18 @@ import 'widgets.dart';
 /// it is doing right now is already in the conversation, so it isn't repeated
 /// here; "All runs…" opens the journal.
 class SidePanel extends StatelessWidget {
-  const SidePanel({super.key, required this.store, required this.onClose});
+  const SidePanel({
+    super.key,
+    required this.store,
+    required this.onClose,
+    this.tabs,
+  });
 
   final TernStore store;
   final VoidCallback onClose;
+
+  /// The Activity / Documents switch, when the core has documents.
+  final Widget? tabs;
 
   @override
   Widget build(BuildContext context) {
@@ -34,14 +42,16 @@ class SidePanel extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(18, 0, 8, 0),
               child: Row(
                 children: [
-                  const Expanded(
-                    child: Text(
-                      'Activity',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                  Expanded(
+                    child:
+                        tabs ??
+                        const Text(
+                          'Activity',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                   ),
                   QuietIconButton(
                     icon: Icons.close,

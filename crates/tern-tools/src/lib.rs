@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod channels;
+pub mod documents;
 pub mod fs;
 pub mod history;
 pub mod http;
@@ -61,6 +62,7 @@ pub fn register_builtins(registry: &mut ToolRegistry, opts: BuiltinOptions) -> R
         notify: None,
     }));
     wait::register(registry, opts.store.clone(), wait::DEFAULT_MAX_ACTIVE, None);
+    documents::register(registry, opts.store.clone());
     registry.register(Arc::new(history::HistorySearch::new(opts.store.clone())));
     registry.register(Arc::new(memory::SessionSearch::new(opts.store.clone())));
     registry.register(Arc::new(

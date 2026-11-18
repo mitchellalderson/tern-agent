@@ -527,11 +527,6 @@ fn delete_agent(c: &Caller, a: DeleteArgs) -> Result<Value, ToolResult> {
         return Err(refused("you can't delete yourself"));
     }
     c.may_change(&target)?;
-    if target.telegram.is_some() {
-        return Err(refused(
-            "it has a Telegram bot of its own: the user removes that in the app first",
-        ));
-    }
     let routines = a
         .routines
         .as_deref()

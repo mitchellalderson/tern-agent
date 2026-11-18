@@ -31,9 +31,6 @@ pub struct AgentRow {
     /// The most autonomy its runs may have: `readonly`, `supervised`,
     /// `autonomous` or `yolo`; `None` = no ceiling beyond the configured one.
     pub autonomy: Option<String>,
-    /// JSON `{bot_token_secret, api_url?}`: a Telegram bot of its own
-    /// (AP3); `None` = it is reached through the main bot's `/agent`.
-    pub telegram: Option<String>,
     pub archived_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -43,6 +40,11 @@ pub struct AgentRow {
     /// Code auto mode (docs/alpha-coding-agent.md): the user opted this agent
     /// in. Never copied from a starter or a bundle; `create_agent` writes 0.
     pub code_auto: bool,
+    /// One line on what it is for: what channel routing reads, never the
+    /// persona. `None` until written (from its role, once it is saved).
+    pub description: Option<String>,
+    /// "Reply when relevant" is off: only an @mention makes it answer.
+    pub mention_only: bool,
 }
 
 impl AgentRow {
@@ -89,16 +91,17 @@ pub struct AgentChange {
     pub delegates: Option<Option<String>>,
     pub egress: Option<Option<String>>,
     pub autonomy: Option<Option<String>>,
-    pub telegram: Option<Option<String>>,
     pub archived: Option<bool>,
     /// Opt in or out of code auto mode. Turning it on needs a ceiling of
     /// `code` or above after this change (or none), and a `readonly` ceiling
     /// never qualifies. Lowering the ceiling below `code` turns it off.
     pub code_auto: Option<bool>,
+    pub description: Option<Option<String>>,
+    pub mention_only: Option<bool>,
 }
 
 const AGENT_COLS: &str = "id, slug, name, avatar, model, subagent_model, tools, memory, delegates, \
-    archived_at, created_at, updated_at, egress, autonomy, telegram, deleted_at, code_auto";
+    archived_at, created_at, updated_at, egress, autonomy, deleted_at, code_auto, description, mention_only";
 
 fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
     Ok(AgentRow {
@@ -116,9 +119,10 @@ fn agent_row(r: &Row<'_>) -> rusqlite::Result<AgentRow> {
         updated_at: r.get(11)?,
         egress: r.get(12)?,
         autonomy: r.get(13)?,
-        telegram: r.get(14)?,
-        deleted_at: r.get(15)?,
-        code_auto: r.get::<_, i64>(16)? != 0,
+        deleted_at: r.get(14)?,
+        code_auto: r.get::<_, i64>(15)? != 0,
+        description: r.get(16)?,
+        mention_only: r.get::<_, i64>(17)? != 0,
     })
 }
 
@@ -142,7 +146,7 @@ impl Store {
         tx.execute(
             &format!(
                 "INSERT INTO agents ({AGENT_COLS})
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10, ?11, ?12, ?13, NULL, 0)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?10, ?11, ?12, NULL, 0, ?13, ?14)"
             ),
             params![
                 a.id,
@@ -157,7 +161,8 @@ impl Store {
                 now,
                 a.egress,
                 a.autonomy,
-                a.telegram
+                a.description,
+                a.mention_only
             ],
         )?;
         tx.execute(
@@ -365,22 +370,14 @@ impl Store {
             }
             _ => {}
         }
-        if let Some(v) = &ch.telegram {
-            set("telegram", v.as_deref())?;
-            // The secret's name only, never a token.
-            let e = crate::LedgerEntry::new(
-                "telegram.agent",
-                id,
-                format!(
-                    "agent {id}: telegram bot {}",
-                    match v.as_deref() {
-                        Some(_) => "set (takes effect when the daemon restarts)",
-                        None => "removed",
-                    }
-                ),
-            )
-            .detail(serde_json::json!({ "value": v }));
-            crate::ledger_repo::append_on(&tx, &e)?;
+        if let Some(v) = &ch.description {
+            set("description", v.as_deref())?;
+        }
+        if let Some(v) = ch.mention_only {
+            tx.execute(
+                "UPDATE agents SET mention_only = ?2 WHERE id = ?1",
+                params![id, v],
+            )?;
         }
         if let Some(a) = ch.archived {
             tx.execute(

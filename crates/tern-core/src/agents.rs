@@ -235,64 +235,120 @@ pub fn scope_allows_skill(scope: Option<&[String]>, name: &str) -> bool {
     scope.is_none_or(|s| crate::tool::in_scope(Some(s), &format!("skill:{name}")))
 }
 
-/// An agent's own Telegram bot (`agents.telegram`, agent profiles §6.4,
-/// AP3): the name of the secret that holds its token (never the token),
-/// and a Bot API URL that only tests and self-hosted API servers change.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentTelegram {
-    pub bot_token_secret: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_url: Option<String>,
-}
-
-impl AgentTelegram {
-    /// The stored JSON, if it is one.
-    pub fn parse(stored: Option<&str>) -> Option<Self> {
-        stored.and_then(|t| serde_json::from_str(t).ok())
-    }
-}
-
-/// The routing call's instructions ("Let agents decide", agent profiles
-/// §5.2): one cheap call that only picks who answers.
-pub const ROUTER_SYSTEM: &str = "You route a user's message in a group chat to the agents best placed to answer it. \
-You are given the agents, one per line as `slug · Name · what it is for`. Pick the one agent whose job fits best; pick \
-a second or third only when the message clearly has separate parts for them. If none fits or you are unsure, pick the \
-first agent listed (the lead). Answer with JSON only, no other text: {\"agents\": [\"slug\", ...]}.";
+/// The routing question ("Let agents decide", agent profiles §5.2), asked
+/// through `decide()`: who answers the new message? "none" is allowed, and
+/// then the lead answers.
+pub const ROUTER_QUESTION: &str = "Which agent in this group chat should answer the new message? Pick the one \
+whose job fits best. If the new message replies to an agent's question or request in the recent posts, pick that \
+agent. \"none\" if no agent fits.";
 
 /// At most this many agents answer one routed message.
 pub const ROUTER_MAX_AGENTS: usize = 3;
+/// An agent is "relevant" in "Every relevant agent" mode at this probability.
+pub const ROUTER_MIN_PROB: f64 = 0.3;
+/// How many recent posts the router sees (B3).
+pub const ROUTER_RECENT_POSTS: usize = 3;
+/// The question ids in a routing decision.
+pub const Q_WHO: &str = "who";
+pub const Q_RULE: &str = "rule";
 
-/// The routing question: the message and the candidates, the lead first.
-/// `agents` are `(slug, name, persona line)`.
-pub fn router_prompt(message: &str, agents: &[(String, String, String)]) -> String {
-    let message: String = message.chars().take(4000).collect();
-    let mut out = String::from("Agents:\n");
-    for (slug, name, line) in agents {
-        out.push_str(&format!("{slug} · {name} · {line}\n"));
+/// A routing candidate: only its one-line description is ever shown to the
+/// router, never its persona.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+}
+
+/// The routing questions for `candidates` (the lead first) and the
+/// channel's optional plain-English reply rule (B2).
+pub fn router_questions(candidates: &[Candidate], rule: Option<&str>) -> crate::decide::Questions {
+    let mut qs = Vec::new();
+    if candidates.len() > 1 {
+        qs.push((
+            Q_WHO.to_owned(),
+            crate::decide::Question::choice(
+                ROUTER_QUESTION,
+                candidates
+                    .iter()
+                    .map(|c| {
+                        crate::decide::Option_::new(
+                            c.slug.to_lowercase(),
+                            format!("{}: {}", c.name, c.description),
+                        )
+                    })
+                    .collect(),
+                true,
+            ),
+        ));
     }
-    out.push_str("\nMessage to route:\n");
-    out.push_str(&message);
+    if let Some(rule) = rule.map(str::trim).filter(|r| !r.is_empty()) {
+        qs.push((
+            Q_RULE.to_owned(),
+            crate::decide::Question::yes_no(&format!(
+                "Should the agents reply to the new message? The channel's rule: {}",
+                rule.chars().take(500).collect::<String>()
+            )),
+        ));
+    }
+    qs
+}
+
+/// What the router reads: the last few posts (`(who, text)`, oldest first,
+/// each cut), then the new message.
+pub fn router_state(recent: &[(String, String)], message: &str) -> String {
+    let cut = |s: &str, n: usize| -> String { s.chars().take(n).collect() };
+    let mut out = String::new();
+    if !recent.is_empty() {
+        out.push_str("Recent posts:\n");
+        for (who, text) in recent {
+            out.push_str(&format!("[{who}] {}\n", cut(text.trim(), 500)));
+        }
+        out.push('\n');
+    }
+    out.push_str("New message:\n");
+    out.push_str(&cut(message, 4000));
     out
 }
 
-/// The slugs the routing call chose, leniently read: the first JSON object
-/// in `text`, its `agents` list, `@` and case ignored. Only `valid` slugs
-/// count, each once, at most [`ROUTER_MAX_AGENTS`]. `None` when nothing
-/// usable was chosen (the caller falls back to the lead).
-pub fn parse_router_answer(text: &str, valid: &[String]) -> Option<Vec<String>> {
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    let v: serde_json::Value = serde_json::from_str(text.get(start..=end)?).ok()?;
-    let mut out: Vec<String> = Vec::new();
-    for a in v.get("agents")?.as_array()? {
-        let slug = a.as_str()?.trim().trim_start_matches('@').to_lowercase();
-        if valid.contains(&slug) && !out.contains(&slug) {
-            out.push(slug);
-        }
+/// What routing decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Routed {
+    /// These agents (slugs), most likely first.
+    Agents(Vec<String>),
+    /// The reply rule says nobody replies.
+    Nobody,
+    /// No clear pick, or nothing answered: the lead answers.
+    Lead,
+}
+
+/// Reads the routing answers. `every` is "Every relevant agent" mode.
+/// Unanswered is never "no": it falls back to the lead.
+pub fn route_outcome(answers: &crate::decide::Answers, every: bool) -> Routed {
+    if answers.get(Q_RULE).and_then(|a| a.is_yes(0.5)) == Some(false) {
+        return Routed::Nobody;
     }
-    out.truncate(ROUTER_MAX_AGENTS);
-    (!out.is_empty()).then_some(out)
+    let Some(who) = answers.get(Q_WHO) else {
+        return Routed::Lead;
+    };
+    let mut slugs: Vec<String> = if every {
+        who.likely(ROUTER_MIN_PROB)
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if slugs.is_empty() {
+        slugs.extend(who.picked().map(str::to_owned));
+    }
+    slugs.truncate(ROUTER_MAX_AGENTS);
+    if slugs.is_empty() {
+        Routed::Lead
+    } else {
+        Routed::Agents(slugs)
+    }
 }
 
 /// A starting point for a new agent (§7.2). It only fills the sheet. The
@@ -620,44 +676,77 @@ mod tests {
         );
     }
 
-    #[test]
-    fn router_answers_are_read_leniently_and_only_name_valid_agents() {
-        let valid: Vec<String> = ["tern", "research", "ops"].map(String::from).to_vec();
-        let pick = |t: &str| parse_router_answer(t, &valid);
-        assert_eq!(
-            pick(r#"{"agents": ["research"]}"#),
-            Some(vec!["research".into()])
-        );
-        // Text around it, an @, case and repeats.
-        assert_eq!(
-            pick("Sure! {\"agents\": [\"@Ops\", \"ops\", \"research\"]} done"),
-            Some(vec!["ops".into(), "research".into()])
-        );
-        // Unknown agents are dropped; nothing valid means no answer.
-        assert_eq!(
-            pick(r#"{"agents": ["ghost", "tern"]}"#),
-            Some(vec!["tern".into()])
-        );
-        assert_eq!(pick(r#"{"agents": ["ghost"]}"#), None);
-        assert_eq!(pick(r#"{"agents": []}"#), None);
-        assert_eq!(pick("research"), None);
-        assert_eq!(pick(r#"{"agents": "research"}"#), None);
-        // At most three.
-        let many: Vec<String> = (0..6).map(|i| format!("a{i}")).collect();
-        let all = serde_json::json!({ "agents": many }).to_string();
-        assert_eq!(
-            parse_router_answer(&all, &many).unwrap().len(),
-            ROUTER_MAX_AGENTS
-        );
+    fn cands() -> Vec<Candidate> {
+        ["tern", "research", "ops"]
+            .iter()
+            .map(|s| Candidate {
+                slug: (*s).into(),
+                name: s.to_uppercase(),
+                description: format!("does {s}"),
+            })
+            .collect()
+    }
+
+    fn answers(who: serde_json::Value, rule: Option<f64>) -> crate::decide::Answers {
+        let qs = router_questions(&cands(), Some("only on questions"));
+        let mut a = serde_json::json!({ "who": { "type": "choice", "probabilities": who } });
+        if let Some(r) = rule {
+            a["rule"] = serde_json::json!({ "type": "noul", "noul": r });
+        }
+        crate::decide::parse_decisions(&serde_json::json!({ "answers": a }), &qs)
     }
 
     #[test]
-    fn the_routing_prompt_lists_the_candidates_and_the_message() {
-        let p = router_prompt(
-            "hello",
-            &[("tern".into(), "tern".into(), "the lead".into())],
+    fn the_router_reads_descriptions_and_recent_posts_never_personas() {
+        let qs = router_questions(&cands(), None);
+        let body = crate::decide::decisions_body("m", "s", &qs);
+        assert_eq!(
+            body["questions"]["who"]["criteria"]["research"],
+            "RESEARCH: does research"
         );
-        assert!(p.contains("tern · tern · the lead") && p.ends_with("Message to route:\nhello"));
+        assert!(body["questions"]["who"]["criteria"]["none"].is_string());
+        assert!(router_questions(&cands()[..1], None).is_empty());
+        let s = router_state(&[("Research".into(), "Which year?".into())], "2024");
+        assert_eq!(
+            s,
+            "Recent posts:\n[Research] Which year?\n\nNew message:\n2024"
+        );
+        assert_eq!(router_state(&[], "hi"), "New message:\nhi");
+    }
+
+    #[test]
+    fn routing_modes_and_rule() {
+        let p = serde_json::json!({ "tern": 0.1, "research": 0.5, "ops": 0.4 });
+        assert_eq!(
+            route_outcome(&answers(p.clone(), None), false),
+            Routed::Agents(vec!["research".into()])
+        );
+        assert_eq!(
+            route_outcome(&answers(p.clone(), None), true),
+            Routed::Agents(vec!["research".into(), "ops".into()])
+        );
+        // A tie goes to the lead (listed first).
+        let tie = serde_json::json!({ "tern": 0.4, "research": 0.4, "ops": 0.2 });
+        assert_eq!(
+            route_outcome(&answers(tie, None), false),
+            Routed::Agents(vec!["tern".into()])
+        );
+        // "none" most likely: the lead.
+        let none = serde_json::json!({ "tern": 0.1, "none": 0.9 });
+        assert_eq!(route_outcome(&answers(none, None), false), Routed::Lead);
+        // The rule says no: nobody. Unanswered: routing goes on.
+        assert_eq!(
+            route_outcome(&answers(p.clone(), Some(0.1)), false),
+            Routed::Nobody
+        );
+        assert!(matches!(
+            route_outcome(&answers(p, Some(0.9)), false),
+            Routed::Agents(_)
+        ));
+        assert_eq!(
+            route_outcome(&crate::decide::Answers::new(), true),
+            Routed::Lead
+        );
     }
 
     #[test]

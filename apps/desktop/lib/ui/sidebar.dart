@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:tern_client/tern_client.dart';
 
-import '../state/connection.dart';
 import '../state/fleet.dart';
 import '../state/store.dart';
 import '../state/transcript.dart';
@@ -11,17 +10,12 @@ import 'channel_view.dart';
 import 'fleet_status.dart';
 import 'manage.dart';
 import 'preferences.dart';
-import 'servers.dart';
 import 'widgets.dart';
 
 class Sidebar extends StatefulWidget {
-  const Sidebar({super.key, required this.store, this.connections});
+  const Sidebar({super.key, required this.store});
 
   final TernStore store;
-
-  /// The saved servers, for the switcher in the footer; without it the
-  /// footer only reports the connection.
-  final Connections? connections;
 
   @override
   State<Sidebar> createState() => _SidebarState();
@@ -142,7 +136,7 @@ class _SidebarState extends State<Sidebar> {
             ),
           const Hairline(),
           SpendBar(store: store),
-          _StatusFooter(store: store, connections: widget.connections),
+          _StatusFooter(store: store),
         ],
       ),
     );
@@ -779,10 +773,7 @@ class _SessionRow extends StatelessWidget {
         ) ??
         false;
     final running = transcript?.activeRun != null;
-    final icon = switch (session.source) {
-      'cron' => Icons.schedule,
-      final s => gatewaySource(s)?.icon,
-    };
+    final icon = session.source == 'cron' ? Icons.schedule : null;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 1),
       child: Material(
@@ -881,10 +872,9 @@ class _Dot extends StatelessWidget {
 }
 
 class _StatusFooter extends StatelessWidget {
-  const _StatusFooter({required this.store, this.connections});
+  const _StatusFooter({required this.store});
 
   final TernStore store;
-  final Connections? connections;
 
   @override
   Widget build(BuildContext context) {
@@ -901,26 +891,20 @@ class _StatusFooter extends StatelessWidget {
           Expanded(
             child: Tooltip(
               message: store.linkError ?? store.client.endpoint.describe(),
-              child: connections != null
-                  ? ServerSwitcher(
-                      connections: connections!,
-                      statusColor: color,
-                      statusText: text,
-                    )
-                  : Row(
-                      children: [
-                        _Dot(color: color),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            text,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ),
-                      ],
+              child: Row(
+                children: [
+                  _Dot(color: color),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
+                  ),
+                ],
+              ),
             ),
           ),
           QuietIconButton(

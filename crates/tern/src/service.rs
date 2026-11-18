@@ -184,6 +184,43 @@ pub mod bundle {
     }
 }
 
+impl Method {
+    /// Whether the service manager writes `logs/daemon.err.log`. The
+    /// bundled `SMAppService` plist can't: launchd needs absolute log
+    /// paths and that plist can't depend on the user's home.
+    pub fn writes_err_log(self) -> bool {
+        self == Method::File
+    }
+}
+
+/// Whether `launchctl print` output says launchd could not exec the job:
+/// `job state = spawn failed`, or exit code 78 (`EX_CONFIG`) with no pid.
+/// Gatekeeper blocking a quarantined helper looks like this.
+pub fn spawn_failed(print: &str) -> bool {
+    let line = |key: &str| {
+        print
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(key))
+            .map(str::trim)
+    };
+    if line("job state = ").is_some_and(|s| s == "spawn failed") {
+        return true;
+    }
+    let code78 = line("last exit code = ").is_some_and(|c| c.split(':').next() == Some("78"));
+    code78 && line("pid = ").is_none()
+}
+
+/// Whether launchd currently reports the daemon's job as failing to spawn.
+pub fn job_spawn_failed() -> bool {
+    launchctl()
+        .args(["print", &launchd_target()])
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| spawn_failed(&String::from_utf8_lossy(&o.stdout)))
+}
+
 /// The plist path in `launchctl print` output.
 fn job_path(print: &str) -> Option<&str> {
     print
@@ -1229,6 +1266,31 @@ mod tests {
         let plain = "x = {\n\tpath = /Users/a/Library/LaunchAgents/ai.tern.daemon.plist\n}";
         assert!(!bundle::is_bundled(job_path(plain).unwrap()));
         assert_eq!(job_path("nothing here"), None);
+    }
+
+    #[test]
+    fn spawn_failure_in_launchctl_print() {
+        let failed = "gui/501/ai.tern.daemon = {\n\tstate = not running\n\tjob state = spawn failed\n\tlast exit code = 78: EX_CONFIG\n\truns = 53\n}";
+        assert!(spawn_failed(failed));
+        // Exit code 78 and no pid, without the job state line.
+        assert!(spawn_failed("x = {\n\tlast exit code = 78: EX_CONFIG\n}"));
+        // Running, or a plain crash, is not a spawn failure.
+        assert!(!spawn_failed(
+            "x = {\n\tstate = running\n\tpid = 123\n\tlast exit code = 78\n}"
+        ));
+        assert!(!spawn_failed(
+            "x = {\n\tjob state = exited\n\tlast exit code = 1\n}"
+        ));
+        assert!(!spawn_failed(
+            "x = {\n\tstate = not running\n\tlast exit code = (never exited)\n}"
+        ));
+        assert!(!spawn_failed(""));
+    }
+
+    #[test]
+    fn only_file_method_writes_err_log() {
+        assert!(Method::File.writes_err_log());
+        assert!(!Method::AppService.writes_err_log());
     }
 
     #[test]

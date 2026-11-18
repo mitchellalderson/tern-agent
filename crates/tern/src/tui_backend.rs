@@ -606,20 +606,9 @@ impl Backend for TuiBackend {
     }
 }
 
-/// A core to attach to over the network (`tern --remote`).
-pub struct RemoteTarget {
-    pub url: String,
-    pub token: String,
-    pub pin: Option<String>,
-}
-
-/// `tern` with no subcommand: attach to `remote` if given, else to a
+/// `tern` with no subcommand: attach to a
 /// running daemon, else run embedded. `command` runs first (`/setup`).
-pub fn run(
-    home: &TernHome,
-    remote: Option<RemoteTarget>,
-    command: Option<&str>,
-) -> anyhow::Result<std::process::ExitCode> {
+pub fn run(home: &TernHome, command: Option<&str>) -> anyhow::Result<std::process::ExitCode> {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!("the chat UI needs a terminal; use `tern run \"<prompt>\"` for scripts");
@@ -628,7 +617,7 @@ pub fn run(
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let (backend, approvals) = connect(home, remote).await?;
+        let (backend, approvals) = connect(home).await?;
         tern_tui::run(backend, approvals, command.map(str::to_owned))
             .await
             .map_err(anyhow::Error::from)
@@ -640,17 +629,10 @@ pub fn run(
 /// embedded runtime whose approvals arrive on the returned receiver.
 pub async fn connect(
     home: &TernHome,
-    remote: Option<RemoteTarget>,
 ) -> anyhow::Result<(
     Arc<dyn tern_tui::Backend>,
     tokio::sync::mpsc::Receiver<tern_tui::UserPrompt>,
 )> {
-    if let Some(t) = remote {
-        let (remote, approvals) =
-            crate::remote::connect_url(&t.url, &t.token, t.pin.as_deref()).await?;
-        tracing::info!(url = %t.url, "attached to a remote core");
-        return Ok((remote as Arc<dyn tern_tui::Backend>, approvals));
-    }
     let socket = home
         .socket_connect_path()
         .inspect_err(|e| tracing::warn!("not attaching to the daemon: {e}"));

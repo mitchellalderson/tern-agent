@@ -13,6 +13,7 @@ TERN_TEST_BIN="$bin" cargo test -p tern --test it -- \
   m1::crash_mid_run_then_resume \
   m5::socket_api_runs_streams_and_approves \
   sandbox:: \
+  run_reliability::smoke \
   t3::an_injected_write_waits_in_the_outbox_and_runs_once_when_approved \
   "$@"
 python3 scripts/tui-smoke.py "$bin"
