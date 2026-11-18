@@ -1,1 +1,0 @@
-- **`capabilities.secrets` (the script reads the value) is deprecated.** The summary says so; use `capabilities.auth`, which attaches the credential host-side.

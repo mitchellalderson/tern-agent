@@ -1,1 +1,0 @@
-- Reports that arrive together (`agent_wait`, `delegate_team`) share one 24,000-character budget instead of 8,000 each, so every report still arrives. A hand-off that stopped, failed or was stopped by the user now tells its caller what got done and what to do next.

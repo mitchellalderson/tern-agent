@@ -9,6 +9,75 @@ Entries go in `changelog.d/` (see its README); the release gathers them here.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.8] - 2026-11-18
+
+### Added
+
+- **Agents and channels from chat.** An agent can create, edit and delete agents (`agent_create`, `agent_edit`, `agent_delete`) and channels (`channel_create`, `channel_edit`, `channel_delete`). A new agent writes its starting role from its name. You approve each change, and deletes always ask. Power only narrows: an agent never gives another a tool, connector or autonomy ceiling it doesn't have, and never changes an agent that can do more than it can. Tool names are forgiving (`Read File`, `read-file`); a refusal is final, so the model doesn't retry it.
+- **New since you left**: Home, DMs and channels mark what arrived while you were away, and open there when there's a lot to catch up on.
+- **Composio connector.** One API key, hundreds of apps: search tools, sign in through a card, run reads without asking, writes with a prompt, destructive tools every time. Payment apps are read-only. See `docs/recipes/composio.md`.
+- **`offer_connection`.** Instead of "I can't", a card offers Composio sign-in, an MCP server or a built connector, once per app per conversation.
+- **Connecting order in the prompt.** Composio, official MCP with OAuth, connector with OAuth, app-only OAuth, API key; never a pasted short-lived token.
+- **Evidence on the activation card:** every test of the exact version (input, each HTTP call with status or "Refused", output or error, logs) and the tools no test touched.
+- **Connector sign-in links** show as a card with the real domain and a live expiry. A tool returns `sign_in = {url, label, expires_at}`; tern checks it is https, has no embedded credentials and is on a declared host's domain, and the model never sees the URL.
+- **Three models:** agent, fast (`fast_model`, background writing) and decision (`decision_model`, quick choices). Quick choices go through one typed `decide()` call, on OpenRouter's Decisions API when available, else the fast model with a retry; a refusal is never read as "no". Channel routing and the notification gate use it. Reasoning is off for quick calls.
+- **Run on this Mac.** tern detects Ollama and always reuses the one that is running. Without it, the first-run screen links to the installer or downloads it for you, but only after you agree: the download is checked against GitHub's checksum and Apple's signature first. tern can start Ollama itself (loopback only, long context and keep-alive) and stops it with the daemon; an Ollama you run yourself is left as is. New `/v1/local/status`, `/models`, `/start`, `/stop` and `/install`.
+- **A local model per tier.** The Local models dialog recommends an agent, fast and decision model for your Mac's memory, lets you use any installed model for a tier (a model that can't use tools can't be the agent or decision model), and can download and set up all three at once. `tern local recommended|use|setup`.
+- **Local models** in the desktop app and the CLI. A dialog lists what's installed (tool support, in memory, and a warning when a model can't use tools or may not fit this Mac), downloads by name with progress and cancel, checks disk space first, and removes models. `tern local status|list|pull|rm|start|stop`. Downloads run in the daemon, so they go on when the window closes.
+- **Memory tidy-up**: a weekly pass merges duplicate memories and flags contradictions, logged with Undo in Memory.
+- **New topic?** hint in Home and DMs when the subject clearly changes: one quick yes/no per message, one hint per conversation, and it never switches by itself.
+- **App-only OAuth (client credentials)** for connectors: set `app_only = true` on an `[auth.clients]` app that has a client secret; no sign-in, and tern fetches a new token when it expires.
+- **Follow-ups**: "I'll check back Friday" in a reply becomes a tracked follow-up the agent wakes for. Shown above the composer and in Tasks, and you can cancel it. Time waits now last up to 30 days.
+- **Proactive help**, each a dismissible card in the agent's DM with its own `[proactive]` switch (on by default) and a hard cap, and no model call when nothing changed:
+  a daily check of routines, sign-ins and waits; a proposed fix for a routine that failed twice or reported nothing three times in a row (never applied silently);
+  a "Make this a routine?" suggestion after the same ask three times in 14 days; and "While you were away" on the first desktop open of the day after 8 hours or more.
+- **Always allowed** in desktop Settings › Permissions lists the standing grants and revokes them.
+- **Remembering**: durable facts in your messages that the agent missed are saved (up to three each), with a card to forget them.
+- **Better channel routing:** the router reads each agent's one-line description (written once from its role, editable in the agent sheet), never its persona, and sees the last three posts, so a reply to an agent's question goes back to it. "Sent to @x" now says why.
+- **Reply when relevant** per agent (off: only when @mentioned), **One agent / Every relevant agent** per channel (up to 3), and an optional plain-English **reply rule**. The desktop app shows "Choosing who replies…".
+- **Team tools for agents.** `delegate_team` splits a question across two or three teammates' lanes and brings their reports back together under one "Handed to Scout and Research" card. `brief_team` tells teammates about a change of plan: they read it at their next run, or are woken with `now` or `want_reply`. `inspect_work` lets an agent look at its own runs (steps, timings, failures, hand-offs, models, tokens). `read_report` reads on past a cut report.
+- **A delegate's answer is a "Message from Scout" card** in the chat of the agent that asked it.
+
+### Changed
+
+- **The default agent is a Chief of Staff.** New installs name it Chief (`@chief`); an existing install keeps its name and persona. It plans, hands work to the teammate whose job it is, and tells the team when a plan changes.
+- **A channel's lead is told who is in which lane.** It hands the parts of a question that spans lanes to those teammates with `delegate_team`, does its own, and answers once with credit. Simple questions stay with one agent.
+- **Connector errors say what to do.** A rejected API key (401/403) tells the agent to ask for a replacement with `secret_request`; a rate limit says to wait. Failed spec fetches say what to check.
+- **`tern setup` and `/setup` lead with Ollama too.** On first run the terminal setup offers "Set up with Ollama" (installs it if needed, starts it, downloads a starter model sized to your Mac, makes it the default), with `a` for "Use an API model instead", which opens the usual provider list unchanged. It needs the background agent.
+- **First run leads with Ollama.** One prompt, "Set up with Ollama", installs it if needed, downloads a starter model sized to your Mac and makes it the default. "Use an API model instead" opens the usual provider setup. tern starts Ollama itself, with no prompt, at startup and before a run that uses it.
+- `schedules.gate_model` is now `decision_model`. Existing config files keep working: the old key is read and moved on load.
+- **"Always allow this" is learned, not on every card.** After you choose Allow once three times in 14 days for the same agent, tool and target, the approval card offers it and says why. Never for destructive calls, tainted runs, routine runs, or shell commands that remove, move, escalate or reach the network. `[proactive] learn_approvals = false` brings back "Always" on every card.
+- **Routine results now notify on this computer.** A routine's `deliver_to` is a local target (`home`, `dm`, `channel:<id>`, or `none`; omitted means where the routine lives). Initiative levels, quiet hours, digests and held deliveries work as before: digests are posted as a note from tern, and notify/interrupt raise a desktop notification. Old gateway targets (`telegram:123`) become `home`.
+- Reports that arrive together (`agent_wait`, `delegate_team`) share one 24,000-character budget instead of 8,000 each, so every report still arrives. A hand-off that stopped, failed or was stopped by the user now tells its caller what got done and what to do next.
+
+### Deprecated
+
+- **`capabilities.secrets` (the script reads the value) is deprecated.** The summary says so; use `capabilities.auth`, which attaches the credential host-side.
+
+### Removed
+
+- **Messaging gateways.** tern is local-only: Telegram, ntfy and Slack gateways are gone, with `tern gateway`, `tern agents telegram`, per-agent bots, pairing codes and the `[gateway]` config (ignored with a warning). Approvals happen in the desktop app and the TUI.
+- **Remote access, accounts and hosted tern.** tern is local-only and single-player: the daemon listens only on its Unix socket. Removed the TCP/TLS listener, device pairing and tokens (`tern devices`, `tern --remote`), Clerk account sign-in (`tern account`), the `[api]` and `[account]` config sections, and the desktop app's server switcher and "where to run" choice. The update drops the device tables. Old `[api]` and `[account]` sections are ignored with a warning.
+- **Webhook routines.** tern is local-only now, so nothing outside this machine can start a routine: `tern hooks`, the `[webhooks]` listener and `/v1/webhooks` are gone, and existing webhook routines are deleted by the update. Schedule and watch routines are unchanged. An old `[webhooks]` section in `config.toml` is ignored with a warning.
+
+### Fixed
+
+- **Channel catch-up no longer loses a trailing question:** the newest three posts are shown in full (up to 2,000 characters), older ones at 500, and run byproducts such as "memory saved" and "handed to" notes are left out.
+- **Ollama** now reports what its models really get. tern reads each model's context and tool support from Ollama, sizes prompts to the context in use instead of assuming 32k (Ollama silently cut longer prompts), warns under 64k and for an Ollama that is too old, keeps the model loaded for 30 minutes, and no longer sends `tool_choice` (which Ollama ignores).
+- **Answers written next to a tool call** are no longer lost behind a short afterword like "I saved the details".
+- **Stopped runs stay stopped**; steps cut off by a stop show as interrupted, and leftovers are closed at startup.
+- **Failed runs** keep a plain-sentence error instead of the raw provider text.
+- **Taint and the autonomy ceiling** carry across the runs of a conversation.
+- **The agent roster** is ordered by name, so the prompt stays cacheable.
+- **"Working for…"** updates when a parent is stopped while a delegate works.
+
+### Security
+
+- **Connector hosts take no wildcards:** `capabilities.http` entries like `*.example.com` are refused; list each host.
+- **OAuth sign-in state** is single-use and expires after 15 minutes.
+- **Secrets are encrypted at rest.** Values in `secrets.toml` are sealed with AES-256-GCM, bound to their names; the key is in the macOS keychain (or `secrets.key` where there is none). Existing plaintext is migrated automatically.
+- **Redaction catches echoed fragments.** A service that echoes part of a key (`ck_**3pNe`, or just its first 8 or last 4 characters) no longer leaks it to the agent, the journal or connector logs.
+
 ## [0.1.0-alpha.7] - 2026-11-13
 
 Agents can write documents you read in a new Documents tab. The desktop app starts tern again on a fresh macOS install, and long chat messages no longer jump back while you read.

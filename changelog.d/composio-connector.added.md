@@ -1,3 +1,0 @@
-- **Composio connector.** One API key, hundreds of apps: search tools, sign in through a card, run reads without asking, writes with a prompt, destructive tools every time. Payment apps are read-only. See `docs/recipes/composio.md`.
-- **`offer_connection`.** Instead of "I can't", a card offers Composio sign-in, an MCP server or a built connector, once per app per conversation.
-- **Connecting order in the prompt.** Composio, official MCP with OAuth, connector with OAuth, app-only OAuth, API key; never a pasted short-lived token.

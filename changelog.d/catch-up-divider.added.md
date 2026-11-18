@@ -1,1 +1,0 @@
-- **New since you left**: Home, DMs and channels mark what arrived while you were away, and open there when there's a lot to catch up on.

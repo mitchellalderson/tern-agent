@@ -1,1 +1,0 @@
-- **A local model per tier.** The Local models dialog recommends an agent, fast and decision model for your Mac's memory, lets you use any installed model for a tier (a model that can't use tools can't be the agent or decision model), and can download and set up all three at once. `tern local recommended|use|setup`.
