@@ -141,7 +141,11 @@ async fn socket_api_runs_streams_and_approves() {
     ]}));
     // A new install is autonomous, which runs a sandboxed `echo` without
     // asking. This test answers an approval, so it pins the supervised level.
-    std::fs::write(env.tern_home.join("config.toml"), "autonomy = \"supervised\"\n").unwrap();
+    std::fs::write(
+        env.tern_home.join("config.toml"),
+        "autonomy = \"supervised\"\n",
+    )
+    .unwrap();
     let _daemon = env.daemon();
     #[cfg(unix)]
     {
