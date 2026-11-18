@@ -22,6 +22,9 @@ void main() {
     tmp = await Directory.systemTemp.createTemp('tern-live');
     final home = '${tmp.path}/.tern';
     await Directory(home).create();
+    // Supervised, so the shell asks: autonomous mode refuses an unconfined
+    // command before asking (CI has no sandbox).
+    await File('$home/config.toml').writeAsString('autonomy = "supervised"\n');
     final script = File('${tmp.path}/script.json');
     await script.writeAsString(
       jsonEncode({
@@ -135,7 +138,10 @@ void main() {
     final set = await client.setSecret('DART_TEST_TOKEN', 'dart-secret-value');
     expect(set.inFile, isTrue);
     final file = File('${tmp.path}/.tern/secrets.toml');
-    expect(await file.readAsString(), contains('dart-secret-value'));
+    // Stored encrypted at rest, never in the clear.
+    final stored = await file.readAsString();
+    expect(stored, contains('DART_TEST_TOKEN'));
+    expect(stored, isNot(contains('dart-secret-value')));
     expect(
       jsonEncode((await client.secrets()).map((s) => s.name).toList()),
       contains('DART_TEST_TOKEN'),
