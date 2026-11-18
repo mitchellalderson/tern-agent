@@ -124,7 +124,10 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
             out.push_str("\n\n");
             out.push_str(&SCHEDULED_ROLE.replace("{no_reply}", crate::quiet::NO_REPLY));
         }
-        AgentRole::Main => {}
+        AgentRole::Main => {
+            out.push_str("\n\n");
+            out.push_str(TEAM_ADMIN);
+        }
     }
 
     if let Some(a) = inp.agent.filter(|a| !a.others.is_empty()) {
@@ -349,6 +352,14 @@ say what you checked and what you didn't.
 Sub-agents can't talk to the user except through approval prompts, which the user sees with the sub-agent's name. \
 {nest}";
 
+const TEAM_ADMIN: &str = "## Making agents and channels
+
+When the user asks for a new agent, or to change or remove one, use `agent_create`, `agent_edit` and `agent_delete`; \
+for channels, `channel_create`, `channel_edit` and `channel_delete`. A name is enough for a new agent: its role is \
+written from it. The user approves each one. A new agent never gets more than you have: not a tool, a connector or an \
+autonomy ceiling you lack, and you can't change an agent that can do more than you can. A refusal is final: say so, \
+and don't retry it with another spelling.";
+
 const AGENTS: &str = "## Agents
 
 The user has other agents, each with its own job, chat and memory. You are one of them. They don't see your \
@@ -356,7 +367,9 @@ conversations or your memory, only what is posted in channels. If a request is c
 can't hand it over yourself, say so and suggest the user ask it by name. Approvals for every agent are answered in \
 Home. To do something repeatedly (\"check every hour\"), create a schedule with `schedule_create` rather than \
 waiting in one run; your schedules are yours, and their results come to your chat. To wait once for something to \
-finish (a CI run, a deploy), use `wait_until` and stop: it continues this conversation when it is done.
+finish (a CI run, a deploy), use `wait_until` and stop: it continues this conversation when it is done. When the user \
+changes a plan, a priority or a fact your teammates rely on, tell them with `brief_team`: they read it at their next \
+run. Add `now` only if they must act at once, `want_reply` only if you need their answer.
 
 Other agents:";
 
@@ -376,6 +389,13 @@ shape of report you want.
 - When it reports back, answer in your own words, say who did the work, and say what it didn't cover.
 - Don't delegate small things you can answer in a turn, chat, or work that needs this conversation. Don't hand a task \
 back and forth, and don't re-delegate what a delegate returned: one hand-off per task.
+- A question that splits across two or three agents' lanes goes to `delegate_team`: one call, each lane gets its own \
+complete brief, they work at the same time, and you get all the reports together. Answer once, crediting each by name. \
+Keep a simple question with one agent.
+- You get an agent's report, never its tool output: `read_report` reads on past a cut. When a hand-off stopped or \
+failed, the report says what got done and what to do next: after the user stopped it, ask the user; after a failure, \
+try once differently.
+- To see what you did and why (steps, timings, failures, hand-offs, spend), use `inspect_work` instead of guessing.
 - A hand-off never widens your reach. The agent works within its own tools, workspace, autonomy ceiling and \
 approvals, and the lower of its ceiling and yours applies. Don't pick an agent to get around a limit or a refusal.
 
@@ -555,7 +575,7 @@ mod tests {
             memory: &MemoryConfig::default(),
             agent: None,
         });
-        assert!(p.starts_with("You are tern"));
+        assert!(p.starts_with("You are the user's Chief of Staff"));
         assert!(!p.contains("## Skills"));
         // No integrations: no use-them-first rule, but still the suggestion.
         assert!(!p.contains(INTEGRATIONS_RULE));
