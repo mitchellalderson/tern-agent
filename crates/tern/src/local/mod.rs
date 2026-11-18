@@ -10,6 +10,7 @@
 
 pub mod install;
 pub mod ollama;
+pub mod pulls;
 
 use std::sync::{Arc, Mutex};
 
@@ -93,9 +94,21 @@ pub struct LocalModel {
     pub loaded: bool,
 }
 
+/// One step of a download, as the engine reports it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Progress {
+    /// `pulling manifest`, `pulling <digest>`, `verifying sha256 digest`, ...
+    pub status: String,
+    /// The layer this step is about, when it is one.
+    pub digest: Option<String>,
+    pub completed: u64,
+    pub total: u64,
+}
+
 #[derive(Debug)]
 pub enum Error {
     NotInstalled(&'static str),
+    Cancelled,
     /// Not possible right now (nothing to stop, another program on the port).
     Unavailable(String),
     Failed(String),
@@ -106,6 +119,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::NotInstalled(name) => write!(f, "{name} isn't installed"),
             Self::Unavailable(m) | Self::Failed(m) => f.write_str(m),
+            Self::Cancelled => f.write_str("cancelled"),
         }
     }
 }
@@ -121,6 +135,15 @@ pub trait Engine: Send + Sync {
     async fn status(&self) -> Status;
     /// Installed models, with what each can do.
     async fn list(&self) -> Result<Vec<LocalModel>, Error>;
+    /// Download `model`, reporting progress. The token stops it; a later
+    /// pull resumes the part already there.
+    async fn pull(
+        &self,
+        model: &str,
+        progress: &mut (dyn FnMut(Progress) + Send),
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<(), Error>;
+    async fn delete(&self, model: &str) -> Result<(), Error>;
     /// Start the server unless one already answers.
     async fn start(&self) -> Result<(), Error>;
     /// Stop a server tern started. One the user runs is left alone.
@@ -132,6 +155,7 @@ pub struct Local {
     engine: Arc<dyn Engine>,
     installer: Arc<install::Installer>,
     installing: Mutex<install::State>,
+    pulls: pulls::Pulls,
     changes: broadcast::Sender<Change>,
 }
 
@@ -145,6 +169,7 @@ impl Local {
             engine,
             installer: Arc::new(installer),
             installing: Mutex::new(install::State::Idle),
+            pulls: pulls::Pulls::default(),
             changes,
         }
     }

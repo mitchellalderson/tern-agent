@@ -1,0 +1,1 @@
+- **Local models** in the desktop app and the CLI. A dialog lists what's installed (tool support, in memory, and a warning when a model can't use tools or may not fit this Mac), downloads by name with progress and cancel, checks disk space first, and removes models. `tern local status|list|pull|rm|start|stop`. Downloads run in the daemon, so they go on when the window closes.

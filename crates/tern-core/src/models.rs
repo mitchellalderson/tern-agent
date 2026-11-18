@@ -131,6 +131,16 @@ pub enum Change {
     /// moved on, a download progressed or finished. Re-read `/v1/local/status`
     /// (and `/v1/local/models`).
     LocalChanged {},
+    /// A model download started, moved on or ended. `phase` is `starting`,
+    /// `downloading`, `verifying`, `done`, `failed` or `cancelled`.
+    LocalPull {
+        id: String,
+        model: String,
+        phase: String,
+        completed: u64,
+        total: u64,
+        error: Option<String>,
+    },
     /// A routine was created, changed or deleted, by a tool or the API;
     /// re-read `/v1/schedules`.
     SchedulesChanged {

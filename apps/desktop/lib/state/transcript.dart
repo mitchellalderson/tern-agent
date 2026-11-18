@@ -866,7 +866,8 @@ class Transcript {
           AuthPromptOpened() ||
           AuthPromptClosed() ||
           ConnectionsChanged() ||
-          LocalChanged():
+          LocalChanged() ||
+          LocalPullEvent():
         return false;
     }
     return true;

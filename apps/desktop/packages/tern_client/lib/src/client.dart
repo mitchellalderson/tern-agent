@@ -192,6 +192,28 @@ class TernClient {
       LocalModel.fromJson(m as Json),
   ];
 
+  /// Model downloads, running and recent.
+  Future<List<LocalPull>> localPulls() async => [
+    for (final p in await _json('GET', '/v1/local/pulls') as List)
+      LocalPull.fromJson(p as Json),
+  ];
+
+  /// Start downloading `model` (for example `qwen3:8b`). The daemon refuses
+  /// when Ollama is off, another download runs, or the disk is too full.
+  Future<LocalPull> localPull(String model) async => LocalPull.fromJson(
+    await _json('POST', '/v1/local/pull', {'model': model}) as Json,
+  );
+
+  /// Stop a download; pulling the same model again resumes it.
+  Future<void> localCancelPull(String id) async {
+    await _json('POST', '/v1/local/pulls/$id/cancel');
+  }
+
+  /// Remove an installed model.
+  Future<void> localDelete(String model) async {
+    await _json('DELETE', '/v1/local/models/$model');
+  }
+
   /// Start the engine unless one already answers.
   Future<LocalStatus> localStart() async =>
       LocalStatus.fromJson(await _json('POST', '/v1/local/start') as Json);

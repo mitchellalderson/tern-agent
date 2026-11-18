@@ -96,8 +96,7 @@ class LocalStatus {
     ramBytes: (j['ram_bytes'] as num?)?.toInt(),
     context: (j['context'] as num?)?.toInt(),
     warnings: [for (final w in j['warnings'] as List? ?? []) w as String],
-    installPage:
-        j['install_page'] as String? ?? 'https://ollama.com/download',
+    installPage: j['install_page'] as String? ?? 'https://ollama.com/download',
     install: j['install'] is Json
         ? LocalInstallPlan.fromJson(j['install'] as Json)
         : const LocalInstallPlan(),
@@ -172,4 +171,41 @@ class LocalModel {
 
   /// In memory now.
   final bool loaded;
+}
+
+/// A model download (`GET /v1/local/pulls`, `local_pull` events).
+class LocalPull {
+  const LocalPull({
+    required this.id,
+    required this.model,
+    required this.phase,
+    this.completed = 0,
+    this.total = 0,
+    this.error,
+  });
+
+  factory LocalPull.fromJson(Json j) => LocalPull(
+    id: j['id'] as String,
+    model: j['model'] as String,
+    phase: j['phase'] as String? ?? 'starting',
+    completed: (j['completed'] as num?)?.toInt() ?? 0,
+    total: (j['total'] as num?)?.toInt() ?? 0,
+    error: j['error'] as String?,
+  );
+
+  final String id;
+  final String model;
+
+  /// `starting`, `downloading`, `verifying`, `done`, `failed`, `cancelled`.
+  final String phase;
+  final int completed;
+  final int total;
+  final String? error;
+
+  bool get finished =>
+      phase == 'done' || phase == 'failed' || phase == 'cancelled';
+
+  /// 0..1 once the size is known.
+  double? get fraction =>
+      total > 0 ? (completed / total).clamp(0.0, 1.0) : null;
 }

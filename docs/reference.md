@@ -83,6 +83,7 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern providers`](#tern-providers) | List, add, or remove model providers (for scripts). |
 | [`tern mcp`](#tern-mcp) | List, add, import, test and manage MCP servers. |
 | [`tern models`](#tern-providers) | List the models each provider offers. |
+| [`tern local`](local-models.md) | Models on this Mac through Ollama: status, list, pull, rm, start, stop. |
 | [`tern config`](#tern-config) | Create, read, and edit `config.toml`. |
 | [`tern doctor`](#tern-doctor) | Check configuration, providers, database, daemon, and integrations. |
 | [`tern devices`](#remote-access) | Pair and manage devices that reach this tern over TCP. |
