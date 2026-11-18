@@ -132,7 +132,6 @@ const YOLO_FIX: &str =
 /// database.
 pub fn audit(home: &TernHome, config: &Config, store: Option<&Store>) -> Audit {
     let mut a = Audit::default();
-    listeners(&mut a, config);
     secrets_file(&mut a, home);
     autonomy(&mut a, config, store);
     code_auto(&mut a, home, config, store);
@@ -142,70 +141,11 @@ pub fn audit(home: &TernHome, config: &Config, store: Option<&Store>) -> Audit {
     connectors(&mut a, home);
     bundles(&mut a, home);
     if let Some(store) = store {
-        devices(&mut a, store);
         routines(&mut a, config, store);
         connections(&mut a, store);
         grants(&mut a, store);
     }
     a.finish()
-}
-
-fn listeners(a: &mut Audit, config: &Config) {
-    match crate::daemon::listen::check(&config.api) {
-        Err(e) => a.add(
-            Severity::High,
-            "listeners",
-            format!("the API's listeners: {e:#}"),
-            None,
-        ),
-        Ok(addrs) if addrs.is_empty() => a.add(
-            Severity::Info,
-            "listeners",
-            "API: the local socket only (no TCP listener)",
-            None,
-        ),
-        Ok(addrs) => {
-            for addr in addrs {
-                if addr.ip().is_loopback() {
-                    a.add(
-                        Severity::Info,
-                        "listeners",
-                        format!(
-                            "API on tcp://{addr} (this machine only, {:?} TLS)",
-                            config.api.tls
-                        ),
-                        None,
-                    );
-                } else {
-                    a.add(
-                        Severity::Low,
-                        "listeners",
-                        format!(
-                            "API on tcp://{addr}: reachable from the network ({:?} TLS); paired device tokens guard it",
-                            config.api.tls
-                        ),
-                        Some("Bind to 127.0.0.1 or a VPN address (Tailscale) unless phones need it elsewhere."),
-                    );
-                }
-            }
-            if config.api.remote_mcp_stdio {
-                a.add(
-                    Severity::High,
-                    "listeners",
-                    "api.remote_mcp_stdio = true: a paired device can start commands on this host outside the sandbox",
-                    Some("Set api.remote_mcp_stdio = false; add stdio MCP servers on this machine."),
-                );
-            }
-            if config.sandbox.backend == SandboxBackendKind::Host {
-                a.add(
-                    Severity::Medium,
-                    "listeners",
-                    "the API is on TCP and sandbox.backend = \"host\": shell commands approved from a paired device run on this machine",
-                    Some("Consider sandbox.backend = \"docker\", or pair phones with --scope read."),
-                );
-            }
-        }
-    }
 }
 
 fn secrets_file(a: &mut Audit, home: &TernHome) {
@@ -507,40 +447,6 @@ fn connectors(a: &mut Audit, home: &TernHome) {
             );
             a.about(&vm.spec.name);
         }
-    }
-}
-
-fn devices(a: &mut Audit, store: &Store) {
-    let now = tern_store::now_ms();
-    for d in store.devices().unwrap_or_default() {
-        if d.revoked_at.is_some() {
-            continue;
-        }
-        let idle_days = (now - d.last_seen_at.unwrap_or(d.created_at)) / 86_400_000;
-        let (sev, can) = match d.scope.as_str() {
-            "owner" => (
-                Severity::Low,
-                "everything, including config, secrets and devices",
-            ),
-            "chat" => (Severity::Info, "conversations, approvals and routines"),
-            _ => (Severity::Info, "reading only"),
-        };
-        let stale = if idle_days >= 90 {
-            format!("; unused for {idle_days} days")
-        } else {
-            String::new()
-        };
-        a.add(
-            if stale.is_empty() {
-                sev
-            } else {
-                Severity::Low.min(sev)
-            },
-            "devices",
-            format!("device {} ({} scope): {can}{stale}", d.name, d.scope),
-            (!stale.is_empty()).then_some("Revoke it with `tern devices revoke`."),
-        );
-        a.about(&d.id);
     }
 }
 

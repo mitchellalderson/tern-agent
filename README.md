@@ -68,7 +68,7 @@ What it doesn't do (no built-in browser, no Windows build, no hosted version, no
 
 ### Front ends and the daemon
 
-Everything that matters lives in one process, the **daemon** (`tern daemon`, or `tern start` to run it in the background). It owns the database, drives every run, runs schedules, and hosts the Telegram gateway. Front ends hold no state of their own. They attach over the daemon's API (a Unix socket, plus TCP for paired remote devices), so you can start a conversation in the desktop app, approve a step from your phone, and watch it finish in the terminal.
+Everything that matters lives in one process, the **daemon** (`tern daemon`, or `tern start` to run it in the background). It owns the database, drives every run, runs schedules, and hosts the Telegram gateway. Front ends hold no state of their own. They attach over the daemon's API, a Unix socket on this machine, so you can start a conversation in the desktop app and watch it finish in the terminal. tern is local-only: nothing listens on the network.
 
 ```mermaid
 flowchart LR
@@ -76,7 +76,6 @@ flowchart LR
         app["Desktop app<br/>Flutter + tern_client"]
         tui["Terminal chat<br/>tern"]
         cli["CLI<br/>tern setup, providers, stop, ..."]
-        remote["Paired devices<br/>tern --remote"]
     end
     tg["Telegram"]
 
@@ -101,7 +100,6 @@ flowchart LR
     app -- "Unix socket" --> api
     tui -- "Unix socket" --> api
     cli -- "Unix socket" --> api
-    remote -- "TCP + TLS<br/>device token" --> api
     tg <--> gw
 
     api --> mgr

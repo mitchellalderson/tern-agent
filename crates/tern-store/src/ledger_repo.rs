@@ -604,18 +604,6 @@ mod tests {
         s.remove_connection(&c.id).unwrap();
         s.set_schedule_autonomy("hook", Some("yolo")).unwrap();
         s.set_schedule_autonomy("hook", Some("yolo")).unwrap(); // unchanged: nothing
-        let d = crate::DeviceRow {
-            id: "d1".into(),
-            name: "phone".into(),
-            platform: None,
-            scope: "chat".into(),
-            created_at: 0,
-            last_seen_at: None,
-            last_ip: None,
-            revoked_at: None,
-        };
-        s.create_device(&d, "h").unwrap();
-        s.revoke_device("d1").unwrap();
 
         let mut rows = s.ledger(&LedgerFilter::default()).unwrap();
         rows.reverse();
@@ -629,8 +617,6 @@ mod tests {
                 "connection.default",
                 "connection.remove",
                 "autonomy.routine",
-                "device.pair",
-                "device.revoke",
             ]
         );
         assert_eq!(rows[0].entry.connector.as_deref(), Some("gmail"));

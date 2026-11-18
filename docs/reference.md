@@ -84,7 +84,6 @@ gh attestation verify tern-desktop-macos.dmg --repo mitchellalderson/tern-agent
 | [`tern models`](#tern-providers) | List the models each provider offers. |
 | [`tern config`](#tern-config) | Create, read, and edit `config.toml`. |
 | [`tern doctor`](#tern-doctor) | Check configuration, providers, database, daemon, and integrations. |
-| [`tern devices`](#remote-access) | Pair and manage devices that reach this tern over TCP. |
 | [`tern report`](#tern-report) | Write a redacted bug report. |
 | [`tern reset`](#tern-reset) | Delete all local data, stopping tern first. |
 
@@ -648,7 +647,6 @@ autonomy or taint, and bounds them instead:
   rewrite or delete it, **Clear** empties the list. `tern agents memory <name>` does the same. API:
   `GET /v1/memories[?agent=&q=&limit=]` (each has `source`), `PATCH /v1/memories/{id}` `{content, tags?}` (it becomes
   `source: user`), `DELETE /v1/memories/{id}`, `DELETE /v1/memories?agent=shared|<agent>` (a namespace is required).
-  A `chat` device may do these; the ledger is owner-only.
 
 A routine's own history is separate: see [A routine's previous report](#a-routines-previous-report).
 
@@ -812,20 +810,6 @@ tern gateway pair                              # then send the code as your firs
   }
   ```
   A tap is a message with `action` set to the button's `data`. `send` and `buttons` may POST; `poll` is GET-only unless the gateway sets `read_via_post = true`. The connector's hosts, `auth` and rate apply. `tern gateway list` and `tern doctor` show whether it loads.
-
-### Remote access
-
-The daemon can also listen on TCP so another computer or a phone can reach it. It's off by default, and every TCP request needs a device token:
-
-```toml
-[api]
-listen = ["unix", "tcp://0.0.0.0:7420"]
-tls = "auto"   # self-signed certificate that devices pin; or "files" with tls_cert/tls_key
-```
-
-Paired devices can't add or test `stdio` MCP servers, since those run commands on this host outside the sandbox; set `remote_mcp_stdio = true` under `[api]` to allow it. HTTP servers, toggles, restarts and removal work from any owner device.
-
-Restart `tern daemon`, then run `tern devices pair` (default scope `chat`: conversations and approvals, but not config, secrets or devices). It prints a QR code and a `tern://pair?…` link valid for 10 minutes. On another machine, `tern devices join '<link>'` prints a token; then `TERN_REMOTE_TOKEN=<token> tern --remote https://host:7420 --pin sha256:…` attaches the chat UI. `tern devices list` and `tern devices revoke <id>` manage devices; revoking signs the device out at once.
 
 ## Workspaces
 
@@ -1007,9 +991,7 @@ tern ledger verify [--json]
 
 | Area | Looks at |
 |---|---|
-| `listeners` | The API's TCP listeners (loopback or the network, TLS), `api.remote_mcp_stdio`, and the host sandbox behind a network API. |
 | `secrets` | `secrets.toml` readable by others (high). |
-| `devices` | Each paired device's scope, and devices unused for 90 days. |
 | `autonomy` | `autonomy = "yolo"` (high) or `"autonomous"` (medium), globally and per routine. |
 | `routines` | Watch routines, which start tainted, and their effective autonomy (high under `yolo`). |
 | `gateways` | Gateway connectors with `strangers = "taint"`. |

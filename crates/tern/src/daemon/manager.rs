@@ -224,10 +224,8 @@ impl ApiApprovals {
     /// granted by it on their next ask, so each is answered
     /// [`Decision::CoveredByGrant`] (the ledger and transcript say it was
     /// covered, not that anyone approved it). Only cards that offered a
-    /// grant qualify, so never a tainted or destructive one, and a
-    /// local-only card is left alone when the answer came from a remote
-    /// device (`remote`).
-    pub fn answer(&self, id: &str, decision: Decision, remote: bool) -> bool {
+    /// grant qualify, so never a tainted or destructive one.
+    pub fn answer(&self, id: &str, decision: Decision) -> bool {
         let (card, released) = {
             let Ok(mut p) = self.pending.lock() else {
                 return false;
@@ -256,7 +254,6 @@ impl ApiApprovals {
                             || reads
                                 && tern_core::approval::READ_FS_TOOLS
                                     .contains(&c.msg.tool.as_str()))
-                            && !(remote && c.msg.local_only)
                             && c.msg.grant.as_ref().is_some_and(|o| o.key == g.key)
                             && match decision {
                                 Decision::AllowRun if reads => root(&c.msg) == root(&card.msg),
@@ -280,15 +277,6 @@ impl ApiApprovals {
             send(c, Decision::CoveredByGrant);
         }
         send(card, decision)
-    }
-
-    /// Whether `id` may only be answered from this host.
-    pub fn is_local_only(&self, id: &str) -> bool {
-        self.pending
-            .lock()
-            .ok()
-            .and_then(|p| p.get(id).map(|c| c.msg.local_only))
-            .unwrap_or(false)
     }
 
     /// Approvals still waiting for an answer, for clients that attach late.
@@ -1449,7 +1437,7 @@ impl ChatHost for Chats {
     /// A chat button: the chat is remote, so local-only items are refused.
     async fn decide_outbox(&self, id: i64, approve: bool) -> Result<String, String> {
         if approve {
-            self.0.approve_outbox(id, None, true).map(|item| {
+            self.0.approve_outbox(id, None).map(|item| {
                 if item.state == "stale" {
                     "Skipped: the file changed".to_owned()
                 } else {
@@ -1458,7 +1446,7 @@ impl ChatHost for Chats {
             })
         } else {
             self.0
-                .reject_outbox(id, None, true)
+                .reject_outbox(id, None)
                 .map(|_| "Rejected".to_owned())
         }
         .map_err(|e| e.to_string())

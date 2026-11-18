@@ -40,6 +40,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0030_waits.sql"),
     include_str!("../migrations/0031_documents.sql"),
     include_str!("../migrations/0032_drop_webhooks.sql"),
+    include_str!("../migrations/0033_drop_devices.sql"),
 ];
 
 /// The migration that introduced first-run seeding.

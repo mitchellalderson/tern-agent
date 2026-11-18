@@ -25,7 +25,6 @@ use super::manager::Manager;
 pub enum OutboxError {
     NotFound,
     /// Only a client on this host may decide it.
-    LocalOnly,
     /// Already decided, or expired.
     NotPending(String),
     Bad(String),
@@ -48,10 +47,6 @@ impl std::fmt::Display for OutboxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OutboxError::NotFound => f.write_str("no such outbox item"),
-            OutboxError::LocalOnly => f.write_str(
-                "this item runs a command on the host outside the sandbox; decide it in the TUI or \
-                 desktop app on that machine",
-            ),
             OutboxError::NotPending(state) => write!(f, "this item is already {state}"),
             OutboxError::Bad(m) => f.write_str(m),
             OutboxError::Internal(e) => write!(f, "{e:#}"),
@@ -68,32 +63,27 @@ const EXPIRY_TICK: Duration = Duration::from_secs(60);
 impl Manager {
     /// An item that can still be decided. `discard`: a stale item may be
     /// rejected too, but never approved.
-    fn pending_item(&self, id: i64, remote: bool, discard: bool) -> Result<OutboxRow, OutboxError> {
+    fn pending_item(&self, id: i64, discard: bool) -> Result<OutboxRow, OutboxError> {
         let item = self
             .rt
             .store
             .outbox_item(id)?
             .ok_or(OutboxError::NotFound)?;
-        if remote && item.local_only {
-            return Err(OutboxError::LocalOnly);
-        }
         if item.state != "pending" && !(discard && item.state == "stale") {
             return Err(OutboxError::NotPending(item.state));
         }
         Ok(item)
     }
 
-    /// Approve item `id` (`remote`: asked over TCP or from a chat, so not a
-    /// local-only item), with `input` replacing its arguments, and start
+    /// Approve item `id` with `input` replacing its arguments, and start
     /// the run that executes it. Exactly once: a second approval is
     /// refused.
     pub fn approve_outbox(
         self: &Arc<Self>,
         id: i64,
         input: Option<Value>,
-        remote: bool,
     ) -> Result<OutboxItem, OutboxError> {
-        let item = self.pending_item(id, remote, false)?;
+        let item = self.pending_item(id, false)?;
         // Its file changed since it was queued: don't run it, and say so
         // once for the batch.
         if outbox::file_changed(item.file_path.as_deref(), item.file_hash.as_deref()) {
@@ -209,13 +199,8 @@ impl Manager {
 
     /// Reject item `id`, with an optional note the run that queued it gets
     /// if it is still working.
-    pub fn reject_outbox(
-        &self,
-        id: i64,
-        note: Option<&str>,
-        remote: bool,
-    ) -> Result<OutboxItem, OutboxError> {
-        self.pending_item(id, remote, true)?;
+    pub fn reject_outbox(&self, id: i64, note: Option<&str>) -> Result<OutboxItem, OutboxError> {
+        self.pending_item(id, true)?;
         let note = note.map(str::trim).filter(|n| !n.is_empty());
         if !self.rt.store.reject_outbox(id, note)? {
             return Err(OutboxError::NotPending("decided".into()));
