@@ -167,6 +167,10 @@ class TernStore extends ChangeNotifier {
   /// The model a new conversation will use, when chosen before sending.
   String? draftModel;
   String? error;
+
+  /// A send into a channel that lets agents decide is waiting for the
+  /// choice of who replies.
+  bool choosingWho = false;
   var _badge = 0;
 
   StreamSubscription<TernEvent>? _events;
@@ -499,6 +503,14 @@ class TernStore extends ChangeNotifier {
     }
   }
 
+  /// Where this device had read to in a conversation when it was opened
+  /// (the posts after it are "new since you left"), kept while it stays
+  /// the visit.
+  final Map<String, int> catchUp = {};
+
+  /// Unread posts at or above which a conversation opens at its divider.
+  static const catchUpJump = 5;
+
   /// New posts since this device last looked.
   bool unread(Channel c) =>
       c.id != channel && (c.lastPostId ?? 0) > (lastSeen[c.id] ?? 0);
@@ -597,13 +609,11 @@ class TernStore extends ChangeNotifier {
   /// Whether the core manages accounts per connector or MCP server.
   bool get hasConnections => health?.features.contains('connections') ?? false;
 
-  /// The Connections page is owner-only.
-  bool get canManageConnections => hasConnections && (health?.isOwner ?? false);
+  /// The Connections page.
+  bool get canManageConnections => hasConnections;
 
-  /// Whether the core installs bundles (tooling spec §6.5). Owner-only.
-  bool get canManageBundles =>
-      (health?.features.contains('bundles') ?? false) &&
-      (health?.isOwner ?? false);
+  /// Whether the core installs bundles (tooling spec §6.5).
+  bool get canManageBundles => health?.features.contains('bundles') ?? false;
 
   /// Whether the core defers unanswered writes to an outbox.
   bool get hasOutbox => health?.features.contains('outbox') ?? false;
@@ -673,19 +683,12 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// `tern security audit` on the core (tooling spec §8.4): owner-only.
+  /// `tern security audit` on the core (tooling spec §8.4).
   bool get hasSecurityAudit =>
-      (health?.features.contains('security_audit') ?? false) &&
-      (health?.isOwner ?? false);
+      health?.features.contains('security_audit') ?? false;
 
-  /// The activity ledger (tooling spec §8.1): owner-only.
-  bool get hasLedger =>
-      (health?.features.contains('ledger') ?? false) &&
-      (health?.isOwner ?? false);
-
-  /// Reached as a paired device rather than the local owner socket, so the
-  /// core refuses stdio MCP servers unless `api.remote_mcp_stdio` is set.
-  bool get remoteCore => health != null && health!.authKind != 'owner';
+  /// The activity ledger (tooling spec §8.1).
+  bool get hasLedger => health?.features.contains('ledger') ?? false;
 
   /// The session's own model, else its agent's, else the default.
   String? modelFor(String? session) {
@@ -728,11 +731,7 @@ class TernStore extends ChangeNotifier {
   String? get coreSkew {
     final h = health;
     if (h == null) return null;
-    return coreSkewMessage(
-      appVersion: appVersion,
-      coreVersion: h.version,
-      local: h.isLocal,
-    );
+    return coreSkewMessage(appVersion: appVersion, coreVersion: h.version);
   }
 
   static const daemonTooOldMessage =
@@ -1103,6 +1102,7 @@ class TernStore extends ChangeNotifier {
     error = null;
     pendingFolder = null;
     this.newTopic = newTopic;
+    catchUp.remove(id);
     if (streamChannel != id) {
       streamChannel = id;
       _streamItems = [];
@@ -1242,6 +1242,7 @@ class TernStore extends ChangeNotifier {
 
   /// Open a topic channel's timeline in the centre column.
   Future<void> openChannelView(String id) async {
+    catchUp.remove(id);
     page = null;
     channel = id;
     error = null;
@@ -1275,6 +1276,8 @@ class TernStore extends ChangeNotifier {
 
   void _markRead(String id, int post) {
     if ((lastSeen[id] ?? 0) >= post) return;
+    // The first arrival of a visit remembers where the reader was.
+    if ((lastSeen[id] ?? 0) > 0) catchUp.putIfAbsent(id, () => lastSeen[id]!);
     lastSeen[id] = post;
     onReadChanged?.call();
   }
@@ -1483,6 +1486,8 @@ class TernStore extends ChangeNotifier {
     String? lead,
     bool? agentWakes,
     bool? letAgentsDecide,
+    String? routeMode,
+    String? replyRule,
   }) async {
     try {
       await client.updateChannel(
@@ -1496,6 +1501,9 @@ class TernStore extends ChangeNotifier {
         lead: lead,
         agentWakes: agentWakes,
         letAgentsDecide: letAgentsDecide,
+        routeMode: routeMode,
+        replyRule: replyRule?.trim().isEmpty ?? false ? null : replyRule,
+        clearReplyRule: replyRule?.trim().isEmpty ?? false,
       );
       channels = await client.channels();
       notifyListeners();
@@ -1554,23 +1562,33 @@ class TernStore extends ChangeNotifier {
   Future<bool> _sendChannel(String text) async {
     error = null;
     final id = channel!;
+    choosingWho = openChannel?.agents?.letAgentsDecide ?? false;
+    if (choosingWho) notifyListeners();
     try {
       final sent = await client.sendToChannel(id, text);
-      _runSession[sent.runId] = sent.sessionId;
-      _runChannel[sent.runId] = id;
+      choosingWho = false;
+      // Nobody replied (a reply rule said no): the post is all there is.
+      final replied = sent.runId.isNotEmpty;
+      if (replied) {
+        _runSession[sent.runId] = sent.sessionId;
+        _runChannel[sent.runId] = id;
+      }
       if (sent.post case final p?) {
         final list = posts.putIfAbsent(id, () => []);
         if (!list.any((x) => x.id == p.id)) list.add(p);
         _markRead(id, p.id);
       }
-      if (selected != sent.sessionId) {
+      if (replied && selected != sent.sessionId) {
         // The main thread was just created.
         channels = await client.channels();
         selected = sent.sessionId;
       }
-      transcripts.putIfAbsent(sent.sessionId, Transcript.new).activeRun ??=
-          sent.runId;
+      if (replied) {
+        transcripts.putIfAbsent(sent.sessionId, Transcript.new).activeRun ??=
+            sent.runId;
+      }
     } on TernException catch (e) {
+      choosingWho = false;
       error = e.message;
       notifyListeners();
       return false;
@@ -1783,6 +1801,9 @@ class TernStore extends ChangeNotifier {
       case SchedulesChanged():
         unawaited(refreshSchedules());
         return;
+      case NotificationRequested():
+        _notifyRoutine(e);
+        return;
       // The local-models dialog and setup step poll their own state.
       case UnknownEvent() ||
           EventsDropped() ||
@@ -1860,6 +1881,22 @@ class TernStore extends ChangeNotifier {
       (selected != session &&
           thread != session &&
           !(streamOpen && _streamSessions.contains(session)));
+
+  /// A routine result the daemon pushed: already posted in its channel, so
+  /// notify unless the window is focused on that channel.
+  void _notifyRoutine(NotificationRequested n) {
+    final ch = n.channelId;
+    if (appActive && ch != null && ch == channel) return;
+    unawaited(
+      notifier.show(
+        id: '$_routineNotePrefix${ch ?? ''}',
+        title: n.title,
+        body: n.body,
+      ),
+    );
+  }
+
+  static const _routineNotePrefix = 'channel:';
 
   void _notifyApproval(Approval a) {
     if (!_unseen(a.sessionId)) return;
@@ -1976,6 +2013,18 @@ class TernStore extends ChangeNotifier {
   }
 
   void _onNotification(String id, NotificationAction action) {
+    if (id.startsWith(_routineNotePrefix)) {
+      if (action != NotificationAction.open) return;
+      final ch = id.substring(_routineNotePrefix.length);
+      unawaited(
+        ch.isEmpty || ch == homeId
+            ? openHome()
+            : ch.startsWith('dm:')
+            ? openStream(ch)
+            : openChannelView(ch),
+      );
+      return;
+    }
     if (action == NotificationAction.open) {
       // An approval id opens the conversation it belongs to.
       final session =
@@ -2460,7 +2509,9 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Create or edit a routine. Returns the daemon's reason on failure.
+  /// Create or edit a routine. `deliverTo`: null leaves the target alone
+  /// (a new routine's is where it lives); else `none`, `home`, `dm` or
+  /// `channel:<id>`. Returns the daemon's reason on failure.
   Future<String?> saveSchedule({
     String? id,
     required String cron,
@@ -2487,7 +2538,7 @@ class TernStore extends ChangeNotifier {
           id,
           cron: cron,
           prompt: prompt,
-          deliverTo: deliverTo ?? 'none',
+          deliverTo: deliverTo,
           limits: limits,
           channel: channel,
           agent: agent,
@@ -2498,34 +2549,6 @@ class TernStore extends ChangeNotifier {
       return null;
     } on TernException catch (e) {
       return e.message;
-    }
-  }
-
-  /// Create a webhook routine (T1c). Returns its hook, secret included
-  /// (shown once), or the daemon's reason on failure.
-  Future<({Webhook? webhook, String? error})> createWebhook({
-    required String prompt,
-    required String auth,
-    String? deliverTo,
-    ScheduleLimits limits = const ScheduleLimits(),
-    String? channel,
-    String? agent,
-    RoutineOptions? options,
-  }) async {
-    try {
-      final created = await client.createWebhook(
-        prompt: prompt,
-        auth: auth,
-        deliverTo: deliverTo,
-        limits: limits,
-        channel: channel,
-        agent: agent,
-        options: options,
-      );
-      await refreshSchedules();
-      return (webhook: created.webhook, error: null);
-    } on TernException catch (e) {
-      return (webhook: null, error: e.message);
     }
   }
 

@@ -53,7 +53,6 @@ const _ops = Agent(
   name: 'Ops',
   avatar: AvatarSpec(glyph: '■', color: 'orange'),
   mainChannelId: 'dm:ops',
-  telegramSecret: 'OPS_BOT',
 );
 const _tern = Agent(
   id: 'tern',
@@ -278,7 +277,7 @@ class _Client extends TernClient {
       name: 'MAIN_BOT',
       inFile: true,
       inEnv: false,
-      usedBy: ['telegram'],
+      usedBy: ['web_search'],
     ),
     SecretStatus(name: 'OPS_BOT', inFile: true, inEnv: false, usedBy: []),
     SecretStatus(name: 'RESEARCH_BOT', inFile: true, inEnv: false, usedBy: []),
@@ -487,18 +486,6 @@ void main() {
       );
       await tester.pumpAndSettle();
       await _shot(tester, key, 'ap3_autonomy_$mode');
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('agent-bot-restart-note')),
-        200,
-        scrollable: scroll,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('agent-bot')));
-      await tester.pumpAndSettle();
-      await _shot(tester, key, 'ap3_bot_$mode');
-      await tester.tap(find.text('RESEARCH_BOT').last);
-      await tester.pumpAndSettle();
-      await _shot(tester, key, 'ap3_bot_chosen_$mode');
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
 

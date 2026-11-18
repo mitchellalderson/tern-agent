@@ -10,7 +10,6 @@ class DaemonStatus {
     this.runningRuns = 0,
     this.pendingApprovals = 0,
     this.activeSchedules = 0,
-    this.gateways = const [],
   });
 
   factory DaemonStatus.fromJson(Json j) => DaemonStatus(
@@ -21,10 +20,6 @@ class DaemonStatus {
     runningRuns: j['running_runs'] as int? ?? 0,
     pendingApprovals: j['pending_approvals'] as int? ?? 0,
     activeSchedules: j['active_schedules'] as int? ?? 0,
-    gateways: [
-      for (final g in j['gateways'] as List? ?? const [])
-        GatewayStatus.fromJson(g as Json),
-    ],
   );
 
   final String version;
@@ -41,17 +36,6 @@ class DaemonStatus {
   /// Approvals and secret requests waiting for an answer.
   final int pendingApprovals;
   final int activeSchedules;
-  final List<GatewayStatus> gateways;
-}
-
-class GatewayStatus {
-  const GatewayStatus({required this.name, required this.ok});
-
-  factory GatewayStatus.fromJson(Json j) =>
-      GatewayStatus(name: j['name'] as String, ok: j['ok'] as bool? ?? false);
-
-  final String name;
-  final bool ok;
 }
 
 /// A run that stopping tern pauses; it resumes on the next start.

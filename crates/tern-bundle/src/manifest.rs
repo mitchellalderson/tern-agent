@@ -203,7 +203,7 @@ pub fn kind(path: &str) -> Result<Kind, BundleError> {
 
 /// A routine template (`routines.toml`, tooling spec §3.1's TOML form).
 /// Bundles carry no agent: the routine belongs to the agent it's installed
-/// for. No webhook triggers: those need a secret made on this machine.
+/// for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoutineTemplate {
@@ -382,7 +382,7 @@ impl RoutinesFile {
                 .count();
             if n != 1 {
                 return Err(BundleError::Invalid(format!(
-                    "{ROUTINES}: routine {} needs exactly one of trigger.cron, trigger.at or trigger.watch (webhooks can't ride in a bundle)",
+                    "{ROUTINES}: routine {} needs exactly one of trigger.cron, trigger.at or trigger.watch",
                     r.name
                 )));
             }

@@ -10,10 +10,6 @@ import 'widgets.dart';
 /// Names the daemon accepts on write (`tern_core::mcp::check_name`).
 final _serverName = RegExp(r'^[a-z0-9_-]{1,24}$');
 
-const remoteStdioOff =
-    'Adding local commands from another device is off. Turn on '
-    '`api.remote_mcp_stdio` on the host.';
-
 /// Add a server (blank, or one tab per pasted draft) or edit `editing`
 /// (docs/mcp-management-spec.md §5).
 Future<void> showMcpSheet(
@@ -389,9 +385,6 @@ class _McpFormState extends State<McpForm> {
   TextEditingController _valueFor(String name) =>
       _values[name] ??= TextEditingController();
 
-  bool get _stdioBlocked =>
-      widget.store.remoteCore && _transport == McpTransport.stdio;
-
   McpServerConfig get _config {
     String? blank(TextEditingController t) =>
         t.text.trim().isEmpty ? null : t.text.trim();
@@ -564,7 +557,6 @@ class _McpFormState extends State<McpForm> {
               children: [
                 for (final w in widget.draft?.warnings ?? const <String>[])
                   _Note(w, color: c.warn),
-                if (_stdioBlocked) _Note(remoteStdioOff, color: c.error),
                 TextField(
                   key: const ValueKey('mcp-name'),
                   controller: _name,
@@ -637,20 +629,20 @@ class _McpFormState extends State<McpForm> {
                   children: [
                     if (r?.ok ?? false) ...[
                       TextButton(
-                        onPressed: _busy || _stdioBlocked ? null : _test,
+                        onPressed: _busy ? null : _test,
                         child: const Text('Test again'),
                       ),
                       FilledButton(
-                        onPressed: _busy || _stdioBlocked ? null : _save,
+                        onPressed: _busy ? null : _save,
                         child: Text(_busy ? 'Saving…' : 'Save'),
                       ),
                     ] else ...[
                       TextButton(
-                        onPressed: _busy || _stdioBlocked ? null : _save,
+                        onPressed: _busy ? null : _save,
                         child: const Text('Save without testing'),
                       ),
                       FilledButton(
-                        onPressed: _busy || _stdioBlocked ? null : _test,
+                        onPressed: _busy ? null : _test,
                         child: Text(_busy ? 'Testing…' : 'Test connection'),
                       ),
                     ],
@@ -665,19 +657,14 @@ class _McpFormState extends State<McpForm> {
   }
 
   Widget _choose(BuildContext context) {
-    final remote = widget.store.remoteCore;
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         _TransportCard(
           icon: Icons.terminal,
           title: 'Local command',
-          blurb: remote
-              ? remoteStdioOff
-              : 'Runs a program on this machine (stdio), e.g. npx or uvx.',
-          onTap: remote
-              ? null
-              : () => setState(() => _transport = McpTransport.stdio),
+          blurb: 'Runs a program on this machine (stdio), e.g. npx or uvx.',
+          onTap: () => setState(() => _transport = McpTransport.stdio),
         ),
         _TransportCard(
           icon: Icons.public,

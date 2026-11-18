@@ -1,6 +1,6 @@
 //! The `/settings` screen: every platform-wide setting in one place, in the
 //! same sections as the desktop Settings window (General, Models &
-//! Providers, Secrets, Permissions & Sandbox, Limits & Budgets, Servers,
+//! Providers, Secrets, Permissions & Sandbox, Limits & Budgets, MCP servers,
 //! Advanced, About). `config.toml` settings are described by the core
 //! (`GET /v1/config/settings`), so this lists and edits whatever it says;
 //! providers, secrets and MCP servers keep their own panels, which a row
@@ -19,7 +19,7 @@ pub enum Section {
     Secrets,
     Permissions,
     Limits,
-    Servers,
+    Mcp,
     Advanced,
     About,
 }
@@ -31,7 +31,7 @@ impl Section {
         Section::Secrets,
         Section::Permissions,
         Section::Limits,
-        Section::Servers,
+        Section::Mcp,
         Section::Advanced,
         Section::About,
     ];
@@ -43,7 +43,7 @@ impl Section {
             Section::Secrets => "Secrets",
             Section::Permissions => "Permissions & Sandbox",
             Section::Limits => "Limits & Budgets",
-            Section::Servers => "Servers",
+            Section::Mcp => "MCP servers",
             Section::Advanced => "Advanced",
             Section::About => "About",
         }
@@ -60,7 +60,7 @@ impl Section {
                 "What tern may do without asking, and how shell commands are confined."
             }
             Section::Limits => "Caps on how long and how much tern works before it stops.",
-            Section::Servers => "How other devices and webhooks reach tern; MCP servers.",
+            Section::Mcp => "The MCP servers tern can use.",
             Section::Advanced => "Tuning knobs most people never touch.",
             Section::About => "Versions and where tern keeps things.",
         }
@@ -74,7 +74,7 @@ impl Section {
             Section::Secrets => "api key token password secrets.toml",
             Section::Permissions => "approvals autonomy sandbox network shell taint scripts",
             Section::Limits => "budget spend cap usd tokens timeout iterations",
-            Section::Servers => "mcp listen api webhooks devices tls",
+            Section::Mcp => "mcp tools connect",
             Section::Advanced => "tuning raw config.toml",
             Section::About => "version data location logs telemetry updates",
         }
@@ -87,7 +87,6 @@ impl Section {
             Section::Models => Some("models"),
             Section::Permissions => Some("permissions"),
             Section::Limits => Some("limits"),
-            Section::Servers => Some("servers"),
             _ => None,
         }
     }
@@ -101,7 +100,7 @@ impl Section {
             "secrets" | "secret" | "keys" => Section::Secrets,
             "permissions" | "sandbox" | "approvals" | "security" => Section::Permissions,
             "limits" | "budgets" | "budget" => Section::Limits,
-            "servers" | "server" | "mcp" => Section::Servers,
+            "servers" | "server" | "mcp" => Section::Mcp,
             "advanced" => Section::Advanced,
             "about" | "version" => Section::About,
             _ => return None,
@@ -228,7 +227,7 @@ impl SettingsPanel {
                 "Secrets",
                 "set and remove API keys and tokens; values are never shown (/secrets)",
             )],
-            Section::Servers => vec![Row::Action(
+            Section::Mcp => vec![Row::Action(
                 Target::Mcp,
                 "MCP servers",
                 "add, test and manage MCP servers (/mcp)",

@@ -67,7 +67,7 @@ void main() {
       quitMessage([report]),
       '1 task is in progress ("Summarize the Q3 report"). It will pick up '
       'where it left off next time tern starts.\n'
-      'Routines and Telegram will be paused until then.',
+      'Routines will be paused until then.',
     );
     expect(
       quitMessage([

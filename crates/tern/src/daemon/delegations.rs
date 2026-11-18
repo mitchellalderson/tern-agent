@@ -501,4 +501,80 @@ mod tests {
             );
         }
     }
+
+    /// A stopped parent cancels its child; the child's pointer then reads
+    /// "Worked for", not "Working for".
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn a_child_cancelled_with_its_parent_ends_the_working_pointer() {
+        use super::super::manager::Routes;
+        use std::sync::Arc;
+        use tern_store::{NewMessage, NewRun};
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = tern_core::TernHome::new(dir.path());
+        let rt =
+            crate::runtime::Runtime::open(&home, Arc::new(tern_core::approval::AutoDeny)).unwrap();
+        let agent = rt
+            .create_agent(crate::runtime::NewAgent {
+                name: "Scout".into(),
+                ..crate::runtime::NewAgent::default()
+            })
+            .unwrap();
+        let store = rt.store.clone();
+        let manager = Manager::new(Arc::new(rt), Arc::new(Routes::default()));
+        let input = NewMessage {
+            role: "user".into(),
+            content_json: "[]".into(),
+            text: "Find the pricing".into(),
+            summary_of: None,
+        };
+        for (id, session, parent) in [("p", "sp", None), ("k", "sk", Some("p"))] {
+            store.create_session(session, "test", None).unwrap();
+            store
+                .create_run(
+                    &NewRun {
+                        id,
+                        session_id: session,
+                        trigger: "subagent",
+                        model: "mock:mock",
+                        system_prompt: "system",
+                        parent_run_id: parent,
+                        parent_call_id: parent.map(|_| id),
+                        label: parent.map(|_| id),
+                        depth: u32::from(parent.is_some()),
+                        ..NewRun::default()
+                    },
+                    &input,
+                )
+                .unwrap();
+        }
+        store.set_session_agent("sk", &agent.id).unwrap();
+        let text = || {
+            let key = key("p", &agent.id);
+            let dm = store.agent_channel(&agent.id).unwrap().unwrap();
+            store
+                .add_post(&tern_store::NewPost {
+                    channel_id: &dm.id,
+                    dedupe_key: Some(&key),
+                    author_kind: "agent",
+                    author_id: &agent.id,
+                    author: "x",
+                    kind: KIND,
+                    text: "probe",
+                    ..tern_store::NewPost::default()
+                })
+                .unwrap()
+                .0
+                .text
+        };
+        store.set_run_status("k", "running", None).unwrap();
+        manager.delegation_changed("k");
+        assert!(text().starts_with("Working for"), "{}", text());
+        store
+            .set_run_status("k", "interrupted", Some("cancelled: the parent run ended"))
+            .unwrap();
+        manager.delegation_changed("k");
+        assert!(text().starts_with("Worked for"), "{}", text());
+    }
 }

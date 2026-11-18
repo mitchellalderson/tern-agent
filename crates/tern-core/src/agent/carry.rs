@@ -1,5 +1,5 @@
 //! The `carry` step (docs/channels-design.md §2.6): the first run of a new
-//! segment of a stream (Home, a Telegram chat) starts with a summary of the
+//! segment of a stream (Home) starts with a summary of the
 //! segment before it, its open items and its last exchanges.
 
 use serde::{Deserialize, Serialize};

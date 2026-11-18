@@ -208,6 +208,9 @@ pub struct ChatRequest {
 /// What a request tells the provider about prompt caching.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CacheHint {
+    /// A quick one-off call (a decision, a short summary): the provider
+    /// turns reasoning off.
+    pub quick: bool,
     /// The request is one turn of a growing conversation (the agent loop):
     /// cache its history too, so the next turn reads it. One-off calls
     /// (summaries, classification) leave this off and pay no write premium

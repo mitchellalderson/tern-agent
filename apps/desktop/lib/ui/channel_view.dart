@@ -49,6 +49,7 @@ class ChannelView extends StatefulWidget {
 
 class _ChannelViewState extends State<ChannelView> {
   final _window = FeedWindow();
+  final _divider = GlobalKey();
   String? _open;
   var _loadingEarlier = false;
 
@@ -74,6 +75,14 @@ class _ChannelViewState extends State<ChannelView> {
     super.dispose();
   }
 
+  Widget _withDivider(int at, int? dividerAt, Widget post) => at == dividerAt
+      ? Column(
+          key: _divider,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [const NewSinceDivider(), post],
+        )
+      : post;
+
   /// Widen the window; at its end, fetch the posts before what is loaded.
   Future<void> _showEarlier(int hidden, String channel) async {
     if (hidden > 0) {
@@ -98,8 +107,20 @@ class _ChannelViewState extends State<ChannelView> {
     }
     // One flat timeline: every post, in order; only the window is built.
     final everything = store.posts[ch.id] ?? const <Post>[];
+    // What arrived while the reader was away, divided off; a lot of it
+    // opens the channel there, with the window wide enough to hold it.
+    final catchUp = catchUpAt(store.catchUp[ch.id], [
+      for (final p in everything) p.id,
+    ]);
+    final jump = catchUp != null && catchUp.count >= TernStore.catchUpJump;
+    if (catchUp != null && jump && _window.visible < catchUp.count + 10) {
+      _window.visible = catchUp.count + 10;
+    }
     final hiddenEarlier = _window.hiddenEarlier(everything.length);
     final shown = _window.slice(everything);
+    final dividerAt = catchUp == null
+        ? null
+        : catchUp.index - _window.start(everything.length);
     // One live line per member at work here (channels-design §5.2).
     final lines = _window.held
         ? const <({String runId, String author, String doing})>[]
@@ -140,6 +161,10 @@ class _ChannelViewState extends State<ChannelView> {
           child: shown.isEmpty && extra == 0
               ? _EmptyChannel(channel: ch)
               : FeedList(
+                  key: ValueKey('feed:${ch.id}'),
+                  reveal: jump && dividerAt != null && dividerAt >= 0
+                      ? _divider
+                      : null,
                   window: _window,
                   count: shown.length + extra,
                   total: everything.length,
@@ -170,9 +195,13 @@ class _ChannelViewState extends State<ChannelView> {
                               )
                             : i < extra
                             ? ItemView(item: loose[extra - 1 - i], store: store)
-                            : widget._timelinePost(
-                                shown,
+                            : _withDivider(
                                 shown.length - 1 - (i - extra),
+                                dividerAt,
+                                widget._timelinePost(
+                                  shown,
+                                  shown.length - 1 - (i - extra),
+                                ),
                               ),
                       ),
                     ),
@@ -183,6 +212,15 @@ class _ChannelViewState extends State<ChannelView> {
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
             child: Text(e, style: TextStyle(color: c.error, fontSize: 12.5)),
+          ),
+        if (store.choosingWho)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 6),
+            child: Text(
+              'Choosing who replies…',
+              key: const Key('choosing-who'),
+              style: TextStyle(color: c.muted, fontSize: 12.5),
+            ),
           ),
         Composer(store: store),
       ],
@@ -960,6 +998,10 @@ class _ChannelDialogState extends State<ChannelDialog> {
       : widget.editing!.lead;
   late bool _wakes = widget.editing?.agents?.agentWakes ?? false;
   late bool _decide = widget.editing?.agents?.letAgentsDecide ?? false;
+  late String _routeMode = widget.editing?.agents?.routeMode ?? 'one';
+  late final _rule = TextEditingController(
+    text: widget.editing?.agents?.replyRule,
+  );
   late final _slugCtl = TextEditingController(text: widget.editing?.slug);
   String? _error;
   var _busy = false;
@@ -981,6 +1023,7 @@ class _ChannelDialogState extends State<ChannelDialog> {
   void dispose() {
     _title.dispose();
     _slugCtl.dispose();
+    _rule.dispose();
     _instructions.dispose();
     super.dispose();
   }
@@ -1020,6 +1063,16 @@ class _ChannelDialogState extends State<ChannelDialog> {
                     _decide == editing.agents!.letAgentsDecide
                 ? null
                 : _decide,
+            routeMode:
+                editing.agents == null ||
+                    _routeMode == editing.agents!.routeMode
+                ? null
+                : _routeMode,
+            replyRule:
+                editing.agents == null ||
+                    _rule.text.trim() == (editing.agents!.replyRule ?? '')
+                ? null
+                : _rule.text.trim(),
           );
     if (!mounted) return;
     if (err == null) {
@@ -1216,13 +1269,44 @@ class _ChannelDialogState extends State<ChannelDialog> {
                   title: const Text('Let agents decide'),
                   subtitle: Text(
                     _decide
-                        ? 'A post that mentions no one goes to the members it '
-                              'fits, picked by one cheap model call. If that '
-                              'fails, the lead answers.'
-                        : 'Off: a post that mentions no one always goes to '
-                              'the lead.',
+                        ? 'A post that mentions no one goes to the agent it '
+                              'fits. If unsure, the lead answers.'
+                        : 'Off: a post that mentions no one goes to the lead.',
                   ),
                 ),
+                if (_decide) ...[
+                  const SizedBox(height: 6),
+                  SegmentedButton<String>(
+                    key: const Key('route-mode'),
+                    showSelectedIcon: false,
+                    segments: const [
+                      ButtonSegment(value: 'one', label: Text('One agent')),
+                      ButtonSegment(
+                        value: 'all',
+                        label: Text('Every relevant agent'),
+                      ),
+                    ],
+                    selected: {_routeMode},
+                    onSelectionChanged: (s) =>
+                        setState(() => _routeMode = s.first),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const Key('reply-rule'),
+                    controller: _rule,
+                    maxLength: 300,
+                    decoration: InputDecoration(
+                      labelText: 'Reply rule (optional)',
+                      hintText: 'Only reply to questions',
+                      isDense: true,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      helperText: 'In plain words. Agents stay quiet when a '
+                          'post does not fit.',
+                    ),
+                  ),
+                ],
               ],
               if (_error case final e?) ...[
                 const SizedBox(height: 10),

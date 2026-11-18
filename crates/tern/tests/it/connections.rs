@@ -359,7 +359,7 @@ async fn accounts_over_the_api_and_the_key_stays_private() {
         .await
         .unwrap();
     assert!(r.status().is_success());
-    let secrets = std::fs::read_to_string(env.tern_home.join("secrets.toml")).unwrap();
+    let secrets = crate::read_secrets(&env.tern_home);
     assert!(
         secrets.contains(&format!(
             "\"conn/connector:linear/work/LINEAR_KEY\" = \"{KEY}\""
