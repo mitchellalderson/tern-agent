@@ -455,8 +455,13 @@ impl Store {
     pub fn set_run_status(&self, id: &str, status: &str, error: Option<&str>) -> Result<()> {
         let now = now_ms();
         let finished = (status != "running" && status != "queued").then_some(now);
+        // A run that was stopped on purpose never goes back to work: a late
+        // resume, a queue kick or a racing writer must not flip it.
         self.conn()?.execute(
-            "UPDATE runs SET status = ?2, error = ?3, updated_at = ?4, finished_at = ?5 WHERE id = ?1",
+            "UPDATE runs SET status = ?2, error = ?3, updated_at = ?4, finished_at = ?5
+             WHERE id = ?1
+               AND NOT (?2 IN ('running', 'queued')
+                        AND status = 'interrupted' AND error LIKE 'cancelled%')",
             params![id, status, error, now, finished],
         )?;
         Ok(())
@@ -573,6 +578,28 @@ impl Store {
             params![run_id, idx, error, now_ms()],
         )?;
         Ok(())
+    }
+
+    /// A step cut off by a cancel: not a failure, and re-run if the run ever
+    /// continues.
+    pub fn interrupt_step(&self, run_id: &str, idx: u32) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE steps SET status = 'interrupted', finished_at = ?3
+             WHERE run_id = ?1 AND idx = ?2",
+            params![run_id, idx, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Startup: steps still `started` under a run that is not running were
+    /// cut off; close them as `interrupted`. Returns how many.
+    pub fn close_dangling_steps(&self) -> Result<usize> {
+        Ok(self.conn()?.execute(
+            "UPDATE steps SET status = 'interrupted', finished_at = ?1
+             WHERE status = 'started'
+               AND run_id IN (SELECT id FROM runs WHERE status NOT IN ('running', 'queued'))",
+            params![now_ms()],
+        )?)
     }
 
     /// Delete steps `idx..` of a run and the messages they appended, and
@@ -978,6 +1005,26 @@ mod tests {
         s.truncate_steps("r", 1).unwrap();
         assert!(s.step("r", 1).unwrap().is_none());
         assert_eq!(texts(5), ["hello", "a0"]);
+    }
+
+    #[test]
+    fn a_stopped_run_never_flips_back_to_running_and_cut_steps_are_interrupted() {
+        let (s, _) = setup();
+        s.start_step("r", 0, "tool", "h", "{}").unwrap();
+        s.start_step("r", 1, "tool", "h", "{}").unwrap();
+        s.interrupt_step("r", 0).unwrap();
+        assert_eq!(s.step("r", 0).unwrap().unwrap().status, "interrupted");
+        s.set_run_status("r", "interrupted", Some("cancelled by the owner"))
+            .unwrap();
+        s.set_run_status("r", "running", None).unwrap();
+        assert_eq!(s.run("r").unwrap().unwrap().status, "interrupted");
+        // Startup closes what a stop or crash left `started`.
+        assert_eq!(s.close_dangling_steps().unwrap(), 1);
+        assert_eq!(s.step("r", 1).unwrap().unwrap().status, "interrupted");
+        // A crash-interrupted run (no cancel) may still be resumed.
+        s.set_run_status("r", "interrupted", Some("crash")).unwrap();
+        s.set_run_status("r", "running", None).unwrap();
+        assert_eq!(s.run("r").unwrap().unwrap().status, "running");
     }
 
     #[test]

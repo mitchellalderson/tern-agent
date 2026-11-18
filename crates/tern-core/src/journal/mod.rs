@@ -342,6 +342,10 @@ impl Journal {
                     replayed: false,
                 })
             }
+            Err(StepError::Cancelled) => {
+                self.store.interrupt_step(run, idx)?;
+                Err(StepError::Cancelled)
+            }
             Err(e) => {
                 self.store
                     .fail_step(run, idx, &self.redact_str(&e.to_string()))?;
