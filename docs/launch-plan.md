@@ -57,7 +57,7 @@ Ninety seconds, recorded in the terminal and on a phone, no voiceover needed. Sc
 1. `tern setup`, paste a key, pick a model. (Ten seconds. Shows there is no config file to write.)
 2. "Every weekday at 8, list invoices over 30 days in <tool> and draft a follow-up for each." tern creates the
    routine and says so.
-3. Run it now. tern reads, drafts, and the approval for the first send pops up on Telegram with Allow / Deny buttons.
+3. Run it now. tern reads, drafts, and the approval for the first send appears as a card in the desktop app with Allow / Deny buttons.
 4. Kill the daemon with `kill -9` while the run is mid-way. Restart. `tern runs show` prints the journal with
    `(replayed)` steps; the run finishes without a duplicate draft.
 5. "Connect to <obscure tool>." tern writes a Luau connector into drafts, tests it, and shows the capability card
@@ -76,7 +76,7 @@ real and the viewer can repeat it. Pick one and keep the connector in `examples/
 |---|---|---|
 | Hacker News (Show HN) | Durability and smallness. HN rewards engineering honesty: say what it doesn't do. | "Show HN: tern, an 18 MB personal agent that survives being killed mid-task" |
 | r/rust | The Rust story: static musl, rustls, no OpenSSL, SQLite journal, Luau sandbox, clippy-clean. | "A personal AI agent as one static Rust binary" |
-| r/selfhosted | "Runs on your box, approves from your phone, no VM, no Node." Contrast with OpenClaw's exposure numbers. | "Self-hosted personal agent that isn't an exposed gateway" |
+| r/selfhosted | "Runs on your box, approves in the desktop app, no VM, no Node." Contrast with OpenClaw's exposure numbers. | "Self-hosted personal agent that isn't an exposed gateway" |
 | Lobsters | Same as HN, shorter. | |
 | X / Bluesky | The 90-second demo as a video, the kill-and-resume moment as the thumbnail. | |
 | LinkedIn | The ops and go-to-market side of the ICP. Lead with the outcome ("it followed up with the five trial accounts that hit 100 events, and skipped the one that's already a customer"), the demo as native video, and the receipt screenshot. | "The agent for the business side of a technical company" |
@@ -90,8 +90,7 @@ command has been tested by someone other than the author.
 
 - Answers to the predictable questions, in `docs/faq.md`: why not OpenClaw, **why not ZeroClaw or IronClaw** (the
   two Rust claws; the honest answer is the journal, host-sandboxed agent-written connectors with capability approval,
-  and the same engine local or hosted), why Luau and not WASM (IronClaw chose WASM; expect this one), why Telegram and
-  not Slack, why no browser, what the sandbox does on macOS versus Linux, is my data sent anywhere, how is this
+  and the same engine local or hosted), why Luau and not WASM (IronClaw chose WASM; expect this one), why no browser, what the sandbox does on macOS versus Linux, is my data sent anywhere, how is this
   different from Claude Duet.
 - An "Inngest" answer that is true and short: the core has no Inngest dependency; a future hosted control plane may
   use it. Don't lead with it and don't hide it.
@@ -111,7 +110,6 @@ the expectation.
 | Stars, 7 days | GitHub | < 300 | 1,000 | 3,000+ (ZeroClaw's first days) |
 | Release downloads, 14 days | GitHub release assets | < 150 | 500 | 2,000+ |
 | Installs that got to a first run | Issues, discussions and replies mentioning a working setup (no telemetry, so this is a count by hand) | < 15 | 50 | 200+ |
-| Telegram pairings | Same, by hand | < 5 | 15 | 60+ |
 | Connectors written by users | PRs, gists, discussion posts | 0 | 3 | 10+ |
 | Waitlist signups at the stated prices | Form | < 20 | 50 | 300+ |
 | Inbound from ICP companies (technical founders, ops or GTM leaders) | Email, DMs, LinkedIn | 0 | 2 | 5+ |
@@ -125,7 +123,7 @@ What the rows mean:
 
 - **Stars without downloads** means the story works and the install doesn't. Fix install friction before anything
   else.
-- **Downloads without pairings** means people try the CLI and stop before the daemon. That is the argument for
+- **Downloads without first runs** means people try the CLI and stop before the daemon. That is the argument for
   Stage 1's `tern service install` and one-click stop (T8a), and for the tray (T8b).
 - **Connectors written by users** is the single best leading indicator. It means the moat is real for someone other
   than us.

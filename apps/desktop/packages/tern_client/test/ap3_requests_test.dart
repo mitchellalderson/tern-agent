@@ -45,7 +45,6 @@ void main() {
     'name': 'Ops',
     'memory': 'private',
     'autonomy': 'supervised',
-    'telegram': {'bot_token_secret': 'OPS_BOT'},
     'updated_at': 0,
   };
 
@@ -136,35 +135,6 @@ void main() {
       'outcome': 'approved_by_mode',
     });
     expect((a as ApprovalAnswered).outcome, 'approved_by_mode');
-  });
-
-  test('a bot is set by the secret NAME and removed with null', () async {
-    reply = {...agent};
-    final a = await client.setAgentTelegram('tern:ops', 'OPS_BOT');
-    expect(a.telegramSecret, 'OPS_BOT');
-    expect(seen.last.body, {
-      'telegram': {'bot_token_secret': 'OPS_BOT'},
-    });
-    await client.setAgentTelegram('tern:ops', null);
-    expect(seen.last.body, {'telegram': null});
-  });
-
-  test('the daemon refusing a shared token reaches the caller', () async {
-    status = 400;
-    reply = {
-      'error':
-          'MAIN_BOT is the main bot\'s token; an agent\'s bot needs its own',
-    };
-    await expectLater(
-      client.setAgentTelegram('tern:ops', 'MAIN_BOT'),
-      throwsA(
-        isA<TernException>().having(
-          (e) => e.message,
-          'message',
-          contains('main bot'),
-        ),
-      ),
-    );
   });
 
   test('creating an agent may carry a ceiling', () async {

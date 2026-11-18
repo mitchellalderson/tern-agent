@@ -374,14 +374,6 @@ class TernClient {
     await _json('POST', '/v1/runs/${_seg(runId)}/undo', {'confirm': true}),
   );
 
-  /// Give an agent a Telegram bot of its own, by the NAME of the secret that
-  /// holds its token (never the token), or remove it with null. Throws
-  /// [TernException] (400) when the name is bad or another bot uses it.
-  /// Applies when the daemon restarts.
-  Future<Agent> setAgentTelegram(String id, String? secret) => updateAgent(id, {
-    'telegram': secret == null ? null : {'bot_token_secret': secret},
-  });
-
   /// What `id` did lately: delegated batches and routine runs.
   Future<List<AgentWork>> agentWork(String id, {int limit = 10}) async => [
     for (final w
@@ -946,8 +938,8 @@ class TernClient {
       Schedule.fromJson(s as Json),
   ];
 
-  /// `deliverTo`: null keeps results in the routine's session; else
-  /// `telegram:<chat_id>`.
+  /// `deliverTo`: null puts results where the routine lives; else `none`,
+  /// `home`, `dm` or `channel:<id>`.
   Future<Schedule> createSchedule({
     required String cron,
     required String prompt,

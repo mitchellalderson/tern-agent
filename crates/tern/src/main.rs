@@ -9,7 +9,6 @@ mod crash;
 mod daemon;
 mod doctor;
 mod fetcher;
-mod gateway_cmd;
 mod grants_cmd;
 mod inspect;
 mod ledger_cmd;
@@ -84,12 +83,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     // logging starts so their first invocation is logged too.
     if matches!(
         cli.command,
-        None | Some(
-            Command::Run { .. }
-                | Command::Resume { .. }
-                | Command::Daemon
-                | Command::Gateway { .. }
-        )
+        None | Some(Command::Run { .. } | Command::Resume { .. } | Command::Daemon)
     ) {
         home.ensure_layout()?;
     }
@@ -163,16 +157,6 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Report { output, run }) => {
             report_cmd::run(&home, output.as_deref(), run.as_deref())
         }
-        Some(Command::Gateway { command }) => match command {
-            cli::GatewayCommand::Pair => gateway_cmd::pair(&home),
-            cli::GatewayCommand::Add {
-                kind,
-                server,
-                channel,
-                force,
-            } => gateway_cmd::add(&home, &kind, server.as_deref(), channel.as_deref(), force),
-            cli::GatewayCommand::List => gateway_cmd::list(&home),
-        },
         Some(Command::Agents { command }) => agents_cmd::run(&home, command),
         Some(Command::Channels { command }) => channels_cmd::run(&home, command),
         Some(Command::Workspace { command }) => workspaces_cmd::run(&home, command),

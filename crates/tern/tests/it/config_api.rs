@@ -179,7 +179,6 @@ async fn read_change_and_reset_settings() {
         ("schedules.quiet_hours", json!("late"), 400),
         ("sandbox.netwrk", json!(true), 404),
         ("providers.anthropic.base_url", json!("http://x"), 404),
-        ("gateway.telegram.bot_token_secret", json!("X"), 400),
     ] {
         let (status, e) = send(
             http.put(format!("{URL}/{key}"))

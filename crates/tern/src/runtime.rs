@@ -679,20 +679,10 @@ impl Runtime {
                 Some(c) => self.place_name(&c)?,
                 None => "Home".into(),
             };
-            let delivered = s
-                .deliver_to
-                .as_deref()
-                .map(|t| t.split(':').next().unwrap_or(t))
-                .map(|g| {
-                    let mut c = g.chars();
-                    c.next()
-                        .map(|f| f.to_uppercase().chain(c).collect::<String>())
-                        .unwrap_or_default()
-                });
             return Ok(Some(routine_where_section(
                 &crate::daemon::scheduler::title(&s),
                 &posted_to,
-                delivered.as_deref(),
+                s.deliver_to.is_some(),
             )));
         }
         let Some(c) = self.store.session_channel(&session.id)? else {

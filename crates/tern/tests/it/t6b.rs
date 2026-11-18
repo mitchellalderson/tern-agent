@@ -135,7 +135,7 @@ async fn the_tasks_view_collects_every_source() {
              INSERT INTO routine_events (routine_id, event_key, payload, state, created_at)
                VALUES ('{capped_id}', 'e1', '{{}}', 'pending', 0);
              INSERT INTO held_deliveries (target, run_id, label, text, release_at, created_at)
-               VALUES ('telegram:1', 'broken', 'Morning brief', 'hi', {far}, 0);",
+               VALUES ('home', 'broken', 'Morning brief', 'hi', {far}, 0);",
             now = tern_store::now_ms(),
         ))
         .unwrap();
@@ -226,9 +226,6 @@ confine = "off"
 [taint]
 egress = "allow"
 
-[gateway.connectors.ntfy]
-enabled = true
-strangers = "taint"
 "#,
     );
     let t = &env.tern_home;
@@ -289,10 +286,6 @@ strangers = "taint"
             "\"Inbox sweep\" starts tainted from what its watch finds"
         )["severity"],
         "high"
-    );
-    assert_eq!(
-        find("gateways", "ntfy: messages from anyone")["severity"],
-        "low"
     );
     assert_eq!(
         find("connectors", "weather reads WEATHER_API_KEY")["severity"],
