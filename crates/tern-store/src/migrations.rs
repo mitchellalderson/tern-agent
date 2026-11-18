@@ -39,7 +39,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0029_outbox_file_state.sql"),
     include_str!("../migrations/0030_waits.sql"),
     include_str!("../migrations/0031_documents.sql"),
-    include_str!("../migrations/0032_channel_routing.sql"),
+    include_str!("../migrations/0034_channel_routing.sql"),
 ];
 
 /// The migration that introduced first-run seeding.
