@@ -166,6 +166,7 @@ impl Runtime {
             &slot,
             &changes,
             &connections,
+            &approvals,
         )?;
         tools.set_taint_safe_writes(config.taint.workspace_writes);
         // Every web read goes through the quarantined fetcher (docs/quarantined-fetch-design.md);
@@ -1406,6 +1407,7 @@ pub fn open_connections(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_tools(
     home: &TernHome,
     config: &Config,
@@ -1414,6 +1416,7 @@ fn build_tools(
     subagents: &HostSlot,
     changes: &broadcast::Sender<Change>,
     connections: &Arc<tern_auth::Connections>,
+    approvals: &Arc<dyn ApprovalHandler>,
 ) -> anyhow::Result<(
     ToolRegistry,
     Arc<tern_lua::Connectors>,
@@ -1478,6 +1481,8 @@ fn build_tools(
     lua.default_rate = config.connectors.rate;
     lua.record_fixtures = config.connectors.record_tests;
     lua.connections = Some(connections.clone());
+    // A connector's `sign_in` link is shown as a card.
+    lua.sign_in = Some(approvals.clone());
     let dirs = tern_lua::tools::Dirs {
         active: home.connectors_dir(),
         drafts: home.drafts_dir(),

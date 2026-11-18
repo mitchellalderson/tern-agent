@@ -718,6 +718,22 @@ pub enum AuthCard {
         #[serde(default)]
         notes: Vec<String>,
     },
+    /// A connector tool returned `sign_in = {url, label, expires_at}`. The
+    /// host checked it (https, no embedded credentials, a declared domain)
+    /// and shows the real `domain` and a live countdown to `expires_at`;
+    /// the model never sees the URL. The answer is `done` or `cancel`.
+    Link {
+        /// The connector's label ("Sign in to Acme").
+        title: String,
+        url: String,
+        /// The URL's real host, shown beside the button.
+        domain: String,
+        /// Unix milliseconds; `None` when the link doesn't say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<i64>,
+        #[serde(default)]
+        notes: Vec<String>,
+    },
 }
 
 /// A sign-in card for the user.
@@ -746,6 +762,7 @@ impl AuthPrompt {
                 AuthCard::SignIn {
                     device_available, ..
                 } => answer == "device" && *device_available,
+                AuthCard::Link { .. } => answer == "done",
             }
     }
 }
