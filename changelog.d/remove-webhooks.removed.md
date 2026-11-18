@@ -1,1 +1,0 @@
-- **Webhook routines.** tern is local-only now, so nothing outside this machine can start a routine: `tern hooks`, the `[webhooks]` listener and `/v1/webhooks` are gone, and existing webhook routines are deleted by the update. Schedule and watch routines are unchanged. An old `[webhooks]` section in `config.toml` is ignored with a warning.

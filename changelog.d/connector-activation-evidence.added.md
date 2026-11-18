@@ -1,1 +1,0 @@
-- **Evidence on the activation card:** every test of the exact version (input, each HTTP call with status or "Refused", output or error, logs) and the tools no test touched.

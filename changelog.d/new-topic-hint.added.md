@@ -1,1 +1,0 @@
-- **New topic?** hint in Home and DMs when the subject clearly changes: one quick yes/no per message, one hint per conversation, and it never switches by itself.

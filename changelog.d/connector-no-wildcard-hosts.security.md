@@ -1,1 +1,0 @@
-- **Connector hosts take no wildcards:** `capabilities.http` entries like `*.example.com` are refused; list each host.

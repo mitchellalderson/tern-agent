@@ -1,2 +1,0 @@
-- **Team tools for agents.** `delegate_team` splits a question across two or three teammates' lanes and brings their reports back together under one "Handed to Scout and Research" card. `brief_team` tells teammates about a change of plan: they read it at their next run, or are woken with `now` or `want_reply`. `inspect_work` lets an agent look at its own runs (steps, timings, failures, hand-offs, models, tokens). `read_report` reads on past a cut report.
-- **A delegate's answer is a "Message from Scout" card** in the chat of the agent that asked it.

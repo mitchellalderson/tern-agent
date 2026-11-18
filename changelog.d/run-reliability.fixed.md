@@ -1,6 +1,0 @@
-- **Answers written next to a tool call** are no longer lost behind a short afterword like "I saved the details".
-- **Stopped runs stay stopped**; steps cut off by a stop show as interrupted, and leftovers are closed at startup.
-- **Failed runs** keep a plain-sentence error instead of the raw provider text.
-- **Taint and the autonomy ceiling** carry across the runs of a conversation.
-- **The agent roster** is ordered by name, so the prompt stays cacheable.
-- **"Working for…"** updates when a parent is stopped while a delegate works.

@@ -1,1 +1,0 @@
-- **OAuth sign-in state** is single-use and expires after 15 minutes.

@@ -1,1 +1,0 @@
-- **Three models:** agent, fast (`fast_model`, background writing) and decision (`decision_model`, quick choices). Quick choices go through one typed `decide()` call, on OpenRouter's Decisions API when available, else the fast model with a retry; a refusal is never read as "no". Channel routing and the notification gate use it. Reasoning is off for quick calls.

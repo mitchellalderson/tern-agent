@@ -1,1 +1,0 @@
-- **Connector errors say what to do.** A rejected API key (401/403) tells the agent to ask for a replacement with `secret_request`; a rate limit says to wait. Failed spec fetches say what to check.

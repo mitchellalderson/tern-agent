@@ -1,1 +1,0 @@
-- `schedules.gate_model` is now `decision_model`. Existing config files keep working: the old key is read and moved on load.

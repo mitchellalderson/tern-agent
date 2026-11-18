@@ -1,1 +1,0 @@
-- **App-only OAuth (client credentials)** for connectors: set `app_only = true` on an `[auth.clients]` app that has a client secret; no sign-in, and tern fetches a new token when it expires.
