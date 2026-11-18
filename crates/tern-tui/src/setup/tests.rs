@@ -31,10 +31,8 @@ fn models() -> Vec<ModelInfo> {
         .iter()
         .map(|id| ModelInfo {
             id: (*id).into(),
-            name: None,
             context_window: Some(200_000),
-            created: None,
-            pricing: None,
+            ..ModelInfo::default()
         })
         .collect()
 }
@@ -128,6 +126,7 @@ impl Backend for Fake {
             message: None,
             fetched_at: Some(0),
             models: models(),
+            warnings: vec![],
             suggested: vec![],
             label: String::new(),
         }])
@@ -481,6 +480,7 @@ fn suggestions_fill_in_when_the_list_is_empty() {
         message: None,
         fetched_at: None,
         models: vec![],
+        warnings: vec![],
         suggested: vec!["openai/gpt-4o-mini".into()],
         label: String::new(),
     }]);

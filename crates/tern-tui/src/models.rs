@@ -301,16 +301,14 @@ mod tests {
             error: None,
             message: None,
             fetched_at: Some(0),
+            warnings: vec![],
             suggested: vec![],
             label: String::new(),
             models: ids
                 .iter()
                 .map(|id| ModelInfo {
                     id: (*id).into(),
-                    name: None,
-                    context_window: None,
-                    created: None,
-                    pricing: None,
+                    ..ModelInfo::default()
                 })
                 .collect(),
         }

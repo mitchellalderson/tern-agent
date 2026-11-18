@@ -306,7 +306,27 @@ impl Runtime {
                     .collect(),
                 reported_window: Some(tern_core::agent::ReportedWindow({
                     let models = models.clone();
-                    Arc::new(move |m| models.context_window(&m.provider, &m.model))
+                    // Ollama cuts a long prompt silently, so before its model
+                    // list is read, assume what it gives this computer's
+                    // memory rather than the generic local window.
+                    let ollama: std::collections::BTreeSet<String> = config
+                        .providers
+                        .iter()
+                        .filter(|(_, p)| {
+                            p.effective_base_url()
+                                .is_some_and(tern_providers::ollama::is_ollama_url)
+                        })
+                        .map(|(name, _)| name.clone())
+                        .collect();
+                    Arc::new(move |m| {
+                        models.context_window(&m.provider, &m.model).or_else(|| {
+                            ollama
+                                .contains(&m.provider)
+                                .then(tern_core::limits::total_memory_bytes)
+                                .flatten()
+                                .map(tern_providers::ollama::default_context)
+                        })
+                    })
                 })),
                 context_windows: config
                     .providers

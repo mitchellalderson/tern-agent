@@ -23,6 +23,9 @@ pub struct OpenAiCompat {
     /// proper takes it by default: other compatible servers may reject
     /// fields they don't know.
     cache_key: bool,
+    /// Ollama on this computer: it ignores `tool_choice` and, on `/v1`, a
+    /// model's keep-alive, so tern works around both.
+    ollama: bool,
     client: reqwest::Client,
 }
 
@@ -37,14 +40,23 @@ impl OpenAiCompat {
         let base_url = tern_core::presets::normalize_base_url(base_url);
         let host = tern_core::models::host_of(&base_url);
         let attribution = host == "openrouter.ai";
+        let ollama = crate::ollama::is_ollama_url(&base_url);
         Ok(Self {
             id: id.to_owned(),
             base_url,
             api_key,
             attribution,
             cache_key: host == "api.openai.com",
+            ollama,
             client: http::client()?,
         })
+    }
+
+    /// Treat the server as Ollama (it is by address when it's on port 11434
+    /// here; this is for an Ollama somewhere else, and for tests).
+    pub fn with_ollama(mut self, on: bool) -> Self {
+        self.ollama = on;
+        self
     }
 
     /// Override whether `prompt_cache_key` is sent (config
@@ -218,6 +230,17 @@ pub fn request_body_for(req: &ChatRequest, anthropic_cache: bool, cache_key: boo
     body
 }
 
+/// Ollama ignores `tool_choice: "none"`, so a model asked not to call tools
+/// would still call one. Not offering the tools is the only way to forbid it.
+pub fn adapt_for_ollama(body: &mut Value, req: &ChatRequest) {
+    if req.forbid_tool_calls
+        && let Some(o) = body.as_object_mut()
+    {
+        o.remove("tools");
+        o.remove("tool_choice");
+    }
+}
+
 #[derive(Default)]
 struct Decoder {
     /// index -> id of tool calls already announced.
@@ -374,6 +397,9 @@ impl Provider for OpenAiCompat {
             self.attribution && is_anthropic_on_openrouter(&req.model),
             self.cache_key,
         );
+        if self.ollama {
+            adapt_for_ollama(&mut body, &req);
+        }
         // Quick calls (decisions, short summaries) don't think first.
         if req.cache.quick && self.attribution {
             body["reasoning"] = json!({ "enabled": false });
@@ -396,10 +422,26 @@ impl Provider for OpenAiCompat {
         };
         let resp = http::check(resp).await?;
         let mut decoder = Decoder::default();
+        // `/v1` can't carry a keep-alive, and the server drops the model
+        // after 5 minutes by default: ask for longer once the reply is done.
+        let warm = self.ollama.then(|| {
+            (
+                self.client.clone(),
+                self.base_url.clone(),
+                req.model.clone(),
+            )
+        });
         // A trailing `None` lets servers that omit `[DONE]` still finish cleanly.
         let stream = sse::events(resp)
             .map(Some)
-            .chain(futures::stream::once(async { None }))
+            .chain(futures::stream::once(async move {
+                if let Some((client, base, model)) = warm {
+                    tokio::spawn(async move {
+                        crate::ollama::keep_warm(&client, &base, &model).await;
+                    });
+                }
+                None
+            }))
             .flat_map(move |ev| {
                 let items = match ev {
                     Some(Ok(ev)) => decoder.decode(&ev.data),
@@ -768,5 +810,68 @@ mod tests {
             }
         ));
         assert_eq!(ev.len(), 3);
+    }
+
+    #[test]
+    fn ollama_gets_no_tools_instead_of_tool_choice_none() {
+        let mut r = req();
+        r.forbid_tool_calls = true;
+        let mut b = request_body_for(&r, false, false);
+        assert_eq!(b["tool_choice"], "none");
+        adapt_for_ollama(&mut b, &r);
+        assert!(b.get("tools").is_none() && b.get("tool_choice").is_none());
+        // Allowed: tools stay.
+        let r = req();
+        let mut b = request_body_for(&r, false, false);
+        adapt_for_ollama(&mut b, &r);
+        assert!(b["tools"].is_array());
+    }
+
+    #[tokio::test]
+    async fn ollama_stream_omits_tools_when_forbidden_and_keeps_the_model_warm() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string("data: [DONE]\n\n"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/generate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+        let p = OpenAiCompat::new("ollama", &format!("{}/v1", server.uri()), None)
+            .unwrap()
+            .with_ollama(true);
+        let mut r = req();
+        r.forbid_tool_calls = true;
+        let mut s = p.stream(r, CancellationToken::new()).await.unwrap();
+        while s.next().await.is_some() {}
+        // The keep-alive call is fire and forget.
+        let mut seen = Vec::new();
+        for _ in 0..50 {
+            seen = server.received_requests().await.unwrap();
+            if seen.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let chat = seen
+            .iter()
+            .find(|q| q.url.path().ends_with("/chat/completions"))
+            .unwrap();
+        let body: Value = serde_json::from_slice(&chat.body).unwrap();
+        assert!(body.get("tools").is_none() && body.get("tool_choice").is_none());
+        let gen_req = seen
+            .iter()
+            .find(|q| q.url.path() == "/api/generate")
+            .unwrap();
+        let body: Value = serde_json::from_slice(&gen_req.body).unwrap();
+        assert_eq!(body["keep_alive"], crate::ollama::KEEP_ALIVE);
+        assert_eq!(body["model"], "qwen");
     }
 }

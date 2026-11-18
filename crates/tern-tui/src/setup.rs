@@ -620,6 +620,7 @@ impl SetupPanel {
                     message: v.message.clone(),
                     fetched_at: None,
                     models: v.models,
+                    warnings: vec![],
                     label: form.label(),
                     suggested: form
                         .preset

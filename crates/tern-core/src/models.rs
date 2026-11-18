@@ -7,15 +7,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::ProviderKind;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// What goes after `provider:`.
     pub id: String,
     /// Display name, when the provider gives one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The window the model gets here. For Ollama that is what the server
+    /// loads it with, which is often far less than `max_context`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// What the model supports at most, when the server says (Ollama).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context: Option<u64>,
+    /// Whether the model can call tools, when the server says (Ollama).
+    /// `None` is unknown, not "no".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<bool>,
     /// Unix seconds, when the provider gives it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<i64>,
@@ -204,6 +213,9 @@ pub struct ProviderModels {
     /// Unix seconds; `None` when never fetched.
     pub fetched_at: Option<i64>,
     pub models: Vec<ModelInfo>,
+    /// Advice that doesn't stop the list, e.g. a context too small for tern.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// Model ids the provider's preset suggests. Clients show them only
     /// when `models` is empty (the list couldn't be fetched).
     #[serde(default)]

@@ -45,6 +45,8 @@ struct Entry {
     fingerprint: String,
     fetched_at: i64,
     models: Vec<ModelInfo>,
+    #[serde(default)]
+    warnings: Vec<String>,
     #[serde(skip)]
     error: Option<ListError>,
 }
@@ -118,19 +120,19 @@ impl ModelCache {
                 fingerprint: fingerprint.to_owned(),
                 fetched_at: now,
                 models: l.models.clone(),
+                warnings: l.warnings.clone(),
                 error: None,
             },
             Err(e) => {
                 // Keep the last good list next to the error.
-                let models = entries
+                let old = entries
                     .get(provider)
-                    .filter(|old| old.fingerprint == fingerprint)
-                    .map(|old| old.models.clone())
-                    .unwrap_or_default();
+                    .filter(|old| old.fingerprint == fingerprint);
                 Entry {
                     fingerprint: fingerprint.to_owned(),
                     fetched_at: now,
-                    models,
+                    models: old.map(|o| o.models.clone()).unwrap_or_default(),
+                    warnings: old.map(|o| o.warnings.clone()).unwrap_or_default(),
                     error: Some(e.clone()),
                 }
             }
@@ -390,10 +392,11 @@ impl Runtime {
                         None => "missing",
                     },
                 };
-                let error = self
-                    .models
-                    .get(name, &fingerprint(p, key.as_deref()))
-                    .and_then(|e| e.error);
+                let entry = self.models.get(name, &fingerprint(p, key.as_deref()));
+                // With no error, the provider's own advice (an Ollama context
+                // that is too small) shows in the same place.
+                let advice = entry.as_ref().and_then(|e| e.warnings.first().cloned());
+                let error = entry.and_then(|e| e.error);
                 ProviderStatus {
                     name: name.clone(),
                     kind: p.kind,
@@ -405,7 +408,8 @@ impl Runtime {
                     label: label_of(name, p),
                     message: error
                         .as_ref()
-                        .map(|e| describe(e, name, p.effective_base_url())),
+                        .map(|e| describe(e, name, p.effective_base_url()))
+                        .or(advice),
                     error,
                     is_default: default.as_deref() == Some(name),
                 }
@@ -464,6 +468,7 @@ impl Runtime {
                 error: entry.error,
                 fetched_at: Some(entry.fetched_at),
                 models: entry.models,
+                warnings: entry.warnings,
                 label: label_of(name, cfg),
                 suggested: preset_of(cfg)
                     .map(|p| p.suggested_models.iter().map(|m| (*m).to_owned()).collect())
@@ -667,6 +672,7 @@ impl Runtime {
         let fp = fingerprint(&plan.cfg, plan.key.as_deref());
         let listing = Ok(Listing {
             models: verified.models.clone(),
+            warnings: Vec::new(),
             suggested_base_url: None,
         });
         self.models.put(&plan.name, &fp, &listing);
@@ -804,6 +810,7 @@ async fn verify(plan: &Plan) -> Verified {
     match result {
         Ok(l) => {
             v.models = l.models;
+            v.warnings.extend(l.warnings);
             v.suggested_base_url = l.suggested_base_url;
         }
         Err(e) => {
