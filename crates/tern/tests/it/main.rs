@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod agent_admin;
 mod ap0;
 mod ap2;
 mod ap3;
