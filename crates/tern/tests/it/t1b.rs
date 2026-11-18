@@ -457,8 +457,8 @@ async fn initiative_levels_decide_the_push_and_the_dial_quiets_them() {
     let env = Env::new(Some(&tg), "[schedules]\nquiet_hours = \"none\"\n");
     env.script(json!({ "conversations": [
         // The gate model's question names the routine's prompt.
-        { "matches": "The task:\nCheck the build", "turns": [{ "text": "{\"interrupt\": true, \"headline\": \"Build is red\"}" }] },
-        { "matches": "The task:\nCheck the news", "turns": [{ "text": "{\"interrupt\": false, \"headline\": \"Nothing big\"}" }] },
+        { "matches": "The task:\nCheck the build", "turns": [{ "text": "{\"answers\": {\"interrupt\": 0.9}}" }] },
+        { "matches": "The task:\nCheck the news", "turns": [{ "text": "{\"answers\": {\"interrupt\": 0.1}}" }] },
         { "matches": "Silent check", "turns": [{ "text": "Silent result." }] },
         { "matches": "Digest one", "turns": [{ "text": "Digest result one." }] },
         { "matches": "Check the build", "turns": [{ "text": "The build failed on main." }] },
@@ -495,10 +495,9 @@ async fn initiative_levels_decide_the_push_and_the_dial_quiets_them() {
         env.due(s["id"].as_str().unwrap());
         env.wait_count(done, n as i64 + 1, 15).await;
     }
-    // interrupt: at once. notify + yes: at once, with the headline.
+    // interrupt: at once. notify + yes: at once.
     tg.wait_for("Ping result.", 15).await;
-    let red = tg.wait_for("The build failed on main.", 15).await;
-    assert!(red.starts_with("Build is red\n\n"), "{red}");
+    tg.wait_for("The build failed on main.", 15).await;
     // digest, and notify + no: held for the next digest time.
     env.wait_count(
         "SELECT count(*) FROM held_deliveries WHERE kind = 'digest'",

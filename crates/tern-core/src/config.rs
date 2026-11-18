@@ -41,6 +41,15 @@ pub enum ConfigError {
 pub struct Config {
     /// `provider:model`, or a fallback chain `["a:x", "b:y"]` (T6a).
     pub default_model: Option<ModelChain>,
+    /// The fast model: background writing (summaries, role lines, carry-over)
+    /// and the fallback for quick decisions. Unset: Claude Haiku when the
+    /// Anthropic provider is set up, else the cheapest priced model.
+    pub fast_model: Option<ModelChain>,
+    /// The decision model: quick choices (who answers, is this worth a push).
+    /// An OpenRouter decision model answers in one call; any other model is
+    /// asked for structured JSON. Unset: an OpenRouter decision model when a
+    /// key is set, else the fast model.
+    pub decision_model: Option<ModelChain>,
     pub workspace: String,
     pub max_iterations: u32,
     /// Show the model's reasoning (Anthropic thinking, `reasoning_content`
@@ -372,6 +381,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             default_model: None,
+            fast_model: None,
+            decision_model: None,
             workspace: "~/tern-workspace".into(),
             max_iterations: 40,
             show_reasoning: true,
@@ -470,6 +481,12 @@ impl Config {
         if !has_autonomy {
             c.autonomy = crate::approval::Autonomy::Supervised;
         }
+        // `schedules.gate_model` became `decision_model`.
+        if let Some(g) = c.schedules.gate_model.take()
+            && c.decision_model.is_none()
+        {
+            c.decision_model = Some(g);
+        }
         // Code auto mode is a per-agent opt-in, never a global default.
         if c.autonomy == crate::approval::Autonomy::Code {
             return Err(ConfigError::CodeIsPerAgent(path.to_path_buf()));
@@ -527,6 +544,12 @@ impl Config {
         let mut out = Vec::new();
         if let Some(c) = &self.default_model {
             out.push(("default_model".to_owned(), c));
+        }
+        if let Some(c) = &self.fast_model {
+            out.push(("fast_model".to_owned(), c));
+        }
+        if let Some(c) = &self.decision_model {
+            out.push(("decision_model".to_owned(), c));
         }
         if let Some(c) = &self.subagents.default_model {
             out.push(("subagents.default_model".to_owned(), c));
@@ -1110,6 +1133,9 @@ pub struct SchedulesConfig {
     pub digest_times: crate::initiative::DigestTimes,
     /// The model that decides whether a `notify` result is worth a push;
     /// unset = the cheapest configured model with a known price.
+    /// Legacy name of `decision_model`: read once and moved there on load,
+    /// never written back.
+    #[serde(skip_serializing)]
     pub gate_model: Option<ModelChain>,
     /// Waits (`wait_until`) one agent may have at once.
     pub max_waits: usize,
@@ -1475,6 +1501,25 @@ docker_cpus = 1.5
     fn shipped_example_parses() {
         let c = Config::parse(crate::defaults::CONFIG_TOML, Path::new("x")).unwrap();
         assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn gate_model_moves_to_decision_model() {
+        let c = Config::parse(
+            "[schedules]\ngate_model = \"openrouter:cheap\"\n",
+            Path::new("c.toml"),
+        )
+        .unwrap();
+        assert_eq!(c.decision_model.as_deref(), Some("openrouter:cheap"));
+        assert!(c.schedules.gate_model.is_none());
+        // The new key wins, and the old one is never written back.
+        let c = Config::parse(
+            "decision_model = \"a:b\"\n[schedules]\ngate_model = \"c:d\"\n",
+            Path::new("c.toml"),
+        )
+        .unwrap();
+        assert_eq!(c.decision_model.as_deref(), Some("a:b"));
+        assert!(!toml::to_string(&c).unwrap().contains("gate_model"));
     }
 
     #[test]

@@ -76,30 +76,24 @@ impl Manager {
         if candidates.len() < 2 {
             return None;
         }
-        let valid: Vec<String> = candidates.iter().map(|c| c.0.clone()).collect();
-        let run_model = self
+        let answers = self
             .rt
-            .live()
-            .default_model
-            .as_ref()
-            .map(|c| c.primary().to_owned())
-            .unwrap_or_else(|| "mock:mock".into());
-        let answer = crate::routines::gate_text(
-            &self.rt,
-            &run_model,
-            tern_core::agents::ROUTER_SYSTEM,
-            tern_core::agents::router_prompt(text, &candidates),
-            100,
-            std::time::Duration::from_secs(20),
-        )
-        .await;
-        let picked = match answer {
-            Ok(t) => tern_core::agents::parse_router_answer(&t, &valid),
-            Err(e) => {
-                tracing::warn!(channel = %channel.id, error = %e, "routing failed; the lead answers");
-                None
-            }
-        }?;
+            .decide(
+                &tern_core::agents::router_state(text),
+                vec![(
+                    "who".into(),
+                    tern_core::agents::router_question(&candidates),
+                )],
+            )
+            .await;
+        let picked: Vec<String> = answers["who"]
+            .picked()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        if picked.is_empty() {
+            tracing::info!(channel = %channel.id, "no clear pick; the lead answers");
+        }
         let ids: Vec<String> = picked
             .iter()
             .filter_map(|slug| store.agent(slug).ok().flatten())

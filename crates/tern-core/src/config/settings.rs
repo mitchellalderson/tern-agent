@@ -164,7 +164,7 @@ const fn at_least(min: f64) -> Meta {
 fn meta(key: &str) -> Meta {
     let m = META;
     match key {
-        "default_model" => Meta {
+        "default_model" | "fast_model" | "decision_model" => Meta {
             kind: Some(Kind::Model),
             live: true,
             section: Some("models"),
@@ -304,11 +304,6 @@ fn meta(key: &str) -> Meta {
             ..m
         },
         "schedules.digest_times" => Meta { live: true, ..m },
-        "schedules.gate_model" => Meta {
-            kind: Some(Kind::Model),
-            live: true,
-            ..m
-        },
         "schedules.max_events_per_poll" => Meta {
             live: true,
             ..at_least(1.0)
@@ -430,9 +425,11 @@ fn placement(key: &str) -> (&'static str, bool) {
         "memory.user_md_tokens" | "memory.memory_md_tokens" | "skills.capture_min_tool_calls" => {
             ("general", true)
         }
-        "default_model" | "subagents.default_model" => ("models", false),
+        "default_model" | "fast_model" | "decision_model" | "subagents.default_model" => {
+            ("models", false)
+        }
         "fetch.model" => ("models", true),
-        "context_window" | "max_tokens" | "schedules.gate_model" => ("models", true),
+        "context_window" | "max_tokens" => ("models", true),
         "autonomy"
         | "taint.egress"
         | "taint.workspace_writes"

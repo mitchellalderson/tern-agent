@@ -5,10 +5,6 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use futures::StreamExt;
-use tern_core::config::ModelRef;
-use tern_core::initiative::{GATE_SYSTEM, GateAnswer, gate_prompt, parse_gate_answer};
-use tern_core::types::{ChatRequest, Message, StreamEvent};
 use tern_store::Store;
 use tern_tools::schedule::{RoutineChecks, WatchSummary};
 
@@ -68,91 +64,17 @@ pub fn lua_host(store: &Store, secrets: &tern_core::Secrets) -> anyhow::Result<t
     Ok(tern_lua::Host::new(store.clone(), secrets.clone())?)
 }
 
-/// The model for the notification gate (tooling spec §4.1, §8.3):
-/// `[schedules] gate_model` if set; else the cheapest configured model with
-/// a known price (input plus output per million tokens), among every model
-/// in a model setting or chain; else the routine run's own model.
-pub fn gate_model(rt: &crate::runtime::Runtime, run_model: &str) -> anyhow::Result<ModelRef> {
-    let config = rt.live();
-    if let Some(m) = &config.schedules.gate_model {
-        return Ok(m.primary().parse()?);
-    }
-    let mut candidates: Vec<String> = config
-        .model_chains()
-        .into_iter()
-        .flat_map(|(_, c)| c.entries().to_vec())
-        .collect();
-    candidates.push(run_model.to_owned());
-    let cheapest = candidates
-        .iter()
-        .filter(|m| {
-            m.parse::<ModelRef>()
-                .is_ok_and(|r| rt.mock || config.providers.contains_key(&r.provider))
-        })
-        .filter_map(|m| rt.price_of(m).map(|p| (p.input + p.output, m)))
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, m)| m.clone());
-    Ok(cheapest.as_deref().unwrap_or(run_model).parse()?)
-}
-
-/// One short call on the gate model, no tools: `system` and `user` in, its
-/// text out. Used for the notification gate and for routing a channel
-/// post to agents. Gives up after `timeout`.
-pub async fn gate_text(
-    rt: &crate::runtime::Runtime,
-    run_model: &str,
-    system: &str,
-    user: String,
-    max_tokens: u32,
-    timeout: std::time::Duration,
-) -> anyhow::Result<String> {
-    let model = gate_model(rt, run_model)?;
-    let provider = rt.agent.provider(&model)?;
-    let req = ChatRequest {
-        model: model.model.clone(),
-        system: system.into(),
-        messages: vec![Message::user_text(user)],
-        tools: Vec::new(),
-        max_tokens,
-        forbid_tool_calls: false,
-        cache: Default::default(),
-    };
-    let call = async {
-        let mut stream = provider
-            .stream(req, tokio_util::sync::CancellationToken::new())
-            .await?;
-        let mut text = String::new();
-        while let Some(ev) = stream.next().await {
-            if let StreamEvent::TextDelta(t) = ev? {
-                text.push_str(&t);
-            }
-        }
-        anyhow::Ok(text)
-    };
-    let text = tokio::time::timeout(timeout, call)
-        .await
-        .map_err(|_| anyhow::anyhow!("the gate model took over {}s", timeout.as_secs()))??;
-    tracing::debug!(model = %model, answer = %text, "gate model answered");
-    Ok(text)
-}
-
-/// Ask the gate model whether a `notify` routine's result is worth a push
-/// now: one short call, no tools, answered as `{"interrupt", "headline"}`.
-pub async fn ask_gate(
-    rt: &crate::runtime::Runtime,
-    purpose: &str,
-    run_model: &str,
-    result: &str,
-) -> anyhow::Result<GateAnswer> {
-    let text = gate_text(
-        rt,
-        run_model,
-        GATE_SYSTEM,
-        gate_prompt(purpose, result),
-        200,
-        std::time::Duration::from_secs(60),
-    )
-    .await?;
-    parse_gate_answer(&text)
-        .ok_or_else(|| anyhow::anyhow!("the gate model answered {text:?}, not the JSON asked for"))
+/// Ask the decision model whether a `notify` routine's result is worth a
+/// push now (one yes/no through `decide()`). `None` when it couldn't answer:
+/// the caller holds the result for the digest, never pushes on a guess.
+pub async fn ask_gate(rt: &crate::runtime::Runtime, purpose: &str, result: &str) -> Option<bool> {
+    use tern_core::decide::Question;
+    use tern_core::initiative::{GATE_QUESTION, GATE_THRESHOLD, gate_state};
+    let answers = rt
+        .decide(
+            &gate_state(purpose, result),
+            vec![("interrupt".into(), Question::yes_no(GATE_QUESTION))],
+        )
+        .await;
+    answers["interrupt"].is_yes(GATE_THRESHOLD)
 }

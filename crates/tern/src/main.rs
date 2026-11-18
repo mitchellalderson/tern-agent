@@ -8,6 +8,7 @@ mod connections_cmd;
 mod connectors_cmd;
 mod crash;
 mod daemon;
+mod decide;
 mod devices_cmd;
 mod doctor;
 mod fetcher;

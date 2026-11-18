@@ -1167,23 +1167,17 @@ impl Manager {
                 self.hold_or_send(s, target, Some(&run.id), text).await;
             }
             Initiative::Notify => {
-                let model = run.model.as_deref().unwrap_or_default();
-                match crate::routines::ask_gate(&self.rt, &s.prompt, model, text).await {
-                    Ok(a) if a.interrupt => {
-                        tracing::info!(schedule = %s.id, headline = %a.headline, "gate model: interrupt");
-                        let text = if a.headline.is_empty() {
-                            text.to_owned()
-                        } else {
-                            format!("{}\n\n{text}", a.headline)
-                        };
-                        self.hold_or_send(s, target, Some(&run.id), &text).await;
+                match crate::routines::ask_gate(&self.rt, &s.prompt, text).await {
+                    Some(true) => {
+                        tracing::info!(schedule = %s.id, "decision model: interrupt");
+                        self.hold_or_send(s, target, Some(&run.id), text).await;
                     }
-                    Ok(_) => {
-                        tracing::info!(schedule = %s.id, "gate model: not now; into the digest");
+                    Some(false) => {
+                        tracing::info!(schedule = %s.id, "decision model: not now; into the digest");
                         self.hold_for_digest(s, target, &run.id, text);
                     }
-                    Err(e) => {
-                        tracing::warn!(schedule = %s.id, error = %e, "gate model failed; into the digest");
+                    None => {
+                        tracing::warn!(schedule = %s.id, "decision model gave no answer; into the digest");
                         self.hold_for_digest(s, target, &run.id, text);
                     }
                 }

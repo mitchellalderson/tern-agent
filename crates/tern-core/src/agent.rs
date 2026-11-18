@@ -1968,6 +1968,7 @@ impl Fork {
                 history: true,
                 volatile: self.volatile.clone(),
                 tail,
+                quick: false,
             },
         }
     }
