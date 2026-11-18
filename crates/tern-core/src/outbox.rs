@@ -117,7 +117,7 @@ pub fn decided_note(item: &OutboxRow, result: Option<&str>) -> String {
     }
 }
 
-/// An outbox item as the API, Telegram and clients see it.
+/// An outbox item as the API and clients see it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutboxItem {
     pub id: i64,

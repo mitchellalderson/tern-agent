@@ -59,7 +59,7 @@ fn export_contains_no_secrets() {
         &store,
         &TriggerArgs::cron("0 8 * * 1-5"),
         "Summarize Notion changes",
-        Some("telegram:12345".into()),
+        Some("channel:private-room".into()),
         &ScheduleLimits {
             runs_per_day: Some(Some(3)),
             ..ScheduleLimits::default()
@@ -67,16 +67,6 @@ fn export_contains_no_secrets() {
         tern_store::DEFAULT_AGENT,
     )
     .unwrap();
-    let hook = create_routine(
-        &store,
-        &TriggerArgs::webhook(),
-        "A webhook arrived",
-        None,
-        &ScheduleLimits::default(),
-        tern_store::DEFAULT_AGENT,
-    )
-    .unwrap();
-
     let key = SecretKey::generate().unwrap();
     let out = export(
         &home,
@@ -106,20 +96,13 @@ fn export_contains_no_secrets() {
         let text = String::from_utf8_lossy(bytes);
         assert!(!text.contains(TOKEN), "{p} holds the secret");
         assert!(
-            !text.contains("telegram:12345"),
+            !text.contains("channel:private-room"),
             "{p} holds the delivery target"
         );
         assert!(!text.contains(&cron.session_id), "{p} holds a session id");
     }
     assert!(out.notes.iter().any(|n| n.contains(".env")));
     assert!(out.notes.iter().any(|n| n.contains("client_secret.json")));
-    assert!(
-        out.notes
-            .iter()
-            .any(|n| n.contains(&hook.id) && n.contains("webhook")),
-        "{:?}",
-        out.notes
-    );
     let routines = String::from_utf8_lossy(&out.files["routines.toml"]).into_owned();
     assert!(routines.contains("cron = \"0 8 * * 1-5\""), "{routines}");
     assert!(routines.contains("runs_per_day = 3"), "{routines}");

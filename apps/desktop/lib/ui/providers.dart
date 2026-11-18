@@ -345,10 +345,6 @@ class _DefaultModelSectionState extends State<_DefaultModelSection> {
 
   TernStore get _store => widget.store;
 
-  /// Fallbacks may be edited by an owner (a config write); a paired chat
-  /// device is told so instead of offered a button that fails.
-  bool get _canEdit => _store.health?.isOwner ?? true;
-
   @override
   void initState() {
     super.initState();
@@ -453,17 +449,16 @@ class _DefaultModelSectionState extends State<_DefaultModelSection> {
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
-                  if (_canEdit)
-                    TextButton(
-                      key: const Key('edit-default-fallbacks'),
-                      onPressed: () => setState(() {
-                        _draft = [...chain];
-                        _error = null;
-                      }),
-                      child: Text(
-                        chain.length > 1 ? 'Edit fallbacks' : 'Add fallbacks',
-                      ),
+                  TextButton(
+                    key: const Key('edit-default-fallbacks'),
+                    onPressed: () => setState(() {
+                      _draft = [...chain];
+                      _error = null;
+                    }),
+                    child: Text(
+                      chain.length > 1 ? 'Edit fallbacks' : 'Add fallbacks',
                     ),
+                  ),
                 ],
               ),
             if (draft != null) ...[

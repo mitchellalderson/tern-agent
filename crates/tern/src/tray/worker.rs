@@ -104,9 +104,6 @@ async fn status(http: &reqwest::Client) -> Option<Status> {
 
 impl<U: Fn(Update)> Worker<U> {
     fn set(&mut self, health: Health) {
-        if let Health::Running(s) = &health {
-            self.cx.gateways = s.gateways.iter().map(|(n, _)| n.clone()).collect();
-        }
         self.health = health;
         self.show();
     }
@@ -201,9 +198,9 @@ impl<U: Fn(Update)> Worker<U> {
                 self.probe().await;
             }
             Command::Menu(Action::Quit) => match self.dry_run().await {
-                Some(runs) if !runs.is_empty() => (self.ui)(Update::ConfirmQuit(
-                    model::quit_prompt(&runs, &self.cx.gateways),
-                )),
+                Some(runs) if !runs.is_empty() => {
+                    (self.ui)(Update::ConfirmQuit(model::quit_prompt(&runs)))
+                }
                 _ => self.quit().await,
             },
             Command::QuitConfirmed => self.quit().await,

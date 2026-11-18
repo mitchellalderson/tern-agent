@@ -5,8 +5,35 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::{AgentRow, ChannelRow, DEFAULT_AGENT, Result, Store, now_ms};
 
+/// Who answers a routed post (B1): one agent, or every relevant one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RouteMode {
+    /// The best fit; ties go to the lead.
+    #[default]
+    One,
+    /// Every relevant agent, at most three.
+    All,
+}
+
+impl RouteMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::One => "one",
+            Self::All => "all",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "one" => Some(Self::One),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
 /// A channel's limits on agents waking agents (§5.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelWakes {
     /// Agents' @mentions wake the agents they name. Off by default.
     pub agent_wakes: bool,
@@ -17,6 +44,11 @@ pub struct ChannelWakes {
     /// "Let agents decide" (§5.2): a post that mentions no one is routed
     /// to the right members by the gate model, not always to the lead.
     pub let_agents_decide: bool,
+    /// One agent answers, or every relevant one.
+    pub route_mode: RouteMode,
+    /// A plain-English rule for when agents reply here (B2); judged as an
+    /// extra yes/no. `None` = no rule.
+    pub reply_rule: Option<String>,
 }
 
 impl Default for ChannelWakes {
@@ -26,6 +58,8 @@ impl Default for ChannelWakes {
             max_hops: 2,
             wakes_per_hour: 6,
             let_agents_decide: false,
+            route_mode: RouteMode::One,
+            reply_rule: None,
         }
     }
 }
@@ -265,7 +299,7 @@ impl Store {
         Ok(self
             .conn()?
             .query_row(
-                "SELECT agent_wakes, max_hops, wakes_per_hour, let_agents_decide FROM channels
+                "SELECT agent_wakes, max_hops, wakes_per_hour, let_agents_decide, route_mode, reply_rule FROM channels
                  WHERE id = ?1",
                 [channel_id],
                 |r| {
@@ -274,6 +308,8 @@ impl Store {
                         max_hops: r.get(1)?,
                         wakes_per_hour: r.get(2)?,
                         let_agents_decide: r.get::<_, i64>(3)? != 0,
+                        route_mode: RouteMode::parse(&r.get::<_, String>(4)?).unwrap_or_default(),
+                        reply_rule: r.get(5)?,
                     })
                 },
             )
@@ -284,7 +320,7 @@ impl Store {
     pub fn set_channel_wakes(&self, channel_id: &str, w: &ChannelWakes) -> Result<()> {
         self.conn()?.execute(
             "UPDATE channels SET agent_wakes = ?2, max_hops = ?3, wakes_per_hour = ?4,
-               let_agents_decide = ?6, updated_at = ?5
+               let_agents_decide = ?6, route_mode = ?7, reply_rule = ?8, updated_at = ?5
              WHERE id = ?1",
             params![
                 channel_id,
@@ -292,7 +328,9 @@ impl Store {
                 w.max_hops,
                 w.wakes_per_hour,
                 now_ms(),
-                w.let_agents_decide
+                w.let_agents_decide,
+                w.route_mode.as_str(),
+                w.reply_rule
             ],
         )?;
         Ok(())

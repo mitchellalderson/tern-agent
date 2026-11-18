@@ -13,26 +13,22 @@
 //! | DELETE | `/v1/mcp/{name}?remove_secrets=` | remove a server |
 //! | POST | `/v1/mcp/{name}/restart` | reconnect now; returns the new `McpStatus` |
 //!
-//! Reads need Read scope, everything else Owner (`/v1/mcp` isn't in
-//! `CHAT_WRITES`). A `stdio` server runs a command on this host outside the
-//! sandbox, so paired devices may add, change or test one only with
-//! `api.remote_mcp_stdio = true`. Every state change sends `mcp_changed`
-//! on `/v1/events`.
+//! A `stdio` server runs a command on this host outside the sandbox. Every
+//! state change sends `mcp_changed` on `/v1/events`.
 
 use std::collections::BTreeMap;
 
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::{Extension, Json, Router};
+use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tern_core::config::{McpServerConfig, McpTransport};
+use tern_core::config::McpServerConfig;
 use tern_core::mcp::{ImportedServer, McpPatch, McpStatus};
 
 use super::api::{ApiError, ApiResult, Shared, bad, not_found};
 use super::api_providers::limited;
-use super::auth::Auth;
 use crate::mcp::McpError;
 
 pub fn routes() -> Router<Shared> {
@@ -45,23 +41,6 @@ pub fn routes() -> Router<Shared> {
             get(show).put(replace).patch(patch).delete(remove),
         )
         .route("/v1/mcp/{name}/restart", post(restart))
-}
-
-/// Refuse `stdio` configs from paired devices unless the host allows it.
-fn stdio_allowed(
-    m: &Shared,
-    auth: Option<&Extension<Auth>>,
-    cfg: &McpServerConfig,
-) -> Result<(), ApiError> {
-    if cfg.transport != McpTransport::Stdio || auth.is_none() || m.rt.live().api.remote_mcp_stdio {
-        return Ok(());
-    }
-    Err(ApiError(
-        StatusCode::FORBIDDEN,
-        "adding local commands from another device is off: a stdio MCP server runs on the \
-         host outside the sandbox. Set `api.remote_mcp_stdio = true` on the host to allow it."
-            .into(),
-    ))
 }
 
 fn write_err(e: anyhow::Error) -> ApiError {
@@ -90,13 +69,8 @@ struct Draft {
     secrets: BTreeMap<String, String>,
 }
 
-async fn verify(
-    State(m): State<Shared>,
-    auth: Option<Extension<Auth>>,
-    Json(d): Json<Draft>,
-) -> ApiResult<Value> {
-    stdio_allowed(&m, auth.as_ref(), &d.config)?;
-    limited(auth.as_ref())?;
+async fn verify(State(m): State<Shared>, Json(d): Json<Draft>) -> ApiResult<Value> {
+    limited()?;
     Ok(Json(
         match m.rt.verify_mcp(&d.name, &d.config, d.secrets).await {
             Ok(v) => json!({ "ok": true, "verified": v }),
@@ -119,10 +93,8 @@ async fn import(
 
 async fn add(
     State(m): State<Shared>,
-    auth: Option<Extension<Auth>>,
     Json(d): Json<Draft>,
 ) -> Result<(StatusCode, Json<McpStatus>), ApiError> {
-    stdio_allowed(&m, auth.as_ref(), &d.config)?;
     let s =
         m.rt.save_mcp(None, &d.name, &d.config, &d.secrets)
             .map_err(write_err)?;
@@ -139,11 +111,9 @@ struct ReplaceBody {
 
 async fn replace(
     State(m): State<Shared>,
-    auth: Option<Extension<Auth>>,
     UrlPath(old): UrlPath<String>,
     Json(b): Json<ReplaceBody>,
 ) -> ApiResult<McpStatus> {
-    stdio_allowed(&m, auth.as_ref(), &b.config)?;
     let name = b.name.unwrap_or_else(|| old.clone());
     m.rt.save_mcp(Some(&old), &name, &b.config, &b.secrets)
         .map(Json)

@@ -5,7 +5,7 @@
 //! |---|---|---|
 //! | GET | `/v1/agents[?archived=1\|deleted=1]` | `[Agent]` (`deleted=1`: archived and deleted ones too, deleted marked `deleted`, so history can name them): the default first, with `main_channel_id`, `last_activity`, `needs_you`, `active_runs` |
 //! | POST | `/v1/agents` | create `{name, slug?, avatar?, persona?, model?, subagent_model?, tools?, memory?, egress?, autonomy?, template?}`, with its DM channel |
-//! | PATCH | `/v1/agents/{id}` | any of those but `template` and `persona`, plus `telegram` (`{bot_token_secret}`: a bot of its own, from the next daemon start; `null` removes it), and `delegates` (agents it may hand work to; `null`: all for the default agent, none for others); `archived: true` archives (not the default agent); `code_auto: true` opts in to code auto mode (409 `ceiling_below_code` unless the ceiling is `code` or above after the change: send `autonomy: "code"` with it), `false` opts out. Create never sets it |
+//! | PATCH | `/v1/agents/{id}` | any of those but `template` and `persona`, plus `delegates` (agents it may hand work to; `null`: all for the default agent, none for others); `archived: true` archives (not the default agent); `code_auto: true` opts in to code auto mode (409 `ceiling_below_code` unless the ceiling is `code` or above after the change: send `autonomy: "code"` with it), `false` opts out. Create never sets it |
 //! | DELETE | `/v1/agents/{id}?confirm=true[&reassign_to=<agent>\|&delete_routines=true]` | delete it (never the default agent): its conversations stay in History under its name; refused (409) while it has runs in progress or writes in the outbox, or routines that `reassign_to` or `delete_routines` doesn't place |
 //! | GET | `/v1/agents/{id}/impact` | what deleting it touches: `{routines, led_channels, member_channels, conversations, memories, running_runs, pending_outbox, blockers}` |
 //! | GET / PUT | `/v1/agents/{id}/persona` | `{persona}`; GET adds `system_sections`, what tern adds to every persona |
@@ -31,7 +31,7 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use tern_core::agents::{self, AgentTelegram, ToolScope};
+use tern_core::agents::{self, ToolScope};
 use tern_core::approval::{Autonomy, Egress};
 use tern_core::config::ModelChain;
 use tern_core::models::Change;
@@ -102,11 +102,14 @@ pub struct Agent {
     /// `code` or above). Only `PATCH` sets it: never create, never a bundle.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub code_auto: bool,
-    /// A Telegram bot of its own: the secret holding its token (never the
-    /// token) and, for tests, a Bot API URL. It starts when the daemon
-    /// does. Absent: reached through the main bot's `/agent`.
+    /// One line on what it is for: what channel routing reads (never the
+    /// persona). Absent until written, once, from its role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub telegram: Option<AgentTelegram>,
+    pub description: Option<String>,
+    /// "Reply when relevant": a channel may pick it to answer. Off: it
+    /// answers only when @mentioned. On by default.
+    #[serde(default = "yes")]
+    pub reply_when_relevant: bool,
     /// Its DM: `home` for the default agent.
     pub main_channel_id: Option<String>,
     #[serde(default)]
@@ -200,7 +203,8 @@ pub(super) fn agent_view(m: &Shared, a: AgentRow) -> Agent {
         egress: a.egress.as_deref().and_then(Egress::parse),
         autonomy: a.autonomy.as_deref().and_then(Autonomy::parse),
         code_auto: a.code_auto,
-        telegram: AgentTelegram::parse(a.telegram.as_deref()),
+        description: a.description.clone(),
+        reply_when_relevant: !a.mention_only,
         archived: a.archived_at.is_some(),
         deleted: a.deleted_at.is_some(),
         is_default: a.is_default(),
@@ -253,6 +257,10 @@ fn double<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
 ) -> Result<Option<Option<T>>, D::Error> {
     Option::<T>::deserialize(d).map(Some)
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -391,11 +399,11 @@ struct UpdateBody {
     /// after this change (send `autonomy: "code"` with it to raise it, which
     /// is the visible step the confirm dialog shows). `false` opts out.
     code_auto: Option<bool>,
-    /// `{bot_token_secret}` gives the agent a bot of its own (set the
-    /// secret first: `tern secrets set <name>`); `null` removes it.
-    /// Applies when the daemon restarts.
+    /// The one-line description channel routing reads; `null` clears it
+    /// (it is written again from the role); at most 120 characters.
     #[serde(default, deserialize_with = "double")]
-    telegram: Option<Option<AgentTelegram>>,
+    description: Option<Option<String>>,
+    reply_when_relevant: Option<bool>,
     archived: Option<bool>,
 }
 
@@ -435,16 +443,20 @@ async fn update(
             "ceiling_below_code: this agent is read-only (autonomy ceiling readonly), so it can't use code auto mode".into(),
         ));
     }
-    let telegram = match &b.telegram {
-        None => None,
-        Some(None) => Some(None),
-        Some(Some(t)) => {
-            check_bot_secret(&m, &a, t)?;
-            Some(Some(serde_json::to_string(t).map_err(internal)?))
+    let description = match &b.description {
+        Some(Some(d)) => {
+            let d = d.trim();
+            if d.chars().count() > 120 || d.contains('\n') {
+                return Err(bad("description is one line of at most 120 characters"));
+            }
+            Some((!d.is_empty()).then(|| d.to_owned()))
         }
+        Some(None) => Some(None),
+        None => None,
     };
     let mut ch = AgentChange {
-        telegram,
+        description,
+        mention_only: b.reply_when_relevant.map(|v| !v),
         slug: b.slug.clone(),
         name,
         avatar: b
@@ -505,27 +517,6 @@ async fn update(
     Ok(Json(agent_view(&m, find(&m, &a.id)?)))
 }
 
-/// Stop the poller of a deleted agent's own Telegram bot (`telegram-<slug>`,
-/// started with the daemon), so it doesn't keep taking messages for an
-/// agent that is gone. Returns whether one was running.
-pub(super) fn stop_bot(m: &Shared, slug: &str) -> bool {
-    let name = format!("{}-{slug}", tern_gateway::telegram::SOURCE);
-    let Ok(mut tasks) = m.routes.lifecycle.gateway_tasks.lock() else {
-        return false;
-    };
-    let mut stopped = false;
-    tasks.retain(|(n, task)| {
-        if *n == name {
-            task.abort();
-            stopped = true;
-            false
-        } else {
-            true
-        }
-    });
-    stopped
-}
-
 #[derive(Deserialize)]
 struct DeleteQuery {
     confirm: Option<String>,
@@ -555,7 +546,6 @@ async fn delete(
             a.slug, a.slug
         )));
     }
-    let bot = agents::AgentTelegram::parse(a.telegram.as_deref()).map(|_| a.slug.clone());
     let done =
         m.rt.delete_agent(
             &a,
@@ -565,56 +555,11 @@ async fn delete(
             },
         )
         .map_err(manage_err)?;
-    if let Some(slug) = bot {
-        stop_bot(&m, &slug);
-    }
     changed(&m);
     let _ =
         m.rt.changes
             .send(Change::SchedulesChanged { id: String::new() });
     Ok(Json(done))
-}
-
-/// A bot's secret must be a valid secret name that no other bot (the main
-/// one or another agent's) polls: two pollers on one token fight over
-/// updates.
-fn check_bot_secret(m: &Shared, me: &AgentRow, t: &AgentTelegram) -> Result<(), ApiError> {
-    if me.is_default() {
-        return Err(bad(
-            "the default agent's bot is [gateway.telegram] in config.toml",
-        ));
-    }
-    if t.api_url.is_some() {
-        // The token would go to whatever host this named.
-        return Err(bad(
-            "api_url isn't set through the API; an agent's bot talks to Telegram",
-        ));
-    }
-    tern_core::secrets::check_name(&t.bot_token_secret).map_err(|e| bad(e.to_string()))?;
-    let cfg = m.rt.live();
-    if cfg
-        .gateway
-        .telegram
-        .as_ref()
-        .is_some_and(|g| g.bot_token_secret == t.bot_token_secret)
-    {
-        return Err(bad(format!(
-            "{} is the main bot's token; an agent's bot needs its own",
-            t.bot_token_secret
-        )));
-    }
-    for other in m.rt.store.agents(true).map_err(internal)? {
-        if other.id != me.id
-            && AgentTelegram::parse(other.telegram.as_deref())
-                .is_some_and(|o| o.bot_token_secret == t.bot_token_secret)
-        {
-            return Err(bad(format!(
-                "@{} already uses {}",
-                other.slug, t.bot_token_secret
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// `list` (ids, @names or names) as agent ids: other agents that exist.
@@ -671,6 +616,13 @@ async fn set_persona(
         .update_agent(&a.id, &AgentChange::default())
         .map_err(internal)?;
     changed(&m);
+    // A role saved with no description yet: write one, once.
+    if a.description.is_none() {
+        let (rt, a) = (m.rt.clone(), a.clone());
+        tokio::spawn(async move {
+            rt.ensure_description(&a).await;
+        });
+    }
     Ok(Json(Persona {
         persona: b.persona.trim().to_owned(),
         system_sections: None,
