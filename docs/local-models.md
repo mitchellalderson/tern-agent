@@ -24,6 +24,10 @@ the existing provider setup unchanged. One press installs Ollama if needed (afte
 it, downloads a starter model sized to this Mac (`local/starters.rs`, a data table; `status.starter`), and makes
 `ollama:<model>` the default. Only a step the person must take shows anything; a failed start shows one line and a retry.
 
+The terminal UI (`tern setup`, `/setup` on first run) does the same: "Set up with Ollama" is the main choice, `a` opens
+the usual provider list ("Use an API model instead"). It needs the background agent (`tern start`), which manages Ollama
+over its Unix socket; without it, first run shows the provider list as before.
+
 tern never prompts to start Ollama. `Local::ensure_running` reuses a server that answers, else starts the installed one
 (loopback only, managed). It runs at daemon start when an Ollama provider is configured, before each run on an Ollama
 model, and during first-run setup. Existing configs keep their providers; only a new install gets the Ollama default.
@@ -57,6 +61,24 @@ Every change sends `local_changed` on `/v1/events`; re-read the status. `health.
 
 Every change sends `local_changed`; a download also sends `local_pull` (`{id, model, phase, completed, total, error}`)
 as it goes. When one ends, the `ollama` provider's model list is refreshed (`models_changed`).
+
+## Models per tier
+
+Three places use a model: **agent** (runs tasks with tools: `default_model`), **fast** (summaries and short writing:
+`fast_model`) and **decision** (quick choices: `decision_model`). Small models do the last two well, so every Mac gets a
+useful set even when the agent model is modest. `local/catalog.rs` is the recommended model per tier by memory, as a data
+table (tags are unverified: check each with a real tool-use run before relying on it). The same table gives first run its
+starter (the agent pick).
+
+- `GET /v1/local/catalog`: `{ram_bytes, tiers: [{tier, model, size_gb, blurb, note, installed, current}], setting_up, error}`.
+- `POST /v1/local/tiers` `{tier, model}`: use an installed model for a tier. A model that can't use tools is refused
+  for agent and decision, and allowed for fast. If no Ollama provider is configured yet, it is added.
+- `POST /v1/local/setup`: download what's missing from the recommended set (one at a time), then use each for its tier.
+  It stops at the first failure and says why in `error`.
+- CLI: `tern local recommended`, `tern local use TIER MODEL`, `tern local setup` (these need the daemon).
+
+The desktop Local models dialog shows the recommended row per tier (Download, Use for, In use), "Set up all three",
+and a "Use for Agent / Fast / Decision" menu on each installed model.
 
 ## Downloads
 

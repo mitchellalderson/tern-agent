@@ -120,9 +120,17 @@ async fn fake_ollama() -> MockServer {
         .mount(&server)
         .await;
     Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [
+            { "id": "qwen3:8b" }, { "id": "llama2" }
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
         .and(path("/api/tags"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "models": [
-            { "name": "qwen3:8b", "size": 5, "digest": "d", "details": { "parameter_size": "8B" } }
+            { "name": "qwen3:8b", "size": 5, "digest": "d", "details": { "parameter_size": "8B" } },
+            { "name": "llama2", "size": 4, "digest": "e", "details": {} }
         ]})))
         .mount(&server)
         .await;
@@ -142,9 +150,21 @@ async fn fake_ollama() -> MockServer {
         .await;
     Mock::given(method("POST"))
         .and(path("/api/show"))
+        .and(wiremock::matchers::body_partial_json(
+            json!({ "model": "llama2" }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "capabilities": ["completion"], "model_info": {}
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "capabilities": ["tools"], "model_info": { "qwen3.context_length": 40960 }
         })))
+        .with_priority(2)
         .mount(&server)
         .await;
     server
@@ -175,6 +195,7 @@ async fn a_running_ollama_is_reused_as_is() {
     );
     let m = api.ok(Method::GET, "/v1/local/models", None).await;
     assert_eq!(m[0]["name"], "qwen3:8b");
+    assert_eq!(m[1]["tools"], false);
     assert_eq!(m[0]["tools"], true);
     assert_eq!(m[0]["max_context"], 40960);
     // Start reuses it; stop leaves a server tern didn't start alone.
@@ -322,4 +343,110 @@ fn the_cli_pulls_with_progress_and_says_when_ollama_is_off() {
     assert!(!ok && err.contains("Start it"), "{err}");
     let (ok, out, _) = cli(&fake.uri(), &["rm", "qwen3:8b"]);
     assert!(ok && out.contains("removed"), "{out}");
+}
+
+/// A daemon with an `ollama` provider already pointing at the fake, so
+/// nothing reaches this computer's real Ollama.
+fn tier_daemon(fake: &MockServer) -> Daemon {
+    let apps = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home/.tern");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "[providers.ollama]\nkind = \"openai_compat\"\nbase_url = \"{}/v1\"\n",
+            fake.uri()
+        ),
+    )
+    .unwrap();
+    let socket = home.join("tern.sock");
+    let child = Command::new(tern_bin())
+        .arg("daemon")
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", tmp.path().join("home"))
+        .env("TERN_HOME", &home)
+        .env("TERN_LOCAL_URL", fake.uri())
+        .env("TERN_LOCAL_APPS", apps.path())
+        .env("TERN_LOCAL_DISK_FREE", "107374182400")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::mem::forget(apps);
+    let end = Instant::now() + Duration::from_secs(10);
+    while !socket.exists() {
+        assert!(Instant::now() < end, "daemon did not start");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Daemon {
+        child,
+        _tmp: tmp,
+        socket,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_catalog_recommends_per_tier_and_tiers_take_installed_models() {
+    let fake = fake_ollama().await;
+    let d = tier_daemon(&fake);
+    let api = Api::new(&d);
+    let c = api.ok(Method::GET, "/v1/local/catalog", None).await;
+    let tiers = c["tiers"].as_array().unwrap();
+    let names: Vec<_> = tiers.iter().map(|t| t["tier"].as_str().unwrap()).collect();
+    assert_eq!(names, ["agent", "fast", "decision"]);
+    assert!(
+        tiers
+            .iter()
+            .all(|t| t["model"].as_str().unwrap().contains(':'))
+    );
+    assert!(tiers.iter().all(|t| t["installed"] == false));
+
+    // A model that isn't there, or can't use tools where they're needed.
+    let (code, text) = api
+        .call(
+            Method::POST,
+            "/v1/local/tiers",
+            Some(json!({ "tier": "fast", "model": "nope" })),
+        )
+        .await;
+    assert_eq!(code, 400, "{text}");
+    assert!(text.contains("isn't installed"), "{text}");
+    let (code, text) = api
+        .call(
+            Method::POST,
+            "/v1/local/tiers",
+            Some(json!({ "tier": "decision", "model": "llama2" })),
+        )
+        .await;
+    assert_eq!(code, 400, "{text}");
+    assert!(text.contains("can't use tools"), "{text}");
+
+    // Fast may be text-only; decision needs tools.
+    let c = api
+        .ok(
+            Method::POST,
+            "/v1/local/tiers",
+            Some(json!({ "tier": "fast", "model": "llama2" })),
+        )
+        .await;
+    assert_eq!(c["tiers"][1]["current"], "llama2");
+    let c = api
+        .ok(
+            Method::POST,
+            "/v1/local/tiers",
+            Some(json!({ "tier": "decision", "model": "qwen3:8b" })),
+        )
+        .await;
+    assert_eq!(c["tiers"][2]["current"], "qwen3:8b");
+    let c = api
+        .ok(
+            Method::POST,
+            "/v1/local/tiers",
+            Some(json!({ "tier": "agent", "model": "qwen3:8b" })),
+        )
+        .await;
+    assert_eq!(c["tiers"][0]["current"], "qwen3:8b");
 }

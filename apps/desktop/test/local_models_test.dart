@@ -18,6 +18,9 @@ class _Fake extends TernClient {
   final started = <String>[];
   final cancelled = <String>[];
   final deleted = <String>[];
+  var catalog = const LocalCatalog();
+  final used = <(LocalTier, String)>[];
+  var setUps = 0;
 
   @override
   Future<LocalStatus> localStatus() async => LocalStatus(
@@ -44,6 +47,21 @@ class _Fake extends TernClient {
 
   @override
   Future<void> localDelete(String model) async => deleted.add(model);
+
+  @override
+  Future<LocalCatalog> localCatalog() async => catalog;
+
+  @override
+  Future<LocalCatalog> localUseTier(LocalTier tier, String model) async {
+    used.add((tier, model));
+    return catalog;
+  }
+
+  @override
+  Future<LocalCatalog> localSetUpAll() async {
+    setUps++;
+    return catalog;
+  }
 }
 
 TernStore _store(_Fake c) => TernStore(c)
@@ -140,11 +158,87 @@ void main() {
     expect(find.textContaining('Only 5.0 GB free'), findsOneWidget);
   });
 
+  _tierTests();
+
   testWidgets('not running: offers to start Ollama', (tester) async {
     final client = _Fake()..running = false;
     await _show(tester, client);
     expect(find.byKey(const ValueKey('local-start')), findsOneWidget);
     expect(find.byKey(const ValueKey('local-name')), findsNothing);
+  });
+}
+
+const _catalog = LocalCatalog(
+  tiers: [
+    LocalTierRow(
+      tier: LocalTier.agent,
+      model: 'qwen3.5:9b',
+      sizeGb: 6.6,
+      blurb: 'Good all-round.',
+      installed: true,
+    ),
+    LocalTierRow(
+      tier: LocalTier.fast,
+      model: 'granite4.2:3b',
+      sizeGb: 2,
+      blurb: 'Quick.',
+      installed: false,
+    ),
+    LocalTierRow(
+      tier: LocalTier.decision,
+      model: 'granite4.2:3b',
+      sizeGb: 2,
+      blurb: 'Short choices.',
+      installed: true,
+      current: 'granite4.2:3b',
+    ),
+  ],
+);
+
+void _tierTests() {
+  testWidgets('recommended models per tier: use, download, in use', (
+    tester,
+  ) async {
+    final client = _Fake()..catalog = _catalog;
+    await _show(tester, client);
+    expect(find.text('Recommended for this Mac'), findsOneWidget);
+    expect(find.textContaining('Agent · qwen3.5:9b · 6.6 GB'), findsOneWidget);
+    expect(find.text('In use'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('use-agent')));
+    await tester.pump();
+    expect(client.used, [(LocalTier.agent, 'qwen3.5:9b')]);
+    await tester.tap(find.byKey(const ValueKey('get-fast')));
+    await tester.pump();
+    expect(client.started, ['granite4.2:3b']);
+  });
+
+  testWidgets('set up all three, and an error from the last try shows', (
+    tester,
+  ) async {
+    final client = _Fake()..catalog = _catalog;
+    await _show(tester, client);
+    await tester.tap(find.byKey(const ValueKey('local-setup-all')));
+    await tester.pump();
+    expect(client.setUps, 1);
+  });
+
+  testWidgets('a no-tools model can be the fast model, not agent', (
+    tester,
+  ) async {
+    final client = _Fake()
+      ..catalog = _catalog
+      ..installed = const [LocalModel(name: 'llama2', size: _gb, tools: false)];
+    await _show(tester, client);
+    await tester.tap(find.byIcon(Icons.more_horiz));
+    await tester.pumpAndSettle();
+    final agent = tester.widget<PopupMenuItem<VoidCallback>>(
+      find.widgetWithText(PopupMenuItem<VoidCallback>, 'Use for Agent'),
+    );
+    final fast = tester.widget<PopupMenuItem<VoidCallback>>(
+      find.widgetWithText(PopupMenuItem<VoidCallback>, 'Use for Fast'),
+    );
+    expect(agent.enabled, isFalse);
+    expect(fast.enabled, isTrue);
   });
 }
 

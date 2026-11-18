@@ -24,6 +24,17 @@ struct Fake {
     removed: Mutex<Vec<(String, bool)>>,
     verified: Mutex<Vec<ProviderDraft>>,
     needs_setup: bool,
+    /// A background agent that manages Ollama, when set.
+    local: Option<Mutex<LocalFake>>,
+}
+
+#[derive(Default)]
+struct LocalFake {
+    info: tern_core::models::LocalInfo,
+    pulls: Vec<tern_core::models::LocalPullInfo>,
+    models: Vec<tern_core::models::LocalModelInfo>,
+    calls: Vec<String>,
+    start_fails: bool,
 }
 
 fn models() -> Vec<ModelInfo> {
@@ -54,10 +65,13 @@ fn status(name: &str, kind: ProviderKind) -> ProviderStatus {
 }
 
 fn name_of(d: &ProviderDraft) -> String {
-    d.name.clone().unwrap_or_else(|| match d.kind {
-        Some(ProviderKind::Anthropic) => "anthropic".into(),
-        _ => "local".into(),
-    })
+    d.name
+        .clone()
+        .or_else(|| d.preset.clone())
+        .unwrap_or_else(|| match d.kind {
+            Some(ProviderKind::Anthropic) => "anthropic".into(),
+            _ => "local".into(),
+        })
 }
 
 #[async_trait]
@@ -155,7 +169,10 @@ impl Backend for Fake {
         _: Option<String>,
         default_model: Option<String>,
     ) -> BackendResult<ProviderStatus> {
-        let mut s = status(&name_of(&draft), draft.kind.unwrap());
+        let mut s = status(
+            &name_of(&draft),
+            draft.kind.unwrap_or(ProviderKind::OpenaiCompat),
+        );
         s.is_default = default_model.is_some();
         if let Some(m) = default_model {
             self.defaults.lock().unwrap().push(m);
@@ -170,6 +187,45 @@ impl Backend for Fake {
             .push((name.into(), remove_secret));
         self.providers.lock().unwrap().retain(|p| p.name != name);
         Ok(())
+    }
+    fn local_first_run(&self) -> bool {
+        self.local.is_some()
+    }
+    async fn local_status(&self) -> BackendResult<tern_core::models::LocalInfo> {
+        Ok(self.local.as_ref().unwrap().lock().unwrap().info.clone())
+    }
+    async fn local_install(&self) -> BackendResult<()> {
+        let mut l = self.local.as_ref().unwrap().lock().unwrap();
+        l.calls.push("install".into());
+        l.info.installed = true;
+        Ok(())
+    }
+    async fn local_start(&self) -> BackendResult<()> {
+        let mut l = self.local.as_ref().unwrap().lock().unwrap();
+        l.calls.push("start".into());
+        if l.start_fails {
+            return Err("Another program is using port 11434.".into());
+        }
+        l.info.running = true;
+        Ok(())
+    }
+    async fn local_pull(&self, model: &str) -> BackendResult<tern_core::models::LocalPullInfo> {
+        let mut l = self.local.as_ref().unwrap().lock().unwrap();
+        l.calls.push(format!("pull {model}"));
+        let p = tern_core::models::LocalPullInfo {
+            id: "p1".into(),
+            model: model.into(),
+            phase: "downloading".into(),
+            ..Default::default()
+        };
+        l.pulls.push(p.clone());
+        Ok(p)
+    }
+    async fn local_pulls(&self) -> BackendResult<Vec<tern_core::models::LocalPullInfo>> {
+        Ok(self.local.as_ref().unwrap().lock().unwrap().pulls.clone())
+    }
+    async fn local_models(&self) -> BackendResult<Vec<tern_core::models::LocalModelInfo>> {
+        Ok(self.local.as_ref().unwrap().lock().unwrap().models.clone())
     }
     fn set_default_model(&self, model: &str) -> BackendResult<Resolved> {
         self.defaults.lock().unwrap().push(model.into());
@@ -487,4 +543,171 @@ fn suggestions_fill_in_when_the_list_is_empty() {
     let rows = l.rows();
     assert!(matches!(&rows[0], Row::Header { note: Some(n), .. } if n.contains("suggestions")));
     assert_eq!(l.chosen().as_deref(), Some("openrouter:openai/gpt-4o-mini"));
+}
+
+// --- First run with Ollama ------------------------------------------------
+
+fn local_fake(installed: bool, running: bool) -> Fake {
+    let local = LocalFake {
+        info: tern_core::models::LocalInfo {
+            installed,
+            running,
+            install_page: "https://ollama.com/download".into(),
+            install: tern_core::models::LocalPlanInfo {
+                summary: "Downloads Ollama from its official GitHub release.".into(),
+                available: true,
+            },
+            starter: Some(tern_core::models::LocalStarterInfo {
+                model: "qwen3.5:9b".into(),
+                size_gb: 6.6,
+                blurb: "Good all-round.".into(),
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    Fake {
+        needs_setup: true,
+        local: Some(Mutex::new(local)),
+        ..Fake::default()
+    }
+}
+
+/// Run a poll task (with no wait) and hand its result to the panel.
+fn run_poll(panel: &mut SetupPanel, fake: &Fake, task: Task) {
+    let Task::LocalPoll(mut opts) = task else {
+        panic!("expected a poll, got {task:?}");
+    };
+    opts.first = true;
+    let view = block_on(crate::local_flow::poll(fake, opts));
+    panel.on_task_done(TaskDone::Local(view), fake);
+}
+
+fn calls(f: &Fake) -> Vec<String> {
+    f.local.as_ref().unwrap().lock().unwrap().calls.clone()
+}
+
+fn poll_opts(t: Option<Task>) -> crate::local_flow::PollOpts {
+    match t {
+        Some(Task::LocalPoll(o)) => o,
+        other => panic!("expected a poll, got {other:?}"),
+    }
+}
+
+#[test]
+fn first_run_leads_with_ollama_and_sets_up_the_starter_as_the_default() {
+    let fake = local_fake(false, false);
+    let mut panel = SetupPanel::open(&fake).unwrap();
+    assert!(matches!(panel.step, Step::Ollama(_)));
+    // Nothing is installed or downloaded before the person agrees.
+    let first = panel.first_task().unwrap();
+    run_poll(&mut panel, &fake, first);
+    let o = poll_opts(panel.take_task());
+    assert!(!o.go && !o.install);
+    assert!(calls(&fake).is_empty());
+
+    panel.on_key(press(KeyCode::Enter), &fake);
+    // The poll already in flight finishes with the old options; the next one
+    // carries the agreement.
+    run_poll(&mut panel, &fake, Task::LocalPoll(o));
+    let o = poll_opts(panel.take_task());
+    assert!(o.go && o.install);
+    run_poll(&mut panel, &fake, Task::LocalPoll(o));
+    // Installed, started by itself (no prompt), starter downloading.
+    assert_eq!(calls(&fake), ["install", "start", "pull qwen3.5:9b"]);
+    let o = poll_opts(panel.take_task());
+    assert!(!o.install, "the install runs once");
+
+    // The download finishes.
+    {
+        let mut l = fake.local.as_ref().unwrap().lock().unwrap();
+        l.pulls[0].phase = "done".into();
+        l.models.push(tern_core::models::LocalModelInfo {
+            name: "qwen3.5:9b".into(),
+            tools: Some(true),
+        });
+    }
+    run_poll(&mut panel, &fake, Task::LocalPoll(o));
+    let save = panel.take_task().unwrap();
+    let Task::Save {
+        draft,
+        default_model,
+        ..
+    } = &save
+    else {
+        panic!("expected a save, got {save:?}");
+    };
+    assert_eq!(draft.preset.as_deref(), Some("ollama"));
+    assert_eq!(default_model.as_deref(), Some("ollama:qwen3.5:9b"));
+    finish(&mut panel, &fake, SetupAction::Run(save));
+    assert!(matches!(panel.step, Step::List));
+    assert!(panel.changed);
+    assert_eq!(fake.default_model().as_deref(), Some("ollama:qwen3.5:9b"));
+}
+
+#[test]
+fn an_installed_ollama_starts_by_itself_and_a_failed_start_offers_a_retry() {
+    let fake = local_fake(true, false);
+    fake.local.as_ref().unwrap().lock().unwrap().start_fails = true;
+    let mut panel = SetupPanel::open(&fake).unwrap();
+    let first = panel.first_task().unwrap();
+    run_poll(&mut panel, &fake, first);
+    assert_eq!(calls(&fake), ["start"]);
+    let Step::Ollama(o) = &panel.step else {
+        panic!()
+    };
+    assert!(o.start_failed);
+    assert!(o.error.as_deref().unwrap().contains("11434"));
+    // No hammering a start that failed.
+    assert!(!poll_opts(panel.take_task()).try_start);
+    panel.on_key(press(KeyCode::Char('r')), &fake);
+    let Step::Ollama(o) = &panel.step else {
+        panic!()
+    };
+    assert!(!o.start_failed);
+}
+
+#[test]
+fn the_api_link_opens_the_existing_providers_and_esc_comes_back() {
+    let fake = local_fake(false, false);
+    let mut panel = SetupPanel::open(&fake).unwrap();
+    panel.on_key(press(KeyCode::Char('a')), &fake);
+    assert!(matches!(panel.step, Step::Kind { selected: 0 }));
+    // The cloud flow is the one it always was.
+    typed(&mut panel, &fake, "1");
+    assert!(matches!(panel.step, Step::Key(_)));
+    panel.on_key(press(KeyCode::Esc), &fake);
+    let action = panel.on_key(press(KeyCode::Esc), &fake);
+    assert!(matches!(panel.step, Step::Ollama(_)));
+    assert!(matches!(action, SetupAction::Run(Task::LocalPoll(_))));
+}
+
+#[test]
+fn a_model_that_cannot_use_tools_is_not_made_the_default() {
+    let fake = local_fake(true, true);
+    fake.local
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .models
+        .push(tern_core::models::LocalModelInfo {
+            name: "llama2".into(),
+            tools: Some(false),
+        });
+    let mut panel = SetupPanel::open(&fake).unwrap();
+    let first = panel.first_task().unwrap();
+    run_poll(&mut panel, &fake, first);
+    assert!(matches!(panel.take_task(), Some(Task::LocalPoll(_))));
+}
+
+#[test]
+fn without_a_background_agent_first_run_is_the_provider_list_as_before() {
+    let fake = Fake {
+        needs_setup: true,
+        ..Fake::default()
+    };
+    let panel = SetupPanel::open(&fake).unwrap();
+    assert!(matches!(panel.step, Step::Kind { selected: 0 }));
+    assert!(panel.first_task().is_none());
 }

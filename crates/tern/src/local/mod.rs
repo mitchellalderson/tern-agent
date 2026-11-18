@@ -8,10 +8,12 @@
 //! [`Local`] is what the daemon holds: the engine, plus the "install it for
 //! me" job and its state.
 
+pub mod catalog;
 pub mod install;
 pub mod ollama;
 pub mod pulls;
 pub mod starters;
+pub mod tiers;
 
 use std::sync::{Arc, Mutex};
 
@@ -159,6 +161,8 @@ pub struct Local {
     installer: Arc<install::Installer>,
     installing: Mutex<install::State>,
     pulls: pulls::Pulls,
+    /// "Set up all three": running, and why it last stopped.
+    preset: Mutex<(bool, Option<String>)>,
     changes: broadcast::Sender<Change>,
 }
 
@@ -173,6 +177,7 @@ impl Local {
             installer: Arc::new(installer),
             installing: Mutex::new(install::State::Idle),
             pulls: pulls::Pulls::default(),
+            preset: Mutex::new((false, None)),
             changes,
         }
     }
@@ -204,6 +209,17 @@ impl Local {
         s.install = self.installer.plan();
         s.installing = self.state();
         s
+    }
+
+    pub fn preset_state(&self) -> (bool, Option<String>) {
+        self.preset
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    pub fn set_preset(&self, running: bool, error: Option<String>) {
+        *self.preset.lock().unwrap_or_else(|p| p.into_inner()) = (running, error);
     }
 
     pub async fn models(&self) -> Result<Vec<LocalModel>, Error> {

@@ -231,3 +231,89 @@ class LocalPull {
   double? get fraction =>
       total > 0 ? (completed / total).clamp(0.0, 1.0) : null;
 }
+
+/// The three places a model is used: `agent` runs tasks with tools, `fast`
+/// writes summaries, `decision` makes quick choices.
+enum LocalTier {
+  agent('agent', 'Agent', 'Runs tasks, so it needs tools'),
+  fast('fast', 'Fast', 'Writes summaries and short text'),
+  decision('decision', 'Decision', 'Makes quick choices, so it needs tools');
+
+  const LocalTier(this.wire, this.label, this.hint);
+
+  final String wire;
+  final String label;
+  final String hint;
+
+  /// The fast tier only writes text.
+  bool get needsTools => this != fast;
+
+  static LocalTier fromWire(String? s) =>
+      values.firstWhere((t) => t.wire == s, orElse: () => agent);
+}
+
+/// One tier: the model recommended for this Mac, and what is set.
+class LocalTierRow {
+  const LocalTierRow({
+    required this.tier,
+    required this.model,
+    this.sizeGb = 0,
+    this.blurb = '',
+    this.note,
+    this.installed = false,
+    this.current,
+  });
+
+  factory LocalTierRow.fromJson(Json j) => LocalTierRow(
+    tier: LocalTier.fromWire(j['tier'] as String?),
+    model: j['model'] as String,
+    sizeGb: (j['size_gb'] as num?)?.toDouble() ?? 0,
+    blurb: j['blurb'] as String? ?? '',
+    note: j['note'] as String?,
+    installed: j['installed'] as bool? ?? false,
+    current: j['current'] as String?,
+  );
+
+  final LocalTier tier;
+  final String model;
+  final double sizeGb;
+  final String blurb;
+
+  /// An honest caveat for this Mac.
+  final String? note;
+
+  /// The recommended model is downloaded.
+  final bool installed;
+
+  /// The local model this tier uses now.
+  final String? current;
+
+  bool get inUse => current == model;
+}
+
+/// `GET /v1/local/catalog`.
+class LocalCatalog {
+  const LocalCatalog({
+    this.ramBytes,
+    this.tiers = const [],
+    this.settingUp = false,
+    this.error,
+  });
+
+  factory LocalCatalog.fromJson(Json j) => LocalCatalog(
+    ramBytes: (j['ram_bytes'] as num?)?.toInt(),
+    tiers: [
+      for (final t in j['tiers'] as List? ?? const [])
+        LocalTierRow.fromJson(t as Json),
+    ],
+    settingUp: j['setting_up'] as bool? ?? false,
+    error: j['error'] as String?,
+  );
+
+  final int? ramBytes;
+  final List<LocalTierRow> tiers;
+
+  /// "Set up all three" is running.
+  final bool settingUp;
+  final String? error;
+}

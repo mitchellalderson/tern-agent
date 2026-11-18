@@ -62,9 +62,9 @@ async fn event_loop(
 
     let mut effects = match command {
         // First-run setup may already be open; don't stack another.
-        Some(c) if c == "/setup" && app.setup.is_some() => vec![],
+        Some(c) if c == "/setup" && app.setup.is_some() => app.startup_effects(),
         Some(c) => app.on_key_command(&c),
-        None => vec![],
+        None => app.startup_effects(),
     };
 
     loop {

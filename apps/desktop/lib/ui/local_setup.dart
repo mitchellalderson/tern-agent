@@ -109,7 +109,7 @@ class _OllamaFirstRunState extends State<OllamaFirstRun> {
     // After the person agreed, download the starter.
     final starter = s.starter;
     final active = _pulls.any((p) => !p.finished);
-    if (_go && starter != null && !_pulling && !active && _models.isEmpty) {
+    if (_go && starter != null && !_pulling && !active && _usable == null) {
       _pulling = true;
       try {
         await widget.client.localPull(starter.model);

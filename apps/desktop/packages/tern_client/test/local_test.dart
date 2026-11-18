@@ -50,4 +50,22 @@ void main() {
     expect(m.loaded, isTrue);
     expect(TernEvent.fromJson(j('{"local_changed":{}}')), isA<LocalChanged>());
   });
+
+  test('decodes the catalog', () {
+    final c = LocalCatalog.fromJson(
+      j(
+        '{"ram_bytes":17179869184,"setting_up":true,"error":null,"tiers":['
+        '{"tier":"agent","model":"qwen3.5:9b","size_gb":6.6,"blurb":"b",'
+        '"note":null,"installed":true,"current":"qwen3.5:9b"},'
+        '{"tier":"decision","model":"granite4.2:3b","size_gb":2.0,'
+        '"blurb":"d","note":"n","installed":false,"current":null}]}',
+      ),
+    );
+    expect(c.settingUp, isTrue);
+    expect(c.tiers.first.tier, LocalTier.agent);
+    expect(c.tiers.first.inUse, isTrue);
+    expect(c.tiers.last.note, 'n');
+    expect(LocalTier.fast.needsTools, isFalse);
+    expect(LocalTier.decision.needsTools, isTrue);
+  });
 }

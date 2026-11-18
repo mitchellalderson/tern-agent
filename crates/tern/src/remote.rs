@@ -16,7 +16,10 @@ use tern_core::approval::{ApprovalRequest, Decision, SecretRequest};
 use tern_core::config::McpServerConfig;
 use tern_core::events::AgentEvent;
 use tern_core::mcp::{ImportedServer, McpPatch, McpStatus, McpVerified, McpVerifyError};
-use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
+use tern_core::models::{
+    LocalInfo, LocalModelInfo, LocalPullInfo, ProviderDraft, ProviderModels, ProviderStatus,
+    Resolved, Verified,
+};
 use tern_core::subagent::ChildRun;
 use tern_core::types::{Role, ToolCall, Usage};
 use tern_store::{SessionRow, SessionSummary};
@@ -750,6 +753,51 @@ impl Backend for Remote {
 
     fn providers(&self) -> BackendResult<Vec<ProviderStatus>> {
         self.get("/v1/providers")
+    }
+
+    fn local_first_run(&self) -> bool {
+        // An older daemon has no `/v1/local`: keep the provider list.
+        self.get::<LocalInfo>("/v1/local/status").is_ok()
+    }
+
+    async fn local_status(&self) -> BackendResult<LocalInfo> {
+        self.request(self.http.get(self.url("/v1/local/status")))
+            .await
+    }
+
+    async fn local_install(&self) -> BackendResult<()> {
+        self.request::<Value>(
+            self.http
+                .post(self.url("/v1/local/install"))
+                .json(&json!({ "consent": true })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn local_start(&self) -> BackendResult<()> {
+        self.request::<Value>(self.http.post(self.url("/v1/local/start")))
+            .await
+            .map(|_| ())
+    }
+
+    async fn local_pull(&self, model: &str) -> BackendResult<LocalPullInfo> {
+        self.request(
+            self.http
+                .post(self.url("/v1/local/pull"))
+                .json(&json!({ "model": model })),
+        )
+        .await
+    }
+
+    async fn local_pulls(&self) -> BackendResult<Vec<LocalPullInfo>> {
+        self.request(self.http.get(self.url("/v1/local/pulls")))
+            .await
+    }
+
+    async fn local_models(&self) -> BackendResult<Vec<LocalModelInfo>> {
+        self.request(self.http.get(self.url("/v1/local/models")))
+            .await
     }
 
     async fn models(
