@@ -49,6 +49,7 @@ class ChannelView extends StatefulWidget {
 
 class _ChannelViewState extends State<ChannelView> {
   final _window = FeedWindow();
+  final _divider = GlobalKey();
   String? _open;
   var _loadingEarlier = false;
 
@@ -74,6 +75,14 @@ class _ChannelViewState extends State<ChannelView> {
     super.dispose();
   }
 
+  Widget _withDivider(int at, int? dividerAt, Widget post) => at == dividerAt
+      ? Column(
+          key: _divider,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [const NewSinceDivider(), post],
+        )
+      : post;
+
   /// Widen the window; at its end, fetch the posts before what is loaded.
   Future<void> _showEarlier(int hidden, String channel) async {
     if (hidden > 0) {
@@ -98,8 +107,20 @@ class _ChannelViewState extends State<ChannelView> {
     }
     // One flat timeline: every post, in order; only the window is built.
     final everything = store.posts[ch.id] ?? const <Post>[];
+    // What arrived while the reader was away, divided off; a lot of it
+    // opens the channel there, with the window wide enough to hold it.
+    final catchUp = catchUpAt(store.catchUp[ch.id], [
+      for (final p in everything) p.id,
+    ]);
+    final jump = catchUp != null && catchUp.count >= TernStore.catchUpJump;
+    if (catchUp != null && jump && _window.visible < catchUp.count + 10) {
+      _window.visible = catchUp.count + 10;
+    }
     final hiddenEarlier = _window.hiddenEarlier(everything.length);
     final shown = _window.slice(everything);
+    final dividerAt = catchUp == null
+        ? null
+        : catchUp.index - _window.start(everything.length);
     // One live line per member at work here (channels-design §5.2).
     final lines = _window.held
         ? const <({String runId, String author, String doing})>[]
@@ -140,6 +161,10 @@ class _ChannelViewState extends State<ChannelView> {
           child: shown.isEmpty && extra == 0
               ? _EmptyChannel(channel: ch)
               : FeedList(
+                  key: ValueKey('feed:${ch.id}'),
+                  reveal: jump && dividerAt != null && dividerAt >= 0
+                      ? _divider
+                      : null,
                   window: _window,
                   count: shown.length + extra,
                   total: everything.length,
@@ -170,9 +195,13 @@ class _ChannelViewState extends State<ChannelView> {
                               )
                             : i < extra
                             ? ItemView(item: loose[extra - 1 - i], store: store)
-                            : widget._timelinePost(
-                                shown,
+                            : _withDivider(
                                 shown.length - 1 - (i - extra),
+                                dividerAt,
+                                widget._timelinePost(
+                                  shown,
+                                  shown.length - 1 - (i - extra),
+                                ),
                               ),
                       ),
                     ),
