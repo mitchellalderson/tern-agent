@@ -501,8 +501,7 @@ class TernStore extends ChangeNotifier {
 
   /// Where this device had read to in a conversation when it was opened
   /// (the posts after it are "new since you left"), kept while it stays
-  /// the visit. Per device, like [lastSeen]; the daemon would have to hold
-  /// it for it to follow the owner across devices.
+  /// the visit.
   final Map<String, int> catchUp = {};
 
   /// Unread posts at or above which a conversation opens at its divider.
