@@ -223,6 +223,9 @@ pub struct MemberLine<'a> {
     pub lead: bool,
     /// The agent this run is.
     pub you: bool,
+    /// What the agent is for, in one line: its lane (a persona line until
+    /// agents carry a description).
+    pub lane: &'a str,
 }
 
 /// The always-present "Where you are" section of a conversation run's
@@ -280,6 +283,7 @@ pub fn where_section(
                 "\n\nAgents in #{slug}: {list}. The lead answers posts that mention no one; a post that `@mentions` an agent is answered by that agent. {wakes}"
             ));
         }
+        out.push_str(&team_section(slug, members));
         out.push_str(
             "\n\nThe channel is one conversation: everyone's posts here (the user's, other agents', routines') are context for your work, and you're shown the new ones before you answer.",
         );
@@ -291,6 +295,40 @@ pub fn where_section(
         ));
     }
     out
+}
+
+/// What the channel's lead is told about its teammates: who is in which
+/// lane, and that a question spanning lanes is handed over with
+/// `delegate_team`, the lead's own part done meanwhile, and one answer
+/// written with credit. General "delegate when you can" advice wasn't enough
+/// on its own; this explicit list is what makes leads split work. Empty for
+/// anyone but the lead, and when the lead has no teammates.
+pub fn team_section(slug: &str, members: &[MemberLine<'_>]) -> String {
+    let lead_is_me = members.iter().any(|m| m.lead && m.you);
+    let mates: Vec<&MemberLine<'_>> = members.iter().filter(|m| !m.you).collect();
+    if !lead_is_me || mates.is_empty() {
+        return String::new();
+    }
+    let lanes = mates
+        .iter()
+        .map(|m| {
+            let lane = if m.lane.trim().is_empty() {
+                "its own job (see its name)"
+            } else {
+                m.lane.trim()
+            };
+            format!("- @{} ({}): {lane}", m.slug, m.name)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "\n\n### Your team in #{slug}\n\nYou lead this channel. Your teammates and their lanes:\n{lanes}\n\n\
+When a question spans two or three of these lanes, hand their parts over with `delegate_team` (one lane per teammate, \
+each with a complete brief) instead of answering it all yourself. Do your own part while they work, then answer once, \
+crediting each teammate by name for what they did. A simple question that fits one agent stays with one agent: answer \
+it yourself, or hand it to that teammate alone with `agent_spawn` and `agent`. If a hand-off is refused, do that part \
+yourself and say so."
+    )
 }
 
 /// "Where you are" for a routine's run: its result goes to `posted_to`
@@ -771,12 +809,14 @@ mod tests {
                 name: "Research",
                 lead: true,
                 you: false,
+                lane: "find things out and cite sources",
             },
             MemberLine {
                 slug: "tern",
                 name: "tern",
                 lead: false,
                 you: true,
+                lane: "",
             },
         ];
         let s = where_section(&topic, &members, true, Some(" Amounts in EUR. "));
@@ -785,6 +825,44 @@ mod tests {
         ));
         assert!(s.contains("ask for what you need in one go"));
         assert!(s.ends_with("The user's instructions for #grokbot-research:\n\nAmounts in EUR."));
+        // Only the lead is told to split work; a member who isn't gets no team section.
+        assert!(!s.contains("Your team in"), "{s}");
+        let lead = [
+            MemberLine {
+                slug: "tern",
+                name: "tern",
+                lead: true,
+                you: true,
+                lane: "",
+            },
+            MemberLine {
+                slug: "scout",
+                name: "Scout",
+                lead: false,
+                you: false,
+                lane: "find leads",
+            },
+            MemberLine {
+                slug: "research",
+                name: "Research",
+                lead: false,
+                you: false,
+                lane: "",
+            },
+        ];
+        let s = where_section(&topic, &lead, true, None);
+        assert!(s.contains("### Your team in #grokbot-research"), "{s}");
+        assert!(s.contains("- @scout (Scout): find leads"), "{s}");
+        assert!(s.contains("- @research (Research): its own job"), "{s}");
+        assert!(
+            s.contains("`delegate_team`") && s.contains("answer once"),
+            "{s}"
+        );
+        assert!(s.contains("stays with one agent"), "{s}");
+        assert!(
+            !s.contains("- @tern"),
+            "the lead isn't listed among its teammates"
+        );
         // Home and a DM.
         let s = where_section(&Place::Home, &[], false, None);
         assert!(s.contains("You're in Home, your direct line with the user."));
