@@ -26,6 +26,8 @@ const NOT_CHAT: &[&str] = &[
 #[derive(Debug, Clone, PartialEq)]
 pub struct Listing {
     pub models: Vec<ModelInfo>,
+    /// Advice that doesn't stop the list (an Ollama context that is too small).
+    pub warnings: Vec<String>,
     /// Set when `base_url` had no version path and adding `/v1` worked.
     pub suggested_base_url: Option<String>,
 }
@@ -49,21 +51,32 @@ pub async fn list_models(cfg: &ProviderConfig, key: Option<&str>) -> Result<List
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| ListError::Unreachable(format!("http client: {e}")))?;
+    let listing = list(cfg, &client, base, key).await?;
+    Ok(with_ollama_details(listing, &client, base).await)
+}
+
+async fn list(
+    cfg: &ProviderConfig,
+    client: &reqwest::Client,
+    base: &str,
+    key: Option<&str>,
+) -> Result<Listing, ListError> {
     match cfg.kind {
         ProviderKind::Anthropic => {
             let key = key.ok_or(ListError::MissingKey)?;
-            let models = anthropic(&client, base, key).await?;
+            let models = anthropic(client, base, key).await?;
             Ok(Listing {
                 models,
+                warnings: Vec::new(),
                 suggested_base_url: None,
             })
         }
-        ProviderKind::OpenaiCompat => match openai_compat(&client, base, key).await {
+        ProviderKind::OpenaiCompat => match openai_compat(client, base, key).await {
             Err(ListError::NotFound) if !has_version_path(base) => {
                 let retry = format!("{base}/v1");
                 // `/v1` answering at all (even 401) means it is the API; its
                 // error is the one that matters.
-                let models = match openai_compat(&client, &retry, key).await {
+                let models = match openai_compat(client, &retry, key).await {
                     Err(ListError::Unreachable(_) | ListError::Malformed(_)) => {
                         return Err(ListError::NotFound);
                     }
@@ -71,15 +84,35 @@ pub async fn list_models(cfg: &ProviderConfig, key: Option<&str>) -> Result<List
                 };
                 Ok(Listing {
                     models,
+                    warnings: Vec::new(),
                     suggested_base_url: Some(retry),
                 })
             }
             other => other.map(|models| Listing {
                 models,
+                warnings: Vec::new(),
                 suggested_base_url: None,
             }),
         },
     }
+}
+
+/// Ollama's `/v1/models` has no context or tool support: ask its own API.
+async fn with_ollama_details(
+    mut listing: Listing,
+    client: &reqwest::Client,
+    base: &str,
+) -> Listing {
+    if crate::ollama::is_ollama_url(base) {
+        listing.warnings = crate::ollama::enrich(
+            client,
+            base,
+            &mut listing.models,
+            tern_core::limits::total_memory_bytes(),
+        )
+        .await;
+    }
+    listing
 }
 
 /// `http` only for loopback and private networks, so a key is never sent
@@ -167,8 +200,7 @@ async fn anthropic(
                 id: m["id"].as_str()?.to_owned(),
                 name: m["display_name"].as_str().map(str::to_owned),
                 context_window: m["max_input_tokens"].as_u64(),
-                created: None,
-                pricing: None,
+                ..ModelInfo::default()
             })
         }));
         match (page["has_more"].as_bool(), page["last_id"].as_str()) {
@@ -204,6 +236,7 @@ async fn openai_compat(
                 context_window: m["context_length"].as_u64(),
                 created: m["created"].as_i64(),
                 pricing: pricing(&m["pricing"]),
+                ..ModelInfo::default()
             })
         })
         .filter(|m| is_chat_model(&m.id))

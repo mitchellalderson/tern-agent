@@ -109,6 +109,31 @@ pub fn is_local_url(base_url: &str) -> bool {
     }
 }
 
+/// This computer's memory in bytes (cached). `None` when it can't be read.
+/// Local servers pick their context size from it.
+pub fn total_memory_bytes() -> Option<u64> {
+    static RAM: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *RAM.get_or_init(|| {
+        if cfg!(target_os = "macos") {
+            let out = std::process::Command::new("/usr/sbin/sysctl")
+                .args(["-n", "hw.memsize"])
+                .output()
+                .ok()?;
+            String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+        } else {
+            let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+            let kb: u64 = text
+                .lines()
+                .find_map(|l| l.strip_prefix("MemTotal:"))?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()?;
+            Some(kb * 1024)
+        }
+    })
+}
+
 /// What the agent knows about one provider when it sizes a run.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Inputs {

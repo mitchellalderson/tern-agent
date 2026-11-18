@@ -1,0 +1,1 @@
+- **Ollama** now reports what its models really get. tern reads each model's context and tool support from Ollama, sizes prompts to the context in use instead of assuming 32k (Ollama silently cut longer prompts), warns under 64k and for an Ollama that is too old, keeps the model loaded for 30 minutes, and no longer sends `tool_choice` (which Ollama ignores).

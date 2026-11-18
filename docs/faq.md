@@ -161,6 +161,18 @@ tidied to the base address, and a wrong address is refused instead of saved. Cal
 quota or an unknown address come back as a plain sentence naming the provider, with the raw error alongside. Details:
 [reference](reference.md#tern-providers).
 
+## Can I run tern with Ollama?
+
+Yes: choose Ollama in `tern setup` (no key), after `ollama pull` of a model that can use tools. Two things to know.
+
+- **Context.** Ollama gives a model only 4k tokens of context on a Mac under 24 GB (32k to 48 GB), and cuts a longer
+  prompt without an error. tern reads what the model really gets from Ollama, sizes its prompts to it, and warns under
+  64k. To raise it, set `OLLAMA_CONTEXT_LENGTH=65536` and restart Ollama (menu bar app: `launchctl setenv
+  OLLAMA_CONTEXT_LENGTH 65536`, then quit and reopen it), or set `context_window` on the provider.
+- **Tools.** A model that can't use tools can chat but can't run tasks. tern knows from Ollama which ones those are.
+
+tern also asks Ollama to keep the model loaded for 30 minutes, and tells you if Ollama is too old (older than 0.6.4).
+
 ## What does "always allow" on an approval card grant?
 
 Only the exact thing you were shown. Where a tool can name it (for example a connector draft's test, tied to the
