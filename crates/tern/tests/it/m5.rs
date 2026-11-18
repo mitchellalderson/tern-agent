@@ -576,7 +576,7 @@ async fn telegram_secret_requests_point_to_the_app() {
     env.pair(&tg).await;
     tg.user_says("set up weather").await;
 
-    let notice = tg.wait_for("tern needs WEATHER_API_KEY", 10).await;
+    let notice = tg.wait_for("Chief needs WEATHER_API_KEY", 10).await;
     let text = notice["text"].as_str().unwrap();
     assert!(
         text.contains("The agent says: \"The weather connector needs it.\""),

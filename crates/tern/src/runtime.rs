@@ -416,6 +416,19 @@ impl Runtime {
         if has_others || had_deleted {
             return;
         }
+        // A brand-new home's default agent is its Chief of Staff, handle
+        // `@chief`. An existing install keeps its name.
+        let renamed = self.store.update_agent(
+            "tern",
+            &tern_store::AgentChange {
+                name: Some("Chief".into()),
+                slug: Some("chief".into()),
+                ..tern_store::AgentChange::default()
+            },
+        );
+        if let Err(e) = renamed {
+            tracing::warn!(error = %e, "naming the default agent Chief failed");
+        }
         let mut made = Vec::new();
         for id in tern_core::agents::SEEDED_STARTERS {
             let Some(t) = tern_core::agents::template(id) else {
@@ -726,13 +739,19 @@ impl Runtime {
                 }
             }
         }
+        let lanes: Vec<String> = agents
+            .iter()
+            .map(|(a, _)| lane_line(&self.home, a))
+            .collect();
         let lines: Vec<_> = agents
             .iter()
-            .map(|(a, lead)| MemberLine {
+            .zip(&lanes)
+            .map(|((a, lead), lane)| MemberLine {
                 slug: &a.slug,
                 name: &a.name,
                 lead: *lead,
                 you: a.id == agent_id,
+                lane,
             })
             .collect();
         let wakes = self.store.channel_wakes(&c.id)?.agent_wakes;
@@ -1113,6 +1132,13 @@ fn words_of(text: &str) -> std::collections::HashSet<String> {
         .filter(|w| w.chars().count() > 3)
         .map(str::to_lowercase)
         .collect()
+}
+
+/// What an agent is for, in one line, for a lead that splits work across
+/// its channel's members. Today the first line of its persona; the one place
+/// to swap for the agent's own description once agents carry one.
+pub(crate) fn lane_line(home: &TernHome, agent: &tern_store::AgentRow) -> String {
+    persona_line(home, &agent.id)
 }
 
 /// The first line of an agent's persona, as a short description of it.
