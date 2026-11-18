@@ -3,7 +3,7 @@
 
 mod allow;
 pub mod fixtures;
-pub mod gateway;
+mod hints;
 mod host;
 mod limit;
 pub mod openapi;

@@ -153,16 +153,6 @@ impl ConfigFile {
         self.upsert_table(&["mcp", "servers"], name, cfg)
     }
 
-    /// Add or replace `[gateway.connectors.<name>]`, like
-    /// [`ConfigFile::upsert_mcp_server`].
-    pub fn upsert_gateway_connector(
-        &mut self,
-        name: &str,
-        cfg: &super::GatewayConnectorConfig,
-    ) -> Result<(), EditError> {
-        self.upsert_table(&["gateway", "connectors"], name, cfg)
-    }
-
     /// Add or replace `[<parents…>.<name>]` with `cfg`'s fields.
     fn upsert_table(
         &mut self,

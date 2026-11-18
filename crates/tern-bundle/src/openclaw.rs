@@ -773,13 +773,9 @@ fn report_config(imp: &mut Import, config: &Value) {
         ));
     }
     for c in keys("/channels") {
-        let how = match c.as_str() {
-            "telegram" => "enable [gateway.telegram] and set its bot token secret (not imported), then `tern gateway pair`".to_owned(),
-            "slack" => "`tern gateway add slack`".to_owned(),
-            "ntfy" => "`tern gateway add ntfy`".to_owned(),
-            other => format!("{other} isn't a tern gateway yet"),
-        };
-        imp.setup.push(format!("channel {c}: {how}"));
+        imp.setup.push(format!(
+            "channel {c}: tern is local-only and has no messaging channels; not imported"
+        ));
     }
     let mut mcp = keys("/mcp/servers");
     mcp.extend(keys("/mcpServers"));

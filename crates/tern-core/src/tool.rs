@@ -94,7 +94,7 @@ pub struct ToolPolicy {
     /// nothing can approve them.
     pub forbidden: Option<&'static str>,
     /// Only a front end on this host may approve the call (the TUI or the
-    /// desktop app over the local socket), not a chat gateway or a paired
+    /// desktop app over the local socket)
     /// device: it would run a command here outside the sandbox.
     pub local_approval: bool,
     /// How far the call reaches ([`Reach`]).

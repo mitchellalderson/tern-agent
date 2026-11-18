@@ -129,7 +129,7 @@ TernStore demoStore() {
     SessionItem(
       id: 's3',
       title: 'Reply to Nora about renewal',
-      source: 'telegram',
+      source: 'cli',
       messages: 8,
       runs: 2,
       updatedAt: now.subtract(const Duration(hours: 5)),

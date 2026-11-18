@@ -94,18 +94,13 @@ class FakeChainClient extends TernClient {
   Future<List<Channel>> channels({bool archived = false}) async => const [];
 }
 
-Future<TernStore> chainStore(
-  FakeChainClient client, {
-  bool owner = true,
-}) async {
+Future<TernStore> chainStore(FakeChainClient client) async {
   final store = TernStore(client)
     ..link = Link.online
-    ..health = Health(
+    ..health = const Health(
       pid: 1,
       version: '0.2.0',
-      features: const {'providers', 'agents'},
-      authKind: 'device',
-      scope: owner ? 'owner' : 'chat',
+      features: {'providers', 'agents'},
     )
     ..info = Info(defaultModel: client.chain.first, tools: const []);
   await store.loadModels();
@@ -331,13 +326,12 @@ void main() {
     Future<FakeChainClient> open(
       WidgetTester tester, {
       List<String> chain = const ['anthropic:claude-sonnet-5-5'],
-      bool owner = true,
     }) async {
       tester.view.physicalSize = const Size(1200, 1400);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       final client = FakeChainClient(chain: chain);
-      final store = await chainStore(client, owner: owner);
+      final store = await chainStore(client);
       await tester.pumpWidget(_app(ProvidersDialog(store: store)));
       await tester.pumpAndSettle();
       return client;
@@ -452,17 +446,6 @@ void main() {
       // Still editing, nothing lost.
       expect(find.byKey(const Key('chain-list')), findsOneWidget);
       expect(client.saved, isEmpty);
-    });
-
-    testWidgets('a chat-scope device isn\'t offered the editor', (
-      tester,
-    ) async {
-      await open(tester, owner: false);
-      expect(find.byKey(const Key('edit-default-fallbacks')), findsNothing);
-      expect(
-        find.byKey(const Key('default-fallbacks-summary')),
-        findsOneWidget,
-      );
     });
   });
 }
