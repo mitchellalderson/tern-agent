@@ -15,6 +15,7 @@ mod grants_cmd;
 mod inspect;
 mod ledger_cmd;
 mod lifecycle;
+mod local;
 mod logging;
 mod manage;
 mod mcp;

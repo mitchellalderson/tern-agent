@@ -6,6 +6,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'local_setup.dart';
 import 'model_chain_editor.dart';
 import 'model_picker.dart';
 import 'secrets.dart';
@@ -702,7 +703,7 @@ class _DefaultModelDialog extends StatelessWidget {
   );
 }
 
-enum _Step { kind, endpoint, key, model }
+enum _Step { kind, local, endpoint, key, model }
 
 /// What the list shows when an older daemon can't send its presets: enough
 /// to get connected. The daemon's own list (`/v1/providers/presets`) wins.
@@ -835,6 +836,16 @@ class ProviderSetupState extends State<ProviderSetup> {
     );
   }
 
+  /// Models on this Mac, through Ollama, when the daemon can manage them.
+  bool get _hasLocal =>
+      widget.store.health?.features.contains('local_models') ?? false;
+
+  /// "Run on this Mac" is ready: connect the Ollama preset.
+  void _localReady() {
+    final ollama = _presets?.where((p) => p.id == 'ollama').firstOrNull;
+    if (ollama != null) _pick(ollama);
+  }
+
   void _pick(ProviderPreset p) => setState(() {
     _preset = p;
     _error = null;
@@ -946,6 +957,7 @@ class ProviderSetupState extends State<ProviderSetup> {
     final c = context.colors;
     final body = switch (_step) {
       _Step.kind => _kindStep(context),
+      _Step.local => LocalSetup(client: _client, onReady: _localReady),
       _Step.endpoint => _endpointStep(context),
       _Step.key => _keyStep(context),
       _Step.model => _modelStep(context),
@@ -1003,11 +1015,16 @@ class ProviderSetupState extends State<ProviderSetup> {
 
   VoidCallback? _back() => switch (_step) {
     _Step.kind => null,
+    _Step.local => () => setState(() => _step = _Step.kind),
     _Step.endpoint => () => setState(() => _step = _Step.kind),
     _Step.key when widget.existing != null => null,
     _Step.key => () => setState(() {
       _error = null;
-      _step = _preset?.isOther ?? false ? _Step.endpoint : _Step.kind;
+      _step = _preset?.isOther ?? false
+          ? _Step.endpoint
+          : _preset?.id == 'ollama' && _hasLocal
+          ? _Step.local
+          : _Step.kind;
     }),
     _Step.model => () => setState(() {
       _verified = null;
@@ -1022,7 +1039,7 @@ class ProviderSetupState extends State<ProviderSetup> {
       foregroundColor: c.onAccent,
     );
     return switch (_step) {
-      _Step.kind => const [],
+      _Step.kind || _Step.local => const [],
       _Step.endpoint => [
         FilledButton(
           style: style,
@@ -1095,11 +1112,20 @@ class ProviderSetupState extends State<ProviderSetup> {
                 spacing: gap,
                 runSpacing: gap,
                 children: [
-                  for (final p in presets)
+                  if (_hasLocal)
                     SizedBox(
                       width: width,
-                      child: _PresetCard(preset: p, onTap: () => _pick(p)),
+                      child: _LocalCard(
+                        onTap: () => setState(() => _step = _Step.local),
+                      ),
                     ),
+                  // Ollama has its own card above when tern can manage it.
+                  for (final p in presets)
+                    if (!(_hasLocal && p.id == 'ollama'))
+                      SizedBox(
+                        width: width,
+                        child: _PresetCard(preset: p, onTap: () => _pick(p)),
+                      ),
                 ],
               );
             },
@@ -1329,6 +1355,52 @@ IconData _presetIcon(ProviderPreset p) => switch (p.id) {
   _ when p.local => Icons.computer_outlined,
   _ => Icons.cloud_outlined,
 };
+
+/// "Run on this Mac": a choice beside the cloud providers.
+class _LocalCard extends StatelessWidget {
+  const _LocalCard({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return InkWell(
+      key: const ValueKey('preset-local-mac'),
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        decoration: BoxDecoration(
+          border: Border.all(color: c.hairline),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.laptop_mac, size: 19, color: c.accent),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Run on this Mac',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Private and offline',
+                    style: TextStyle(fontSize: 11.5, color: c.muted),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _PresetCard extends StatelessWidget {
   const _PresetCard({required this.preset, required this.onTap});

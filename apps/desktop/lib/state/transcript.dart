@@ -866,7 +866,9 @@ class Transcript {
           NotificationRequested() ||
           AuthPromptOpened() ||
           AuthPromptClosed() ||
-          ConnectionsChanged():
+          ConnectionsChanged() ||
+          LocalChanged() ||
+          NotificationRequested():
         return false;
     }
     return true;

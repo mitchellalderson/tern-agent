@@ -49,6 +49,7 @@ chrono.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 futures.workspace = true
+sha2.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 # `tern mcp serve` (T6d): an MCP server over stdio.
@@ -65,7 +66,7 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-nix.workspace = true
+nix = { workspace = true, features = ["fs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2 = { workspace = true, optional = true }

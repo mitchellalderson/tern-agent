@@ -222,6 +222,7 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_secrets::routes())
         .merge(super::api_connections::routes())
         .merge(super::api_bundles::routes())
+        .merge(super::api_local::routes())
         .merge(super::api_providers::routes())
         .merge(super::api_mcp::routes())
         .merge(super::api_mcp_serve::routes())

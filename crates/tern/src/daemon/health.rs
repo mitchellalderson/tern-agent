@@ -61,6 +61,9 @@ pub const FEATURES: &[&str] = &[
     // its revisions (docs/documents-design.md). Older cores lack it: hide the
     // Documents panel.
     "documents",
+    // `/v1/local/*`: models on this computer, through Ollama
+    // (docs/local-models.md).
+    "local_models",
 ];
 
 /// Routes this module adds to the API router.
