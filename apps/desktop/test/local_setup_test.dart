@@ -7,25 +7,25 @@ import 'package:tern_desktop/theme.dart';
 import 'package:tern_desktop/ui/local_setup.dart';
 
 class _Fake extends TernClient {
-  _Fake(this.status) : super(const Endpoint.unix('/nonexistent'));
+  _Fake(this.local) : super(const Endpoint.unix('/nonexistent'));
 
-  LocalStatus status;
+  LocalStatus local;
   final installs = <bool>[];
   var starts = 0;
 
   @override
-  Future<LocalStatus> localStatus() async => status;
+  Future<LocalStatus> localStatus() async => local;
 
   @override
   Future<LocalStatus> localInstall({required bool consent}) async {
     installs.add(consent);
-    return status;
+    return local;
   }
 
   @override
   Future<LocalStatus> localStart() async {
     starts++;
-    return status;
+    return local;
   }
 }
 

@@ -1783,7 +1783,8 @@ class TernStore extends ChangeNotifier {
       case SchedulesChanged():
         unawaited(refreshSchedules());
         return;
-      case UnknownEvent() || EventsDropped():
+      // The local-models dialog and setup step poll their own state.
+      case UnknownEvent() || EventsDropped() || LocalChanged():
         return;
     }
     if (session == null) {
