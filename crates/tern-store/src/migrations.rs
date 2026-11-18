@@ -276,8 +276,12 @@ mod tests {
         .unwrap();
         migrate(&mut c).unwrap();
         let target = |id: &str| -> Option<String> {
-            c.query_row("SELECT deliver_to FROM schedules WHERE id = ?1", [id], |r| r.get(0))
-                .unwrap()
+            c.query_row(
+                "SELECT deliver_to FROM schedules WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
         };
         assert_eq!(target("a").as_deref(), Some("home"));
         assert_eq!(target("b").as_deref(), Some("channel:launch"));
