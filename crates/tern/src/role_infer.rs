@@ -12,9 +12,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::Context;
-use futures::StreamExt;
 use tern_core::role;
-use tern_core::types::{ChatRequest, Message, StreamEvent};
 use tern_store::AgentRow;
 
 use crate::runtime::Runtime;
@@ -174,40 +172,15 @@ impl Runtime {
             return Ok(Inferred::Skipped("it already has a role".into()));
         }
         let evidence = self.role_evidence(agent)?;
-        let agent_model = agent
-            .model
-            .as_deref()
-            .and_then(tern_core::config::ModelChain::from_stored)
-            .map(|c| c.primary().to_owned());
-        let model = self.pick_model_for(None, None, agent_model.as_deref())?;
-        let provider = self.agent.provider(&model)?;
-        let req = ChatRequest {
-            model: model.model.clone(),
-            system: role::INFER_SYSTEM.into(),
-            messages: vec![Message::user_text(role::infer_request(
-                &agent.name,
-                &evidence,
-            ))],
-            tools: Vec::new(),
-            max_tokens: 800,
-            forbid_tool_calls: true,
-            cache: Default::default(),
-        };
-        let call = async {
-            let mut stream = provider
-                .stream(req, tokio_util::sync::CancellationToken::new())
-                .await?;
-            let mut text = String::new();
-            while let Some(ev) = stream.next().await {
-                if let StreamEvent::TextDelta(t) = ev? {
-                    text.push_str(&t);
-                }
-            }
-            anyhow::Ok(text)
-        };
-        let reply = tokio::time::timeout(TIMEOUT, call)
+        // Background writing: the fast model, reasoning off.
+        let reply = self
+            .fast_text(
+                role::INFER_SYSTEM,
+                role::infer_request(&agent.name, &evidence),
+                800,
+                TIMEOUT,
+            )
             .await
-            .map_err(|_| anyhow::anyhow!("the model took over {TIMEOUT:?} to answer"))?
             .context("the model call failed")?;
         let text = role::clean_reply(&reply);
         if text.is_empty() {

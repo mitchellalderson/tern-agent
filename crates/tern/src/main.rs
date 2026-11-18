@@ -7,6 +7,7 @@ mod connections_cmd;
 mod connectors_cmd;
 mod crash;
 mod daemon;
+mod decide;
 mod doctor;
 mod fetcher;
 mod grants_cmd;

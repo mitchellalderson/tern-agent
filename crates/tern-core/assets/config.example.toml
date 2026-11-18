@@ -7,6 +7,11 @@
 # the first model gets the chain, whatever picked it.
 # default_model = "anthropic:claude-sonnet-4-5"
 # default_model = ["anthropic:claude-sonnet-4-5", "openrouter:anthropic/claude-sonnet-4.5"]
+# Three models: the agent model above does the work; the fast model writes in the background
+# (summaries, role lines, carry-over); the decision model makes quick choices (who answers, is it
+# worth a push). An OpenRouter decision model answers in one call; any other model is asked for JSON.
+# fast_model = "anthropic:claude-haiku-4-5"      # unset: Haiku if Anthropic is set up, else the cheapest priced model
+# decision_model = "openrouter:liquid/..."        # unset: an OpenRouter decision model if a key is set, else the fast model
 
 workspace = "~/tern-workspace"   # where the agent works; shell commands start here
 max_iterations = 40              # model calls per run before it stops
@@ -225,7 +230,6 @@ docker_pids = 512          # 0 for no limit
 # initiative = "digest"         # how results reach the chat: silent | digest | notify | interrupt (a routine can set its own)
 # initiative_dial = "normal"    # every routine one level "quieter" or "louder", or "vacation" (nothing pushed)
 # digest_times = ["08:30", "17:30"]  # local times digest results are sent, as one message
-# gate_model = "openrouter:cheap-model"  # decides if a "notify" result is worth a push (default: the cheapest priced model)
 #
 # Home is one stream cut into sessions. A message
 # starts a new one, with a summary of the last carried over, after:

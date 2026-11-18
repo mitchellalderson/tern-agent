@@ -177,16 +177,16 @@ async fn send(s: &Path, channel: &str, text: &str) -> Value {
 async fn let_agents_decide_routes_a_post_to_the_right_members() {
     let env = Env::with_config(
         &json!({ "conversations": [
-            // The routing call (it carries "Message to route:"); a real
+            // The routing call (it carries "Message:"); a real
             // run's first message never does.
-            { "matches": "Message to route:\nWhat does Acme charge", "turns": [
-                { "text": "{\"agents\": [\"research\"]}" }] },
-            { "matches": "Message to route:\nBoth please", "turns": [
-                { "text": "Sure: {\"agents\": [\"@Ops\", \"ghost\", \"research\", \"ops\"]}" }] },
-            { "matches": "Message to route:\nGarbled", "turns": [
+            { "matches": "Message:\nWhat does Acme charge", "turns": [
+                { "text": "{\"answers\": {\"who\": {\"research\": 0.9, \"ops\": 0.1}}}" }] },
+            { "matches": "Message:\nBoth please", "turns": [
+                { "text": "Sure: {\"answers\": {\"who\": {\"ops\": 0.6, \"ghost\": 0.9, \"research\": 0.4}}}" }] },
+            { "matches": "Message:\nGarbled", "turns": [
                 { "text": "I think research." }] },
-            { "matches": "Message to route:\nOutsider", "turns": [
-                { "text": "{\"agents\": [\"outsider\"]}" }] },
+            { "matches": "Message:\nOutsider", "turns": [
+                { "text": "{\"answers\": {\"who\": {\"outsider\": 1}}}" }] },
             { "matches": "What does Acme charge", "turns": [{ "text": "Research: $15." }] },
             { "matches": "Both please", "turns": [{ "text": "On it." }] },
             { "matches": "Garbled", "turns": [{ "text": "Lead here." }] },
@@ -251,7 +251,7 @@ async fn let_agents_decide_routes_a_post_to_the_right_members() {
         "{posts:#?}"
     );
 
-    // Several picks: members only, each once (`ghost` isn't an agent).
+    // The most likely member answers; names that aren't members are ignored.
     let sent = send(&s, "ask", "Both please").await;
     let agents: Vec<_> = sent["woke"]
         .as_array()
@@ -259,7 +259,7 @@ async fn let_agents_decide_routes_a_post_to_the_right_members() {
         .iter()
         .map(|w| w["agent_id"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(agents, vec![ops.clone(), research.clone()], "{sent:#}");
+    assert_eq!(agents, vec![ops.clone()], "{sent:#}");
 
     // An answer that can't be read, or names someone who isn't a member:
     // the lead answers, as without the setting.
