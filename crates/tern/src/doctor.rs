@@ -254,67 +254,8 @@ pub fn run(home: &TernHome, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
     r.section("Autonomy");
     check_autonomy(&mut r, home, &config);
 
-    r.section("Remote access");
-    check_listeners(&mut r, &config);
-
     r.section("Sub-agents");
     check_subagents(&mut r, &config);
-
-    r.section("Gateways");
-    match &config.gateway.telegram {
-        Some(t) if t.enabled => {
-            check_secret(&mut r, &secrets, "telegram bot token", &t.bot_token_secret)
-        }
-        _ => r.check(Status::Info, "telegram disabled", None),
-    }
-    let agents_db = home
-        .db_path()
-        .exists()
-        .then(|| Store::open(&home.db_path()).ok())
-        .flatten();
-    if let Some(store) = &agents_db {
-        for a in store.agents(false).unwrap_or_default() {
-            if let Some(bot) = tern_core::agents::AgentTelegram::parse(a.telegram.as_deref()) {
-                check_secret(
-                    &mut r,
-                    &secrets,
-                    &format!("telegram bot token for @{}", a.slug),
-                    &bot.bot_token_secret,
-                );
-            }
-        }
-    }
-    for c in crate::gateway_cmd::check_connectors(home, &config) {
-        if !c.enabled {
-            r.check(Status::Info, format!("{}: disabled", c.name), None);
-            continue;
-        }
-        match &c.state {
-            Ok(what) if c.missing.is_empty() && c.paired == 0 => r.check(
-                Status::Warn,
-                format!("{}: {what}; nobody has paired", c.name),
-                Some("run `tern gateway pair` and send the code as your first message"),
-            ),
-            Ok(what) if c.missing.is_empty() => r.check(
-                Status::Ok,
-                format!("{}: {what}; {} paired", c.name, c.paired),
-                None,
-            ),
-            Ok(what) => r.check(
-                Status::Fail,
-                format!("{}: {what}; secret {} is not set", c.name, c.missing.join(", ")),
-                Some("set it in the TUI with /secrets, or in secrets.toml (chmod 600)"),
-            ),
-            Err(e) => r.check(
-                Status::Fail,
-                format!("{}: can't run: {e}", c.name),
-                Some(&format!(
-                    "`tern gateway add {}` installs the built-in one, or fix ~/.tern/connectors/{}.luau",
-                    c.name, c.name
-                )),
-            ),
-        }
-    }
 
     r.section("Connectors");
     check_connectors(&mut r, home);
@@ -1015,34 +956,6 @@ fn check_daemon(r: &mut Report, home: &TernHome) {
                 r.check(Status::Warn, note, None);
             }
         }
-    }
-}
-
-/// `[api]` (deployment spec §6.1, §6.6).
-fn check_listeners(r: &mut Report, config: &tern_core::Config) {
-    let addrs = match crate::daemon::listen::check(&config.api) {
-        Ok(a) => a,
-        Err(e) => return r.check(Status::Fail, format!("{e:#}"), None),
-    };
-    if addrs.is_empty() {
-        return r.check(Status::Info, "local socket only (no TCP listener)", None);
-    }
-    let list: Vec<String> = addrs.iter().map(|a| format!("tcp://{a}")).collect();
-    r.check(
-        Status::Ok,
-        format!(
-            "listening on {} ({:?} TLS)",
-            list.join(", "),
-            config.api.tls
-        ),
-        None,
-    );
-    if config.sandbox.backend == SandboxBackendKind::Host {
-        r.check(
-            Status::Warn,
-            "the API is reachable over TCP and sandbox.backend = \"host\": approved shell commands from paired devices run on this machine",
-            Some("Consider sandbox.backend = \"docker\", or pair phones with --scope read."),
-        );
     }
 }
 

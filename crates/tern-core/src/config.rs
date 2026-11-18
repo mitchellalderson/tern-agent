@@ -59,11 +59,7 @@ pub struct Config {
     pub secret_request_timeout_secs: u64,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub sandbox: SandboxConfig,
-    pub gateway: GatewayConfig,
     pub mcp: McpConfig,
-    pub api: ApiConfig,
-    /// Hosted tern account sign-in (deployment spec §10.4a). Off by default.
-    pub account: AccountConfig,
     pub subagents: SubagentsConfig,
     pub schedules: SchedulesConfig,
     pub memory: crate::memory::MemoryConfig,
@@ -380,10 +376,7 @@ impl Default for Config {
             secret_request_timeout_secs: 900,
             providers: BTreeMap::new(),
             sandbox: SandboxConfig::default(),
-            gateway: GatewayConfig::default(),
             mcp: McpConfig::default(),
-            api: ApiConfig::default(),
-            account: AccountConfig::default(),
             subagents: SubagentsConfig::default(),
             schedules: SchedulesConfig::default(),
             memory: crate::memory::MemoryConfig::default(),
@@ -406,7 +399,7 @@ impl Default for Config {
 /// single-player). A config that still has them loads, with one warning,
 /// instead of failing on an unknown key. Dotted paths; a table name drops
 /// the whole table.
-const REMOVED: &[&str] = &["webhooks"];
+const REMOVED: &[&str] = &["webhooks", "api", "account", "gateway"];
 
 /// Remove the dotted `path` from `table`; whether it was there.
 fn remove_path(table: &mut toml::Table, path: &str) -> bool {
@@ -500,9 +493,6 @@ impl Config {
                 Some((secret, format!("provider {name}")))
             })
             .collect();
-        if let Some(t) = &self.gateway.telegram {
-            uses.push((t.bot_token_secret.clone(), "telegram".into()));
-        }
         for (name, s) in &self.mcp.servers {
             uses.extend(
                 s.secret_names()
@@ -871,161 +861,6 @@ pub enum SandboxBackendKind {
     Docker,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GatewayConfig {
-    pub telegram: Option<TelegramConfig>,
-    /// Gateway connectors by connector name (tooling spec §6.4): Luau
-    /// connectors with a `gateway` table, such as ntfy or Slack.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub connectors: BTreeMap<String, GatewayConnectorConfig>,
-}
-
-/// `[gateway.connectors.<name>]`: run active connector `<name>` as a chat
-/// transport. Delivery targets are `<name>:<chat>`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GatewayConnectorConfig {
-    pub enabled: bool,
-    /// How often to poll for messages, in seconds (when the connector can
-    /// receive).
-    pub poll_secs: u64,
-    /// Messages from senders who haven't paired (`tern gateway pair`):
-    /// `reply` with a fixed note, `ignore` them, or start a `taint`ed run
-    /// that can't write without an approval.
-    pub strangers: Strangers,
-    /// Handed to the connector (`opts.settings` on send, the third argument
-    /// of `poll`): topics, channel ids. Never secret values; those go in
-    /// `capabilities.auth`.
-    pub settings: BTreeMap<String, toml::Value>,
-}
-
-impl Default for GatewayConnectorConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            poll_secs: 30,
-            strangers: Strangers::Reply,
-            settings: BTreeMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Strangers {
-    #[default]
-    Reply,
-    Ignore,
-    Taint,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TelegramConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    pub bot_token_secret: String,
-    /// Bot API base URL; only changed for tests or self-hosted API servers.
-    pub api_url: Option<String>,
-}
-
-/// `[account]`: sign-in with a hosted tern account (Clerk), deployment spec
-/// §10.4a. Off unless `issuer` is set; local use never reads it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct AccountConfig {
-    /// Clerk's Frontend API URL, e.g. `https://clerk.example.com`. JWTs must
-    /// name it as `iss`. Setting it turns accounts on.
-    pub issuer: Option<String>,
-    /// The Clerk publishable key (public; the desktop app reads it).
-    pub publishable_key: Option<String>,
-    /// The `aud` JWTs must carry: the OAuth application's client id.
-    pub audience: Option<String>,
-    /// The Clerk user id (`user_…`) that owns this core. Only that account's
-    /// tokens are accepted; unset means none are.
-    pub owner: Option<String>,
-    /// Where the signing keys are; default `<issuer>/.well-known/jwks.json`.
-    pub jwks_url: Option<String>,
-}
-
-impl AccountConfig {
-    pub fn enabled(&self) -> bool {
-        self.issuer.is_some()
-    }
-
-    pub fn jwks_url(&self) -> Option<String> {
-        let issuer = self.issuer.as_deref()?;
-        Some(
-            self.jwks_url.clone().unwrap_or_else(|| {
-                format!("{}/.well-known/jwks.json", issuer.trim_end_matches('/'))
-            }),
-        )
-    }
-
-    /// Why this section can't work, if it can't.
-    pub fn check(&self) -> Result<(), String> {
-        let Some(issuer) = self.issuer.as_deref() else {
-            return Ok(());
-        };
-        let local =
-            issuer.starts_with("http://127.0.0.1") || issuer.starts_with("http://localhost");
-        if !issuer.starts_with("https://") && !local {
-            return Err("account.issuer must be an https:// URL".into());
-        }
-        if self.audience.as_deref().is_none_or(str::is_empty) {
-            return Err("account.audience is required when account.issuer is set".into());
-        }
-        Ok(())
-    }
-}
-
-/// `[api]`: where the daemon's API listens (deployment spec §6.1).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ApiConfig {
-    /// `"unix"` (always on) plus any `"tcp://host:port"` listeners.
-    pub listen: Vec<String>,
-    pub tls: TlsMode,
-    /// Certificate chain and key (PEM) for `tls = "files"`.
-    pub tls_cert: Option<String>,
-    pub tls_key: Option<String>,
-    /// Honour `X-Forwarded-For` from a reverse proxy on loopback.
-    pub trust_proxy: bool,
-    /// The URL devices use to reach this core, put in pairing links.
-    /// Defaults to the first TCP listener (with this host's name for
-    /// `0.0.0.0`).
-    pub public_url: Option<String>,
-    /// Let paired devices add or test `stdio` MCP servers, which run
-    /// commands on this host outside the sandbox.
-    pub remote_mcp_stdio: bool,
-}
-
-impl Default for ApiConfig {
-    fn default() -> Self {
-        Self {
-            listen: vec!["unix".into()],
-            tls: TlsMode::Auto,
-            tls_cert: None,
-            tls_key: None,
-            trust_proxy: false,
-            public_url: None,
-            remote_mcp_stdio: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TlsMode {
-    /// A self-signed certificate in `$TERN_HOME/tls/`, pinned by clients.
-    Auto,
-    /// `tls_cert` and `tls_key`, verified against the usual roots.
-    Files,
-    /// Plain HTTP: only behind a TLS-terminating proxy on loopback.
-    Off,
-}
-
 /// `[subagents]`: delegation to child runs (docs/subagents-design.md §1.6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -1338,15 +1173,6 @@ backend = "host"
 shell_timeout_secs = 120
 docker_image = "debian:stable-slim"
 
-[gateway.telegram]
-enabled = true
-bot_token_secret = "TELEGRAM_BOT_TOKEN"
-
-[gateway.connectors.ntfy]
-poll_secs = 15
-strangers = "taint"
-settings = { topic = "tern-abc", reply_topic = "tern-abc-reply" }
-
 [mcp.servers.github]
 transport = "stdio"
 command = "github-mcp-server"
@@ -1363,11 +1189,6 @@ env_secrets = ["GITHUB_TOKEN"]
             c.providers["anthropic"].effective_base_url(),
             Some(ProviderConfig::ANTHROPIC_BASE_URL)
         );
-        assert!(c.gateway.telegram.as_ref().unwrap().enabled);
-        let ntfy = &c.gateway.connectors["ntfy"];
-        assert!(ntfy.enabled);
-        assert_eq!((ntfy.poll_secs, ntfy.strangers), (15, Strangers::Taint));
-        assert_eq!(ntfy.settings["topic"].as_str(), Some("tern-abc"));
         assert_eq!(c.mcp.servers["github"].env_secrets, ["GITHUB_TOKEN"]);
         let m = c.default_model_ref().unwrap().unwrap();
         assert_eq!(m.provider, "anthropic");

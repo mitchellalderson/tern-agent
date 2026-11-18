@@ -225,9 +225,7 @@ void main() {
     expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
   });
 
-  testWidgets('results can go to a gateway connector such as ntfy', (
-    tester,
-  ) async {
+  testWidgets('"Notify me" picks a local target', (tester) async {
     tester.view.physicalSize = const Size(700, 1800) * 2;
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
@@ -238,39 +236,20 @@ void main() {
       prompt: 'Inbox sweep',
       sessionId: 's',
       enabled: true,
-      deliverTo: 'telegram:42',
+      deliverTo: 'home',
     );
     client.list = [editing];
-    final store = TernStore(client)
-      ..info = const Info(
-        tools: [],
-        gateways: [
-          (name: 'ntfy', kind: 'ntfy'),
-          (name: 'telegram', kind: 'telegram'),
-        ],
-      );
+    final store = TernStore(client);
     await tester.pumpWidget(_app(RoutineSheet(store: store, editing: editing)));
     await tester.pumpAndSettle();
-    expect(find.text('Also send to…'), findsOneWidget);
-    expect(find.widgetWithText(TextField, '42'), findsOneWidget);
+    expect(find.byKey(const Key('routine-notify')), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('routine-gateway')));
+    await tester.tap(find.byKey(const Key('routine-notify')));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('ntfy').last);
+    await tester.tap(find.text('Not at all').last);
     await tester.pumpAndSettle();
-    final chat = find.byKey(const Key('routine-chat'));
-    await tester.enterText(chat, 'my topic');
-    await tester.pump();
-    final save = find.widgetWithText(FilledButton, 'Save');
-    expect(
-      tester.widget<FilledButton>(save).onPressed,
-      isNull,
-      reason: 'no spaces',
-    );
-    await tester.enterText(chat, 'tern-x7');
-    await tester.pump();
-    await tester.tap(save);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
-    expect(client.sentTargets.single, 'ntfy:tern-x7');
+    expect(client.sentTargets.single, 'none');
   });
 }

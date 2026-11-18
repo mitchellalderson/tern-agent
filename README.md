@@ -1,6 +1,6 @@
 # tern
 
-A personal AI agent you run yourself, shipped as **one static binary**: no Python, no Node, no Docker required. You can keep several **agents**, each with its own persona, model, tools and memory. For an API that has no integration, an agent writes a sandboxed Luau connector, or generates one from an OpenAPI document. The connector stays in drafts until you approve the hosts, secrets and tools it declares. It runs in its own VM, limited to those hosts, and tern adds the credentials to its requests so the script never sees them. Agents ask before they run commands or change anything. It chats in your terminal, on Telegram, and in a macOS desktop app, starting from a catalog of 23 starters (research, inbox, code review, bug fixing, writing, SEO audits and more). They also run scheduled routines and delegate to each other and to sub-agents.
+A personal AI agent you run yourself, shipped as **one static binary**: no Python, no Node, no Docker required. You can keep several **agents**, each with its own persona, model, tools and memory. For an API that has no integration, an agent writes a sandboxed Luau connector, or generates one from an OpenAPI document. The connector stays in drafts until you approve the hosts, secrets and tools it declares. It runs in its own VM, limited to those hosts, and tern adds the credentials to its requests so the script never sees them. Agents ask before they run commands or change anything. It chats in your terminal and in a macOS desktop app, starting from a catalog of 23 starters (research, inbox, code review, bug fixing, writing, SEO audits and more). They also run scheduled routines and delegate to each other and to sub-agents.
 
 <!-- TODO(launch): replace this screenshot with docs/assets/demo.gif. Center the demo on an agent writing a sandboxed
      Luau connector, or generating one from an OpenAPI document, and on approving its declared hosts, secrets and
@@ -41,21 +41,21 @@ Then make an agent from a starter, and use the rest as you need it:
 tern agents templates                              # the 23 starters, by category, with each one's autonomy ceiling
 tern agents new reviewer --template code-reviewer  # an agent with its own persona, tools, memory and DM
 tern run "summarize ~/notes/today.md"   # one prompt, answer on stdout (--yes auto-approves tools)
-tern start                              # run tern in the background: schedules, Telegram, the desktop app
+tern start                              # run tern in the background: schedules, the desktop app
 tern service install                    # ...and start it at login
 tern doctor                             # check everything and say what's missing
 ```
 
 **Desktop app** (macOS 12+): download [`tern-desktop-macos.dmg`](https://github.com/mitchellalderson/tern-agent/releases/download/v0.1.0-alpha.7/tern-desktop-macos.dmg) from the v0.1.0-alpha.7 release (other versions: the [releases page](https://github.com/mitchellalderson/tern-agent/releases); the file name never carries a version, only the tag in the URL does, and `releases/latest` does not work for pre-releases) and drag tern to Applications. To build it instead on a Mac with Flutter installed: after the `cargo build` above, `scripts/release-macos.sh --dry-run target/dist/tern out/` writes an ad-hoc signed DMG (see [docs/desktop-release.md](docs/desktop-release.md)). The app is ad-hoc signed and not notarized yet (the `tern` CLI tarballs are unsigned; each has a `.sha256` and a build attestation), so macOS blocks the first open ("Apple cannot check it for malicious software"). To open it once: double-click it and dismiss the warning, open **System Settings › Privacy & Security**, scroll to the message about tern, click **Open Anyway** and confirm with your password (on macOS 12 to 14, right-click the app and choose **Open** instead). To remove tern later see [Back up, update and uninstall](docs/reference.md#back-up-update-and-uninstall): trashing the app does not stop its background process. The app carries its own `tern`, so you don't need the CLI. On first launch it asks where tern should run (this Mac, with an option to start at login and a menu-bar icon, or a tern server you pair with). Then open **Settings** (⌘,), go to **Models & Providers** and pick a provider from the presets (Anthropic, OpenAI, OpenRouter, Gemini, Groq, Together, Ollama, LM Studio, or another OpenAI-compatible address), paste a key, and choose a model. Under AGENTS in the sidebar, **+** opens the agent sheet: pick a starter from the searchable list, adjust it if you like, and Create. If a run fails because of a key, address or quota, the conversation says so in plain words, with the raw error under "Show details".
 
-**Telegram**, remote devices, schedules, MCP servers, connectors, sandboxing and every other option are covered in the [reference](docs/reference.md).
+Schedules, MCP servers, connectors, sandboxing and every other option are covered in the [reference](docs/reference.md).
 
 ## What it does
 
 - **Agents of your own.** Each agent has a name (`@name`), persona, model list, tool scope, private or shared memory, routines and a DM. Start from one of 23 starters across Everyday, Coding, Writing & Content, Research & Learning and Business, or from Blank. Every starter carries a conservative **autonomy ceiling** (read-only for look-only roles, otherwise supervised), and you can set a ceiling on any agent: a cap on what it may do on its own, never a grant. Agents can be renamed, edited, archived or deleted, in the desktop app, the TUI and `tern agents`. Even a read-only agent keeps its own notes (it still can't touch files or run commands): they are capped, logged in the ledger, marked `unverified` if it had read untrusted content, recalled as data, and you can view, edit and clear them. A routine's next run is given its last report, so "what changed since last time" works.
-- **Agents working together.** An agent can hand work to another (`@name`), agents share topic channels and wake on `@mention`, and a channel can switch on **Let agents decide**, where tern routes a post to the agent that fits. Each agent can have a Telegram bot of its own. Agents, with routines and skills, can be packaged as signed **bundles**; installing one shows everything it can do first.
+- **Agents working together.** An agent can hand work to another (`@name`), agents share topic channels and wake on `@mention`, and a channel can switch on **Let agents decide**, where tern routes a post to the agent that fits. Agents, with routines and skills, can be packaged as signed **bundles**; installing one shows everything it can do first.
 - **Code auto mode (opt-in, not fully sandboxed).** For a coding agent you trust with a folder: turn it on per agent (the autonomy list in the agent sheet, `/autonomy code`, or `tern agents code-auto`) and it edits files and runs build and test commands in its workspace without asking, while the OS sandbox is verified active. It still asks for the network, installs, `git push`, big deletions and anything after reading untrusted content; a snapshot is saved before each run changes anything (`tern runs undo`); every unasked call is in the ledger. Read what it does not protect before you switch it on ([reference](docs/reference.md#code-auto-mode), [SECURITY](SECURITY.md)).
-- **Approvals that don't nag.** Risky steps wait for you as cards in the conversation, on Telegram or in the terminal. In the desktop app and terminal you can approve **once, for this run, for this conversation, or always** for that exact thing (a different tool, draft, host or account asks again); repeated identical approvals collapse into one line. Writes from unattended runs wait in an **outbox** instead of blocking.
+- **Approvals that don't nag.** Risky steps wait for you as cards in the conversation, in the desktop app or the terminal. In the desktop app and terminal you can approve **once, for this run, for this conversation, or always** for that exact thing (a different tool, draft, host or account asks again); repeated identical approvals collapse into one line. Writes from unattended runs wait in an **outbox** instead of blocking.
 - **Routines and skills.** Schedules, cron and one-off triggers, and watches that remember where they left off. After a long, clean run tern offers to save it as a **skill**: it writes a draft, and nothing is published until you review it.
 - **Compute without `shell`.** The `python` tool runs scripts in a sandboxed Python subset (Monty) that call tern's tools as functions. Every call is checked and journaled, a call that needs approval pauses the script and asks you, `gather` runs calls in parallel, and writes from scripts are off unless you turn them on.
 - **Connectors and MCP.** The agent writes Luau connectors that run sandboxed with credentials injected by the host, can build one from an OpenAPI document, and signs in with OAuth where a service offers it. MCP servers are managed from chat, the CLI, the TUI and the desktop app (platform-wide settings are all in one place too: Settings in the app, `/settings` in the terminal), and `tern mcp serve` offers tern's tools to other agents.
@@ -68,7 +68,7 @@ What it doesn't do (no built-in browser, no Windows build, no hosted version, no
 
 ### Front ends and the daemon
 
-Everything that matters lives in one process, the **daemon** (`tern daemon`, or `tern start` to run it in the background). It owns the database, drives every run, runs schedules, and hosts the Telegram gateway. Front ends hold no state of their own. They attach over the daemon's API (a Unix socket, plus TCP for paired remote devices), so you can start a conversation in the desktop app, approve a step from your phone, and watch it finish in the terminal.
+Everything that matters lives in one process, the **daemon** (`tern daemon`, or `tern start` to run it in the background). It owns the database, drives every run, and runs schedules. Front ends hold no state of their own. They attach over the daemon's API, a Unix socket on this machine, so you can start a conversation in the desktop app and watch it finish in the terminal. tern is local-only: nothing listens on the network.
 
 ```mermaid
 flowchart LR
@@ -76,15 +76,12 @@ flowchart LR
         app["Desktop app<br/>Flutter + tern_client"]
         tui["Terminal chat<br/>tern"]
         cli["CLI<br/>tern setup, providers, stop, ..."]
-        remote["Paired devices<br/>tern --remote"]
     end
-    tg["Telegram"]
 
     subgraph daemon["tern daemon"]
         api["API<br/>HTTP + SSE events"]
         mgr["Manager<br/>starts runs, routes approvals"]
         sched["Scheduler"]
-        gw["Telegram gateway"]
         agent["Agent loop<br/>tern-core"]
         journal[("Journal + store<br/>SQLite ~/.tern/tern.db")]
         tools["Tools"]
@@ -101,12 +98,9 @@ flowchart LR
     app -- "Unix socket" --> api
     tui -- "Unix socket" --> api
     cli -- "Unix socket" --> api
-    remote -- "TCP + TLS<br/>device token" --> api
-    tg <--> gw
 
     api --> mgr
     sched --> mgr
-    gw --> mgr
     mgr --> agent
     agent <--> journal
     agent --> models
@@ -126,7 +120,7 @@ A **session** is a conversation; a **run** is one prompt driven to a final answe
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client (app, TUI, Telegram)
+    participant C as Client (app, TUI)
     participant D as Daemon API + Manager
     participant A as Agent loop
     participant J as Journal
@@ -198,7 +192,7 @@ The full design is in [docs/subagents-design.md](docs/subagents-design.md).
 
 ### Agents and channels
 
-Delegation inside a run is a **tree**: one parent, its children, and mail that flows only along the edges. On top of that, tern has **channels**: shared chat streams that you and your agents both post to and read, so agents can hand off and report in the open rather than through private mailboxes. Home is one stream, each agent has a DM, and topic channels (in the desktop app, the TUI, and on Telegram as topics or `#slug` prefixes) hold work on one subject. Agents in a channel read each other's posts and wake on `@mention`; with **Let agents decide** on, tern routes a post to the agent whose job fits. Agents can suggest a channel for a piece of work, and you accept or decline. Conversations are flat: no reply threads or side chats.
+Delegation inside a run is a **tree**: one parent, its children, and mail that flows only along the edges. On top of that, tern has **channels**: shared chat streams that you and your agents both post to and read, so agents can hand off and report in the open rather than through private mailboxes. Home is one stream, each agent has a DM, and topic channels (in the desktop app and the TUI) hold work on one subject. Agents in a channel read each other's posts and wake on `@mention`; with **Let agents decide** on, tern routes a post to the agent whose job fits. Agents can suggest a channel for a piece of work, and you accept or decline. Conversations are flat: no reply threads or side chats.
 
 ```mermaid
 flowchart LR
@@ -232,7 +226,6 @@ The repo has two halves that meet only over the daemon's API: the Rust engine (`
 flowchart TB
     tern["tern<br/>CLI, daemon, API, runtime"]
     tui["tern-tui<br/>terminal chat"]
-    gateway["tern-gateway<br/>Telegram"]
     tools["tern-tools<br/>built-in tools, agent_* tools"]
     python["tern-python<br/>Monty, the python tool"]
     mcp["tern-mcp<br/>MCP client"]
@@ -242,8 +235,8 @@ flowchart TB
     core["tern-core<br/>agent loop, journal, config, secrets"]
     store["tern-store<br/>SQLite, migrations"]
 
-    tern --> tui & gateway & tools & mcp & lua & providers & python
-    tui & gateway & tools & mcp & lua & providers --> core
+    tern --> tui & tools & mcp & lua & providers & python
+    tui & tools & mcp & lua & providers --> core
     tools --> sandbox
     core --> store
 

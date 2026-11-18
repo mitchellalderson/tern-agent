@@ -425,7 +425,7 @@ async fn release_held(manager: &Manager) -> anyhow::Result<()> {
     let mut seen = HashSet::new();
     for target in targets.into_iter().filter(|t| seen.insert(*t)) {
         let items: Vec<&HeldDelivery> = due.iter().filter(|h| h.target == target).collect();
-        match manager.send_to(target, None, &combine(&items)).await {
+        match manager.post_digest(target, &combine(&items)).await {
             Ok(()) => {
                 let ids: Vec<i64> = items.iter().map(|h| h.id).collect();
                 store.delete_held_deliveries(&ids)?;

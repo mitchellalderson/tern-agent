@@ -10,8 +10,6 @@ use tern_core::agent::{RunOutcome, RunStatus};
 use tern_core::approval::{
     ApprovalHandler, ApprovalRequest, AuthPrompt, Decision, SecretAsk, SecretRequest, SecretValues,
 };
-use tern_core::events::AgentEvent;
-use tern_gateway::{ChatHost, Gateway};
 use tokio::sync::{broadcast, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -20,7 +18,6 @@ use crate::runtime::Runtime;
 struct Active {
     run_id: String,
     cancel: CancellationToken,
-    started: Instant,
     done: watch::Receiver<bool>,
 }
 
@@ -224,10 +221,8 @@ impl ApiApprovals {
     /// granted by it on their next ask, so each is answered
     /// [`Decision::CoveredByGrant`] (the ledger and transcript say it was
     /// covered, not that anyone approved it). Only cards that offered a
-    /// grant qualify, so never a tainted or destructive one, and a
-    /// local-only card is left alone when the answer came from a remote
-    /// device (`remote`).
-    pub fn answer(&self, id: &str, decision: Decision, remote: bool) -> bool {
+    /// grant qualify, so never a tainted or destructive one.
+    pub fn answer(&self, id: &str, decision: Decision) -> bool {
         let (card, released) = {
             let Ok(mut p) = self.pending.lock() else {
                 return false;
@@ -256,7 +251,6 @@ impl ApiApprovals {
                             || reads
                                 && tern_core::approval::READ_FS_TOOLS
                                     .contains(&c.msg.tool.as_str()))
-                            && !(remote && c.msg.local_only)
                             && c.msg.grant.as_ref().is_some_and(|o| o.key == g.key)
                             && match decision {
                                 Decision::AllowRun if reads => root(&c.msg) == root(&card.msg),
@@ -280,15 +274,6 @@ impl ApiApprovals {
             send(c, Decision::CoveredByGrant);
         }
         send(card, decision)
-    }
-
-    /// Whether `id` may only be answered from this host.
-    pub fn is_local_only(&self, id: &str) -> bool {
-        self.pending
-            .lock()
-            .ok()
-            .and_then(|p| p.get(id).map(|c| c.msg.local_only))
-            .unwrap_or(false)
     }
 
     /// Approvals still waiting for an answer, for clients that attach late.
@@ -548,7 +533,6 @@ pub enum AnswerError {
 #[derive(Default)]
 pub struct Routes {
     pub store: OnceLock<tern_store::Store>,
-    pub gateways: OnceLock<HashMap<String, Arc<dyn Gateway>>>,
     pub api: ApiApprovals,
     pub secrets: ApiSecretRequests,
     pub auth: ApiAuthPrompts,
@@ -563,8 +547,6 @@ pub struct Lifecycle {
     /// Cancelled by `POST /v1/shutdown`; `daemon::serve` then stops as it
     /// does on SIGTERM.
     pub shutdown: CancellationToken,
-    /// Each gateway's polling task, to report whether it is still up.
-    pub gateway_tasks: Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
 }
 
 impl Default for Lifecycle {
@@ -572,40 +554,23 @@ impl Default for Lifecycle {
         Self {
             started: Instant::now(),
             shutdown: CancellationToken::new(),
-            gateway_tasks: Mutex::new(Vec::new()),
         }
     }
 }
 
-/// Sends each approval to the chat the run's tree reports to, else to API
-/// clients. A sub-agent asks where its root run would.
+/// Sends each approval to the desktop app or TUI (API clients). A sub-agent
+/// asks where its root run would.
 pub struct Router(pub Arc<Routes>);
-
-/// A gateway and the chat on it a run tree reports to.
-type ChatTarget = (Arc<dyn Gateway>, String);
 
 /// The channel and agent of a run tree's root session.
 pub(crate) type Where = (Option<String>, Option<String>);
 
 impl Router {
-    /// The session at the top of `run_id`'s tree, and the gateway chat that
-    /// tree reports to, if any.
-    fn place(&self, run_id: &str) -> (Option<String>, Option<ChatTarget>) {
-        let routes = &self.0;
-        let root = routes.store.get().and_then(|s| {
-            let root = s.root_run(run_id).ok()?;
-            s.run(&root).ok().flatten()
-        });
-        let target = root.as_ref().and_then(|r| {
-            let s = routes.store.get()?;
-            s.run_deliver_to(&r.id).ok().flatten()
-        });
-        let chat = target.as_deref().and_then(|t| {
-            let (gateway, chat) = t.split_once(':')?;
-            let g = routes.gateways.get()?.get(gateway)?.clone();
-            Some((g, chat.to_owned()))
-        });
-        (root.map(|r| r.session_id), chat)
+    /// The session at the top of `run_id`'s tree.
+    fn root_session(&self, run_id: &str) -> Option<String> {
+        let store = self.0.store.get()?;
+        let root = store.root_run(run_id).ok()?;
+        store.run(&root).ok().flatten().map(|r| r.session_id)
     }
 
     /// The conversation the run tree is in: where its cards wait.
@@ -636,53 +601,16 @@ impl Router {
     }
 }
 
-/// Updates a gateway's secret notice when the request ends, however it ends.
-struct Notice {
-    gateway: Arc<dyn Gateway>,
-    chat: String,
-    handle: String,
-    text: Option<String>,
-}
-
-impl Drop for Notice {
-    fn drop(&mut self) {
-        let text = self
-            .text
-            .take()
-            .unwrap_or_else(|| "🔑 No longer waiting for this secret.".into());
-        let (g, chat, handle) = (self.gateway.clone(), self.chat.clone(), self.handle.clone());
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(async move { g.secret_request_done(&chat, &handle, &text).await });
-        }
-    }
-}
-
 #[async_trait]
 impl ApprovalHandler for Router {
-    /// A local-only approval never goes to a chat: the TUI or desktop app
-    /// on this host answers it.
+    /// Approvals go to the desktop app or TUI on this host; with none
+    /// listening a write goes to the outbox. (A routine inside its quiet
+    /// hours takes the same path, and its morning delivery lists what
+    /// waits, spec W4.)
     async fn ask(&self, req: &ApprovalRequest) -> Decision {
-        // A routine inside its quiet hours doesn't ping the chat: an app
-        // may answer, else a write goes to the outbox, which its morning
-        // delivery lists (spec W4).
-        if self
-            .0
-            .manager
-            .get()
-            .and_then(Weak::upgrade)
-            .is_some_and(|m| m.routine_quiet_now(&req.run_id))
-        {
-            let (root, _) = self.place(&req.run_id);
-            let at = self.at(root.as_deref());
-            return self.ask_api(req, root, at).await;
-        }
-        match self.place(&req.run_id) {
-            (_, Some((g, chat))) if !req.local_only => g.ask_approval(&chat, req).await,
-            (root, _) => {
-                let at = self.at(root.as_deref());
-                self.ask_api(req, root, at).await
-            }
-        }
+        let root = self.root_session(&req.run_id);
+        let at = self.at(root.as_deref());
+        self.ask_api(req, root, at).await
     }
 
     /// The daemon executes approved outbox items.
@@ -696,81 +624,21 @@ impl ApprovalHandler for Router {
         }
     }
 
-    /// API clients always get the prompt. A chat only gets a pointer to
-    /// them, since a value typed there would stay in its history.
     async fn ask_secrets(&self, req: &SecretRequest) -> Option<SecretValues> {
-        let (root, chat) = self.place(&req.run_id);
-        let mut notice = None;
-        if let Some((g, chat)) = chat
-            && let Some(handle) = g.secret_request_notice(&chat, req).await
-        {
-            notice = Some(Notice {
-                gateway: g,
-                chat,
-                handle,
-                text: None,
-            });
-        }
+        let root = self.root_session(&req.run_id);
         let at = self.at(root.as_deref());
         let waiting = self
             .manager()
             .and_then(|m| super::waiting::open_secret(&m, req, &at));
         let values = self.0.secrets.ask(req, root, at).await;
         super::waiting::close_secret(waiting, values.values().any(|v| !v.trim().is_empty()));
-        if let Some(n) = &mut notice {
-            // What the tool will save: a value that cleans up to nothing
-            // (`""`, a bare `Bearer `) counts as skipped there too.
-            let saved = |name: &str| {
-                values.get(name).is_some_and(|v| {
-                    !tern_core::secrets::keys::normalize_key(v)
-                        .unwrap_or_else(|_| v.trim().to_owned())
-                        .is_empty()
-                })
-            };
-            let names = |set: bool| -> Vec<&str> {
-                req.asks
-                    .iter()
-                    .filter(|a| saved(&a.name) == set)
-                    .map(|a| a.name.as_str())
-                    .collect()
-            };
-            let (saved, skipped) = (names(true), names(false));
-            let mut text = String::from("🔑 ");
-            if !saved.is_empty() {
-                text.push_str(&format!("✓ {} saved. ", saved.join(", ")));
-            }
-            if !skipped.is_empty() {
-                text.push_str(&format!("{} skipped.", skipped.join(", ")));
-            }
-            n.text = Some(text.trim_end().to_owned());
-        }
         Some(values)
     }
 
-    /// API clients get the card; a chat gets a pointer to them.
     async fn ask_auth(&self, req: &AuthPrompt) -> Option<String> {
-        let (root, chat) = self.place(&req.run_id);
-        let mut notice = None;
-        if let Some((g, chat)) = chat
-            && let Some(handle) = g.auth_prompt_notice(&chat, req).await
-        {
-            notice = Some(Notice {
-                gateway: g,
-                chat,
-                handle,
-                text: None,
-            });
-        }
+        let root = self.root_session(&req.run_id);
         let at = self.at(root.as_deref());
-        let answer = self.0.auth.ask(req, root, at).await;
-        if let Some(n) = &mut notice {
-            n.text = Some(match answer.as_deref() {
-                Some("cancel") => "🔐 Cancelled.".into(),
-                Some(other) => format!("🔐 Chose: {other}."),
-                None => "🔐 Done.".into(),
-            });
-        }
-        answer
+        self.0.auth.ask(req, root, at).await
     }
 }
 
@@ -820,14 +688,6 @@ impl Manager {
             stale_batch: Mutex::new(Vec::new()),
             delegation_lock: Mutex::new(()),
         })
-    }
-
-    pub(super) fn gateway(&self, name: &str) -> Option<Arc<dyn Gateway>> {
-        self.routes
-            .gateways
-            .get()
-            .and_then(|g| g.get(name))
-            .cloned()
     }
 
     /// Start a run in `session` (creating one from `source` if `None`),
@@ -1033,7 +893,6 @@ impl Manager {
                 Active {
                     run_id: run_id.to_owned(),
                     cancel: cancel.clone(),
-                    started: Instant::now(),
                     done: done_rx,
                 },
             );
@@ -1104,14 +963,14 @@ impl Manager {
                 if pending.is_empty() {
                     outcome.final_text.clone()
                 } else {
-                    format!("{}{pending}\nApprove with /outbox.", outcome.final_text)
+                    format!("{}{pending}\nApprove in the Outbox.", outcome.final_text)
                 }
             }
             RunStatus::Failed => format!(
                 "Failed: {}",
                 outcome.error.as_deref().unwrap_or("unknown error")
             ),
-            // Interrupted runs were stopped on purpose; the gateway says so.
+            // Interrupted runs were stopped on purpose.
             RunStatus::Interrupted | RunStatus::Running => return,
         };
         let schedule = (run.trigger == "cron")
@@ -1217,29 +1076,6 @@ impl Manager {
         }
     }
 
-    /// Whether `run_id`'s tree is a routine's, inside its quiet hours now
-    /// (and not `urgent`): its chat isn't pinged.
-    pub fn routine_quiet_now(&self, run_id: &str) -> bool {
-        let store = &self.rt.store;
-        let Some(root) = store
-            .root_run(run_id)
-            .ok()
-            .and_then(|r| store.run(&r).ok().flatten())
-            .filter(|r| r.trigger == "cron")
-        else {
-            return false;
-        };
-        let Some(s) = store.schedule_for_session(&root.session_id).ok().flatten() else {
-            return false;
-        };
-        let quiet = s
-            .quiet_hours
-            .as_deref()
-            .and_then(|q| q.parse::<tern_core::quiet::QuietHours>().ok())
-            .unwrap_or(self.rt.live().schedules.quiet_hours);
-        !s.urgent && quiet.release_at(chrono::Local::now()).is_some()
-    }
-
     /// Deliver `text` for schedule `s` to its target, if it has one.
     pub async fn deliver_for_schedule(
         &self,
@@ -1290,20 +1126,77 @@ impl Manager {
         }
     }
 
-    /// Send `text` to `gateway:chat`.
+    /// The conversation a local delivery target names: `home`, `dm` (the
+    /// DM of the agent that owns `run_id`, else the default agent's) or
+    /// `channel:<id>`. Anything else (a gateway value an old database
+    /// still held) is Home.
+    pub fn delivery_channel(&self, target: &str, run_id: Option<&str>) -> String {
+        let store = &self.rt.store;
+        match target {
+            "dm" => {
+                let agent = run_id
+                    .and_then(|r| store.run(r).ok().flatten())
+                    .and_then(|r| store.session_agent(&r.session_id).ok())
+                    .unwrap_or_else(|| tern_store::DEFAULT_AGENT.to_owned());
+                store
+                    .agent_channel(&agent)
+                    .ok()
+                    .flatten()
+                    .map_or_else(|| tern_store::HOME.to_owned(), |c| c.id)
+            }
+            t => match t.strip_prefix("channel:") {
+                Some(id) if store.channel(id).ok().flatten().is_some() => id.to_owned(),
+                _ => tern_store::HOME.to_owned(),
+            },
+        }
+    }
+
+    /// Push `text` to the local target: the desktop app raises a system
+    /// notification that opens the conversation (`Change::Notification`).
+    /// The text itself is already posted there by the run, or by
+    /// [`Manager::post_digest`].
     pub async fn send_to(
         &self,
         target: &str,
         run_id: Option<&str>,
         text: &str,
     ) -> Result<(), String> {
-        let (name, chat) = target
-            .split_once(':')
-            .ok_or_else(|| format!("bad delivery target {target:?}"))?;
-        let g = self
-            .gateway(name)
-            .ok_or_else(|| format!("no gateway {name:?} to deliver to"))?;
-        g.deliver(chat, run_id, text).await
+        let store = &self.rt.store;
+        let title = run_id
+            .and_then(|r| store.run(r).ok().flatten())
+            .and_then(|r| store.schedule_for_session(&r.session_id).ok().flatten())
+            .map_or_else(|| "tern".to_owned(), |s| super::scheduler::title(&s));
+        let body: String = text.trim().chars().take(240).collect();
+        let _ = self
+            .rt
+            .changes
+            .send(tern_core::models::Change::Notification {
+                title,
+                body,
+                channel_id: Some(self.delivery_channel(target, run_id)),
+                run_id: run_id.map(str::to_owned),
+            });
+        Ok(())
+    }
+
+    /// Post a digest (or what quiet hours held) in the target's
+    /// conversation, from tern, and notify.
+    pub async fn post_digest(&self, target: &str, text: &str) -> Result<(), String> {
+        let store = &self.rt.store;
+        let channel = self.delivery_channel(target, None);
+        let (row, _) = store
+            .add_post(&tern_store::NewPost {
+                channel_id: &channel,
+                author_kind: "agent",
+                author_id: tern_core::channels::author::AGENT,
+                author: "tern",
+                kind: "note",
+                text,
+                ..tern_store::NewPost::default()
+            })
+            .map_err(|e| e.to_string())?;
+        self.publish(super::channels::view(store, row));
+        self.send_to(target, None, text).await
     }
 
     /// Cancel the run in `session`, optionally waiting (briefly) for it to stop.
@@ -1366,40 +1259,6 @@ impl Manager {
             .lock()
             .is_ok_and(|a| a.values().any(|x| x.run_id == run_id))
     }
-
-    /// The `external_ref` of `chat`'s sessions with the agent it talks to
-    /// (`/agent` in Telegram; agent profiles §6.4).
-    fn chat_key(&self, source: &str, chat: &str) -> (String, String) {
-        let agent = tern_gateway::chat_agents::get(&self.rt.store, source, chat);
-        let key = tern_gateway::chat_agents::session_ref(chat, &agent);
-        (agent, key)
-    }
-
-    /// The chat's current session: the default agent's in Home (as before
-    /// profiles), another agent's in its DM.
-    fn chat_session(&self, source: &str, chat: &str) -> anyhow::Result<tern_store::SessionRow> {
-        let (agent, key) = self.chat_key(source, chat);
-        if let Some(s) = self.rt.store.latest_session_for(source, &key)? {
-            return Ok(s);
-        }
-        if agent != tern_store::DEFAULT_AGENT
-            && let Some(dm) = self.rt.store.agent_channel(&agent)?
-        {
-            return Ok(self.rt.store.create_thread(&tern_store::NewThread {
-                id: &tern_core::agent::new_id(),
-                source,
-                channel_id: &dm.id,
-                external_ref: Some(&key),
-                ..tern_store::NewThread::default()
-            })?);
-        }
-        Ok(self.rt.store.create_session_with_ref(
-            &tern_core::agent::new_id(),
-            source,
-            &key,
-            None,
-        )?)
-    }
 }
 
 /// The manager as the sub-agent host's driver: children are ordinary
@@ -1423,201 +1282,6 @@ impl crate::subagents::RunDriver for ManagerDriver {
 
     fn is_active(&self, run_id: &str) -> bool {
         self.0.upgrade().is_some_and(|m| m.is_active(run_id))
-    }
-}
-
-fn err(e: impl std::fmt::Display) -> String {
-    format!("{e:#}")
-}
-
-/// The manager as gateways see it.
-pub struct Chats(pub Arc<Manager>);
-
-#[async_trait]
-impl ChatHost for Chats {
-    async fn pending_outbox(&self) -> Vec<tern_core::outbox::OutboxItem> {
-        let mut rows = self
-            .0
-            .rt
-            .store
-            .outbox(Some("pending"), 200)
-            .unwrap_or_default();
-        rows.reverse();
-        rows.into_iter().map(|r| self.0.outbox_view(r)).collect()
-    }
-
-    /// A chat button: the chat is remote, so local-only items are refused.
-    async fn decide_outbox(&self, id: i64, approve: bool) -> Result<String, String> {
-        if approve {
-            self.0.approve_outbox(id, None, true).map(|item| {
-                if item.state == "stale" {
-                    "Skipped: the file changed".to_owned()
-                } else {
-                    "Approved; running it".to_owned()
-                }
-            })
-        } else {
-            self.0
-                .reject_outbox(id, None, true)
-                .map(|_| "Rejected".to_owned())
-        }
-        .map_err(|e| e.to_string())
-    }
-
-    /// A chat posting in topic channel `channel` (C5): the same send as
-    /// the app's, with the first answer delivered back to the chat.
-    async fn send_to_channel(
-        &self,
-        source: &str,
-        chat: &str,
-        channel: &str,
-        text: &str,
-    ) -> Result<(String, String), String> {
-        let store = &self.0.rt.store;
-        let c = store
-            .channel(channel)
-            .map_err(err)?
-            .filter(|c| c.kind == "topic" && c.archived_at.is_none())
-            .ok_or_else(|| format!("no channel {channel}"))?;
-        let target = format!("{source}:{chat}");
-        let sent = self
-            .0
-            .send_to_topic(&c, text, None, None, Some(&target))
-            .await
-            .map_err(err)?;
-        let agent = sent
-            .woke
-            .first()
-            .and_then(|w| store.agent(&w.agent_id).ok().flatten())
-            .map_or_else(|| tern_core::channels::author::AGENT.to_owned(), |a| a.name);
-        Ok((sent.run_id, agent))
-    }
-
-    fn changes(&self) -> Option<tokio::sync::broadcast::Receiver<tern_core::models::Change>> {
-        Some(self.0.rt.subscribe_changes())
-    }
-
-    /// The chat is a stream like Home (docs/channels-design.md §2.6): a
-    /// message goes to the run working there, else to the current segment
-    /// or, after idle hours or a new day, to a new one.
-    async fn send(&self, source: &str, chat: &str, text: &str) -> Result<String, String> {
-        let session = self.0.chat_session(source, chat).map_err(err)?;
-        if let Some((run_id, _)) = self.0.queue_message(&session.id, text).map_err(err)? {
-            return Ok(run_id);
-        }
-        let session = self.0.cut(&session, false).map_err(err)?.unwrap_or(session);
-        let target = format!("{source}:{chat}");
-        let started = self
-            .0
-            .start(Some(&session.id), None, text, source, "user", Some(&target))
-            .await
-            .map_err(err)?;
-        Ok(started.run_id)
-    }
-
-    /// A stranger in a gateway chat (`strangers = "taint"`): a tainted run
-    /// in the chat's guest session, never the owner's, with the message
-    /// wrapped as untrusted. Its answer goes back to the chat.
-    async fn send_untrusted(
-        &self,
-        source: &str,
-        chat: &str,
-        text: &str,
-        taint: &str,
-    ) -> Result<String, String> {
-        let key = format!("{chat}|untrusted");
-        let store = &self.0.rt.store;
-        let session = match store.latest_session_for(source, &key).map_err(err)? {
-            Some(s) => s,
-            None => store
-                .create_session_with_ref(&tern_core::agent::new_id(), source, &key, None)
-                .map_err(err)?,
-        };
-        let input = format!(
-            "A {taint} (not the owner of this chat):\n{}",
-            tern_core::agent::taint::wrap(&format!("{source}:{chat}"), text)
-        );
-        let target = format!("{source}:{chat}");
-        let started = self
-            .0
-            .start_tainted(
-                Some(&session.id),
-                None,
-                &input,
-                source,
-                "user",
-                Some(&target),
-                Some(taint),
-            )
-            .await
-            .map_err(err)?;
-        Ok(started.run_id)
-    }
-
-    /// `/new`: New topic. The run in progress is stopped (its answer would
-    /// land after "Started a new conversation."), and the next message
-    /// starts a segment that carries this one's summary over.
-    async fn new_session(&self, source: &str, chat: &str) -> Result<(), String> {
-        let old = self.0.chat_session(source, chat).map_err(err)?;
-        self.0.stop_session(&old.id, true).await;
-        self.0.cut(&old, true).map(|_| ()).map_err(err)
-    }
-
-    async fn model(&self, source: &str, chat: &str, set: Option<&str>) -> Result<String, String> {
-        let session = self.0.chat_session(source, chat).map_err(err)?;
-        if let Some(m) = set {
-            self.0.rt.check_model(m).map_err(err)?;
-            self.0
-                .rt
-                .store
-                .set_session_model(&session.id, m)
-                .map_err(err)?;
-            return Ok(m.to_owned());
-        }
-        self.0
-            .rt
-            .pick_model(None, session.model.as_deref())
-            .map(|m| m.to_string())
-            .map_err(err)
-    }
-
-    async fn stop(&self, source: &str, chat: &str) -> bool {
-        let (_, key) = self.0.chat_key(source, chat);
-        match self.0.rt.store.latest_session_for(source, &key) {
-            Ok(Some(s)) => self.0.stop_session(&s.id, false).await,
-            _ => false,
-        }
-    }
-
-    async fn status(&self, source: &str, chat: &str) -> String {
-        let (_, key) = self.0.chat_key(source, chat);
-        let session = self
-            .0
-            .rt
-            .store
-            .latest_session_for(source, &key)
-            .ok()
-            .flatten();
-        let model = self
-            .0
-            .rt
-            .pick_model(None, session.as_ref().and_then(|s| s.model.as_deref()))
-            .map(|m| m.to_string())
-            .unwrap_or_else(|_| "none configured".into());
-        let running = session.as_ref().and_then(|s| {
-            self.0.active.lock().ok().and_then(|a| {
-                a.get(&s.id)
-                    .map(|x| (x.run_id.clone(), x.started.elapsed()))
-            })
-        });
-        match running {
-            Some((run, t)) => format!("Working for {}s (run {run}). Model: {model}.", t.as_secs()),
-            None => format!("Idle. Model: {model}."),
-        }
-    }
-
-    fn events(&self) -> broadcast::Receiver<AgentEvent> {
-        self.0.rt.agent.subscribe()
     }
 }
 

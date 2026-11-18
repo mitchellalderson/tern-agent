@@ -64,21 +64,6 @@ docker_memory = "2g"       # "" for no limit
 docker_cpus = 2.0          # 0 for no limit
 docker_pids = 512          # 0 for no limit
 
-# [gateway.telegram]
-# enabled = true
-# bot_token_secret = "TELEGRAM_BOT_TOKEN"
-
-# Gateway connectors: Luau connectors with a `gateway` table that tern runs as
-# chat transports, so routine results, approvals and outbox cards reach you
-# there too. `tern gateway add ntfy` (or `slack`) installs one and adds this
-# table; delivery targets are then `ntfy:<topic>` or `slack:<channel id>`.
-# [gateway.connectors.ntfy]
-# enabled = true
-# poll_secs = 30             # how often to check for replies
-# strangers = "reply"        # unpaired senders: "reply" (a fixed note), "ignore",
-#                            # or "taint" (a run that asks before any write)
-# settings = { topic = "tern-x7…", reply_topic = "tern-x7…-in" }   # handed to the connector
-
 # [mcp.servers.github]
 # transport = "stdio"
 # command = "github-mcp-server"
@@ -242,32 +227,12 @@ docker_pids = 512          # 0 for no limit
 # digest_times = ["08:30", "17:30"]  # local times digest results are sent, as one message
 # gate_model = "openrouter:cheap-model"  # decides if a "notify" result is worth a push (default: the cheapest priced model)
 #
-# Home (and each Telegram chat) is one stream cut into sessions. A message
+# Home is one stream cut into sessions. A message
 # starts a new one, with a summary of the last carried over, after:
 # [home]
 # idle_hours = 6                # this long without a message
 # day_starts = "04:00"          # a new day (local), once idle for an hour
 
-# Where the API listens, for the desktop app on other devices and the
-# phone (docs/deployment-spec.md). The Unix socket is always on.
-# [api]
-# listen = ["unix", "tcp://0.0.0.0:8711"]  # add tcp:// listeners for paired devices
-# tls = "auto"  # "auto": a self-signed certificate devices pin; "files": tls_cert and tls_key; "off": plain HTTP
-# tls_cert = "/etc/tern/cert.pem"  # certificate chain (PEM), for tls = "files"
-# tls_key = "/etc/tern/key.pem"    # its private key (PEM), for tls = "files"
-# trust_proxy = false           # trust X-Forwarded-For from a reverse proxy on loopback
-# public_url = "https://tern.example.com"  # put in pairing links; default: the first tcp listener
-# remote_mcp_stdio = false      # let paired devices add stdio MCP servers (they run on this host)
-
-# Sign in to a server core with a hosted tern account (Clerk). Off unless
-# `issuer` is set; see docs/recipes/clerk-setup.md.
-# [account]
-# issuer = "https://clerk.example.com"  # Clerk's Frontend API URL; setting it turns accounts on
-# audience = "client_abc"       # the OAuth application's client id
-# publishable_key = "pk_live_..."  # public; the desktop app reads it
-# owner = "user_2abc"           # the Clerk user id that owns this core; unset: no account gets in
-# jwks_url = "https://clerk.example.com/.well-known/jwks.json"  # signing keys; default: under issuer
-#
 # Prices (USD per million tokens) for models whose list doesn't give them:
 # [providers.anthropic.prices]
 # "claude-sonnet-4-5" = { input = 3.0, output = 15.0, cache_read = 0.3, cache_write = 3.75, cache_write_1h = 6.0 }

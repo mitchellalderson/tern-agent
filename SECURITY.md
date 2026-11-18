@@ -81,11 +81,8 @@ with no file, process or module access, 5 seconds and 64 MB per call, and can re
 secrets they declare, including across redirects. A connector the agent writes stays in `drafts/` until you approve
 it on a card that lists its hosts, secrets and tools; tern records the hash of the approved source and declared
 capabilities, and won't load an activated connector whose file or capabilities later change. The daemon's local API
-is a Unix socket at mode 0600. Remote access over TCP is off by default; when enabled, it requires TLS (a self-signed
-certificate that clients pin by SHA-256, or your own), a device token from a one-time pairing code (10 minutes, single
-use, rate-limited, only a hash of the token is stored, revocable at once), and a scope (`read`, `chat` or `owner`);
-config, secrets and devices are owner-only, and new endpoints are owner-only until listed. Telegram only answers
-accounts paired with a one-time code, and an approval button counts only in the chat it was sent to.
+is a Unix socket at mode 0600. tern is local-only: there is no TCP or TLS listener, no remote access, no device tokens and no accounts, so
+nothing outside this machine can reach the daemon. Approvals happen only in the desktop app and the terminal.
 
 **Sandboxing, macOS versus Linux.** With the default `sandbox.backend = "host"`, an approved `shell` command runs as
 you, with a scrubbed environment, inside an OS sandbox: Seatbelt (`sandbox-exec`) on macOS, Landlock (plus seccomp
@@ -197,13 +194,11 @@ script grants.
   connector that declares `auth` never sees its credential (tern adds it to requests for the declared hosts), but an
   older one that reads `ctx.secret` can read the secrets it declares and send them to the hosts it declares; tern
   flags those.
-- **The model provider and Telegram.** Your conversation, tool results and the system prompt go to the provider you
-  configure; with Telegram on, chat passes through Telegram's servers. Redaction applies to what tern stores and logs,
+- **The model provider.** Your conversation, tool results and the system prompt go to the provider you
+  configure. Redaction applies to what tern stores and logs,
   not to what the model sees during a live run: if a tool returns a secret value, the model receives it.
 - **Your own account.** `secrets.toml` and the database are plain files protected by Unix permissions, not encrypted.
   Any process running as your user can read them and can drive the agent through the socket.
-- **Remote access done badly.** `tls = "off"` is allowed only on loopback behind a proxy you declare with
-  `trust_proxy`; exposing a core to the internet is your call, and an `owner` device can do anything you can.
 - **The desktop app** is a client of the same API with no extra privileges; it is not separately hardened or
   notarized yet (release builds are ad-hoc signed until a Developer ID is set up).
 - **Supply chain.** Release archives are checksummed by `install.sh` and carry GitHub build provenance attestations

@@ -224,7 +224,7 @@ pub(super) struct CreateBody {
     #[serde(flatten)]
     pub(super) trigger: TriggerArgs,
     prompt: String,
-    /// `none` (default), `telegram:<chat_id>` or `<gateway>:<chat>`.
+    /// omitted (here), `none`, `home`, `dm` or `channel:<id>`.
     deliver_to: Option<String>,
     channel: Option<String>,
     agent: Option<String>,
@@ -268,19 +268,33 @@ fn set_autonomy(m: &Shared, s: &mut ScheduleRow, a: Option<&str>) -> Result<(), 
     Ok(())
 }
 
-/// A delivery target: Telegram (as before, whether or not it is enabled),
-/// or a gateway connector this daemon runs.
-fn target(m: &Shared, t: Option<&str>) -> Result<Option<String>, ApiError> {
+/// A delivery target: `none`, or a local one (`home`, `dm`,
+/// `channel:<id>`). Omitted: where the routine lives, so its notify and
+/// interrupt results raise a desktop notification that opens it.
+fn target(
+    m: &Shared,
+    t: Option<&str>,
+    channel: Option<&str>,
+    agent: &str,
+) -> Result<Option<String>, ApiError> {
     match t.map(str::trim) {
-        None | Some("") | Some("none") => Ok(None),
+        Some("none") => Ok(None),
+        None | Some("") | Some("here") => Ok(Some(match channel {
+            Some(c)
+                if m.rt
+                    .store
+                    .channel(c)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|c| c.kind == "topic") =>
+            {
+                format!("channel:{c}")
+            }
+            _ if agent != tern_store::DEFAULT_AGENT => "dm".to_owned(),
+            _ => "home".to_owned(),
+        })),
         Some(t) => {
             tern_tools::schedule::check_deliver_to(t).map_err(bad)?;
-            let gateway = t.split(':').next().unwrap_or_default();
-            if gateway != tern_gateway::telegram::SOURCE && m.gateway(gateway).is_none() {
-                return Err(bad(format!(
-                    "no gateway {gateway:?}: add it with `tern gateway add {gateway}` (or [gateway.connectors.{gateway}] in config.toml) and restart tern"
-                )));
-            }
             Ok(Some(t.to_owned()))
         }
     }
@@ -314,7 +328,6 @@ async fn create(
 async fn create_row(m: &Shared, mut b: CreateBody) -> Result<ScheduleRow, ApiError> {
     let m = m.clone();
     check_trigger(&m, &mut b.trigger, &b.limits, None).await?;
-    let deliver_to = target(&m, b.deliver_to.as_deref())?;
     if let Some(a) = &b.autonomy {
         autonomy(a)?;
     }
@@ -327,6 +340,7 @@ async fn create_row(m: &Shared, mut b: CreateBody) -> Result<ScheduleRow, ApiErr
         Some(a) => owner(&m, a)?,
         None => tern_store::DEFAULT_AGENT.into(),
     };
+    let deliver_to = target(&m, b.deliver_to.as_deref(), channel.as_deref(), &agent)?;
     let mut row = tern_tools::schedule::create_routine(
         &m.rt.store,
         &b.trigger,
@@ -414,7 +428,7 @@ async fn update(
     let old = m.rt.store.schedule(&id).map_err(internal)?;
     check_trigger(&m, &mut b.trigger, &b.limits, old.as_ref()).await?;
     let deliver_to = match &b.deliver_to {
-        Some(t) => Some(target(&m, Some(t))?),
+        Some(t) => Some(target(&m, Some(t), None, tern_store::DEFAULT_AGENT)?),
         None => None,
     };
     if let Some(a) = &b.autonomy {

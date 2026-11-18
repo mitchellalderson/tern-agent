@@ -28,19 +28,22 @@ fn fmt_time(ms: i64) -> String {
         .unwrap_or_else(|| "?".into())
 }
 
-/// Where results go when the caller says "here": the chat this session is
-/// attached to, if any.
+/// Where results go when the caller says "here": the conversation this
+/// session is in, as a local target (`home`, `dm`, `channel:<id>`). A
+/// sub-agent's session has none.
 pub fn here(store: &Store, session_id: &str) -> Option<String> {
     let s = store.session(session_id).ok().flatten()?;
-    // Telegram's and gateway connectors' chats; `<chat>|<agent>` is an
-    // agent's stream in the same chat.
-    match (s.source.as_str(), s.external_ref) {
-        (tern_core::subagent::SESSION_SOURCE, _) | (_, None) => None,
-        (source, Some(chat)) => {
-            let chat = chat.split('|').next().unwrap_or(&chat);
-            Some(format!("{source}:{chat}"))
-        }
+    if s.source == tern_core::subagent::SESSION_SOURCE {
+        return None;
     }
+    let channel = store.session_channel(session_id).ok().flatten()?;
+    Some(if channel.kind == "topic" {
+        format!("channel:{}", channel.id)
+    } else if channel.id == tern_store::HOME {
+        "home".into()
+    } else {
+        "dm".into()
+    })
 }
 
 /// `null` → `Some(None)` (back to the default), absent → `None` (unchanged).
@@ -680,26 +683,17 @@ pub fn describe_limits(s: &ScheduleRow) -> String {
     }
 }
 
-/// A concrete delivery target: `telegram:<chat_id>`, or `<gateway>:<chat>`
-/// for a gateway connector (`ntfy:<topic>`, `slack:<channel id>`).
+/// A local delivery target: `home`, `dm` (the routine's agent's DM) or
+/// `channel:<id>`. Nothing leaves this computer.
 pub fn check_deliver_to(t: &str) -> Result<(), String> {
-    let ok = match t.split_once(':') {
-        Some(("telegram", chat)) => chat.parse::<i64>().is_ok(),
-        Some((gateway, chat)) => {
-            let mut g = gateway.chars();
-            gateway.len() <= 32
-                && g.next().is_some_and(|c| c.is_ascii_lowercase())
-                && g.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-                && !chat.is_empty()
-                && !chat.chars().any(char::is_whitespace)
-        }
-        None => false,
-    };
+    let ok = matches!(t, "home" | "dm")
+        || t.strip_prefix("channel:")
+            .is_some_and(|c| !c.is_empty() && !c.chars().any(char::is_whitespace));
     if ok {
         Ok(())
     } else {
         Err(format!(
-            "deliver_to {t:?} must be \"here\", \"none\", \"telegram:<chat_id>\" or \"<gateway>:<chat>\" (e.g. \"ntfy:<topic>\")"
+            "deliver_to {t:?} must be \"here\", \"none\", \"home\", \"dm\" or \"channel:<id>\""
         ))
     }
 }
@@ -723,7 +717,7 @@ struct CreateArgs {
     limits: ScheduleLimits,
 }
 
-/// "here" (or nothing) is the chat this session is attached to.
+/// "here" (or nothing) is the conversation this session is in.
 fn resolve_target(store: &Store, session_id: &str, t: Option<&str>) -> Option<String> {
     match t.map(str::trim) {
         None | Some("here") | Some("") => here(store, session_id),
@@ -741,7 +735,7 @@ impl Tool for ScheduleCreate {
     fn spec(&self) -> ToolSpec {
         spec(
             "schedule_create",
-            "Schedule a prompt (a routine) to run repeatedly on a `cron`, or once `at` a time (reminders). Each run happens in its own session and its result is posted to this channel (a topic channel) or the running agent's DM, and also delivered to `deliver_to`: \"here\" (default: this chat, if it's a messaging chat), \"none\", \"telegram:<chat_id>\", or \"<gateway>:<chat>\" for a gateway connector such as ntfy or slack. To have another agent do the work (\"have Research check …\"), set `agent` to it rather than writing \"ask Research\" in the prompt: the routine then runs as, and belongs to, that agent (the user manages it from the link). A run with nothing to report answers NO_REPLY and sends nothing. Results finishing in quiet hours wait until they end, unless `urgent`. Scheduled runs only happen while `tern daemon` is running. Give the user the link in the result so they can open the routine.",
+            "Schedule a prompt (a routine) to run repeatedly on a `cron`, or once `at` a time (reminders). Each run happens in its own session and its result is posted to this channel (a topic channel) or the running agent's DM, and also delivered to `deliver_to`: \"here\" (default: this conversation), \"none\", \"home\", \"dm\" (your DM) or \"channel:<id>\". Notify and interrupt results also raise a desktop notification. To have another agent do the work (\"have Research check …\"), set `agent` to it rather than writing \"ask Research\" in the prompt: the routine then runs as, and belongs to, that agent (the user manages it from the link). A run with nothing to report answers NO_REPLY and sends nothing. Results finishing in quiet hours wait until they end, unless `urgent`. Scheduled runs only happen while `tern daemon` is running. Give the user the link in the result so they can open the routine.",
             {
                 let mut props = limit_properties();
                 props.extend(trigger_properties());
@@ -1038,8 +1032,14 @@ mod tests {
     #[tokio::test]
     async fn create_list_delete_and_deliver_here() {
         let store = Store::open_in_memory().unwrap();
+        store.create_session("chat", "api", None).unwrap();
         store
-            .create_session_with_ref("chat", "telegram", "555", None)
+            .conn()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET channel_id = 'home' WHERE id = 'chat'",
+                [],
+            )
             .unwrap();
         let ctx = ToolCtx {
             scope: tern_core::workspace::WorkspaceScope::for_dir(std::env::temp_dir()),
@@ -1059,13 +1059,9 @@ mod tests {
         let r = create
             .call(&ctx, json!({"cron": "0 8 * * 1-5", "prompt": "Summarize my unread GitHub notifications"}))
             .await;
-        assert!(
-            !r.is_error && r.content.contains("telegram:555"),
-            "{}",
-            r.content
-        );
+        assert!(!r.is_error && r.content.contains("home"), "{}", r.content);
         let s = &store.schedules().unwrap()[0];
-        assert_eq!(s.deliver_to.as_deref(), Some("telegram:555"));
+        assert_eq!(s.deliver_to.as_deref(), Some("home"));
         assert_eq!(
             store.session(&s.session_id).unwrap().unwrap().source,
             "cron"
