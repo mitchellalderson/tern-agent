@@ -12,7 +12,6 @@ class _Store extends TernStore {
 Future<void> _pump(
   WidgetTester tester,
   _Store store, {
-  VoidCallback? onConnectRemote,
   String? bin = '/usr/bin/tern',
 }) => tester.pumpWidget(
   MaterialApp(
@@ -20,7 +19,6 @@ Future<void> _pump(
     home: Scaffold(
       body: OfflineView(
         store: store,
-        onConnectRemote: onConnectRemote,
         locateBin: () => bin,
       ),
     ),
@@ -28,22 +26,17 @@ Future<void> _pump(
 );
 
 void main() {
-  testWidgets('first launch is a welcome with two choices', (tester) async {
+  testWidgets('first launch is a welcome with one choice', (tester) async {
     final store = _Store()..link = Link.offline;
     store.linkError = "can't reach tern at /x: No such file or directory";
-    var remote = 0;
-    await _pump(tester, store, onConnectRemote: () => remote++);
+    await _pump(tester, store);
 
     expect(find.text('Welcome to tern'), findsOneWidget);
     expect(find.text('Start on this Mac'), findsOneWidget);
-    expect(find.text('Connect to a remote server…'), findsOneWidget);
     expect(find.text("tern isn't running"), findsNothing);
     expect(find.text('Try again'), findsNothing);
     expect(find.byKey(const Key('offline-details')), findsNothing);
     expect(find.textContaining('No such file'), findsNothing);
-
-    await tester.tap(find.text('Connect to a remote server…'));
-    expect(remote, 1);
   });
 
   testWidgets('details disclosure shows the socket and the OS error', (

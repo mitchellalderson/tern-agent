@@ -74,21 +74,6 @@ pub async fn connect(socket: &Path) -> Option<Attached> {
     attach(http, BASE.into()).await.ok()
 }
 
-/// Connect to a core over HTTPS with a device token, pinning its
-/// certificate when `pin` is given (deployment spec §7.2).
-pub async fn connect_url(url: &str, token: &str, pin: Option<&str>) -> anyhow::Result<Attached> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    let mut auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))?;
-    auth.set_sensitive(true);
-    headers.insert(reqwest::header::AUTHORIZATION, auth);
-    let http = crate::daemon::tls::client(pin)?
-        .default_headers(headers)
-        .build()?;
-    attach(http, url.trim_end_matches('/').to_owned())
-        .await
-        .map_err(anyhow::Error::msg)
-}
-
 async fn attach(http: reqwest::Client, base: String) -> BackendResult<Attached> {
     let (events, _) = broadcast::channel(1024);
     let (prompts_tx, prompts_rx) = mpsc::channel(8);

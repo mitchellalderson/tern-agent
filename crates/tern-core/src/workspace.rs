@@ -204,10 +204,16 @@ impl DenySet {
     /// secrets and database from reads.
     pub fn for_data_dir(dir: &Path) -> Self {
         let dir = canonicalize_lenient(dir);
-        let no_read = ["secrets.toml", "tern.db", "tern.db-wal", "tern.db-shm"]
-            .iter()
-            .map(|f| dir.join(f))
-            .collect();
+        let no_read = [
+            "secrets.toml",
+            "secrets.key",
+            "tern.db",
+            "tern.db-wal",
+            "tern.db-shm",
+        ]
+        .iter()
+        .map(|f| dir.join(f))
+        .collect();
         Self {
             no_write: vec![dir],
             no_read,

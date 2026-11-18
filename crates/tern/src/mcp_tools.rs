@@ -170,7 +170,7 @@ impl Tool for McpAdd {
             Effect::Write
         };
         ToolPolicy {
-            local_approval: stdio && !self.0.remote_stdio_allowed(),
+            local_approval: stdio,
             ..ToolPolicy::new(effect, false).forced(true)
         }
     }

@@ -407,7 +407,6 @@ fn template(r: &ScheduleRow, names: &mut BTreeSet<String>) -> Result<RoutineTemp
                 ..TriggerTemplate::default()
             }
         }
-        "webhook" => return Err("webhook routines need a secret made where they run".into()),
         other => return Err(format!("unknown trigger {other}")),
     };
     let base = name_for(&r.prompt);

@@ -153,7 +153,6 @@ class _OutboxCardState extends State<OutboxCard> {
     final expires = left.inHours >= 1
         ? 'expires in ${left.inHours}h'
         : 'expires in ${left.inMinutes.clamp(0, 59)}m';
-    final remoteBlocked = o.localOnly && widget.store.remoteCore;
     return Container(
       decoration: BoxDecoration(
         color: c.card,
@@ -231,11 +230,6 @@ class _OutboxCardState extends State<OutboxCard> {
                   child: const Text('Discard'),
                 ),
               ],
-            )
-          else if (remoteBlocked)
-            Text(
-              'Decide this on the computer running tern: it runs a command there.',
-              style: TextStyle(fontSize: 12.5, color: c.muted),
             )
           else
             Row(

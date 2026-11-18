@@ -38,10 +38,10 @@ class _FakeClient extends TernClient {
         usedBy: ['provider openrouter'],
       ),
     const SecretStatus(
-      name: 'TELEGRAM_BOT_TOKEN',
+      name: 'BRAVE_API_KEY',
       inFile: false,
       inEnv: false,
-      usedBy: ['telegram'],
+      usedBy: ['web_search'],
     ),
   ];
 

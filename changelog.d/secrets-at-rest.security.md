@@ -1,0 +1,2 @@
+- **Secrets are encrypted at rest.** Values in `secrets.toml` are sealed with AES-256-GCM, bound to their names; the key is in the macOS keychain (or `secrets.key` where there is none). Existing plaintext is migrated automatically.
+- **Redaction catches echoed fragments.** A service that echoes part of a key (`ck_**3pNe`, or just its first 8 or last 4 characters) no longer leaks it to the agent, the journal or connector logs.

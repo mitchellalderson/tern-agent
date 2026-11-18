@@ -41,6 +41,7 @@ class ConversationView extends StatefulWidget {
 
 class _ConversationViewState extends State<ConversationView> {
   final _window = FeedWindow();
+  final _divider = GlobalKey();
   Object? _open;
   var _loadingEarlier = false;
 
@@ -86,9 +87,23 @@ class _ConversationViewState extends State<ConversationView> {
       _open = open;
     }
     final all = t?.items ?? const <Item>[];
+    // Home and DMs: the first post that arrived while the reader was away.
+    final catchUp = store.streamOpen
+        ? catchUpAt(store.catchUp[store.streamChannel], [
+            for (final i in all) i is PostItem ? i.post.id : null,
+          ])
+        : null;
+    final jump = catchUp != null && catchUp.count >= TernStore.catchUpJump;
+    if (catchUp != null &&
+        jump &&
+        _window.visible < all.length - catchUp.index + 10) {
+      _window.visible = all.length - catchUp.index + 10;
+    }
     final hiddenEarlier = _window.hiddenEarlier(all.length);
     // Only the window is grouped and built: the rest costs nothing.
     final items = groupApprovals(_window.slice(all));
+    final dividerItem = catchUp == null ? null : all[catchUp.index];
+    final dividerShown = dividerItem != null && items.contains(dividerItem);
     final phase = t?.phase;
     // The activity line sits below the newest item (index 0, reversed),
     // and waits with the other new arrivals while the reader is scrolled up.
@@ -125,6 +140,8 @@ class _ConversationViewState extends State<ConversationView> {
               // Reversed, so the newest content stays pinned to the bottom
               // while it streams.
               : FeedList(
+                  key: ValueKey('feed:$open'),
+                  reveal: jump && dividerShown ? _divider : null,
                   window: _window,
                   count: items.length + extra,
                   total: all.length,
@@ -157,6 +174,16 @@ class _ConversationViewState extends State<ConversationView> {
                                       final String run => t.reasoningFor(run),
                                       _ => null,
                                     },
+                                  )
+                                : identical(item, dividerItem)
+                                ? Column(
+                                    key: _divider,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      const NewSinceDivider(),
+                                      ItemView(item: item, store: store),
+                                    ],
                                   )
                                 : ItemView(item: item, store: store),
                           ),

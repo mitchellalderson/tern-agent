@@ -1,5 +1,7 @@
 # tern channels: shared timelines for many agents
 
+> **Partly superseded (2026-11).** tern is local-only and single-player: messaging gateways (Telegram, ntfy, Slack) were removed; see [DECISIONS.md](../DECISIONS.md#tern-is-local-only-single-player). Kept as history.
+
 Status: **conversations are flat everywhere** (§6.2, 2026-11-04): side chats, reply threads and the thread pane were removed; where this document describes them, §6.2 supersedes it. C0–C2 built (2026-11-03); C3's prerequisite, the taint slice of T3 (T3a), is built: tainted runs write `tainted` posts. Home is one continuous stream (§2.6, decided §7.1). This is the detailed design for phase T2 in
 [personal-agent-tooling-spec.md](personal-agent-tooling-spec.md) §4.2, which it follows and extends. Related:
 [subagents-design.md](subagents-design.md) (child runs, the `inbox` step and `agent_mail`, which this reuses; its

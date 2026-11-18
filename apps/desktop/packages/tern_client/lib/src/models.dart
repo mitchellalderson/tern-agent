@@ -11,125 +11,34 @@ import 'secret_requests.dart';
 
 typedef Json = Map<String, dynamic>;
 
-/// `/v1/health`: what the core is and what this client may do there
-/// (deployment spec §7.3). Derive behaviour from these, not from how the
-/// core was reached.
+/// `/v1/health`: what the daemon is and which features it has.
 class Health {
   const Health({
     required this.pid,
     required this.version,
     this.api = 1,
-    this.deployment = 'local',
-    this.authKind = 'owner',
-    this.scope = 'owner',
     this.features = const {},
   });
 
-  factory Health.fromJson(Json j) {
-    final auth = j['auth'] as Json?;
-    return Health(
-      pid: j['pid'] as int,
-      version: j['version'] as String,
-      api: j['api'] as int? ?? 1,
-      deployment: j['deployment'] as String? ?? 'local',
-      authKind: auth?['kind'] as String? ?? 'owner',
-      scope: auth?['scope'] as String? ?? 'owner',
-      features: {
-        for (final f in j['features'] as List? ?? const []) f as String,
-      },
-    );
-  }
+  factory Health.fromJson(Json j) => Health(
+    pid: j['pid'] as int,
+    version: j['version'] as String,
+    api: j['api'] as int? ?? 1,
+    features: {
+      for (final f in j['features'] as List? ?? const []) f as String,
+    },
+  );
 
   final int pid;
   final String version;
   final int api;
 
-  /// `local` (this machine: files, Finder, start/stop apply), `server` or
-  /// `cloud`.
-  final String deployment;
-
-  /// `owner` (the local socket), `device` or `cloud`.
-  final String authKind;
-
-  /// `owner`, `chat` or `read`. Hide owner-only screens below `owner`.
-  final String scope;
-
-  /// e.g. `devices`, `uploads`.
+  /// e.g. `workspaces`, `uploads`.
   final Set<String> features;
 
-  /// The core has workspaces (`/v1/workspaces`): older cores don't, so hide
+  /// The daemon has workspaces (`/v1/workspaces`): older ones don't, so hide
   /// the folder picker.
   bool get hasWorkspaces => features.contains('workspaces');
-
-  bool get isLocal => deployment == 'local';
-  bool get isOwner => scope == 'owner';
-  bool get canChat => scope != 'read';
-}
-
-/// A paired device, as the owner sees it.
-class Device {
-  const Device({
-    required this.id,
-    required this.name,
-    required this.scope,
-    this.platform,
-    required this.createdAt,
-    this.lastSeenAt,
-    this.lastIp,
-    this.revokedAt,
-  });
-
-  factory Device.fromJson(Json j) => Device(
-    id: j['id'] as String,
-    name: j['name'] as String,
-    scope: j['scope'] as String,
-    platform: j['platform'] as String?,
-    createdAt: DateTime.fromMillisecondsSinceEpoch(j['created_at'] as int),
-    lastSeenAt: _ms(j['last_seen_at']),
-    lastIp: j['last_ip'] as String?,
-    revokedAt: _ms(j['revoked_at']),
-  );
-
-  final String id;
-  final String name;
-  final String scope;
-  final String? platform;
-  final DateTime createdAt;
-  final DateTime? lastSeenAt;
-  final String? lastIp;
-  final DateTime? revokedAt;
-
-  bool get revoked => revokedAt != null;
-}
-
-DateTime? _ms(Object? v) =>
-    v == null ? null : DateTime.fromMillisecondsSinceEpoch(v as int);
-
-/// A one-time code for a new device; show [link] as a QR code.
-class PairingOffer {
-  const PairingOffer({
-    required this.code,
-    required this.scope,
-    this.link,
-    this.fingerprint,
-    required this.expiresIn,
-  });
-
-  factory PairingOffer.fromJson(Json j) => PairingOffer(
-    code: j['code'] as String,
-    scope: j['scope'] as String,
-    link: j['link'] as String?,
-    fingerprint: j['fingerprint'] as String?,
-    expiresIn: Duration(seconds: j['expires_in_secs'] as int),
-  );
-
-  final String code;
-  final String scope;
-
-  /// Null when the core has no TCP listener yet.
-  final String? link;
-  final String? fingerprint;
-  final Duration expiresIn;
 }
 
 class Info {
@@ -137,7 +46,6 @@ class Info {
     this.defaultModel,
     required this.tools,
     this.setupNeeded = false,
-    this.gateways = const [],
     this.sandbox,
   });
 
@@ -155,21 +63,10 @@ class Info {
       for (final t in j['tools'] as List)
         (name: (t as List)[0] as String, description: t[1] as String),
     ],
-    gateways: [
-      for (final g in (j['gateways'] as List?) ?? const [])
-        (
-          name: (g as Json)['name'] as String,
-          kind: g['kind'] as String? ?? g['name'] as String,
-        ),
-    ],
   );
 
   final String? defaultModel;
   final List<({String name, String description})> tools;
-
-  /// Where routines can deliver (`<name>:<chat>`): Telegram and gateway
-  /// connectors such as ntfy or Slack. Empty from older daemons.
-  final List<({String name, String kind})> gateways;
 
   /// No usable model yet: offer provider setup.
   final bool setupNeeded;
@@ -265,7 +162,7 @@ class SessionItem {
   final String id;
   final String? title;
 
-  /// Where the session came from: `api`, `cli`, `telegram`, `cron`, …
+  /// Where the session came from: `api`, `cli`, `cron`, …
   final String source;
   final String? model;
   final int messages;
@@ -681,6 +578,14 @@ sealed class TernEvent {
     }
     if (j['schedules_changed'] case final Json s) {
       return SchedulesChanged(s['id'] as String? ?? '');
+    }
+    if (j['notification'] case final Json n) {
+      return NotificationRequested(
+        title: n['title'] as String? ?? '',
+        body: n['body'] as String? ?? '',
+        channelId: n['channel_id'] as String?,
+        runId: n['run_id'] as String?,
+      );
     }
     final run = j['run_id'] as String? ?? '';
     final event = _agentEvent(j, run);
@@ -1127,6 +1032,23 @@ class SchedulesChanged extends TernEvent {
   final String id;
 }
 
+/// The daemon asks the app to raise a system notification for a routine
+/// result it pushed. The text is already posted in [channelId].
+class NotificationRequested extends TernEvent {
+  const NotificationRequested({
+    required this.title,
+    required this.body,
+    this.channelId,
+    this.runId,
+  });
+  final String title;
+  final String body;
+
+  /// `home`, `dm:...` or a channel id; null when unknown.
+  final String? channelId;
+  final String? runId;
+}
+
 class UnknownEvent extends TernEvent {
   const UnknownEvent(this.json);
   final Json json;
@@ -1199,7 +1121,7 @@ class Schedule {
   /// Each schedule runs in a session of its own (source `cron`).
   final String sessionId;
 
-  /// Null keeps results in the session; else `telegram:<chat_id>`.
+  /// Where a pushed result goes: `home`, `dm`, `channel:<id>`; null for none.
   final String? deliverTo;
   final bool enabled;
   final DateTime? nextRunAt;

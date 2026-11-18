@@ -23,7 +23,7 @@ pub(crate) fn with_backend<T>(
         .build()?;
     runtime.block_on(async {
         // Approvals never come up: these commands run no tools.
-        let (backend, _approvals) = crate::tui_backend::connect(home, None).await?;
+        let (backend, _approvals) = crate::tui_backend::connect(home).await?;
         f(backend).await
     })
 }

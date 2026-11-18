@@ -66,11 +66,6 @@ impl McpAdmin {
         self.connectors.secret_uses()
     }
 
-    /// Whether paired devices may approve or add `stdio` servers.
-    pub fn remote_stdio_allowed(&self) -> bool {
-        self.live().api.remote_mcp_stdio
-    }
-
     pub fn mcp_statuses(&self) -> Vec<McpStatus> {
         self.mcp.statuses()
     }
