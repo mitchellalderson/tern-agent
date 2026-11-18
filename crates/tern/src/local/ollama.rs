@@ -71,7 +71,10 @@ fn disk_free(path: &Path) -> Option<u64> {
             p = p.parent()?;
         }
         let s = nix::sys::statvfs::statvfs(p).ok()?;
-        Some(u64::from(s.blocks_available()).saturating_mul(s.fragment_size()))
+        // Their widths differ between platforms.
+        let blocks: u64 = s.blocks_available().try_into().ok()?;
+        let frag: u64 = s.fragment_size().try_into().ok()?;
+        Some(blocks.saturating_mul(frag))
     }
     #[cfg(not(unix))]
     {
