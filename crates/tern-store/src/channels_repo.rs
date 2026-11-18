@@ -166,6 +166,10 @@ pub struct NewThread<'a> {
 const NOT_WAKER: &str =
     "AND id NOT IN (SELECT woken_by FROM runs WHERE session_id = ?2 AND woken_by IS NOT NULL)";
 
+/// Leaves out of a digest what runs leave behind rather than say: notes
+/// ("memory saved", "handed to", "joined") and other system lines.
+const NOT_BYPRODUCT: &str = "AND kind != 'note' AND author_kind != 'system'";
+
 const CHANNEL_COLS: &str = "id, slug, title, kind, instructions, main_session_id, created_by, \
     archived_at, created_at, updated_at, agent_id";
 const POST_COLS: &str = "id, channel_id, session_id, run_id, author_kind, author_id, author, kind, \
@@ -851,13 +855,13 @@ impl Store {
     ) -> Result<(Vec<PostRow>, usize)> {
         let conn = self.conn()?;
         let total: i64 = conn.query_row(
-            &format!("SELECT count(*) FROM posts WHERE channel_id = ?1 AND id > ?3 AND session_id IS NOT ?2 {NOT_WAKER}"),
+            &format!("SELECT count(*) FROM posts WHERE channel_id = ?1 AND id > ?3 AND session_id IS NOT ?2 {NOT_WAKER} {NOT_BYPRODUCT}"),
             params![channel_id, session_id, after],
             |r| r.get(0),
         )?;
         let sql = format!(
             "SELECT {POST_COLS} FROM posts WHERE channel_id = ?1 AND id > ?3 AND session_id IS NOT ?2
-             {NOT_WAKER} ORDER BY id DESC LIMIT ?4"
+             {NOT_WAKER} {NOT_BYPRODUCT} ORDER BY id DESC LIMIT ?4"
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(

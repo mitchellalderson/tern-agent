@@ -102,6 +102,14 @@ pub struct Agent {
     /// `code` or above). Only `PATCH` sets it: never create, never a bundle.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub code_auto: bool,
+    /// One line on what it is for: what channel routing reads (never the
+    /// persona). Absent until written, once, from its role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// "Reply when relevant": a channel may pick it to answer. Off: it
+    /// answers only when @mentioned. On by default.
+    #[serde(default = "yes")]
+    pub reply_when_relevant: bool,
     /// Its DM: `home` for the default agent.
     pub main_channel_id: Option<String>,
     #[serde(default)]
@@ -195,6 +203,8 @@ pub(super) fn agent_view(m: &Shared, a: AgentRow) -> Agent {
         egress: a.egress.as_deref().and_then(Egress::parse),
         autonomy: a.autonomy.as_deref().and_then(Autonomy::parse),
         code_auto: a.code_auto,
+        description: a.description.clone(),
+        reply_when_relevant: !a.mention_only,
         archived: a.archived_at.is_some(),
         deleted: a.deleted_at.is_some(),
         is_default: a.is_default(),
@@ -247,6 +257,10 @@ fn double<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
 ) -> Result<Option<Option<T>>, D::Error> {
     Option::<T>::deserialize(d).map(Some)
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -385,8 +399,11 @@ struct UpdateBody {
     /// after this change (send `autonomy: "code"` with it to raise it, which
     /// is the visible step the confirm dialog shows). `false` opts out.
     code_auto: Option<bool>,
-    /// `{bot_token_secret}` gives the agent a bot of its own (set the
-    /// secret first: `tern secrets set <name>`); `null` removes it.
+    /// The one-line description channel routing reads; `null` clears it
+    /// (it is written again from the role); at most 120 characters.
+    #[serde(default, deserialize_with = "double")]
+    description: Option<Option<String>>,
+    reply_when_relevant: Option<bool>,
     archived: Option<bool>,
 }
 
@@ -426,7 +443,20 @@ async fn update(
             "ceiling_below_code: this agent is read-only (autonomy ceiling readonly), so it can't use code auto mode".into(),
         ));
     }
+    let description = match &b.description {
+        Some(Some(d)) => {
+            let d = d.trim();
+            if d.chars().count() > 120 || d.contains('\n') {
+                return Err(bad("description is one line of at most 120 characters"));
+            }
+            Some((!d.is_empty()).then(|| d.to_owned()))
+        }
+        Some(None) => Some(None),
+        None => None,
+    };
     let mut ch = AgentChange {
+        description,
+        mention_only: b.reply_when_relevant.map(|v| !v),
         slug: b.slug.clone(),
         name,
         avatar: b
@@ -586,6 +616,13 @@ async fn set_persona(
         .update_agent(&a.id, &AgentChange::default())
         .map_err(internal)?;
     changed(&m);
+    // A role saved with no description yet: write one, once.
+    if a.description.is_none() {
+        let (rt, a) = (m.rt.clone(), a.clone());
+        tokio::spawn(async move {
+            rt.ensure_description(&a).await;
+        });
+    }
     Ok(Json(Persona {
         persona: b.persona.trim().to_owned(),
         system_sections: None,

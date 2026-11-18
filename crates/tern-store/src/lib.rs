@@ -33,7 +33,7 @@ pub use ledger_repo::{
     LedgerRow, entry_hash,
 };
 pub use manage_repo::{AgentUse, ChannelUse, RoutineFate};
-pub use members_repo::{ChannelWakes, Member, mention_slugs};
+pub use members_repo::{ChannelWakes, Member, RouteMode, mention_slugs};
 pub use memory_repo::{
     Forgot, MemoryLimits, MemoryRefusal, NewMemory, SOURCE_AGENT, SOURCE_UNVERIFIED, SOURCE_USER,
 };

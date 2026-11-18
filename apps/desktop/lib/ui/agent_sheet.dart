@@ -89,6 +89,12 @@ class _AgentSheetState extends State<AgentSheet> {
   late final _name = TextEditingController(text: widget.editing?.name);
   final _persona = TextEditingController();
 
+  /// The one line channel routing reads; empty = written from its role.
+  late final _description = TextEditingController(
+    text: widget.editing?.description,
+  );
+  late bool _replies = widget.editing?.replyWhenRelevant ?? true;
+
   /// The model chain (T6a): empty = the default model.
   late List<String> _model = [...?widget.editing?.model];
   late List<String> _subagentModel = [...?widget.editing?.subagentModel];
@@ -276,6 +282,11 @@ class _AgentSheetState extends State<AgentSheet> {
         if (_subagentModel.join(',') != a.subagentModel.join(','))
           'subagent_model': _wire(_subagentModel),
         if (!_isDefault) 'memory': _memory,
+        if (_description.text.trim() != (a.description ?? ''))
+          'description': _description.text.trim().isEmpty
+              ? null
+              : _description.text.trim(),
+        if (_replies != a.replyWhenRelevant) 'reply_when_relevant': _replies,
         if (_browse != (a.egress == 'allow'))
           'egress': _browse ? 'allow' : null,
         if (!_isDefault || _tools != null) 'tools': _tools?.toJson(),
@@ -700,6 +711,36 @@ class _AgentSheetState extends State<AgentSheet> {
                               'knows somewhere new.',
                             ),
                           ),
+                          if (widget.editing != null) ...[
+                            _section('In channels'),
+                            TextField(
+                              key: const Key('agent-description'),
+                              controller: _description,
+                              maxLength: 120,
+                              decoration: InputDecoration(
+                                hintText: 'Written from its role if empty',
+                                isDense: true,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                helperText: 'One line. What a channel reads to '
+                                    'pick who answers.',
+                              ),
+                            ),
+                            SwitchListTile(
+                              key: const Key('reply-when-relevant'),
+                              contentPadding: EdgeInsets.zero,
+                              dense: true,
+                              value: _replies,
+                              onChanged: (v) => setState(() => _replies = v),
+                              title: const Text('Reply when relevant'),
+                              subtitle: Text(
+                                _replies
+                                    ? 'Can be picked to answer in channels.'
+                                    : 'Answers only when you @mention it.',
+                              ),
+                            ),
+                          ],
                           _section('How much it does on its own'),
                           AutonomyPicker(
                             value: _autonomy,
@@ -810,6 +851,7 @@ class _AgentSheetState extends State<AgentSheet> {
     _name.dispose();
     _slugCtl.dispose();
     _persona.dispose();
+    _description.dispose();
     super.dispose();
   }
 }

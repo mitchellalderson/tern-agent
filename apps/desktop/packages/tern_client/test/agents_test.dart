@@ -206,4 +206,27 @@ void main() {
       isTrue,
     );
   });
+
+  test('routing fields default to one agent, replying when relevant', () {
+    final a = Agent.fromJson({'id': 'tern:x', 'slug': 'x', 'name': 'X'});
+    expect(a.replyWhenRelevant, isTrue);
+    expect(a.description, isNull);
+    final b = Agent.fromJson({
+      'id': 'tern:y',
+      'slug': 'y',
+      'name': 'Y',
+      'description': 'Runs the calendar',
+      'reply_when_relevant': false,
+    });
+    expect(b.replyWhenRelevant, isFalse);
+    expect(b.description, 'Runs the calendar');
+    final none = ChannelAgents.fromJson({'members': <Object>[]});
+    expect((none.routeMode, none.replyRule), ('one', null));
+    final c = ChannelAgents.fromJson({
+      'members': <Object>[],
+      'route_mode': 'all',
+      'reply_rule': 'Only questions',
+    });
+    expect((c.routeMode, c.replyRule), ('all', 'Only questions'));
+  });
 }

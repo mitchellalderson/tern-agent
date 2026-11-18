@@ -23,9 +23,13 @@ class Agent {
     this.delegates,
     this.autonomy,
     this.codeAuto = false,
+    this.description,
+    this.replyWhenRelevant = true,
   });
 
   factory Agent.fromJson(Json j) => Agent(
+    description: j['description'] as String?,
+    replyWhenRelevant: j['reply_when_relevant'] as bool? ?? true,
     codeAuto: j['code_auto'] as bool? ?? false,
     id: j['id'] as String,
     slug: j['slug'] as String,
@@ -114,6 +118,14 @@ class Agent {
   /// without asking. Needs a ceiling of `code` or above (or none); only an
   /// explicit, confirmed PATCH sets it, never a starter or a bundle.
   final bool codeAuto;
+
+  /// One line on what it is for: what channel routing reads (never the
+  /// persona). Null until written, once, from its role.
+  final String? description;
+
+  /// "Reply when relevant": a channel may pick it to answer. Off: it answers
+  /// only when @mentioned.
+  final bool replyWhenRelevant;
 
   /// The ceiling as a level, when it is one this client knows.
   AutonomyLevel? get autonomyLevel => AutonomyLevel.parse(autonomy);

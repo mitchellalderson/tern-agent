@@ -185,6 +185,9 @@ class _FakeClient extends TernClient {
     int? maxHops,
     int? wakesPerHour,
     bool? letAgentsDecide,
+    String? routeMode,
+    String? replyRule,
+    bool clearReplyRule = false,
   }) async {
     patches.add((lead: lead, agentWakes: agentWakes));
     if (letAgentsDecide != null) {
@@ -414,14 +417,14 @@ void main() {
     expect(toggle, findsOneWidget);
     expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
     expect(
-      find.textContaining('always goes to the lead'),
+      find.textContaining('mentions no one goes to the lead'),
       findsOneWidget,
       reason: 'off says where unmentioned posts go',
     );
     await tester.tap(toggle);
     await tester.pump();
     expect(
-      find.textContaining('picked by one cheap model call'),
+      find.textContaining('goes to the agent it fits'),
       findsOneWidget,
     );
     expect(find.textContaining('the lead answers'), findsOneWidget);
