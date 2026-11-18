@@ -28,11 +28,12 @@ pub struct TuiBackend {
 
 impl TuiBackend {
     pub fn open(home: &TernHome, approvals: Arc<dyn ApprovalHandler>) -> anyhow::Result<Self> {
-        let rt = Runtime::open(home, approvals.clone())?;
+        let rt = Arc::new(Runtime::open(home, approvals.clone())?);
+        rt.bind_admin();
         Ok(Self {
             home: home.clone(),
             approvals,
-            rt: RwLock::new(Arc::new(rt)),
+            rt: RwLock::new(rt),
         })
     }
 
@@ -169,15 +170,16 @@ impl Backend for TuiBackend {
     }
 
     fn reload(&self) -> BackendResult<String> {
-        let fresh = Runtime::open(&self.home, self.approvals.clone()).map_err(chain)?;
+        let fresh = Arc::new(Runtime::open(&self.home, self.approvals.clone()).map_err(chain)?);
+        fresh.bind_admin();
         let summary = format!(
             "reloaded: {} tools, {} providers configured",
             fresh.agent.tools().names().len(),
             fresh.config.providers.len()
         );
         match self.rt.write() {
-            Ok(mut g) => *g = Arc::new(fresh),
-            Err(poisoned) => *poisoned.into_inner() = Arc::new(fresh),
+            Ok(mut g) => *g = fresh,
+            Err(poisoned) => *poisoned.into_inner() = fresh,
         }
         Ok(summary)
     }
