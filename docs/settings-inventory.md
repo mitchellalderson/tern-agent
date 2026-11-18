@@ -28,7 +28,7 @@ same list and a new config field appears in both without UI changes.
 | Secrets | the secrets editor (names and set/unset only; values are write-only) |
 | Permissions & Sandbox | default autonomy, taint egress, sandbox, scripts, bundles, outbox; security audit |
 | Limits & Budgets | iteration caps, spend/token budgets, sub-agent limits, timeouts, rate limits |
-| MCP & gateways | MCP servers (own editor), Telegram/gateway connectors (own editor) |
+| MCP servers | MCP servers (own editor) |
 | Advanced | everything marked *adv*, plus the raw file (config.toml path, reveal, reload) |
 | About | app and core version, data location, config path, log location |
 
@@ -98,8 +98,7 @@ same list and a new config field appears in both without UI changes.
 | Setting | Where today | Restart | Secret | Surface |
 |---|---|---|---|---|
 | `[providers.*]` (kind, base_url, context_window, prices, `api_key_secret` name) | `/setup`, `tern providers`, desktop Providers dialog | no (reload) | key is a secret, stored in `secrets.toml`, write-only | Models & Providers |
-| `[mcp.servers.*]`, `[mcp.serve]` | `/mcp`, `tern mcp`, desktop MCP | no | env/bearer/header values are secrets | MCP & gateways |
-| `[gateway.telegram]`, `[gateway.connectors.*]` | `tern gateway pair`, desktop Connections, config | yes | bot token is a secret | MCP & gateways |
+| `[mcp.servers.*]`, `[mcp.serve]` | `/mcp`, `tern mcp`, desktop MCP | no | env/bearer/header values are secrets | MCP servers |
 | `[agents.*]` model aliases / chains | agent sheet, config | yes | no | **agent settings: unchanged** |
 
 ## Not in `config.toml`

@@ -2,7 +2,7 @@
 //!
 //! | Method | Path | |
 //! |---|---|---|
-//! | GET | `/v1/status` | one cheap summary: version, uptime, counts, gateway health |
+//! | GET | `/v1/status` | one cheap summary: version, uptime, counts |
 //! | GET | `/v1/initiative` | `{dial}`: the global initiative dial (T1b) |
 //! | PUT | `/v1/initiative` | set `{dial}`: `vacation`, `quieter`, `normal` or `louder`; written to `config.toml` (`schedules.initiative_dial`). Owner only |
 //! | POST | `/v1/shutdown[?dry_run=1]` | stop gracefully (exit 0); runs in progress stay `running` and resume on the next start. With `dry_run`, only list them |
@@ -37,35 +37,13 @@ pub struct Status {
     pub pending_approvals: usize,
     /// Enabled schedules that will fire again.
     pub active_schedules: usize,
-    pub gateways: Vec<GatewayStatus>,
     /// The global initiative dial: `vacation`, `quieter`, `normal` or `louder`.
     #[serde(default)]
     pub initiative: String,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct GatewayStatus {
-    pub name: String,
-    /// Its polling task is still running.
-    pub ok: bool,
-}
-
 async fn status(State(m): State<Shared>) -> ApiResult<Status> {
     let schedules = m.rt.store.schedules().map_err(internal)?;
-    let gateways = m
-        .routes
-        .lifecycle
-        .gateway_tasks
-        .lock()
-        .map(|t| {
-            t.iter()
-                .map(|(name, task)| GatewayStatus {
-                    name: name.clone(),
-                    ok: !task.is_finished(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     Ok(Json(Status {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         pid: std::process::id(),
@@ -79,7 +57,6 @@ async fn status(State(m): State<Shared>) -> ApiResult<Status> {
             .iter()
             .filter(|s| s.enabled && s.next_run_at != i64::MAX)
             .count(),
-        gateways,
         initiative: m.rt.live().schedules.initiative_dial.as_str().to_owned(),
     }))
 }

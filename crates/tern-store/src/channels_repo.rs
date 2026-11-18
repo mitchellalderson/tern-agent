@@ -152,7 +152,6 @@ pub struct NewThread<'a> {
     pub source: &'a str,
     pub channel_id: &'a str,
     pub model: Option<&'a str>,
-    /// Gateway chats: the chat id.
     pub external_ref: Option<&'a str>,
     pub prev_session_id: Option<&'a str>,
     pub segment_reason: Option<&'a str>,

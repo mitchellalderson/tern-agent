@@ -59,7 +59,7 @@ fn export_contains_no_secrets() {
         &store,
         &TriggerArgs::cron("0 8 * * 1-5"),
         "Summarize Notion changes",
-        Some("telegram:12345".into()),
+        Some("channel:private-room".into()),
         &ScheduleLimits {
             runs_per_day: Some(Some(3)),
             ..ScheduleLimits::default()
@@ -96,7 +96,7 @@ fn export_contains_no_secrets() {
         let text = String::from_utf8_lossy(bytes);
         assert!(!text.contains(TOKEN), "{p} holds the secret");
         assert!(
-            !text.contains("telegram:12345"),
+            !text.contains("channel:private-room"),
             "{p} holds the delivery target"
         );
         assert!(!text.contains(&cron.session_id), "{p} holds a session id");

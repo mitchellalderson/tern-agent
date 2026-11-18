@@ -114,10 +114,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
                       'Settings › General › Login Items.'
                 : Platform.isMacOS
                 ? 'tern runs in the background with an icon in the '
-                      'menu bar, so routines and Telegram keep working '
-                      'with this window closed.'
-                : 'tern runs in the background, so routines and '
-                      'Telegram keep working with this window closed.',
+                      'menu bar, so routines keep working with this window '
+                      'closed.'
+                : 'tern runs in the background, so routines keep working '
+                      'with this window closed.',
             style: small,
           ),
           value: _atLogin,

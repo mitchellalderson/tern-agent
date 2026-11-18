@@ -31,7 +31,6 @@ python = ["dep:tern-python", "dep:monty-alloc"]
 tern-auth.workspace = true
 tern-bundle.workspace = true
 tern-core.workspace = true
-tern-gateway.workspace = true
 tern-lua.workspace = true
 tern-mcp.workspace = true
 tern-store.workspace = true

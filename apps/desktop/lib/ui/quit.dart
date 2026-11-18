@@ -16,7 +16,7 @@ String quitMessage(List<PausedRun> runs) {
       : ('${runs.length} tasks are', 'They');
   return '$count in progress ($names). $pronoun will pick up where '
       '${runs.length == 1 ? 'it' : 'they'} left off next time tern starts.\n'
-      'Routines and Telegram will be paused until then.';
+      'Routines will be paused until then.';
 }
 
 /// Asks only when something would be interrupted. True to go ahead.
@@ -62,7 +62,7 @@ Future<CloseChoice> askCloseTrayless(BuildContext context) async {
       title: const Text('Leave tern running?'),
       content: const Text(
         'tern keeps running in the background after you close the window, so '
-        'routines and Telegram keep working. It has no menu-bar icon '
+        'routines keep working. It has no menu-bar icon '
         'because it is not set to start when you log in, so the only ways to '
         'stop it later are this app or `tern stop`.\n\n'
         'Settings › General › Start tern when I log in adds the icon.',

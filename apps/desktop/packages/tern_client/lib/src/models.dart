@@ -45,7 +45,6 @@ class Info {
     this.defaultModel,
     required this.tools,
     this.setupNeeded = false,
-    this.gateways = const [],
     this.sandbox,
   });
 
@@ -63,21 +62,10 @@ class Info {
       for (final t in j['tools'] as List)
         (name: (t as List)[0] as String, description: t[1] as String),
     ],
-    gateways: [
-      for (final g in (j['gateways'] as List?) ?? const [])
-        (
-          name: (g as Json)['name'] as String,
-          kind: g['kind'] as String? ?? g['name'] as String,
-        ),
-    ],
   );
 
   final String? defaultModel;
   final List<({String name, String description})> tools;
-
-  /// Where routines can deliver (`<name>:<chat>`): Telegram and gateway
-  /// connectors such as ntfy or Slack. Empty from older daemons.
-  final List<({String name, String kind})> gateways;
 
   /// No usable model yet: offer provider setup.
   final bool setupNeeded;
@@ -173,7 +161,7 @@ class SessionItem {
   final String id;
   final String? title;
 
-  /// Where the session came from: `api`, `cli`, `telegram`, `cron`, …
+  /// Where the session came from: `api`, `cli`, `cron`, …
   final String source;
   final String? model;
   final int messages;
@@ -585,6 +573,14 @@ sealed class TernEvent {
     }
     if (j['schedules_changed'] case final Json s) {
       return SchedulesChanged(s['id'] as String? ?? '');
+    }
+    if (j['notification'] case final Json n) {
+      return NotificationRequested(
+        title: n['title'] as String? ?? '',
+        body: n['body'] as String? ?? '',
+        channelId: n['channel_id'] as String?,
+        runId: n['run_id'] as String?,
+      );
     }
     final run = j['run_id'] as String? ?? '';
     final event = _agentEvent(j, run);
@@ -1018,6 +1014,23 @@ class SchedulesChanged extends TernEvent {
   final String id;
 }
 
+/// The daemon asks the app to raise a system notification for a routine
+/// result it pushed. The text is already posted in [channelId].
+class NotificationRequested extends TernEvent {
+  const NotificationRequested({
+    required this.title,
+    required this.body,
+    this.channelId,
+    this.runId,
+  });
+  final String title;
+  final String body;
+
+  /// `home`, `dm:...` or a channel id; null when unknown.
+  final String? channelId;
+  final String? runId;
+}
+
 class UnknownEvent extends TernEvent {
   const UnknownEvent(this.json);
   final Json json;
@@ -1090,7 +1103,7 @@ class Schedule {
   /// Each schedule runs in a session of its own (source `cron`).
   final String sessionId;
 
-  /// Null keeps results in the session; else `telegram:<chat_id>`.
+  /// Where a pushed result goes: `home`, `dm`, `channel:<id>`; null for none.
   final String? deliverTo;
   final bool enabled;
   final DateTime? nextRunAt;

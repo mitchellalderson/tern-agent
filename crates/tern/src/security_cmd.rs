@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use serde::{Deserialize, Serialize};
 use tern_core::approval::{Autonomy, Egress};
-use tern_core::config::{ConfineMode, SandboxBackendKind, Strangers};
+use tern_core::config::{ConfineMode, SandboxBackendKind};
 use tern_core::{Config, TernHome};
 use tern_store::Store;
 
@@ -35,7 +35,7 @@ impl Severity {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
     pub severity: Severity,
-    /// `listeners`, `devices`, `autonomy`, `routines`, `gateways`,
+    /// `autonomy`, `routines`,
     /// `connectors`, `bundles`, `sandbox`, `connections`, `egress`,
     /// `secrets`, `grants`.
     pub area: String,
@@ -137,7 +137,6 @@ pub fn audit(home: &TernHome, config: &Config, store: Option<&Store>) -> Audit {
     code_auto(&mut a, home, config, store);
     sandbox(&mut a, home, config);
     egress(&mut a, config, store);
-    gateways(&mut a, home, config, store);
     connectors(&mut a, home);
     bundles(&mut a, home);
     if let Some(store) = store {
@@ -330,58 +329,6 @@ fn egress(a: &mut Audit, config: &Config, store: Option<&Store>) {
             );
             a.about(&ag.id);
         }
-    }
-}
-
-fn gateways(a: &mut Audit, home: &TernHome, config: &Config, store: Option<&Store>) {
-    if config.gateway.telegram.as_ref().is_some_and(|t| t.enabled) {
-        a.add(
-            Severity::Info,
-            "gateways",
-            "telegram: only paired chats reach the agent",
-            None,
-        );
-    }
-    if let Some(store) = store {
-        for ag in store.agents(false).unwrap_or_default() {
-            if ag.telegram.is_some() {
-                a.add(
-                    Severity::Info,
-                    "gateways",
-                    format!(
-                        "telegram bot for @{}: only paired chats reach it (pairing is shared with the main bot)",
-                        ag.slug
-                    ),
-                    None,
-                );
-                a.about(&ag.id);
-            }
-        }
-    }
-    let checks = crate::gateway_cmd::check_connectors(home, config);
-    for (name, g) in &config.gateway.connectors {
-        if !g.enabled {
-            continue;
-        }
-        let paired = checks
-            .iter()
-            .find(|c| &c.name == name)
-            .map_or(0, |c| c.paired);
-        match g.strangers {
-            Strangers::Taint => a.add(
-                Severity::Low,
-                "gateways",
-                format!("{name}: messages from anyone who hasn't paired start tainted runs"),
-                Some("Their writes ask or go to the outbox. Set strangers = \"reply\" to answer them with a fixed note instead."),
-            ),
-            _ => a.add(
-                Severity::Info,
-                "gateways",
-                format!("{name}: {paired} paired; others get no run"),
-                None,
-            ),
-        }
-        a.about(name);
     }
 }
 

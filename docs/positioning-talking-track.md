@@ -124,18 +124,15 @@ have been burned by Zapier loops and duplicate sends.
 runs on start (built, M1/M5). Non-idempotent tools are substituted rather than re-executed after a crash. The
 research doc's observation: this is the property Inngest sells, delivered on a single host.
 
-### 4.3 It runs where you put it, and it reaches you wherever you are
+### 4.3 It runs where you put it
 
-**Say:** "Routines run around the clock when tern lives on an always-on server (yours today, ours when hosting ships). On a laptop alone, a sleeping machine pauses them and they catch up on wake without repeating work. Approvals reach your phone. The same agent answers in the desktop
-app and in Telegram, and it's one conversation, one memory. Run it on your own machine, on a server you control, or
-let us host it. Moving between the three is a file copy."
+**Say:** "Routines run around the clock when tern lives on an always-on server (yours today, ours when hosting ships). On a laptop alone, a sleeping machine pauses them and they catch up on wake without repeating work. Approvals show up as cards in the desktop app and the terminal. It's one conversation, one memory, and tern is local-only: it runs on your own machine and nothing listens on the network."
 
 **Why they care:** the morning brief, the invoice chase and the order watch are only useful if they happen without
 you. Phone reach is table stakes; *the same engine local or hosted* is not something anyone else offers.
 
-**Proof:** daemon with scheduler and Telegram gateway with approval buttons (built, M5). Remote core over TCP with TLS,
-device pairing by QR code and scoped tokens (built, D1). Desktop app attaches to the daemon; closing it loses nothing
-(built, G0–G2). Hosted tier, push relay, mobile app: roadmap (D4–D5). See §6.
+**Proof:** daemon with scheduler and approval cards in the desktop app and TUI (built, M5). Desktop app attaches to the daemon; closing it loses nothing
+(built, G0–G2). Routines raise a desktop notification by initiative level. See §6.
 
 ### 4.4 Nothing goes out without a receipt
 
@@ -211,8 +208,8 @@ What to say when each name comes up. Be generous about what they do well; the po
 The pitch to the operator:
 
 > "tern runs on your laptop for free. When you want it on while the laptop is closed, we host the engine for you:
-> same binary, your own private instance, your data on its own volume, backups included. Your phone, your desktop app
-> and Telegram all connect to it. Export everything with one click and run it at home again whenever you like."
+> same binary, your own private instance, your data on its own volume, backups included. Your desktop app
+> connects to it. Export everything with one click and run it at home again whenever you like."
 
 What the hosted tier actually sells (from the deployment spec §10): always on, everywhere, maintained, optional
 bundled models, and a relay for self-hosted cores that want push and phone reach without port forwarding. The pricing
@@ -277,8 +274,9 @@ Stories to tell in a demo, each under a minute, each exercising a killer feature
   approved or logged. Show the ledger. Admit what's roadmap.
 - **"Can it browse the web and click things?"** Not natively, on purpose. It calls APIs, which is faster and
   auditable. A browser is available through an MCP server when you need one.
-- **"What about Slack / WhatsApp / iMessage?"** Telegram today. Slack, Discord and WhatsApp are a connector file each
-  (roadmap T4). iMessage is excluded: Apple Business approval and per-user fees.
+- **"What about Telegram / Slack / WhatsApp / iMessage?"** Not built. tern is local-only and single-player: it talks to
+  you in the desktop app and the terminal. Messaging gateways were removed (see
+  [DECISIONS.md](../DECISIONS.md#tern-is-local-only-single-player)).
 - **"Is it open source?"** Decide and state it. The hosted tier makes an open core viable; the claw family shows
   self-hosters expect it.
 
@@ -302,10 +300,8 @@ Stories to tell in a demo, each under a minute, each exercising a killer feature
 | OAuth-first discovery, sign-in cards, credentials injected at host boundary | **built** (T4a, T4b-i) | tooling spec §6.1, §6.7 |
 | Several accounts per service, writes must name the account | **built** (T4a) | tooling spec §6.8 |
 | Step journal, crash resume, replayed steps, no duplicate side effects | **built** (M1, M5) | README "Durability", `tern resume` |
-| Daemon, cron schedules in natural language, delivered to the asking chat | **built** (M5) | README "Schedules" |
-| Telegram with approval buttons and pairing | **built** (M5) | README "Telegram" |
+| Daemon, cron schedules in natural language, posted to the asking conversation | **built** (M5) | README "Schedules" |
 | Desktop app: conversations, approvals, routines sheet, run inspector, notifications | **built** (G0–G2) | apps/desktop/README.md |
-| Remote core over TCP + TLS, QR pairing, scoped device tokens | **built** (D1) | DECISIONS.md D1 |
 | Sub-agents with delegation on by default | **built** (S0–S5) | DECISIONS.md S0–S5 |
 | Secrets editor, 0600 secrets file, redacted bug reports | **built** | README `/secrets`, `tern report` |
 | Anthropic + any OpenAI-compatible endpoint, switch per task | **built** (P0) | README "Models" |
@@ -313,8 +309,7 @@ Stories to tell in a demo, each under a minute, each exercising a killer feature
 | Initiative levels, digests, quiet hours, channels | **built** (T1, T2) | tooling spec §4 |
 | Effects, outbox with deferred approvals, taint, scoped grants | **built** (T0, T3, scoped grants) | tooling spec §5 |
 | Activity ledger, per-routine budgets, `tern security audit` | **built** (T1a, T6b) | tooling spec §8 |
-| Signed bundles; gateway connectors for ntfy and Slack | **built** (T4b-ii, T4b-iii) |
-| Gateway connectors for Discord and WhatsApp | **roadmap** (T4) | tooling spec §6.4–6.5 |
+| Signed bundles | **built** (T4b-iii) |
 | Menu-bar tray (Linux tray too), one-click quit, no terminal needed | **built** (T8a–c) | tooling spec §11 |
 | Hosted engine (tern Cloud), push relay, mobile app, export and leave | **roadmap** (D4–D5) | deployment spec §8, §10 |
 | Browser via MCP | **built** as a recipe (T7a); native browser **roadmap** (T7b) | tooling spec §9 |
