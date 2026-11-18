@@ -95,6 +95,7 @@ pub fn run(home: &TernHome) -> anyhow::Result<ExitCode> {
     };
     let routes = Arc::new(Routes::default());
     let rt = Arc::new(Runtime::open(home, Arc::new(Router(routes.clone())))?);
+    rt.bind_admin();
     let _ = routes.store.set(rt.store.clone());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -650,7 +650,7 @@ and none changes anything by itself. `GET /v1/proactive/cards[?state=]`, `POST /
   reach the network. An "always" answer to a card that didn't offer it counts as once. Desktop **Settings ›
   Permissions › Always allowed** lists the grants and revokes them (`GET /v1/grants`, `POST /v1/grants/revoke`;
   `tern grants` does the same). Off: "Always" is on every card, as before.
-- **Routine suggestions** (`suggest_routines`). The same kind of ask three times in 14 days (word overlap, no model):
+- **Routine suggestions** (`suggest_routines`). The same kind of ask three times in 14 days (word overlap, then one yes/no to the decision model):
   a card with **Set up routine**. One a day, and one per kind of ask; not if a routine for it already exists.
 - **While you were away** (`away_brief`). The desktop reports it is open (`POST /v1/proactive/presence`). On the first
   open of the day after 8 hours or more, Home gets one brief: held digest results, the outbox, what is open, routine

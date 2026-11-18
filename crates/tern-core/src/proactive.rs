@@ -199,13 +199,13 @@ pub fn ask_signature(text: &str) -> String {
         .join(" ")
 }
 
-/// The hook a later session fills with a decision model: after the host-side
-/// similarity says "3+ alike asks", this may overrule with a yes/no on whether
-/// they are one repeatable job. `None` = no opinion (the host's answer stands).
-/// Unset today.
-pub trait SimilarAsks: Send + Sync {
-    fn repeatable(&self, asks: &[String]) -> Option<bool>;
-}
+/// The yes/no put to the decision model (`Runtime::decide`) once the host
+/// finds three alike asks: is this one repeatable job?
+pub const REPEAT_QUESTION: &str = "Are these asks the same repeatable job that could run on a \
+     schedule (not three different one-off requests)?";
+/// At or above this the answer counts as yes. Unanswered is not a no: the
+/// host's own count stands, since the card is cheap and dismissible.
+pub const REPEAT_THRESHOLD: f64 = 0.5;
 
 // ---- P2: while you were away ----
 

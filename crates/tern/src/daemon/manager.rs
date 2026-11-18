@@ -677,9 +677,6 @@ pub struct Manager {
     /// Held while a delegation post is read from the store and written, so
     /// two children ending together can't leave the older status behind.
     pub(super) delegation_lock: Mutex<()>,
-    /// P1's hook for a decision-model check on "these asks are one
-    /// repeatable job". Unset: the host's own similarity stands.
-    pub similar_asks: std::sync::OnceLock<Arc<dyn tern_core::proactive::SimilarAsks>>,
 }
 
 impl Manager {
@@ -690,7 +687,6 @@ impl Manager {
             active: Mutex::new(HashMap::new()),
             stale_batch: Mutex::new(Vec::new()),
             delegation_lock: Mutex::new(()),
-            similar_asks: std::sync::OnceLock::new(),
         })
     }
 
