@@ -929,7 +929,11 @@ impl App {
             }
             "model" => self.use_model(arg, false),
             "setup" | "providers" => match SetupPanel::open(self.backend.as_ref()) {
-                Ok(panel) => self.setup = Some(panel),
+                Ok(panel) => {
+                    let first = panel.first_task();
+                    self.setup = Some(panel);
+                    return first.map(Effect::Task).into_iter().collect();
+                }
                 Err(e) => self.error(e),
             },
             "sessions" => match self.backend.sessions(15) {
@@ -2248,7 +2252,11 @@ impl App {
     fn open_from_settings(&mut self, target: Target) -> Vec<Effect> {
         match target {
             Target::Providers => match SetupPanel::open(self.backend.as_ref()) {
-                Ok(panel) => self.setup = Some(panel),
+                Ok(panel) => {
+                    let first = panel.first_task();
+                    self.setup = Some(panel);
+                    return first.map(Effect::Task).into_iter().collect();
+                }
                 Err(e) => self.error(e),
             },
             Target::Secrets => match SecretsPanel::open(self.backend.as_ref(), None) {
@@ -2313,6 +2321,17 @@ impl App {
         vec![]
     }
 
+    /// Work to start with the app: first-run setup may already be open and
+    /// need its first poll.
+    pub fn startup_effects(&self) -> Vec<Effect> {
+        self.setup
+            .as_ref()
+            .and_then(SetupPanel::first_task)
+            .map(Effect::Task)
+            .into_iter()
+            .collect()
+    }
+
     /// The spinner ticked; panels that poll do so here.
     pub fn on_tick(&mut self) {
         if let Some(panel) = &mut self.mcp {
@@ -2344,9 +2363,11 @@ impl App {
         }
         if let Some(panel) = &mut self.setup {
             panel.on_task_done(done, self.backend.as_ref());
+            let next = panel.take_task();
             if std::mem::take(&mut panel.changed) {
                 self.models_changed();
             }
+            return next.map(Effect::Task).into_iter().collect();
         } else if let Some(picker) = &mut self.picker {
             match done {
                 TaskDone::Models(Ok(groups)) => picker.list.set_groups(groups),

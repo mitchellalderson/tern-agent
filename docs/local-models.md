@@ -24,6 +24,10 @@ the existing provider setup unchanged. One press installs Ollama if needed (afte
 it, downloads a starter model sized to this Mac (`local/starters.rs`, a data table; `status.starter`), and makes
 `ollama:<model>` the default. Only a step the person must take shows anything; a failed start shows one line and a retry.
 
+The terminal UI (`tern setup`, `/setup` on first run) does the same: "Set up with Ollama" is the main choice, `a` opens
+the usual provider list ("Use an API model instead"). It needs the background agent (`tern start`), which manages Ollama
+over its Unix socket; without it, first run shows the provider list as before.
+
 tern never prompts to start Ollama. `Local::ensure_running` reuses a server that answers, else starts the installed one
 (loopback only, managed). It runs at daemon start when an Ollama provider is configured, before each run on an Ollama
 model, and during first-run setup. Existing configs keep their providers; only a new install gets the Ollama default.

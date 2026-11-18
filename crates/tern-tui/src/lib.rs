@@ -6,6 +6,7 @@
 mod app;
 mod history;
 mod input;
+mod local_flow;
 mod markdown;
 mod mcp;
 mod models;
@@ -47,6 +48,8 @@ pub use term::run;
 pub type BackendResult<T> = Result<T, String>;
 
 const NO_SETUP: &str = "this backend can't manage providers";
+const NO_LOCAL: &str =
+    "this backend can't manage local models; start the background agent with `tern start`";
 const NO_SETTINGS: &str = "this backend can't edit settings";
 const NO_MCP: &str = "this backend can't manage MCP servers";
 const NO_CHANNELS: &str =
@@ -311,6 +314,31 @@ pub trait Backend: Send + Sync + 'static {
     /// Set `default_model`; returns the resolved `provider:model`.
     fn set_default_model(&self, _model: &str) -> BackendResult<Resolved> {
         Err(NO_SETUP.into())
+    }
+    /// First run can set up Ollama here (the background agent manages it
+    /// over its socket). False: show the provider list as before.
+    fn local_first_run(&self) -> bool {
+        false
+    }
+    async fn local_status(&self) -> BackendResult<tern_core::models::LocalInfo> {
+        Err(NO_LOCAL.into())
+    }
+    /// Download and install Ollama. Only called after the person agreed.
+    async fn local_install(&self) -> BackendResult<()> {
+        Err(NO_LOCAL.into())
+    }
+    /// Start Ollama (an already running one is reused).
+    async fn local_start(&self) -> BackendResult<()> {
+        Err(NO_LOCAL.into())
+    }
+    async fn local_pull(&self, _model: &str) -> BackendResult<tern_core::models::LocalPullInfo> {
+        Err(NO_LOCAL.into())
+    }
+    async fn local_pulls(&self) -> BackendResult<Vec<tern_core::models::LocalPullInfo>> {
+        Err(NO_LOCAL.into())
+    }
+    async fn local_models(&self) -> BackendResult<Vec<tern_core::models::LocalModelInfo>> {
+        Err(NO_LOCAL.into())
     }
     /// Every platform setting in `config.toml`, as the core describes it
     /// (`/settings`).

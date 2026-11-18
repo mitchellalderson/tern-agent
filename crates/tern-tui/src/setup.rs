@@ -11,6 +11,7 @@ use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved,
 use tern_core::presets::{PRESETS, Preset};
 use tern_core::secrets::keys::mask_key;
 
+use crate::local_flow::{self, LocalView, PollOpts};
 use crate::models::{ListKey, ModelList};
 use crate::{Backend, BackendResult};
 
@@ -42,6 +43,8 @@ pub enum Task {
         secrets: BTreeMap<String, String>,
     },
     McpRestart(String),
+    /// One step of first-run Ollama setup.
+    LocalPoll(PollOpts),
 }
 
 /// A finished [`Task`].
@@ -53,6 +56,7 @@ pub enum TaskDone {
     McpVerified(BackendResult<Result<McpVerified, McpVerifyError>>),
     McpSaved(BackendResult<McpStatus>),
     McpRestarted(String, BackendResult<McpStatus>),
+    Local(BackendResult<LocalView>),
 }
 
 impl Task {
@@ -78,6 +82,7 @@ impl Task {
                 cfg,
                 secrets,
             } => TaskDone::McpSaved(backend.save_mcp(old, name, *cfg, secrets).await),
+            Task::LocalPoll(opts) => TaskDone::Local(local_flow::poll(backend, opts).await),
             Task::McpRestart(name) => {
                 let r = backend.restart_mcp(name.clone()).await;
                 TaskDone::McpRestarted(name, r)
@@ -202,6 +207,23 @@ pub enum Step {
         list: ModelList,
         make_default: bool,
     },
+    /// First run: "Set up with Ollama", with an API model one key away.
+    Ollama(Box<OllamaStep>),
+}
+
+/// Where first-run Ollama setup is.
+#[derive(Debug, Default)]
+pub struct OllamaStep {
+    /// Nothing until the first poll answers.
+    pub view: Option<LocalView>,
+    /// The person pressed Enter: install (if needed) and download the starter.
+    pub go: bool,
+    /// Install once, on the next poll.
+    pub install_requested: bool,
+    pub start_failed: bool,
+    /// A model is chosen and the provider is being saved.
+    pub saving: bool,
+    pub error: Option<String>,
 }
 
 pub const MANAGE: &[&str] = &["Change API key", "Choose default model", "Remove"];
@@ -216,6 +238,10 @@ pub struct SetupPanel {
     pub intro: Option<String>,
     /// Set when providers or the default model changed.
     pub changed: bool,
+    /// First run leads with Ollama (the background agent can manage it).
+    pub local_first: bool,
+    /// The next background task the panel wants, after a result.
+    next: Option<Task>,
 }
 
 /// What a key asks the app to do.
@@ -229,7 +255,10 @@ pub enum SetupAction {
 impl SetupPanel {
     pub fn open(backend: &dyn Backend) -> Result<Self, String> {
         let providers = backend.providers()?;
-        let step = if providers.is_empty() {
+        let local_first = providers.is_empty() && backend.local_first_run();
+        let step = if local_first {
+            Step::Ollama(Box::default())
+        } else if providers.is_empty() {
             Step::Kind { selected: 0 }
         } else {
             Step::List
@@ -241,7 +270,19 @@ impl SetupPanel {
             message: None,
             intro: None,
             changed: false,
+            local_first,
+            next: None,
         })
+    }
+
+    /// The task that starts the panel's own polling, when it needs one.
+    pub fn first_task(&self) -> Option<Task> {
+        matches!(self.step, Step::Ollama(_)).then(first_poll_task)
+    }
+
+    /// The task a result asked for (the next poll, or saving the provider).
+    pub fn take_task(&mut self) -> Option<Task> {
+        self.next.take()
     }
 
     pub fn is_busy(&self) -> bool {
@@ -362,6 +403,10 @@ impl SetupPanel {
                 (Step::List, SetupAction::None)
             }
             Step::Kind { mut selected } => match key.code {
+                KeyCode::Esc if self.local_first && self.providers.is_empty() => (
+                    Step::Ollama(Box::default()),
+                    SetupAction::Run(first_poll_task()),
+                ),
                 KeyCode::Esc if self.providers.is_empty() => return SetupAction::Close,
                 KeyCode::Esc => (Step::List, SetupAction::None),
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -560,6 +605,26 @@ impl SetupPanel {
                     )
                 }
             }
+            Step::Ollama(mut o) => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => return SetupAction::Close,
+                // "Use an API model instead": the existing provider list.
+                KeyCode::Char('a') => (Step::Kind { selected: 0 }, SetupAction::None),
+                KeyCode::Enter if !o.go => {
+                    o.go = true;
+                    o.error = None;
+                    o.install_requested = o
+                        .view
+                        .as_ref()
+                        .is_some_and(|v| !v.info.installed && v.info.install.available);
+                    (Step::Ollama(o), SetupAction::None)
+                }
+                KeyCode::Char('r') if o.start_failed => {
+                    o.start_failed = false;
+                    o.error = None;
+                    (Step::Ollama(o), SetupAction::None)
+                }
+                _ => (Step::Ollama(o), SetupAction::None),
+            },
             busy @ (Step::Verifying(_) | Step::Saving { .. }) => (busy, SetupAction::None),
         };
         self.step = step;
@@ -712,6 +777,74 @@ impl SetupPanel {
                     default_only,
                 }
             }
+            (Step::Ollama(mut o), TaskDone::Local(result)) => {
+                match result {
+                    Ok(view) => {
+                        o.start_failed |= view.start_error.is_some();
+                        if let Some(e) = view.start_error.clone().or(view.error.clone()) {
+                            o.error = Some(e);
+                        }
+                        if view.error.is_some() && o.view.is_some() {
+                            // A failed install or download: ask again.
+                            o.go = false;
+                        }
+                        let usable = view.usable_model().map(|m| m.name.clone());
+                        let running = view.info.running && !view.info.too_old;
+                        o.view = Some(view);
+                        self.next = match usable {
+                            Some(m) if running && !o.saving => {
+                                o.saving = true;
+                                Some(Task::Save {
+                                    draft: ProviderDraft {
+                                        preset: Some("ollama".into()),
+                                        ..ProviderDraft::default()
+                                    },
+                                    existing: None,
+                                    default_model: Some(format!("ollama:{m}")),
+                                })
+                            }
+                            _ if o.saving => None,
+                            _ => {
+                                let install = std::mem::take(&mut o.install_requested);
+                                Some(Task::LocalPoll(PollOpts {
+                                    first: false,
+                                    go: o.go,
+                                    install,
+                                    try_start: !o.start_failed,
+                                }))
+                            }
+                        };
+                    }
+                    Err(e) => {
+                        // The agent went away or answered badly: say so and
+                        // keep the way to an API model open.
+                        o.error = Some(e);
+                        o.go = false;
+                    }
+                }
+                Step::Ollama(o)
+            }
+            (Step::Ollama(mut o), TaskDone::Saved(Ok(status))) => {
+                self.changed = true;
+                self.refresh(backend);
+                self.selected = self
+                    .providers
+                    .iter()
+                    .position(|p| p.name == status.name)
+                    .unwrap_or(0);
+                self.message = Some((
+                    false,
+                    format!("Saved {}. It's the default provider now.", status.name),
+                ));
+                self.intro = None;
+                o.saving = false;
+                Step::List
+            }
+            (Step::Ollama(mut o), TaskDone::Saved(Err(e))) => {
+                o.saving = false;
+                o.error = Some(e);
+                Step::Ollama(o)
+            }
             // A result for a step the user has left.
             (step, _) => step,
         };
@@ -725,6 +858,15 @@ impl SetupPanel {
             mask_key(form.key.trim())
         }
     }
+}
+
+fn first_poll_task() -> Task {
+    Task::LocalPoll(PollOpts {
+        first: true,
+        go: false,
+        install: false,
+        try_start: true,
+    })
 }
 
 /// The step after choosing entry `i` of the preset list: "Other" asks for a

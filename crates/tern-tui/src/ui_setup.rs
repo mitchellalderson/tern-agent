@@ -214,6 +214,101 @@ fn kind_label(kind: ProviderKind) -> &'static str {
     }
 }
 
+/// First run with Ollama: what is happening, or the one thing to agree to.
+fn ollama_step(
+    body: &mut Vec<Line<'static>>,
+    o: &crate::setup::OllamaStep,
+) -> Vec<(&'static str, &'static str)> {
+    let line = |t: String, s: Style| Line::from(Span::styled(t, s));
+    body.push(line("Set up with Ollama".into(), bold()));
+    body.push(line(
+        "Private and offline, good for everyday tasks.".into(),
+        dim(),
+    ));
+    body.push(Line::default());
+    let mut keys = vec![("a", "use an API model instead"), ("Esc", "close")];
+    let Some(v) = &o.view else {
+        body.push(line(format!("{} Checking for Ollama…", spinner()), dim()));
+        return keys;
+    };
+    let info = &v.info;
+    if info.installing.state == "working" {
+        let pct = (info.installing.completed * 100)
+            .checked_div(info.installing.total)
+            .map(|p| format!(" {p}%"))
+            .unwrap_or_default();
+        let what = match info.installing.phase.as_deref() {
+            Some("downloading") => "Downloading Ollama…",
+            Some("verifying") => "Checking the download…",
+            Some("installing") => "Installing…",
+            _ => "Getting ready…",
+        };
+        body.push(line(format!("{} {what}{pct}", spinner()), Style::new()));
+    } else if o.start_failed {
+        body.push(line(
+            o.error
+                .clone()
+                .unwrap_or_else(|| "Ollama didn't start.".into()),
+            theme::warn(),
+        ));
+        keys.insert(0, ("r", "try again"));
+    } else if info.installed && !info.running {
+        body.push(line(
+            format!("{} Starting Ollama…", spinner()),
+            Style::new(),
+        ));
+    } else if let Some(p) = v.active_pull() {
+        let pct = (p.completed * 100)
+            .checked_div(p.total)
+            .map(|p| format!(" · {p}%"))
+            .unwrap_or_default();
+        body.push(line(
+            format!("{} Downloading {}{pct}", spinner(), p.model),
+            Style::new(),
+        ));
+    } else if info.running && (v.usable_model().is_some() || o.saving) {
+        body.push(line(format!("{} Connecting…", spinner()), Style::new()));
+    } else if o.go && info.running && o.error.is_none() {
+        body.push(line(
+            format!("{} Getting your model…", spinner()),
+            Style::new(),
+        ));
+    } else {
+        // Something to agree to.
+        if !info.installed && info.install.available {
+            body.push(line(info.install.summary.clone(), dim()));
+        } else if !info.installed {
+            body.push(line(format!("Get Ollama at {}", info.install_page), dim()));
+        }
+        if let Some(s) = &info.starter {
+            body.push(line(
+                format!(
+                    "Then it downloads {} ({} GB). {}",
+                    s.model, s.size_gb, s.blurb
+                ),
+                dim(),
+            ));
+        }
+        for w in &info.warnings {
+            body.push(line(w.clone(), theme::warn()));
+        }
+        if !info.too_old {
+            keys.insert(0, ("Enter", "set up with Ollama"));
+        }
+    }
+    if let Some(e) = &o.error
+        && !o.start_failed
+    {
+        body.push(line(e.clone(), theme::warn()));
+    }
+    body.push(Line::default());
+    body.push(line(
+        "Cloud models are stronger on long multi-step work.".into(),
+        dim(),
+    ));
+    keys
+}
+
 pub fn draw_setup(frame: &mut Frame<'_>, panel: &SetupPanel, area: Rect) {
     let mut body: Vec<Line<'static>> = Vec::new();
     if let Some(intro) = &panel.intro {
@@ -283,6 +378,7 @@ pub fn draw_setup(frame: &mut Frame<'_>, panel: &SetupPanel, area: Rect) {
             }
             vec![("Enter", "choose"), ("1-9", "pick"), ("Esc", "back")]
         }
+        Step::Ollama(o) => ollama_step(&mut body, o),
         Step::Endpoint { form, field: f } => {
             body.push(Line::from(Span::styled("OpenAI-compatible server", bold())));
             body.push(Line::default());

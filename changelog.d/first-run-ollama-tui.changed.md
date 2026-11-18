@@ -1,0 +1,1 @@
+- **`tern setup` and `/setup` lead with Ollama too.** On first run the terminal setup offers "Set up with Ollama" (installs it if needed, starts it, downloads a starter model sized to your Mac, makes it the default), with `a` for "Use an API model instead", which opens the usual provider list unchanged. It needs the background agent.

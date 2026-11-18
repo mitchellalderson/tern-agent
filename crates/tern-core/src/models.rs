@@ -227,6 +227,76 @@ pub struct ProviderModels {
     pub label: String,
 }
 
+/// The local engine (Ollama), as `GET /v1/local/status` describes it, for
+/// clients that run first-run setup (the terminal UI). Only what they use.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalInfo {
+    pub installed: bool,
+    pub running: bool,
+    pub too_old: bool,
+    pub warnings: Vec<String>,
+    pub install_page: String,
+    pub install: LocalPlanInfo,
+    pub installing: LocalInstallingInfo,
+    pub starter: Option<LocalStarterInfo>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalPlanInfo {
+    /// What "Install for me" does, in a sentence.
+    pub summary: String,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalInstallingInfo {
+    /// `idle`, `working`, `done` or `failed`.
+    pub state: String,
+    pub phase: Option<String>,
+    pub completed: u64,
+    pub total: u64,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalStarterInfo {
+    pub model: String,
+    pub size_gb: f64,
+    pub blurb: String,
+}
+
+/// A model download, from `/v1/local/pulls`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalPullInfo {
+    pub id: String,
+    pub model: String,
+    /// `starting`, `downloading`, `verifying`, `done`, `failed`, `cancelled`.
+    pub phase: String,
+    pub completed: u64,
+    pub total: u64,
+    pub error: Option<String>,
+}
+
+impl LocalPullInfo {
+    pub fn finished(&self) -> bool {
+        matches!(self.phase.as_str(), "done" | "failed" | "cancelled")
+    }
+}
+
+/// An installed local model, from `/v1/local/models`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalModelInfo {
+    pub name: String,
+    /// `None`: the server didn't say.
+    pub tools: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resolved {
     pub model: String,
