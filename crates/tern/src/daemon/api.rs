@@ -3,7 +3,7 @@
 //!
 //! | Method | Path | |
 //! |---|---|---|
-//! | GET | `/v1/health` | pid, version, and capabilities (see `auth::health`) |
+//! | GET | `/v1/health` | pid, version, and capabilities (see `health::health`) |
 //! | GET | `/v1/info` | default model and tools |
 //! | GET | `/v1/tools` | full tool specs: `[{name, description, input_schema, effect, untrusted}]` |
 //! | POST | `/v1/models/check` | validate `{model}` |
@@ -225,12 +225,12 @@ pub fn router(manager: Shared) -> Router {
         .merge(super::api_mcp::routes())
         .merge(super::api_mcp_serve::routes())
         .merge(super::api_lifecycle::routes())
-        .merge(super::auth::routes())
+        .merge(super::health::routes())
         .with_state(manager)
 }
 
-async fn health(auth: Option<axum::Extension<super::auth::Auth>>) -> Json<Value> {
-    Json(super::auth::health(auth.as_ref().map(|a| &a.0)))
+async fn health() -> Json<Value> {
+    Json(super::health::health())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -953,18 +953,9 @@ pub struct ApproveBody {
 
 async fn approve(
     State(m): State<Shared>,
-    auth: Option<axum::Extension<super::auth::Auth>>,
     UrlPath(id): UrlPath<String>,
     Json(b): Json<ApproveBody>,
 ) -> ApiResult<Value> {
-    if auth.is_some() && m.routes.api.is_local_only(&id) {
-        return Err(ApiError(
-            axum::http::StatusCode::FORBIDDEN,
-            "this approval runs a command on the host outside the sandbox; answer it in the \
-             TUI or desktop app on that machine"
-                .into(),
-        ));
-    }
     let decision = match b.decision.as_str() {
         "once" => Decision::AllowOnce,
         "always" => Decision::AlwaysAllow,
@@ -978,7 +969,7 @@ async fn approve(
             )));
         }
     };
-    if m.routes.api.answer(&id, decision, auth.is_some()) {
+    if m.routes.api.answer(&id, decision) {
         Ok(Json(json!({ "ok": true })))
     } else {
         Err(not_found("pending approval"))

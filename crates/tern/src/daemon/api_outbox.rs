@@ -61,7 +61,6 @@ async fn one(State(m): State<Shared>, UrlPath(id): UrlPath<i64>) -> ApiResult<Ou
 fn status(e: OutboxError) -> ApiError {
     let code = match &e {
         OutboxError::NotFound => StatusCode::NOT_FOUND,
-        OutboxError::LocalOnly => StatusCode::FORBIDDEN,
         OutboxError::NotPending(_) => StatusCode::CONFLICT,
         OutboxError::Bad(_) => StatusCode::BAD_REQUEST,
         OutboxError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -71,24 +70,20 @@ fn status(e: OutboxError) -> ApiError {
 
 async fn approve(
     State(m): State<Shared>,
-    auth: Option<axum::Extension<super::auth::Auth>>,
     UrlPath(id): UrlPath<i64>,
     body: Option<Json<Value>>,
 ) -> ApiResult<OutboxItem> {
     let input = body.and_then(|Json(b)| approve_input(&b));
-    m.approve_outbox(id, input, auth.is_some())
-        .map(Json)
-        .map_err(status)
+    m.approve_outbox(id, input).map(Json).map_err(status)
 }
 
 async fn reject(
     State(m): State<Shared>,
-    auth: Option<axum::Extension<super::auth::Auth>>,
     UrlPath(id): UrlPath<i64>,
     body: Option<Json<Value>>,
 ) -> ApiResult<OutboxItem> {
     let note = body.and_then(|Json(b)| b.get("note").and_then(Value::as_str).map(str::to_owned));
-    m.reject_outbox(id, note.as_deref(), auth.is_some())
+    m.reject_outbox(id, note.as_deref())
         .map(Json)
         .map_err(status)
 }

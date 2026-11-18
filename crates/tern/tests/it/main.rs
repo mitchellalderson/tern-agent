@@ -3,7 +3,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod account;
 mod ap0;
 mod ap1;
 mod ap2;
@@ -13,7 +12,6 @@ mod c5;
 mod code_auto;
 mod config_api;
 mod connections;
-mod d1;
 mod delegation;
 mod documents;
 mod edit_delete;
