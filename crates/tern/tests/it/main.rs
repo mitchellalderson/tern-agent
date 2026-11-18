@@ -8,6 +8,7 @@ mod ap2;
 mod ap3;
 mod bundles;
 mod c5;
+mod chief_of_staff;
 mod code_auto;
 mod config_api;
 mod connections;

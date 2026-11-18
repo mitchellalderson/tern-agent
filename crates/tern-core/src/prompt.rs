@@ -564,7 +564,7 @@ mod tests {
             memory: &MemoryConfig::default(),
             agent: None,
         });
-        assert!(p.starts_with("You are tern"));
+        assert!(p.starts_with("You are the user's Chief of Staff"));
         assert!(!p.contains("## Skills"));
         // No integrations: no use-them-first rule, but still the suggestion.
         assert!(!p.contains(INTEGRATIONS_RULE));
