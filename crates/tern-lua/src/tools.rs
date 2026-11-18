@@ -36,6 +36,10 @@ impl Dirs {
     pub fn draft_fixtures(&self, name: &str) -> PathBuf {
         crate::fixtures::path_for(&self.draft(name))
     }
+    /// A draft's test evidence (what the activation card shows), beside it.
+    pub fn draft_evidence(&self, name: &str) -> PathBuf {
+        crate::evidence::path_for(&self.draft(name))
+    }
     /// An active connector's fixtures, beside it.
     pub fn active_fixtures(&self, name: &str) -> PathBuf {
         crate::fixtures::path_for(&self.active(name))
@@ -464,6 +468,7 @@ impl Tool for ConnectorTest {
     }
 
     async fn call(&self, ctx: &ToolCtx, args: Value) -> ToolResult {
+        let result = async {
         let (name, tool) = match (name_arg(&args), arg(&args, "tool")) {
             (Ok(n), Ok(t)) => (n, t),
             (Err(e), _) | (_, Err(e)) => return e,
@@ -510,19 +515,32 @@ impl Tool for ConnectorTest {
                     if mode == Mode::Auto { " any more" } else { "" }
                 ));
             };
-            return match crate::fixtures::check_case(&vm, case).await {
-                crate::fixtures::Outcome::Pass => ToolResult::ok(format!(
-                    "[replayed offline from the recorded fixture; mode \"live\" calls the API again]\n{}",
-                    case.result
-                )),
-                crate::fixtures::Outcome::Changed { got } => ToolResult::ok(format!(
-                    "[replayed offline from the recorded fixture; the result differs from the recorded one, which was:\n{}]\n{got}",
-                    clip(&case.result, 1500)
-                )),
-                crate::fixtures::Outcome::Failed(e) => {
-                    ToolResult::error(format!("{name}.{tool} (replaying fixtures): {e}"))
-                }
+            let (ran, events) = crate::fixtures::replay_traced(&vm, case).await;
+            let (result, text, ok) = match ran {
+                Ok(got) if got == case.result => (
+                    ToolResult::ok(format!(
+                        "[replayed offline from the recorded fixture; mode \"live\" calls the API again]\n{}",
+                        case.result
+                    )),
+                    got,
+                    true,
+                ),
+                Ok(got) => (
+                    ToolResult::ok(format!(
+                        "[replayed offline from the recorded fixture; the result differs from the recorded one, which was:\n{}]\n{got}",
+                        clip(&case.result, 1500)
+                    )),
+                    got,
+                    true,
+                ),
+                Err(e) => (
+                    ToolResult::error(format!("{name}.{tool} (replaying fixtures): {e}")),
+                    e,
+                    false,
+                ),
             };
+            self.log_test(name, &loaded_hash, tool, &tool_args, true, ok, text, events);
+            return result;
         }
         // A test only reads what its account allows; it runs under the
         // account asked for, else the default.
@@ -546,13 +564,29 @@ impl Tool for ConnectorTest {
                 "the account for {name} changed since its approval was decided; nothing was run"
             ));
         }
+        let tape = std::sync::Arc::new(crate::fixtures::Tape::record());
         if !self.host.record_fixtures {
-            return match vm.call_as(tool, &tool_args, conn).await {
+            let r = vm
+                .call_taped(tool, &tool_args, conn, Some(tape.clone()))
+                .await;
+            let (ok, text) = match &r {
+                Ok(o) => (true, o.clone()),
+                Err(e) => (false, e.clone()),
+            };
+            self.log_test(name, &loaded_hash, tool, &tool_args, false, ok, text, tape.events());
+            return match r {
                 Ok(out) => ToolResult::ok(out),
                 Err(e) => ToolResult::error(format!("{name}.{tool}: {e}")),
             };
         }
-        match crate::fixtures::record_case(&vm, tool, &tool_args, conn).await {
+        let recorded =
+            crate::fixtures::record_case_on(&vm, tool, &tool_args, conn, tape.clone()).await;
+        let (ok, text) = match &recorded {
+            Ok((out, _)) => (true, out.clone()),
+            Err(e) => (false, e.clone()),
+        };
+        self.log_test(name, &loaded_hash, tool, &tool_args, false, ok, text, tape.events());
+        match recorded {
             // Nothing went over the network: nothing worth replaying.
             Ok((out, case)) if case.exchanges.is_empty() => ToolResult::ok(out),
             Ok((out, case)) => {
@@ -570,6 +604,68 @@ impl Tool for ConnectorTest {
             }
             Err(e) => ToolResult::error(format!("{name}.{tool}: {e}")),
         }
+        }
+        .await;
+        // A `sign_in` link in a test's result is checked but not shown, and
+        // never given to the model (the card is for activated connectors).
+        let caps = name_arg(&args)
+            .ok()
+            .and_then(|n| self.inspected.inspect(&self.host, &self.dirs, n).ok())
+            .map(|l| l.fingerprint.capabilities);
+        match (result.is_error, caps) {
+            (false, Some(caps)) => {
+                let (mut out, link) =
+                    crate::link::take_sign_in(&caps, &result.content, tern_store::now_ms());
+                let note = match link {
+                    crate::link::Extracted::None => return result,
+                    crate::link::Extracted::Refused(why) => {
+                        format!("[sign_in refused: {why}]")
+                    }
+                    crate::link::Extracted::Link(l) => format!(
+                        "[sign_in accepted: \"{}\" on {}; it is shown to the user as a card once the connector is active]",
+                        l.label, l.domain
+                    ),
+                };
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&note);
+                ToolResult::ok(out)
+            }
+            _ => result,
+        }
+    }
+}
+
+impl ConnectorTest {
+    /// Add this test to the draft's evidence, as it finishes (a failed or
+    /// refused one too). Best effort: it never fails the test.
+    #[allow(clippy::too_many_arguments)]
+    fn log_test(
+        &self,
+        name: &str,
+        hash: &str,
+        tool: &str,
+        args: &Value,
+        offline: bool,
+        ok: bool,
+        text: String,
+        events: Vec<crate::evidence::Event>,
+    ) {
+        let text = self.host.secrets.redact(&text);
+        let _ = crate::evidence::append(
+            &self.dirs.draft_evidence(name),
+            crate::evidence::TestRecord {
+                hash: hash.to_owned(),
+                tool: tool.to_owned(),
+                args: args.clone(),
+                at: tern_store::now_ms(),
+                offline,
+                ok,
+                text,
+                events,
+            },
+        );
     }
 }
 
@@ -663,6 +759,13 @@ impl Tool for ConnectorActivate {
                         &l.vm.spec.capabilities.lines(rate),
                     ));
                 }
+                // Evidence, for exactly this version: every test of it, then
+                // the tools nothing exercised.
+                let tools: Vec<String> = l.vm.spec.tools.iter().map(|t| t.name.clone()).collect();
+                let tests =
+                    crate::evidence::for_hash(&self.dirs.draft_evidence(name), &l.fingerprint.hash);
+                out.push('\n');
+                out.push_str(&crate::evidence::render(&tests, &tools));
                 out
             }
             Err(e) => format!("activate Luau connector {name} — invalid draft: {e}"),
@@ -695,6 +798,7 @@ impl Tool for ConnectorActivate {
             return ToolResult::error(format!("recording approval: {e}"));
         }
         let _ = std::fs::remove_file(self.dirs.draft(name));
+        let _ = std::fs::remove_file(self.dirs.draft_evidence(name));
         // Fixtures go with the connector, so its tests replay where it lives.
         let fixtures = self.dirs.draft_fixtures(name);
         if fixtures.exists() {
@@ -956,7 +1060,7 @@ return {
   description = "Look up forecasts",
   capabilities = {
     http = { "api.weather.example/v1/*" },  -- hosts ctx.http may call, optionally limited to paths
-                                          -- ("*.example.com" allowed; "*" in a path is one segment,
+                                          -- (no wildcard hosts; "*" in a path is one segment,
                                           -- a trailing "*" is the rest)
     auth = { secret = "WEATHER_API_KEY" },  -- tern adds "Authorization: Bearer <value>" to every
                                           -- request to those hosts; the script never sees it

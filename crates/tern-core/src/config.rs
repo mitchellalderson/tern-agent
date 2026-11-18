@@ -290,6 +290,10 @@ pub struct OAuthClientConfig {
     /// their profile's endpoints without it; any other provider needs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
+    /// App-only access (OAuth client credentials): the app's own token, no
+    /// user sign-in, no refresh token. Needs `client_secret_secret`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub app_only: bool,
 }
 
 /// The `python` tool (docs/python-tool-spec.md §8). Read when tern starts.

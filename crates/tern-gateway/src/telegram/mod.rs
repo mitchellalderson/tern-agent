@@ -1181,6 +1181,9 @@ fn auth_notice(req: &AuthPrompt, agent: &str) -> String {
         AuthCard::Choose { title, .. } => format!(
             "🔐 {who} wants you to choose how to connect: {title}.\nIt's waiting in the tern app or the TUI."
         ),
+        AuthCard::Link { title, domain, .. } => format!(
+            "🔐 {who} needs you to sign in: {title} ({domain}).\nFinish it in the tern app or the TUI; the link opens there, not in this chat."
+        ),
         AuthCard::SignIn { title, .. } => format!(
             "🔐 {who} needs you to sign in: {title}.\nFinish it in the tern app or the TUI; the sign-in page opens there, not in this chat."
         ),

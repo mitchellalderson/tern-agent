@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:tern_client/tern_client.dart';
 
@@ -108,7 +110,12 @@ class _AuthCardViewState extends State<AuthCardView> {
                   child: Text('Asked by $who', style: small),
                 ),
               const SizedBox(height: 12),
-              if (card.choose) ..._choose(c) else ..._signIn(c, small),
+              if (card.choose)
+                ..._choose(c)
+              else if (card.link)
+                ..._link(c, small)
+              else
+                ..._signIn(c, small),
               if (card.notes.isNotEmpty) ...[
                 const SizedBox(height: 10),
                 for (final n in card.notes) Text(n, style: small),
@@ -165,6 +172,35 @@ class _AuthCardViewState extends State<AuthCardView> {
         ),
       ),
   ];
+
+  /// A connector's sign-in link: the real domain, a live expiry, and the
+  /// page. The user says when they're done.
+  List<Widget> _link(TernColors c, TextStyle? small) {
+    final card = _card;
+    final url = card.url;
+    return [
+      Text('Opens ${card.domain ?? ''}', style: const TextStyle(fontSize: 14)),
+      if (card.expiresAt case final at?)
+        _Countdown(expiresAt: at, style: small),
+      const SizedBox(height: 10),
+      if (_web(url))
+        FilledButton(
+          onPressed: () => openUrl(url!),
+          child: const Text('Open sign-in page'),
+        ),
+      if (url != null) ...[
+        const SizedBox(height: 6),
+        SelectableText(url, style: TextStyle(fontSize: 11, color: c.muted)),
+      ],
+      Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton(
+          onPressed: _busy ? null : () => _answer('done'),
+          child: const Text("I've signed in"),
+        ),
+      ),
+    ];
+  }
 
   List<Widget> _signIn(TernColors c, TextStyle? small) {
     final card = _card;
@@ -223,5 +259,45 @@ class _AuthCardViewState extends State<AuthCardView> {
         ],
       ),
     ];
+  }
+}
+
+/// "Expires in 4:32", ticking each second; "Expired" once it has.
+class _Countdown extends StatefulWidget {
+  const _Countdown({required this.expiresAt, this.style});
+
+  /// Unix milliseconds.
+  final int expiresAt;
+  final TextStyle? style;
+
+  @override
+  State<_Countdown> createState() => _CountdownState();
+}
+
+class _CountdownState extends State<_Countdown> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final left =
+        (widget.expiresAt - DateTime.now().millisecondsSinceEpoch) ~/ 1000;
+    final text = left <= 0
+        ? 'Expired'
+        : 'Expires in ${left ~/ 60}:${(left % 60).toString().padLeft(2, '0')}';
+    return Text(text, style: widget.style);
   }
 }

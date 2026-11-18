@@ -697,6 +697,16 @@ impl App {
                 KeyCode::Esc => self.answer_auth("cancel"),
                 _ => {}
             },
+            AuthCard::Link { url, .. } => match code {
+                KeyCode::Enter | KeyCode::Char('o') => {
+                    let u = url.clone();
+                    self.hint = Some("opened the sign-in page in your browser".into());
+                    return vec![Effect::OpenUrl(u)];
+                }
+                KeyCode::Char('d') => self.answer_auth("done"),
+                KeyCode::Esc => self.answer_auth("cancel"),
+                _ => {}
+            },
             AuthCard::SignIn {
                 url,
                 device_available,

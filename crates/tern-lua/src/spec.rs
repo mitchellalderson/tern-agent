@@ -9,7 +9,7 @@ use crate::host::LoadError;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Capabilities {
-    /// Hosts `ctx.http` may reach (`api.example.com` or `*.example.com`),
+    /// Hosts `ctx.http` may reach (`api.example.com`; no wildcards),
     /// each optionally limited to paths (`api.example.com/v1/*`).
     pub http: Vec<String>,
     /// Secret names `ctx.secret` may read: the legacy way, since the
@@ -266,7 +266,7 @@ impl ConnectorSpec {
         ));
         if c.legacy_secrets() {
             out.push_str(&format!(
-                ". ⚠ legacy: the script reads {} with ctx.secret and could send it anywhere it may reach; capabilities.auth keeps the value from the script",
+                ". ⚠ legacy: the script reads {} with ctx.secret and could send it anywhere it may reach. Deprecated: move it to capabilities.auth, which attaches it host-side and keeps the value from the script",
                 c.secrets.join(", ")
             ));
         }
@@ -514,7 +514,7 @@ fn parse_auth_entry(v: Value, http: &[String], oauth: Option<&str>) -> Result<Au
         let covered = http
             .iter()
             .any(|e| crate::allow::entry_host(e).eq_ignore_ascii_case(h))
-            || (!h.starts_with("*.") && crate::allow::host_allowed(http, h));
+            || crate::allow::host_allowed(http, h);
         if !covered {
             return Err(invalid(format!(
                 "capabilities.auth.hosts entry {h:?} must be one of the hosts in capabilities.http"

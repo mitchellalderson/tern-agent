@@ -167,6 +167,8 @@ class AuthCard {
     this.userCode,
     this.verificationUri,
     this.deviceAvailable = false,
+    this.domain,
+    this.expiresAt,
     this.notes = const [],
   });
 
@@ -181,10 +183,12 @@ class AuthCard {
     userCode: j['user_code'] as String?,
     verificationUri: j['verification_uri'] as String?,
     deviceAvailable: j['device_available'] as bool? ?? false,
+    domain: j['domain'] as String?,
+    expiresAt: j['expires_at'] as int?,
     notes: [for (final n in j['notes'] as List? ?? const []) n as String],
   );
 
-  /// `choose` or `sign_in`.
+  /// `choose`, `sign_in` or `link`.
   final String kind;
   final String title;
 
@@ -198,9 +202,15 @@ class AuthCard {
 
   /// "Use a code instead" is on offer.
   final bool deviceAvailable;
+
+  /// `link` (a connector's sign-in link): the URL's real host, and when it
+  /// expires, in unix milliseconds.
+  final String? domain;
+  final int? expiresAt;
   final List<String> notes;
 
   bool get choose => kind == 'choose';
+  bool get link => kind == 'link';
   bool get device => userCode != null;
 }
 
