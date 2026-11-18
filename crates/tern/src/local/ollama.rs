@@ -71,9 +71,12 @@ fn disk_free(path: &Path) -> Option<u64> {
             p = p.parent()?;
         }
         let s = nix::sys::statvfs::statvfs(p).ok()?;
-        // Their widths differ between platforms.
-        let blocks: u64 = s.blocks_available().try_into().ok()?;
-        let frag: u64 = s.fragment_size().try_into().ok()?;
+        // Their widths differ between platforms: u32 on macOS, u64 on Linux.
+        #[allow(clippy::useless_conversion)]
+        let (blocks, frag) = (
+            u64::from(s.blocks_available()),
+            u64::from(s.fragment_size()),
+        );
         Some(blocks.saturating_mul(frag))
     }
     #[cfg(not(unix))]
