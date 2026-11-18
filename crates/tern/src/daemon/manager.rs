@@ -727,8 +727,25 @@ impl Manager {
         if let Some(t) = deliver_to {
             self.rt.store.set_run_deliver_to(&started.run_id, t)?;
         }
+        self.ensure_local(&started.model).await;
         self.spawn(&started.session_id, &started.run_id, false);
         Ok(started)
+    }
+
+    /// A run on an Ollama model needs Ollama: start it if it isn't running
+    /// (no prompt). A failure is logged; the run then fails with the
+    /// provider's own "couldn't reach" message.
+    pub(crate) async fn ensure_local(&self, model: &tern_core::config::ModelRef) {
+        let is_ollama = self
+            .rt
+            .live()
+            .providers
+            .get(&model.provider)
+            .and_then(|p| p.effective_base_url())
+            .is_some_and(tern_providers::ollama::is_ollama_url);
+        if is_ollama && let Err(e) = self.rt.local.ensure_running().await {
+            tracing::warn!(error = %e, "couldn't start Ollama for a run");
+        }
     }
 
     /// The run working in `session`, if one is.

@@ -327,6 +327,9 @@ mod tests {
     /// the network.
     struct Scripted {
         running: bool,
+        installed: bool,
+        /// Times `start` ran.
+        starts: std::sync::atomic::AtomicUsize,
         free: Option<u64>,
         steps: Vec<Progress>,
         /// Wait for the token after the steps instead of finishing.
@@ -341,7 +344,7 @@ mod tests {
         }
         async fn detect(&self) -> Detection {
             Detection {
-                installed: true,
+                installed: self.installed,
                 running: self.running,
                 ..Detection::default()
             }
@@ -366,6 +369,7 @@ mod tests {
                     available: false,
                 },
                 installing: crate::local::install::State::Idle,
+                starter: None,
             }
         }
         async fn list(&self) -> Result<Vec<LocalModel>, Error> {
@@ -397,6 +401,8 @@ mod tests {
             Ok(())
         }
         async fn start(&self) -> Result<(), Error> {
+            self.starts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
         async fn stop(&self) -> Result<(), Error> {
@@ -424,6 +430,8 @@ mod tests {
     fn engine() -> Scripted {
         Scripted {
             running: true,
+            installed: true,
+            starts: Default::default(),
             free: Some(100 * GB),
             steps: vec![
                 step("pulling manifest", None, 0, 0),
@@ -531,5 +539,26 @@ mod tests {
         l.delete("qwen3:8b").await.unwrap();
         assert!(l.delete("../etc").await.is_err());
         assert!(matches!(rx.try_recv(), Ok(Change::LocalChanged {})));
+    }
+
+    #[tokio::test]
+    async fn ensure_running_reuses_starts_or_says_not_installed() {
+        // Running: nothing to do.
+        let (l, _rx) = local(engine());
+        l.ensure_running().await.unwrap();
+        // Installed, not running: started once, no prompt.
+        let mut e = engine();
+        e.running = false;
+        let (l, _rx) = local(e);
+        l.ensure_running().await.unwrap();
+        // Not installed: the one thing a person must do.
+        let mut e = engine();
+        e.running = false;
+        e.installed = false;
+        let (l, _rx) = local(e);
+        assert!(matches!(
+            l.ensure_running().await,
+            Err(Error::NotInstalled(_))
+        ));
     }
 }

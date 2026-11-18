@@ -114,6 +114,20 @@ async fn serve(home: &TernHome, rt: Arc<Runtime>, routes: Arc<Routes>) -> anyhow
         h.set_driver(Arc::new(manager::ManagerDriver(Arc::downgrade(&manager))));
     }
 
+    // An Ollama provider is configured: have Ollama running before the first
+    // run (reuse one that answers, else start it; loopback only).
+    if rt.live().providers.values().any(|p| {
+        p.effective_base_url()
+            .is_some_and(tern_providers::ollama::is_ollama_url)
+    }) {
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            if let Err(e) = rt.local.ensure_running().await {
+                tracing::info!(error = %e, "Ollama isn't running and couldn't be started");
+            }
+        });
+    }
+
     // Channel posts a crash skipped (docs/channels-design.md §2.3).
     manager.reconcile_posts();
     // Spec §5.3: resume recent runs a crash cut off; mark older ones interrupted.

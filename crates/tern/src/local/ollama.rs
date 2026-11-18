@@ -323,6 +323,7 @@ impl Engine for Ollama {
                 available: false,
             },
             installing: super::install::State::Idle,
+            starter: None,
         }
     }
 

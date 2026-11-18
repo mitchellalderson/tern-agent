@@ -642,6 +642,9 @@ class TernStore extends ChangeNotifier {
       health?.features.contains('secret_requests') ?? false;
 
   /// Whether the core manages MCP servers over the API (older ones can't).
+  /// The daemon manages models on this computer (Ollama).
+  bool get hasLocalModels => health?.features.contains('local_models') ?? false;
+
   bool get hasMcp => health?.features.contains('mcp') ?? false;
 
   /// Whether the core manages accounts per connector or MCP server.

@@ -17,6 +17,7 @@ import 'agent_sheet.dart';
 import 'code_auto.dart';
 import 'outbox.dart';
 import 'preferences.dart';
+import 'local_setup.dart';
 import 'providers.dart';
 import 'widgets.dart';
 import 'workspace_ui.dart';
@@ -394,14 +395,24 @@ class _Header extends StatelessWidget {
 }
 
 /// First run: no usable model yet, so set one up right here.
-class _Welcome extends StatelessWidget {
+class _Welcome extends StatefulWidget {
   const _Welcome({required this.store});
 
   final TernStore store;
 
   @override
+  State<_Welcome> createState() => _WelcomeState();
+}
+
+class _WelcomeState extends State<_Welcome> {
+  /// "Use an API model instead": the provider setup, not Ollama.
+  var _api = false;
+
+  @override
   Widget build(BuildContext context) {
+    final store = widget.store;
     final c = context.colors;
+    final local = store.hasLocalModels && !_api;
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
       child: Center(
@@ -419,13 +430,16 @@ class _Welcome extends StatelessWidget {
                     ?.copyWith(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 6),
-              Text(
-                'tern needs a model provider and its API key. The key stays '
-                'on this computer, in ~/.tern/secrets.toml.',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 20),
+              if (!local) ...[
+                Text(
+                  'tern needs a model provider and its API key. The key stays '
+                  'on this computer, in ~/.tern/secrets.toml.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 20),
+              ] else
+                const SizedBox(height: 14),
               Container(
                 padding: const EdgeInsets.all(18),
                 decoration: BoxDecoration(
@@ -433,10 +447,19 @@ class _Welcome extends StatelessWidget {
                   border: Border.all(color: c.hairline),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: ProviderSetup(
-                  store: store,
-                  onDone: (_) => store.refreshInfo(),
-                ),
+                child: local
+                    ? OllamaFirstRun(
+                        client: store.client,
+                        onDone: store.refreshInfo,
+                        onUseApi: () => setState(() => _api = true),
+                      )
+                    : ProviderSetup(
+                        store: store,
+                        onDone: (_) => store.refreshInfo(),
+                        onCancel: store.hasLocalModels
+                            ? () => setState(() => _api = false)
+                            : null,
+                      ),
               ),
             ],
           ),
