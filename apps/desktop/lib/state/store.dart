@@ -499,6 +499,14 @@ class TernStore extends ChangeNotifier {
     }
   }
 
+  /// Where this device had read to in a conversation when it was opened
+  /// (the posts after it are "new since you left"), kept while it stays
+  /// the visit.
+  final Map<String, int> catchUp = {};
+
+  /// Unread posts at or above which a conversation opens at its divider.
+  static const catchUpJump = 5;
+
   /// New posts since this device last looked.
   bool unread(Channel c) =>
       c.id != channel && (c.lastPostId ?? 0) > (lastSeen[c.id] ?? 0);
@@ -1103,6 +1111,7 @@ class TernStore extends ChangeNotifier {
     error = null;
     pendingFolder = null;
     this.newTopic = newTopic;
+    catchUp.remove(id);
     if (streamChannel != id) {
       streamChannel = id;
       _streamItems = [];
@@ -1242,6 +1251,7 @@ class TernStore extends ChangeNotifier {
 
   /// Open a topic channel's timeline in the centre column.
   Future<void> openChannelView(String id) async {
+    catchUp.remove(id);
     page = null;
     channel = id;
     error = null;
@@ -1275,6 +1285,8 @@ class TernStore extends ChangeNotifier {
 
   void _markRead(String id, int post) {
     if ((lastSeen[id] ?? 0) >= post) return;
+    // The first arrival of a visit remembers where the reader was.
+    if ((lastSeen[id] ?? 0) > 0) catchUp.putIfAbsent(id, () => lastSeen[id]!);
     lastSeen[id] = post;
     onReadChanged?.call();
   }
