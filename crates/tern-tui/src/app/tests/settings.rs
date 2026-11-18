@@ -59,7 +59,7 @@ fn every_section_is_there_and_toggles_and_resets_work() {
         "Secrets",
         "Permissions & Sandbox",
         "Limits & Budgets",
-        "Servers",
+        "MCP servers",
         "Advanced",
         "About",
     ] {
@@ -179,7 +179,7 @@ fn rows_open_the_existing_secrets_and_mcp_panels_and_return() {
 
     press(&mut app, KeyCode::Char('6'));
     press(&mut app, KeyCode::Enter);
-    assert!(app.mcp.is_some(), "MCP servers is a row of Servers");
+    assert!(app.mcp.is_some(), "MCP servers is a row of its section");
     press(&mut app, KeyCode::Esc);
     assert!(app.mcp.is_none());
     assert!(app.settings.is_some());

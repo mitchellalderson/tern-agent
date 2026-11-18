@@ -248,13 +248,6 @@ async fn poll_once(
     })
 }
 
-/// Start runs for waiting events now rather than at the next tick: a
-/// webhook delivery calls this once its event is recorded.
-pub async fn start_waiting_now(manager: &Arc<Manager>) -> anyhow::Result<()> {
-    let defaults = manager.rt.live().schedules;
-    start_waiting(manager, &defaults, Local::now()).await
-}
-
 /// Start a run for routines with events waiting: one at a time per
 /// routine, since its runs share a session. Caps apply as for cron runs.
 async fn start_waiting(
@@ -262,8 +255,7 @@ async fn start_waiting(
     defaults: &SchedulesConfig,
     now: DateTime<Local>,
 ) -> anyhow::Result<()> {
-    // The tick and webhook deliveries both start events; one at a time, so
-    // an event can't be handed to two runs.
+    // One at a time, so an event can't be handed to two runs.
     static STARTING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _one = STARTING.lock().await;
     let store = &manager.rt.store;
@@ -307,7 +299,7 @@ async fn start_waiting(
 /// watch's next poll, never for a `once` routine.
 fn next_slot(s: &ScheduleRow, now: DateTime<Local>) -> Result<i64, String> {
     match s.trigger() {
-        "once" | "webhook" => Ok(i64::MAX),
+        "once" => Ok(i64::MAX),
         "watch" => Ok(now.timestamp_millis()
             + 1000
                 * s.every_secs
@@ -434,7 +426,7 @@ async fn release_held(manager: &Manager) -> anyhow::Result<()> {
     let mut seen = HashSet::new();
     for target in targets.into_iter().filter(|t| seen.insert(*t)) {
         let items: Vec<&HeldDelivery> = due.iter().filter(|h| h.target == target).collect();
-        match manager.send_to(target, None, &combine(&items)).await {
+        match manager.post_digest(target, &combine(&items)).await {
             Ok(()) => {
                 let ids: Vec<i64> = items.iter().map(|h| h.id).collect();
                 store.delete_held_deliveries(&ids)?;

@@ -138,22 +138,20 @@ class _FakeClient extends TernClient {
   }
 }
 
-TernStore _store(_FakeClient client, {String auth = 'owner'}) =>
-    TernStore(client)
-      ..link = Link.online
-      ..health = Health(
-        pid: 1,
-        version: '0.1.0',
-        authKind: auth,
-        features: const {'providers', 'mcp'},
-      )
-      ..info = const Info(
-        tools: [
-          (name: 'shell', description: 'Run a command'),
-          (name: 'mcp__github__search', description: 'Search code'),
-        ],
-      )
-      ..mcpServers = client.servers;
+TernStore _store(_FakeClient client) => TernStore(client)
+  ..link = Link.online
+  ..health = const Health(
+    pid: 1,
+    version: '0.1.0',
+    features: {'providers', 'mcp'},
+  )
+  ..info = const Info(
+    tools: [
+      (name: 'shell', description: 'Run a command'),
+      (name: 'mcp__github__search', description: 'Search code'),
+    ],
+  )
+  ..mcpServers = client.servers;
 
 Widget _app(Widget child) => MaterialApp(
   theme: ternTheme(TernColors.light, Brightness.light),
@@ -321,28 +319,6 @@ void main() {
     await tester.tap(find.text('Save without testing'));
     await tester.pumpAndSettle();
     expect(client.adds.single.name, 'github');
-  });
-
-  testWidgets('a remote core can only add URLs', (tester) async {
-    final client = _FakeClient();
-    final store = _store(client, auth: 'device');
-    await _pumpSheet(tester, store);
-    expect(find.text(remoteStdioOff), findsOneWidget);
-    await tester.tap(find.text('Local command'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('mcp-command')), findsNothing);
-
-    await tester.tap(find.text('Remote URL'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('mcp-url')), findsOneWidget);
-
-    // A pasted stdio server can't be tested or saved from here.
-    await _pumpSheet(tester, store, drafts: const [_draft]);
-    expect(find.text(remoteStdioOff), findsOneWidget);
-    final test = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Test connection'),
-    );
-    expect(test.onPressed, isNull);
   });
 
   testWidgets('make secret moves an env row to env_secrets', (tester) async {

@@ -277,7 +277,7 @@ async fn agent_asks_api_client_answers_value_stays_private() {
     let outcome = wait_run(&http, &run_id).await;
     assert_eq!(outcome["status"], "completed", "{outcome}");
 
-    let secrets = std::fs::read_to_string(env.tern_home.join("secrets.toml")).unwrap();
+    let secrets = crate::read_secrets(&env.tern_home);
     assert!(
         secrets.contains(&format!("WEATHER_API_KEY = \"{VALUE}\"")),
         "{secrets}"

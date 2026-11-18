@@ -6,7 +6,6 @@
 // The folder UI shows only when the core lists the `workspaces` feature, so
 // an older core behaves exactly as before.
 import 'package:tern_client/tern_client.dart' as tc;
-import 'package:tern_client/tern_client.dart' show RemoteEndpoint;
 
 import 'store.dart';
 import 'workspaces.dart';
@@ -22,10 +21,7 @@ const workspacesFeature = 'workspaces';
 WorkspaceApi? workspaceApiFor(TernStore store) {
   if (!kWorkspacesWired) return null;
   if (!(store.health?.hasWorkspaces ?? false)) return null;
-  return TernWorkspaceApi(
-    store.client,
-    isLocal: store.client.endpoint is! RemoteEndpoint,
-  );
+  return TernWorkspaceApi(store.client, isLocal: true);
 }
 
 class TernWorkspaceApi implements WorkspaceApi {

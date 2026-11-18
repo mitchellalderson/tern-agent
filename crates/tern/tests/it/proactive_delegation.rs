@@ -259,7 +259,7 @@ async fn nobody_hands_work_to_itself() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_roster_is_bounded_ranked_by_the_request_and_never_stale() {
+async fn the_roster_is_bounded_ordered_by_slug_the_same_every_run_and_never_stale() {
     let env = Env::new(&json!({ "turns": [{ "text": "ok" }] }));
     let _d = env.daemon_with(None);
     let s = env.socket();
@@ -282,8 +282,8 @@ async fn the_roster_is_bounded_ranked_by_the_request_and_never_stale() {
     .await;
     assert!(zed["slug"] == "zed", "{zed}");
 
-    // Capped, with a pointer to the rest; the best match for the request is
-    // in even though it sorts last by name.
+    // Capped, with a pointer to the rest, in slug order whatever the request
+    // says (so the prompt cache holds); the best match sorts last and is out.
     let run = say(&s, "home", "Please groom the zebras").await;
     let sys = system_prompt(&env, &run);
     let lines = roster(&sys);
@@ -294,13 +294,15 @@ async fn the_roster_is_bounded_ranked_by_the_request_and_never_stale() {
     );
     assert!(lines.last().unwrap().contains("and 4 more"), "{lines:#?}");
     assert!(
-        lines.iter().any(|l| l.starts_with("- `zed` ·")),
+        lines.iter().all(|l| !l.starts_with("- `zed` ·")),
         "{lines:#?}"
     );
-    assert!(
-        lines[0].starts_with("- `zed` ·"),
-        "best match first: {lines:#?}"
-    );
+    let again = say(&s, "home", "Something about widgets entirely").await;
+    assert_eq!(roster(&system_prompt(&env, &again)), lines);
+    let slugs: Vec<&String> = lines.iter().take(12).collect();
+    let mut sorted = slugs.clone();
+    sorted.sort();
+    assert_eq!(slugs, sorted, "by slug");
     let others = sys.split("Other agents:").nth(1).unwrap();
     let others = others
         .lines()
@@ -319,11 +321,11 @@ async fn the_roster_is_bounded_ranked_by_the_request_and_never_stale() {
     )
     .await;
     assert_eq!(fresh["slug"], "newcomer");
+    // ("newcomer" sorts after the first twelve slugs, so it is behind "more".)
     let run = say(&s, "home", "Please groom the zebras").await;
     let sys = system_prompt(&env, &run);
     assert!(
         !sys.contains("`zed`") && !sys.contains("@zed"),
         "archived: {sys}"
     );
-    assert!(roster(&sys)[0].starts_with("- `newcomer` ·"), "{sys}");
 }

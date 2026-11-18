@@ -72,7 +72,6 @@ void main() {
         'Connections',
         'Connectors',
         'Autonomy',
-        'Webhooks',
         'Devices',
       ];
       await tester.pumpWidget(

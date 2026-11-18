@@ -24,12 +24,11 @@ use std::time::{Duration, Instant};
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
-use axum::{Extension, Json, Router};
+use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::api::{ApiError, ApiResult, Shared, bad, internal};
-use super::auth::Auth;
 use tern_core::models::{ProviderDraft, ProviderModels, ProviderStatus, Resolved, Verified};
 
 /// Verifications allowed per device (or local client) per minute, so a
@@ -51,13 +50,9 @@ pub fn routes() -> Router<Shared> {
         .route("/v1/config/reload", post(reload))
 }
 
-pub(super) fn limited(auth: Option<&Extension<Auth>>) -> Result<(), ApiError> {
+pub(super) fn limited() -> Result<(), ApiError> {
     static HITS: Mutex<Option<HashMap<String, VecDeque<Instant>>>> = Mutex::new(None);
-    let who = match auth.map(|a| &a.0) {
-        Some(Auth::Device { id, .. }) => id.clone(),
-        Some(Auth::Account { user_id }) => format!("account:{user_id}"),
-        None => "local".into(),
-    };
+    let who = "local".to_owned();
     let now = Instant::now();
     let mut hits = HITS.lock().unwrap_or_else(|p| p.into_inner());
     let q = hits
@@ -88,22 +83,17 @@ async fn presets() -> Json<Value> {
     Json(json!(tern_core::presets::PRESETS))
 }
 
-async fn verify_new(
-    State(m): State<Shared>,
-    auth: Option<Extension<Auth>>,
-    Json(d): Json<ProviderDraft>,
-) -> ApiResult<Verified> {
-    limited(auth.as_ref())?;
+async fn verify_new(State(m): State<Shared>, Json(d): Json<ProviderDraft>) -> ApiResult<Verified> {
+    limited()?;
     m.rt.verify_provider(&d, None).await.map(Json).map_err(bad)
 }
 
 async fn verify_existing(
     State(m): State<Shared>,
-    auth: Option<Extension<Auth>>,
     UrlPath(name): UrlPath<String>,
     Json(d): Json<ProviderDraft>,
 ) -> ApiResult<Verified> {
-    limited(auth.as_ref())?;
+    limited()?;
     m.rt.verify_provider(&d, Some(&name))
         .await
         .map(Json)
@@ -117,12 +107,8 @@ struct SaveBody {
     default_model: Option<String>,
 }
 
-async fn add(
-    State(m): State<Shared>,
-    auth: Option<Extension<Auth>>,
-    Json(b): Json<SaveBody>,
-) -> ApiResult<Value> {
-    limited(auth.as_ref())?;
+async fn add(State(m): State<Shared>, Json(b): Json<SaveBody>) -> ApiResult<Value> {
+    limited()?;
     let (provider, verified) =
         m.rt.save_provider(&b.draft, None, b.default_model.as_deref())
             .await
@@ -132,11 +118,10 @@ async fn add(
 
 async fn change(
     State(m): State<Shared>,
-    auth: Option<Extension<Auth>>,
     UrlPath(name): UrlPath<String>,
     Json(b): Json<SaveBody>,
 ) -> ApiResult<Value> {
-    limited(auth.as_ref())?;
+    limited()?;
     let (provider, verified) =
         m.rt.save_provider(&b.draft, Some(&name), b.default_model.as_deref())
             .await

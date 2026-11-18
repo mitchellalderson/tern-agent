@@ -8,36 +8,21 @@ void main() {
   group('coreSkewMessage', () {
     test('matching versions are quiet', () {
       expect(
-        coreSkewMessage(appVersion: '0.2.0', coreVersion: '0.2.0', local: true),
+        coreSkewMessage(appVersion: '0.2.0', coreVersion: '0.2.0'),
         isNull,
       );
     });
 
-    test('a different local core names both versions', () {
-      final m = coreSkewMessage(
-        appVersion: '0.2.0',
-        coreVersion: '0.1.0',
-        local: true,
-      );
+    test('a different core names both versions', () {
+      final m = coreSkewMessage(appVersion: '0.2.0', coreVersion: '0.1.0');
       expect(m, contains('v0.2.0'));
       expect(m, contains('v0.1.0'));
       expect(m, contains('Restart tern'));
     });
 
-    test('a core on a server is not ours to compare', () {
-      expect(
-        coreSkewMessage(
-          appVersion: '0.2.0',
-          coreVersion: '0.1.0',
-          local: false,
-        ),
-        isNull,
-      );
-    });
-
     test('a development build has nothing to compare', () {
       expect(
-        coreSkewMessage(appVersion: '', coreVersion: '0.1.0', local: true),
+        coreSkewMessage(appVersion: '', coreVersion: '0.1.0'),
         isNull,
       );
       expect(appVersionLabel(''), 'development build');

@@ -1,6 +1,6 @@
 //! Agent profiles AP3 end-to-end (docs/agent-profiles-design.md §8): the
 //! per-agent autonomy ceiling, agent templates as bundles, "Let agents
-//! decide" and a Telegram bot per agent.
+//! decide".
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(unix)]
 
@@ -177,16 +177,16 @@ async fn send(s: &Path, channel: &str, text: &str) -> Value {
 async fn let_agents_decide_routes_a_post_to_the_right_members() {
     let env = Env::with_config(
         &json!({ "conversations": [
-            // The routing call (it carries "Message to route:"); a real
+            // The routing call (it carries "New message:"); a real
             // run's first message never does.
-            { "matches": "Message to route:\nWhat does Acme charge", "turns": [
-                { "text": "{\"agents\": [\"research\"]}" }] },
-            { "matches": "Message to route:\nBoth please", "turns": [
-                { "text": "Sure: {\"agents\": [\"@Ops\", \"ghost\", \"research\", \"ops\"]}" }] },
-            { "matches": "Message to route:\nGarbled", "turns": [
+            { "matches": "New message:\nWhat does Acme charge", "turns": [
+                { "text": "{\"answers\": {\"who\": {\"research\": 0.9, \"ops\": 0.1}}}" }] },
+            { "matches": "New message:\nBoth please", "turns": [
+                { "text": "Sure: {\"answers\": {\"who\": {\"ops\": 0.6, \"ghost\": 0.9, \"research\": 0.4}}}" }] },
+            { "matches": "New message:\nGarbled", "turns": [
                 { "text": "I think research." }] },
-            { "matches": "Message to route:\nOutsider", "turns": [
-                { "text": "{\"agents\": [\"outsider\"]}" }] },
+            { "matches": "New message:\nOutsider", "turns": [
+                { "text": "{\"answers\": {\"who\": {\"outsider\": 1}}}" }] },
             { "matches": "What does Acme charge", "turns": [{ "text": "Research: $15." }] },
             { "matches": "Both please", "turns": [{ "text": "On it." }] },
             { "matches": "Garbled", "turns": [{ "text": "Lead here." }] },
@@ -247,11 +247,12 @@ async fn let_agents_decide_routes_a_post_to_the_right_members() {
     assert!(
         posts
             .iter()
-            .any(|p| p["kind"] == "note" && p["text"] == "Sent to @research"),
+            .any(|p| p["kind"] == "note"
+                && p["text"].as_str().unwrap().starts_with("Sent to @research")),
         "{posts:#?}"
     );
 
-    // Several picks: members only, each once (`ghost` isn't an agent).
+    // The most likely member answers; names that aren't members are ignored.
     let sent = send(&s, "ask", "Both please").await;
     let agents: Vec<_> = sent["woke"]
         .as_array()
@@ -259,7 +260,7 @@ async fn let_agents_decide_routes_a_post_to_the_right_members() {
         .iter()
         .map(|w| w["agent_id"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(agents, vec![ops.clone(), research.clone()], "{sent:#}");
+    assert_eq!(agents, vec![ops.clone()], "{sent:#}");
 
     // An answer that can't be read, or names someone who isn't a member:
     // the lead answers, as without the setting.
@@ -274,207 +275,115 @@ async fn let_agents_decide_routes_a_post_to_the_right_members() {
     assert_eq!(sent["woke"][0]["agent_id"], "tern", "{sent:#}");
 }
 
-// ---- 4. a Telegram bot per agent ----
-
-/// The fake Bot API (`tests/fixtures/fake_telegram.py`); one per bot.
-struct FakeTelegram {
-    _proc: subagents_env::Killed,
-    url: String,
-    http: reqwest::Client,
-}
-
-const CHAT: i64 = 7070;
-
-impl FakeTelegram {
-    fn start() -> Self {
-        use std::io::BufRead;
-        let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/fake_telegram.py");
-        let mut child = std::process::Command::new("python3")
-            .arg(script)
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut line = String::new();
-        std::io::BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        Self {
-            _proc: subagents_env::Killed(child),
-            url: format!("http://127.0.0.1:{}", line.trim()),
-            http: reqwest::Client::new(),
-        }
-    }
-
-    async fn says(&self, user: i64, text: &str) {
-        self.http
-            .post(format!("{}/control/message", self.url))
-            .json(&json!({ "chat_id": CHAT, "user_id": user, "text": text }))
-            .send()
-            .await
-            .unwrap();
-    }
-
-    /// The first bot message containing `needle`.
-    async fn wait_for(&self, needle: &str) -> Value {
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        loop {
-            let all: Vec<Value> = self
-                .http
-                .get(format!("{}/control/messages", self.url))
-                .send()
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
-            if let Some(m) = all
-                .iter()
-                .find(|m| m["text"].as_str().unwrap_or("").contains(needle))
-            {
-                return m.clone();
-            }
-            assert!(
-                std::time::Instant::now() < end,
-                "no bot message with {needle:?}: {all:#?}"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    }
-}
-
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agent_with_its_own_bot_is_its_own_contact_and_pairing_is_shared() {
-    let main_bot = FakeTelegram::start();
-    let research_bot = FakeTelegram::start();
+async fn routing_modes_the_reply_rule_the_per_agent_switch_and_recent_posts() {
+    let who = |p: Value| json!({ "answers": { "who": p } }).to_string();
     let env = Env::with_config(
         &json!({ "conversations": [
-            { "matches": "Look into Acme", "turns": [{ "text": "Acme moved to Stripe." }] },
-            { "matches": "Hello tern", "turns": [{ "text": "tern here." }] }
+            { "matches": "New message:\nBoth topics", "turns": [
+                { "text": who(json!({ "research": 0.5, "ops": 0.45, "tern": 0.05 })) }] },
+            // A follow-up: the router sees the agent's last post and picks it.
+            { "matches": "Recent posts:\n[you] Both topics", "turns": [
+                { "text": who(json!({ "ops": 0.9, "research": 0.1 })) }] },
+            { "matches": "New message:\nthanks", "turns": [
+                { "text": json!({ "answers": { "who": { "research": 1 }, "rule": 0.1 } }).to_string() }] },
+            { "matches": "Both topics", "turns": [{ "text": "Answered." }] },
+            { "matches": "thanks", "turns": [{ "text": "Welcome." }] }
         ]}),
-        &format!(
-            "[gateway.telegram]\nenabled = true\nbot_token_secret = \"MAIN_TOKEN\"\napi_url = \"{}\"\n",
-            main_bot.url
-        ),
+        "",
     );
-    let secrets = env.tern_home.join("secrets.toml");
-    std::fs::write(
-        &secrets,
-        "MAIN_TOKEN = \"TEST:TOKEN\"\nRESEARCH_TOKEN = \"TEST:TOKEN\"\n",
-    )
-    .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
-
-    // The CLI sets it up without a daemon: an unknown or shared secret, and
-    // the default agent's bot, are refused.
-    let run = |args: &[&str]| env.cmd(args).output().unwrap();
-    assert!(
-        run(&["agents", "new", "Research", "--template", "research"])
-            .status
-            .success()
-    );
-    assert!(run(&["agents", "new", "Other"]).status.success());
-    assert!(
-        !run(&["agents", "telegram", "tern", "RESEARCH_TOKEN"])
-            .status
-            .success()
-    );
-    assert!(
-        !run(&["agents", "telegram", "research", "MAIN_TOKEN"])
-            .status
-            .success()
-    );
-    let ok = run(&["agents", "telegram", "research", "RESEARCH_TOKEN"]);
-    assert!(
-        ok.status.success(),
-        "{}",
-        String::from_utf8_lossy(&ok.stderr)
-    );
-    assert!(
-        !run(&["agents", "telegram", "other", "RESEARCH_TOKEN"])
-            .status
-            .success()
-    );
-    let list = String::from_utf8_lossy(&run(&["agents"]).stdout).into_owned();
-    assert!(
-        list.lines()
-            .any(|l| l.contains("@research") && l.contains("own bot")),
-        "{list}"
-    );
-    // Tests point it at the fake: the API refuses an api_url, so write it.
-    env.db()
-        .execute(
-            "UPDATE agents SET telegram = ?1 WHERE slug = 'research'",
-            [
-                json!({ "bot_token_secret": "RESEARCH_TOKEN", "api_url": research_bot.url })
-                    .to_string(),
-            ],
-        )
-        .unwrap();
-
     let _d = env.daemon_with(None);
     let s = env.socket();
-    // The API shows it, and won't take a shared token or an api_url.
-    let (_, agents) = get(&s, "/v1/agents").await;
-    let r = agents
+    let research = agent(
+        &s,
+        json!({ "name": "Research", "persona": "You research." }),
+    )
+    .await;
+    let ops = agent(&s, json!({ "name": "Ops", "persona": "You run ops." })).await;
+    let (code, _) = post(&s, "/v1/channels", json!({ "slug": "ask" })).await;
+    assert_eq!(code, 201);
+    for a in ["research", "ops"] {
+        post(&s, "/v1/channels/ask/agents", json!({ "agent": a })).await;
+    }
+    let (code, c) = patch(
+        &s,
+        "/v1/channels/ask",
+        json!({ "let_agents_decide": true, "route_mode": "all" }),
+    )
+    .await;
+    assert_eq!(code, 200, "{c}");
+    assert_eq!(c["agents"]["route_mode"], "all");
+    let (code, _) = patch(&s, "/v1/channels/ask", json!({ "route_mode": "some" })).await;
+    assert_eq!(code, 400);
+
+    // Every relevant agent, most likely first (tern is under 0.3).
+    let sent = send(&s, "ask", "Both topics").await;
+    let ids: Vec<_> = sent["woke"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|a| a["slug"] == "research")
-        .unwrap();
-    assert_eq!(r["telegram"]["bot_token_secret"], "RESEARCH_TOKEN");
-    for bad in [
-        json!({ "telegram": { "bot_token_secret": "MAIN_TOKEN" } }),
-        json!({ "telegram": { "bot_token_secret": "RESEARCH_TOKEN" } }),
-        json!({ "telegram": { "bot_token_secret": "NEW_TOKEN", "api_url": "http://evil" } }),
-        json!({ "telegram": { "bot_token_secret": "not a name" } }),
-    ] {
-        let (code, body) = patch(&s, "/v1/agents/other", bad.clone()).await;
-        assert_eq!(code, 400, "{bad}: {body}");
-    }
+        .map(|w| w["agent_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids, vec![research.clone(), ops.clone()], "{sent:#}");
+    posts_until(&s, "ask", |p| {
+        p.iter().any(|p| p["author_id"] == ops.as_str())
+            && p.iter().any(|p| p["author_id"] == research.as_str())
+    })
+    .await;
 
-    // Pair once on the main bot...
-    let out = env.cmd(&["gateway", "pair"]).output().unwrap();
-    main_bot
-        .says(1, String::from_utf8_lossy(&out.stdout).trim())
-        .await;
-    main_bot.wait_for("Paired.").await;
-    // ...and the agent's bot already knows you; a stranger gets nothing.
-    research_bot.says(2, "Look into Acme").await;
-    research_bot.wait_for("This bot is private").await;
-    research_bot.says(1, "Look into Acme").await;
-    // The bot is Research: no name prefix, and the chat is its own thread
-    // of Research's DM.
-    let m = research_bot.wait_for("Acme moved to Stripe.").await;
-    assert_eq!(m["text"], "Acme moved to Stripe.", "{m}");
-    let (channel, agent): (String, String) = env
-        .db()
-        .query_row(
-            "SELECT channel_id, agent_id FROM sessions WHERE source = 'telegram-research'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(agent, "tern:research");
-    let dm: String = env.query("SELECT id FROM channels WHERE slug = 'dm-research'");
-    assert_eq!(channel, dm);
-    // Nothing to switch on it.
-    research_bot.says(1, "/agent tern").await;
-    research_bot
-        .wait_for("This bot is Research's own chat")
-        .await;
-    // The main bot is unchanged.
-    main_bot.says(1, "Hello tern").await;
-    main_bot.wait_for("tern here.").await;
-    let main_sessions: i64 = env.query("SELECT COUNT(*) FROM sessions WHERE source = 'telegram'");
-    assert_eq!(main_sessions, 1);
-    // Removing the bot is recorded.
-    let (code, a) = patch(&s, "/v1/agents/research", json!({ "telegram": null })).await;
-    assert_eq!(code, 200, "{a}");
-    assert_eq!(a.get("telegram"), None);
-    let n: i64 = env.query("SELECT COUNT(*) FROM ledger WHERE kind = 'telegram.agent'");
-    assert!(n >= 2, "ledger entries: {n}");
+    // One agent mode: the follow-up sees the recent posts; the switch off
+    // takes an agent out of routing.
+    patch(&s, "/v1/channels/ask", json!({ "route_mode": "one" })).await;
+    let sent = send(&s, "ask", "And the second part?").await;
+    assert_eq!(sent["woke"][0]["agent_id"], ops.as_str(), "{sent:#}");
+    let (code, a) = patch(
+        &s,
+        "/v1/agents/ops",
+        json!({ "reply_when_relevant": false }),
+    )
+    .await;
+    assert_eq!(code, 200);
+    assert_eq!(a["reply_when_relevant"], false);
+    let sent = send(&s, "ask", "And the second part?").await;
+    assert_ne!(
+        sent["woke"][0]["agent_id"],
+        ops.as_str(),
+        "ops answers only when mentioned"
+    );
+    let sent = send(&s, "ask", "@ops Both topics").await;
+    assert_eq!(sent["woke"][0]["agent_id"], ops.as_str());
+
+    // The reply rule: judged no, nobody replies and a note says why.
+    patch(
+        &s,
+        "/v1/channels/ask",
+        json!({ "reply_rule": "Only reply to questions" }),
+    )
+    .await;
+    let sent = send(&s, "ask", "thanks").await;
+    assert_eq!(sent["woke"].as_array().map_or(0, Vec::len), 0, "{sent:#}");
+    let posts = posts_until(&s, "ask", |p| {
+        p.iter()
+            .any(|p| p["kind"] == "note" && p["text"].as_str().unwrap().contains("reply rule"))
+    })
+    .await;
+    assert!(!posts.is_empty());
+    // A one-line description can be set, and is capped.
+    let (code, a) = patch(
+        &s,
+        "/v1/agents/ops",
+        json!({ "description": "Runs the calendar" }),
+    )
+    .await;
+    assert_eq!(
+        (code, a["description"].as_str()),
+        (200, Some("Runs the calendar"))
+    );
+    let (code, _) = patch(
+        &s,
+        "/v1/agents/ops",
+        json!({ "description": "x".repeat(200) }),
+    )
+    .await;
+    assert_eq!(code, 400);
 }

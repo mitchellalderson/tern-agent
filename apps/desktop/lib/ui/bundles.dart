@@ -446,8 +446,7 @@ class _Installed extends StatelessWidget {
             'want it; you approve each.',
       if (plan.agents.any((a) => !a.existing && !a.kept))
         'Agents made: ${plan.agents.where((a) => !a.existing && !a.kept).map((a) => '@${a.slug}').join(', ')}. '
-            'Each has its own chat in the sidebar; set its model, and its '
-            'Telegram bot if you want one, in its sheet.',
+            'Each has its own chat in the sidebar; set its model in its sheet.',
       if (plan.routines.isNotEmpty)
         'Routines are paused. Turn them on in Routines.',
       for (final s in plan.secrets.where((s) => !s.set))

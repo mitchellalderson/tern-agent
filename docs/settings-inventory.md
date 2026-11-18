@@ -28,8 +28,7 @@ same list and a new config field appears in both without UI changes.
 | Secrets | the secrets editor (names and set/unset only; values are write-only) |
 | Permissions & Sandbox | default autonomy, taint egress, sandbox, scripts, bundles, outbox; security audit |
 | Limits & Budgets | iteration caps, spend/token budgets, sub-agent limits, timeouts, rate limits |
-| Servers | desktop's saved servers; API listeners, webhooks, devices |
-| MCP & gateways | MCP servers (own editor), Telegram/gateway connectors (own editor) |
+| MCP servers | MCP servers (own editor) |
 | Advanced | everything marked *adv*, plus the raw file (config.toml path, reveal, reload) |
 | About | app and core version, data location, config path, log location |
 
@@ -42,6 +41,8 @@ same list and a new config field appears in both without UI changes.
 | `show_reasoning` | bool | true | config, desktop | yes | no | general | user |
 | `secret_request_timeout_secs` | int | 900 | config, desktop | yes | no | advanced | adv |
 | `autonomy` | choice readonly/supervised/autonomous/yolo | autonomous (new installs; a config file with no line stays supervised) | config, desktop (shown as text) | yes | no | permissions | user |
+| `fast_model` | model chain | unset | config, desktop | no | no | models | user |
+| `decision_model` | model chain | unset | config, desktop | no | no | models | user |
 | `default_model` | model chain | unset | `/model`, `/setup`, desktop providers + config | no (live) | no | models | user |
 | `context_window` | int | unset (per model; 200000 fallback, 32768 local) | config, desktop | yes | no | models | adv |
 | `max_tokens` | int | unset (32000, cut to the model's max) | config, desktop | yes | no | models | adv |
@@ -69,7 +70,6 @@ same list and a new config field appears in both without UI changes.
 | `schedules.initiative` | choice silent/digest/notify/interrupt | digest | config, desktop | no | no | general | user |
 | `schedules.initiative_dial` | choice vacation/quieter/normal/louder | normal | config, desktop | no | no | general | user |
 | `schedules.digest_times` | list | 08:30, 17:30 | config, desktop | no | no | general | user |
-| `schedules.gate_model` | model chain | unset | config, desktop | no | no | models | adv |
 | `memory.user_md_tokens` / `memory_md_tokens` | int | 1500 | config, desktop | yes | no | general | adv |
 | `memory.flush` | bool | true | config, desktop | yes | no | general | user |
 | `home.idle_hours` | float | 6 | config, desktop | no | no | general | user |
@@ -95,22 +95,13 @@ same list and a new config field appears in both without UI changes.
 | `python.enabled` | bool | true | config, desktop | yes | no | permissions | adv |
 | `python.allow_writes` | bool | false | config, desktop | yes | no | permissions | user |
 | `python.max_*` (seconds, turn, wall, memory, host calls, parallel, asks, writes) | int | 30/10/600/256/200/4/3/10 | config, desktop | yes | no | limits | adv |
-| `webhooks.listen` / `public_url` | list/text | `[]` / unset | config, desktop | yes | no | servers | user |
-| `webhooks.tls` | choice | unset | config, desktop | yes | no | servers | adv |
-| `webhooks.max_body_kb` / `per_minute` / `tolerance_secs` / `body_timeout_secs` | int | 256 / 30 / 300 / 30 | config, desktop | no | no | limits | adv |
-| `webhooks.header_timeout_secs` / `max_connections` | int | 10 / 64 | config, desktop | yes | no | limits | adv |
-| `api.listen` | list | `unix` | config, desktop | yes | no | servers | user |
-| `api.public_url` | text | unset | config, desktop | yes | no | servers | user |
-| `api.tls` / `tls_cert` / `tls_key` / `trust_proxy` | choice/text/bool | auto / unset / unset / false | config, desktop | yes | no | servers | adv |
-| `api.remote_mcp_stdio` | bool | false | config, desktop | no | no | servers | adv |
 
 ## `config.toml`: tables with their own editors
 
 | Setting | Where today | Restart | Secret | Surface |
 |---|---|---|---|---|
 | `[providers.*]` (kind, base_url, context_window, prices, `api_key_secret` name) | `/setup`, `tern providers`, desktop Providers dialog | no (reload) | key is a secret, stored in `secrets.toml`, write-only | Models & Providers |
-| `[mcp.servers.*]`, `[mcp.serve]` | `/mcp`, `tern mcp`, desktop MCP | no | env/bearer/header values are secrets | MCP & gateways |
-| `[gateway.telegram]`, `[gateway.connectors.*]` | `tern gateway pair`, desktop Connections, config | yes | bot token is a secret | MCP & gateways |
+| `[mcp.servers.*]`, `[mcp.serve]` | `/mcp`, `tern mcp`, desktop MCP | no | env/bearer/header values are secrets | MCP servers |
 | `[agents.*]` model aliases / chains | agent sheet, config | yes | no | **agent settings: unchanged** |
 
 ## Not in `config.toml`
@@ -121,12 +112,8 @@ same list and a new config field appears in both without UI changes.
 | Launch at login | OS login item via `tern service` | desktop Settings, `tern service install` | no | no | General (desktop) |
 | Close window keeps tern running / quits | desktop `desktop.json` (`on_close`) | desktop Settings | no | no | General (desktop) |
 | Tray icon | `tern tray` (macOS menu bar, follows login item) | `tern tray` | no | no | General (desktop, explained) |
-| Saved servers and the active one | desktop `desktop.json`; tokens in the OS keychain | desktop Servers dialog | no | tokens: yes, never shown | Servers (desktop) |
-| Where tern runs (this computer / a server) | `desktop.json` | desktop Servers dialog | reconnects | no | General / Servers |
 | Data location (`TERN_HOME`, default `~/.tern`) | environment variable | env only | yes | no | About (shown, not editable) |
 | Log level (`TERN_LOG`, default `info`) | environment variable | env only | yes | no | About (shown, not editable); logs are in `<data>/logs`, 14 daily files |
-| Remote attach (`TERN_REMOTE_TOKEN`, `--remote`) | env / CLI flags | CLI | n/a | yes | not a setting |
-| Devices (paired phones/laptops) | daemon DB | `tern devices`, desktop Security | no | tokens: yes | Servers & devices (listed) |
 | Security audit | derived | `tern security`, desktop Settings | n/a | no | Permissions & Sandbox |
 | Telemetry, usage reporting | none exist: tern sends no telemetry | n/a | n/a | n/a | About states this |
 | Automatic updates | none exist: updates are a reinstall (`install.sh` or the desktop download) | n/a | n/a | n/a | About states the version |
@@ -141,4 +128,3 @@ same list and a new config field appears in both without UI changes.
   refuse writes; values go through `/v1/secrets` (write-only, masked status).
 - `restart_required` is per setting, and the view reports whether any saved
   setting is still waiting on a restart.
-- Owner-scope devices only: chat and read devices get 403.

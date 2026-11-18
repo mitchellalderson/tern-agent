@@ -39,6 +39,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0029_outbox_file_state.sql"),
     include_str!("../migrations/0030_waits.sql"),
     include_str!("../migrations/0031_documents.sql"),
+    include_str!("../migrations/0032_drop_webhooks.sql"),
+    include_str!("../migrations/0033_drop_devices.sql"),
+    include_str!("../migrations/0034_local_delivery.sql"),
+    include_str!("../migrations/0035_channel_routing.sql"),
     include_str!("../migrations/0036_proactive.sql"),
 ];
 
@@ -255,5 +259,38 @@ mod tests {
         );
         assert_eq!(nulls("SELECT count(*) FROM workspaces"), 0);
         assert_eq!(user_version(&c).unwrap(), LATEST_VERSION);
+    }
+
+    #[test]
+    fn gateway_delivery_targets_fall_back_to_home() {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate_to(&mut c, 33);
+        c.execute_batch(
+            "INSERT INTO sessions (id, source, created_at, updated_at) VALUES ('s', 'cron', 0, 0);
+             INSERT INTO schedules (id, cron, prompt, session_id, next_run_at, deliver_to)
+               VALUES ('a', '0 8 * * *', 'p', 's', 0, 'telegram:1'),
+                      ('b', '0 8 * * *', 'p', 's', 0, 'channel:launch'),
+                      ('c', '0 8 * * *', 'p', 's', 0, NULL);
+             INSERT INTO held_deliveries (target, text, release_at, created_at)
+               VALUES ('ntfy:topic', 'x', 0, 0);",
+        )
+        .unwrap();
+        migrate(&mut c).unwrap();
+        let target = |id: &str| -> Option<String> {
+            c.query_row(
+                "SELECT deliver_to FROM schedules WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(target("a").as_deref(), Some("home"));
+        assert_eq!(target("b").as_deref(), Some("channel:launch"));
+        assert_eq!(target("c"), None);
+        let held: String = c
+            .query_row("SELECT target FROM held_deliveries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(held, "home");
     }
 }
