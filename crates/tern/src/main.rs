@@ -1,4 +1,5 @@
 mod account_cmd;
+mod admin_tools;
 mod agents_cmd;
 mod bundle_cmd;
 mod channels_cmd;

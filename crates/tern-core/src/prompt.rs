@@ -124,7 +124,10 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
             out.push_str("\n\n");
             out.push_str(&SCHEDULED_ROLE.replace("{no_reply}", crate::quiet::NO_REPLY));
         }
-        AgentRole::Main => {}
+        AgentRole::Main => {
+            out.push_str("\n\n");
+            out.push_str(TEAM_ADMIN);
+        }
     }
 
     if let Some(a) = inp.agent.filter(|a| !a.others.is_empty()) {
@@ -348,6 +351,14 @@ say what you checked and what you didn't.
 
 Sub-agents can't talk to the user except through approval prompts, which the user sees with the sub-agent's name. \
 {nest}";
+
+const TEAM_ADMIN: &str = "## Making agents and channels
+
+When the user asks for a new agent, or to change or remove one, use `agent_create`, `agent_edit` and `agent_delete`; \
+for channels, `channel_create`, `channel_edit` and `channel_delete`. A name is enough for a new agent: its role is \
+written from it. The user approves each one. A new agent never gets more than you have: not a tool, a connector or an \
+autonomy ceiling you lack, and you can't change an agent that can do more than you can. A refusal is final: say so, \
+and don't retry it with another spelling.";
 
 const AGENTS: &str = "## Agents
 

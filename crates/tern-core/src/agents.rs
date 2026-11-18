@@ -148,7 +148,9 @@ impl ToolScope {
             builtins: Pick::Names(
                 builtins
                     .iter()
-                    .filter(|n| n.as_str() != "shell")
+                    .filter(|n| {
+                        n.as_str() != "shell" && !crate::narrow::ADMIN_TOOLS.contains(&n.as_str())
+                    })
                     .cloned()
                     .collect(),
             ),
