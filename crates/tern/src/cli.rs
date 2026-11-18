@@ -6,15 +6,6 @@ use clap::{Args, Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
-    /// Attach the chat UI to a core over HTTPS (e.g. https://host:7420)
-    /// instead of the local daemon. The device token comes from
-    /// $TERN_REMOTE_TOKEN (get one with `tern devices join`).
-    #[arg(long, value_name = "URL")]
-    pub remote: Option<String>,
-    /// Certificate pin for --remote (`sha256:…`, from the pairing link);
-    /// also read from $TERN_REMOTE_PIN.
-    #[arg(long, requires = "remote")]
-    pub pin: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -51,16 +42,6 @@ pub enum Command {
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
-    },
-    /// Hosted tern account sign-in for this core.
-    Account {
-        #[command(subcommand)]
-        command: Option<AccountCommand>,
-    },
-    /// Pair and manage devices that reach this core over TCP.
-    Devices {
-        #[command(subcommand)]
-        command: Option<DevicesCommand>,
     },
     /// Messaging gateways.
     Gateway {
@@ -407,46 +388,6 @@ pub enum GatewayCommand {
     },
     /// Gateways in config.toml and whether each can run.
     List,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum AccountCommand {
-    /// Whether account sign-in is on, who owns this core, and whether the
-    /// signing keys can be fetched.
-    Status,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum DevicesCommand {
-    /// Print a one-time pairing link (and QR code) for a phone or another
-    /// computer. Valid for 10 minutes.
-    Pair {
-        /// owner (everything), chat (conversations and approvals, no
-        /// config or secrets), or read (view only).
-        #[arg(long, default_value = "chat")]
-        scope: String,
-        /// Name for the device; otherwise the device names itself.
-        #[arg(long)]
-        name: Option<String>,
-        /// URL devices reach this core at (default: `api.public_url`, else
-        /// the first TCP listener).
-        #[arg(long)]
-        url: Option<String>,
-    },
-    /// List paired devices.
-    List,
-    /// Revoke a device's token, signing it out at once.
-    Revoke { id: String },
-    /// Rename a device.
-    Rename { id: String, name: String },
-    /// Pair this machine with a remote core from its pairing link, and
-    /// print the device token.
-    Join {
-        link: String,
-        /// Name to show on the core (default: this host's name).
-        #[arg(long)]
-        name: Option<String>,
-    },
 }
 
 #[derive(Debug, Subcommand)]

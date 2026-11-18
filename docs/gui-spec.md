@@ -1,5 +1,7 @@
 # tern desktop: Flutter GUI spec
 
+> **Partly superseded (2026-11).** The desktop app runs tern on this Mac only ([DECISIONS.md](../DECISIONS.md#tern-is-local-only-single-player)): the saved servers, server switcher, pairing and sign-in described in the server sections were removed. Kept as history.
+
 Status: draft, 2026-11-03. G0–G2 are built in `apps/desktop/` (see its README for what's in and out). Every conversation in the app is flat (2026-11-04, [channels-design.md](channels-design.md) §6.2): no side chats, no reply threads; the right pane only reads (History entries, a post's work, moved conversations).
 
 A desktop app for tern that attaches to the daemon (`tern daemon`) over its local socket API. It's a front end, like the TUI and the Telegram gateway: the engine owns all state, runs, approvals and scheduling. The app can be closed at any time without losing anything.

@@ -49,7 +49,7 @@ for when you want something small that keeps working and that you can reason abo
 - a step journal, so a crash or a `kill -9` doesn't mean redoing or duplicating work;
 - no open skill registry (OpenClaw's ClawHub had hundreds of malicious skills in early 2026); connectors are short
   scripts you approve one at a time, with their hosts and secrets on the approval card;
-- local-only by default: the API is a Unix socket, and remote access needs TLS, device pairing and scoped tokens.
+- local-only: the API is a Unix socket on your machine, with no network listener, accounts or remote access.
 
 ## Why not ZeroClaw or IronClaw?
 
@@ -70,8 +70,8 @@ What tern does differently:
 - **Agent-written connectors are plain source you can read, sandboxed by the host, and pinned to what you approved.**
   The agent drafts a Luau file, tests it, and asks to activate it with a card listing hosts, secrets and tools. tern
   stores the hash and capabilities you approved and refuses to load the file if either changes.
-- **One engine, local or remote.** The same daemon serves the terminal, the desktop app, Telegram and paired remote
-  devices. A hosted version of the same engine is planned, not built.
+- **One engine, local only.** The same daemon serves the terminal and the desktop app on your machine. There is no
+  hosted version and no remote access.
 - **Agents of your own, packaged as bundles.** Each agent has its own persona, tools, memory and autonomy ceiling, and
   can be shared as a signed bundle that shows everything it can do before you install it. There is no store to browse.
 

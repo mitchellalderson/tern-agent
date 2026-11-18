@@ -605,13 +605,11 @@ class TernStore extends ChangeNotifier {
   /// Whether the core manages accounts per connector or MCP server.
   bool get hasConnections => health?.features.contains('connections') ?? false;
 
-  /// The Connections page is owner-only.
-  bool get canManageConnections => hasConnections && (health?.isOwner ?? false);
+  /// The Connections page.
+  bool get canManageConnections => hasConnections;
 
-  /// Whether the core installs bundles (tooling spec §6.5). Owner-only.
-  bool get canManageBundles =>
-      (health?.features.contains('bundles') ?? false) &&
-      (health?.isOwner ?? false);
+  /// Whether the core installs bundles (tooling spec §6.5).
+  bool get canManageBundles => health?.features.contains('bundles') ?? false;
 
   /// Whether the core defers unanswered writes to an outbox.
   bool get hasOutbox => health?.features.contains('outbox') ?? false;
@@ -681,19 +679,12 @@ class TernStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// `tern security audit` on the core (tooling spec §8.4): owner-only.
+  /// `tern security audit` on the core (tooling spec §8.4).
   bool get hasSecurityAudit =>
-      (health?.features.contains('security_audit') ?? false) &&
-      (health?.isOwner ?? false);
+      health?.features.contains('security_audit') ?? false;
 
-  /// The activity ledger (tooling spec §8.1): owner-only.
-  bool get hasLedger =>
-      (health?.features.contains('ledger') ?? false) &&
-      (health?.isOwner ?? false);
-
-  /// Reached as a paired device rather than the local owner socket, so the
-  /// core refuses stdio MCP servers unless `api.remote_mcp_stdio` is set.
-  bool get remoteCore => health != null && health!.authKind != 'owner';
+  /// The activity ledger (tooling spec §8.1).
+  bool get hasLedger => health?.features.contains('ledger') ?? false;
 
   /// The session's own model, else its agent's, else the default.
   String? modelFor(String? session) {
@@ -736,11 +727,7 @@ class TernStore extends ChangeNotifier {
   String? get coreSkew {
     final h = health;
     if (h == null) return null;
-    return coreSkewMessage(
-      appVersion: appVersion,
-      coreVersion: h.version,
-      local: h.isLocal,
-    );
+    return coreSkewMessage(appVersion: appVersion, coreVersion: h.version);
   }
 
   static const daemonTooOldMessage =
