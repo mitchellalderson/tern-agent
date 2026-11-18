@@ -185,6 +185,9 @@ class _FakeClient extends TernClient {
     int? maxHops,
     int? wakesPerHour,
     bool? letAgentsDecide,
+    String? routeMode,
+    String? replyRule,
+    bool clearReplyRule = false,
   }) async {
     patches.add((lead: lead, agentWakes: agentWakes));
     if (letAgentsDecide != null) {
