@@ -471,7 +471,7 @@ async fn usd_per_day_is_ignored_without_a_price_and_applies_with_one() {
     env.script(json!({ "turns": [{ "text": "Spent a little." }] }));
     let daemon = env.daemon();
     let s = env
-        .create(json!({ "cron": "* * * * *", "prompt": "Spend", "deliver_to": target(), "initiative": "interrupt" }))
+        .create(json!({ "cron": "0 3 * * *", "prompt": "Spend", "deliver_to": target(), "initiative": "interrupt" }))
         .await;
     let id = s["id"].as_str().unwrap().to_owned();
     let runs = "SELECT count(*) FROM runs WHERE trigger = 'cron' AND status = 'completed'";
