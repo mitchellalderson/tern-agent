@@ -70,6 +70,10 @@ fn main() -> ExitCode {
     if let Some(code) = tern_python::helper::run_if_requested() {
         return code;
     }
+    // Secrets are encrypted with a key kept in the macOS keychain (file fallback).
+    tern_core::secrets::vault::set_default_key_source(
+        tern_core::secrets::vault::KeySource::Keychain,
+    );
     let cli = Cli::parse_from(tray::rewrite_args(std::env::args_os().collect()));
     match run(cli) {
         Ok(code) => code,

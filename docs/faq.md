@@ -220,7 +220,7 @@ Only where you point it. There is no telemetry, no update check, no account, and
 - **The hosts you or the agent call**: `http_fetch` URLs, the hosts a connector declares, MCP servers you configure.
 
 Everything else stays in `~/.tern`: config, the SQLite database (conversations, journal, memories), and
-`secrets.toml` (mode 0600, not encrypted). Copy, back up or delete the folder as you like. `tern report` writes a bug
+`secrets.toml` (mode 0600, values encrypted; the key is in the macOS keychain, or in `secrets.key` beside it on other systems, so back that up too). Copy, back up or delete the folder as you like. `tern report` writes a bug
 report locally, with secrets redacted, and sends it nowhere.
 
 ## How is this different from Claude Duet?

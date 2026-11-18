@@ -4958,6 +4958,7 @@ name = "tern-core"
 version = "0.1.0-alpha.7"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "blake3",
  "cap-std",
  "chrono",
@@ -4966,6 +4967,7 @@ dependencies = [
  "ignore",
  "libc",
  "reqwest",
+ "security-framework",
  "serde",
  "serde_json",
  "tempfile",
