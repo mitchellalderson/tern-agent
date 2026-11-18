@@ -865,8 +865,7 @@ class Transcript {
           SchedulesChanged() ||
           AuthPromptOpened() ||
           AuthPromptClosed() ||
-          ConnectionsChanged() ||
-          NotificationRequested():
+          ConnectionsChanged():
         return false;
     }
     return true;
