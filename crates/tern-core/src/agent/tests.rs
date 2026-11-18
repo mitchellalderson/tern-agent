@@ -3608,6 +3608,7 @@ async fn the_ledger_follows_an_outbox_item_from_queue_to_execution() {
 mod py_scripts;
 
 mod grants;
+mod learned_always;
 
 mod plans;
 mod tainted_reads;

@@ -54,7 +54,7 @@ impl ApprovalHandler for User {
                 // The card stays open until the sign-in closes it.
                 std::future::pending().await
             }
-            AuthCard::SignIn { .. } => None,
+            AuthCard::SignIn { .. } | AuthCard::Link { .. } => None,
         }
     }
 }
@@ -493,6 +493,7 @@ async fn a_configured_app_is_bound_to_its_issuer() {
             client_id: "slack-app".into(),
             client_secret_secret: Some("SLACK_CLIENT_SECRET".into()),
             issuer: None,
+            ..Default::default()
         },
     );
     cfg.clients.insert(
@@ -501,6 +502,7 @@ async fn a_configured_app_is_bound_to_its_issuer() {
             client_id: "acme-app".into(),
             client_secret_secret: Some("ACME_CLIENT_SECRET".into()),
             issuer: Some("https://login.acme.example".into()),
+            ..Default::default()
         },
     );
     let host = AuthHost::new(&cfg);

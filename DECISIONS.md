@@ -1756,6 +1756,17 @@ alone: tool-result cap (32 KiB), sub-agent budget (400k), fetch reader budget, m
 - **Busy conversation: wait.** A continuation never cuts off a run in progress; it starts on the first tick after the session is idle. Fire is at-least-once: the run starts, then the row is deleted, so a crash between them fires it again rather than losing it.
 - **Everything goes in the ledger**: `wait.create`, `wait.fire` (with how it ended) and `wait.cancel` (who, and why), appended in the same transaction as the change.
 
+
+## Composio and connect offers (innbot learnings, workstream 8)
+
+- **Native Rust, not a Lua package.** Composio is a plain REST API with one key (`x-api-key`, v3.1: `/tools`, `/tools/{slug}`, `/tools/execute/{slug}`, `/auth_configs`, `/connected_accounts`, `/connected_accounts/link`). The host has to enforce the read / write / destructive rules and the taint, and a Lua connector would put that logic in text the agent can rewrite. It lives in `tern-tools/src/composio.rs` next to the other built-ins, six tools.
+- **Hints are Composio's tags.** `readOnlyHint` and `destructiveHint` arrive in a tool's `tags`, not in a typed annotations field. The host fetches the tool before running it. `destructiveHint` wins, `readOnlyHint` is a read, anything else is a write: it fails closed. `composio_run_read_tool` never asks and refuses any tool not tagged read-only.
+- **Payment toolkits are read-only** (a fixed list of slugs: Stripe, PayPal, Square and so on). Only the read tool runs them, and only read-tagged tools.
+- **Sign-in reuses the existing `AuthCard::SignIn` card** and `ask_auth`, so desktop and TUI needed no new card. The link is checked (https, a host, no credentials) and goes only to the card. The result the model sees says whether the user connected, never the URL. Composio-managed auth configs are reused or created per app.
+- **`offer_connection` uses `AuthCard::Choose`** with `composio`, `mcp` and `build`. "Once per app per conversation" is held in memory by `(session, app)`; a daemon restart forgets it, which costs at most one repeat card.
+- **One user id.** Every connection is `user_id = "tern"`: a single-owner local app, so the hosted per-person and shared project scoping from innbot does not apply.
+- **Output is untrusted.** Results taint the run (`Ingestion::Connector`). HTML becomes plain text, strings over 4,000 characters are cut.
+
 ## tern is local-only, single-player
 
 - **Decision (2026-11-18).** tern runs on one computer for one person. The daemon and the desktop app (or TUI) both run on this machine and talk over a Unix socket. There is no remote access, no user accounts, no hosted offering, no messaging gateways and no inbound webhooks.

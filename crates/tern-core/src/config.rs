@@ -74,6 +74,8 @@ pub struct Config {
     pub memory: crate::memory::MemoryConfig,
     /// Skill capture offers (T5b).
     pub skills: crate::skill_capture::SkillsConfig,
+    /// Proactive help: one switch per feature, all on by default.
+    pub proactive: crate::proactive::ProactiveConfig,
     /// How main channels (Home and each agent's DM) are cut into segments.
     /// `[main]` is accepted too (agent profiles §3).
     #[serde(alias = "main")]
@@ -294,6 +296,10 @@ pub struct OAuthClientConfig {
     /// their profile's endpoints without it; any other provider needs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
+    /// App-only access (OAuth client credentials): the app's own token, no
+    /// user sign-in, no refresh token. Needs `client_secret_secret`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub app_only: bool,
 }
 
 /// The `python` tool (docs/python-tool-spec.md §8). Read when tern starts.
@@ -392,6 +398,7 @@ impl Default for Config {
             schedules: SchedulesConfig::default(),
             memory: crate::memory::MemoryConfig::default(),
             skills: crate::skill_capture::SkillsConfig::default(),
+            proactive: crate::proactive::ProactiveConfig::default(),
             home: crate::channels::HomeConfig::default(),
             agent_chains: Vec::new(),
             autonomy: crate::approval::Autonomy::Autonomous,

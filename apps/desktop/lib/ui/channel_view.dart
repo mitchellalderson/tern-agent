@@ -8,7 +8,7 @@ import '../state/workspaces.dart';
 import '../theme.dart';
 import 'agent_face.dart';
 import 'agent_picker.dart';
-import 'channel_items.dart' show SuggestionActions;
+import 'channel_items.dart' show ProactiveActions, SuggestionActions;
 import 'conversation.dart';
 import 'feed.dart';
 import 'fleet_status.dart';
@@ -816,7 +816,9 @@ class TimelinePost extends StatelessWidget {
               for (final id in routineLinksIn(post.text))
                 RoutineCard(item: RoutineItem(id), store: store),
               if (post.suggestion case final sg?)
-                SuggestionActions(suggestion: sg, store: store),
+                SuggestionActions(suggestion: sg, store: store)
+              else if (post.card case final card?)
+                ProactiveActions(card: card, store: store),
               Row(
                 children: [
                   // An outbox item: decide it here (topic channels have no
@@ -835,7 +837,7 @@ class TimelinePost extends StatelessWidget {
                         onTap: () => store.decideOutbox(item, approve: false),
                       ),
                     ],
-                  ] else if (post.suggestion != null)
+                  ] else if (post.suggestion != null || post.card != null)
                     const SizedBox.shrink()
                   else if (post.needsYou && !post.isRequest)
                     _Action(label: 'Done', onTap: () => store.resolvePost(post))

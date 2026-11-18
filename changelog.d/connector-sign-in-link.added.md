@@ -1,0 +1,1 @@
+- **Connector sign-in links** show as a card with the real domain and a live expiry. A tool returns `sign_in = {url, label, expires_at}`; tern checks it is https, has no embedded credentials and is on a declared host's domain, and the model never sees the URL.

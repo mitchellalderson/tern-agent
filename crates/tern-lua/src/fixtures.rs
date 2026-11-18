@@ -171,6 +171,8 @@ pub struct Tape {
     replay: Option<Vec<Exchange>>,
     used: Mutex<Vec<bool>>,
     recorded: Mutex<Vec<Exchange>>,
+    /// What the call did, in order, for the activation card's evidence.
+    trace: Mutex<Vec<crate::evidence::Event>>,
 }
 
 impl Tape {
@@ -179,6 +181,7 @@ impl Tape {
             replay: None,
             used: Mutex::new(Vec::new()),
             recorded: Mutex::new(Vec::new()),
+            trace: Mutex::new(Vec::new()),
         }
     }
 
@@ -188,6 +191,7 @@ impl Tape {
             replay: Some(exchanges),
             used: Mutex::new(used),
             recorded: Mutex::new(Vec::new()),
+            trace: Mutex::new(Vec::new()),
         }
     }
 
@@ -218,6 +222,17 @@ impl Tape {
         }
     }
 
+    pub(crate) fn note(&self, e: crate::evidence::Event) {
+        if let Ok(mut t) = self.trace.lock() {
+            t.push(e);
+        }
+    }
+
+    /// The HTTP calls (refused ones too) and logs of the call, in order.
+    pub fn events(&self) -> Vec<crate::evidence::Event> {
+        self.trace.lock().map(|t| t.clone()).unwrap_or_default()
+    }
+
     pub fn exchanges(&self) -> Vec<Exchange> {
         self.recorded.lock().map(|r| r.clone()).unwrap_or_default()
     }
@@ -233,7 +248,17 @@ pub async fn record_case(
     args: &Value,
     conn: Option<tern_auth::Resolved>,
 ) -> Result<(String, Case), String> {
-    let tape = std::sync::Arc::new(Tape::record());
+    record_case_on(vm, tool, args, conn, std::sync::Arc::new(Tape::record())).await
+}
+
+/// [`record_case`] on a tape the caller keeps, to read what the call did.
+pub async fn record_case_on(
+    vm: &crate::Vm,
+    tool: &str,
+    args: &Value,
+    conn: Option<tern_auth::Resolved>,
+    tape: std::sync::Arc<Tape>,
+) -> Result<(String, Case), String> {
     let live = vm.call_taped(tool, args, conn, Some(tape.clone())).await?;
     let exchanges = tape.exchanges();
     let mut case = Case {
@@ -255,9 +280,19 @@ pub async fn record_case(
 /// Run a recorded case offline: every request is answered from the tape,
 /// and one that wasn't recorded fails.
 pub async fn replay_case(vm: &crate::Vm, case: &Case) -> Result<String, String> {
+    replay_traced(vm, case).await.0
+}
+
+/// [`replay_case`], with what the call did.
+pub async fn replay_traced(
+    vm: &crate::Vm,
+    case: &Case,
+) -> (Result<String, String>, Vec<crate::evidence::Event>) {
     let tape = std::sync::Arc::new(Tape::replay(case.exchanges.clone()));
-    vm.call_taped(&case.tool, &case.args, None, Some(tape))
-        .await
+    let r = vm
+        .call_taped(&case.tool, &case.args, None, Some(tape.clone()))
+        .await;
+    (r, tape.events())
 }
 
 /// How a replayed case came out.
