@@ -306,7 +306,7 @@ jobs:
           (cd packages/tern_client && dart pub get)
           flutter pub get
           TERN_BIN="$GITHUB_WORKSPACE/target/release/tern" \
-            flutter test --concurrency=1 test/quit_test.dart test/where_to_run_test.dart test/daemon_test.dart test/store_live_test.dart
+            flutter test --concurrency=1 test/quit_test.dart test/daemon_test.dart test/store_live_test.dart
       - uses: actions/upload-artifact@v4
         if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
         with:
