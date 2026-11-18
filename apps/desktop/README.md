@@ -30,9 +30,9 @@ The macOS app runs outside the App Sandbox (see `macos/Runner/*.entitlements`). 
 - Model chip: a searchable picker over every provider's models (fetched by the daemon and cached), with the current model first, a refresh button, **Also make it the default**, and a `Use "<typed>"` row for models the list doesn't have. It works before the first message too: the choice is sent with it.
 - Notifications: when the window doesn't have focus, or you're in another conversation, a finished run and an approval each post a system notification. Approvals have **Allow once** and **Deny** buttons that answer straight from the notification. The dock badge counts pending approvals. On macOS this uses `UserNotifications` through the `tern/window` channel; on Linux, `notify-send` (no buttons).
 
-Beyond G0–G2 the app also has: agents (a searchable list of 25 starters, edit, archive and delete, a per-agent autonomy ceiling and Telegram bot), channels (Home, topic channels, "Let agents decide"), the outbox and Tasks views, scoped approval choices (this run, this conversation, always), Connections (OAuth sign-in), MCP servers, bundles, the activity ledger and security audit, a config editor, and a first-launch choice of where tern runs (this Mac, or a paired tern server). The menu-bar icon is `tern tray`, shipped inside the app bundle.
+Beyond G0–G2 the app also has: agents (a searchable list of 25 starters, edit, archive and delete, a per-agent autonomy ceiling and Telegram bot), channels (Home, topic channels, "Let agents decide"), the outbox and Tasks views, scoped approval choices (this run, this conversation, always), Connections (OAuth sign-in), MCP servers, bundles, the activity ledger and security audit, a config editor, and a first launch that starts tern on this Mac. The menu-bar icon is `tern tray`, shipped inside the app bundle.
 
-Not yet: a skills view (reviewing skill-capture drafts is `tern skills`), a Telegram pairing screen with a QR code, a quick switcher, several saved servers, a Linux build, and notarized releases without the project's Apple credentials. The phases are in gui-spec §10; what's left is in the [roadmap](../../ROADMAP.md).
+Not yet: a skills view (reviewing skill-capture drafts is `tern skills`), a Telegram pairing screen with a QR code, a quick switcher, a Linux build, and notarized releases without the project's Apple credentials. The phases are in gui-spec §10; what's left is in the [roadmap](../../ROADMAP.md).
 
 ## Release build
 
@@ -45,7 +45,7 @@ scripts/package-macos-app.sh target/release/tern dist    # from the repo root
 
 ## Layout
 
-- `packages/tern_client`: pure Dart client (models, SSE, `Endpoint.unix` / `Endpoint.tcp` with a bearer token). The TCP side is the seed of `TernTransport` in [deployment-spec.md](../../docs/deployment-spec.md) §7.2; the daemon can listen on TCP for paired devices (D1).
+- `packages/tern_client`: pure Dart client (models, SSE, `Endpoint.unix`, the daemon's Unix socket).
 - `lib/state/transcript.dart`: session history plus live events reduced to display items. Pure and unit-tested.
 - `lib/state/store.dart`: the `ChangeNotifier` the widgets listen to. Connection, resync and event routing.
 - `lib/ui/`: widgets.

@@ -99,55 +99,52 @@ Future<bool> quitTernCompletely(
   exitApp ??= () async {
     await ServicesBinding.instance.exitApplication(AppExitType.required);
   };
-  // A remote core isn't ours to stop; only the window closes.
-  if (store.health?.isLocal ?? false) {
-    List<PausedRun> runs;
-    try {
-      runs = (await store.client.shutdown(dryRun: true)).runs;
-    } on TernException {
-      runs = const [];
-    }
-    if (!context.mounted || !await confirmQuit(context, runs)) return false;
-    if (!context.mounted) return false;
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const AlertDialog(
-        content: Row(
-          children: [
-            SizedBox.square(
-              dimension: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
+  List<PausedRun> runs;
+  try {
+    runs = (await store.client.shutdown(dryRun: true)).runs;
+  } on TernException {
+    runs = const [];
+  }
+  if (!context.mounted || !await confirmQuit(context, runs)) return false;
+  if (!context.mounted) return false;
+  showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => const AlertDialog(
+      content: Row(
+        children: [
+          SizedBox.square(
+            dimension: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          SizedBox(width: 14),
+          Text('Quitting tern…'),
+        ],
+      ),
+    ),
+  );
+  try {
+    await stopTern(store.client, control, wait: wait);
+  } on TernCommandException catch (e) {
+    if (context.mounted) {
+      Navigator.pop(context);
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text("tern didn't stop"),
+          content: Text(e.message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK'),
             ),
-            SizedBox(width: 14),
-            Text('Quitting tern…'),
           ],
         ),
-      ),
-    );
-    try {
-      await stopTern(store.client, control, wait: wait);
-    } on TernCommandException catch (e) {
-      if (context.mounted) {
-        Navigator.pop(context);
-        await showDialog<void>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text("tern didn't stop"),
-            content: Text(e.message),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('OK'),
-              ),
-            ],
-          ),
-        );
-      }
-      return false;
+      );
     }
-    if (context.mounted) Navigator.pop(context);
+    return false;
   }
+  if (context.mounted) Navigator.pop(context);
   await exitApp();
   return true;
 }
