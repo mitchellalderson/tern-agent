@@ -131,6 +131,8 @@ pub struct Runtime {
     pub mock: bool,
     /// What file tools must never touch (tern's data directory).
     pub deny: Arc<tern_core::workspace::DenySet>,
+    /// Where the agent- and channel-management tools find this runtime.
+    admin: crate::admin_tools::AdminSlot,
 }
 
 impl Runtime {
@@ -256,6 +258,10 @@ impl Runtime {
             connectors: connectors.clone(),
         });
         crate::mcp_tools::register(&mut tools, mcp_admin.clone());
+        // Agents and channels from chat, acting through this runtime once
+        // it is shared (`bind_admin`).
+        let admin = crate::admin_tools::AdminSlot::default();
+        crate::admin_tools::register(&mut tools, &admin);
         let tools = Arc::new(tools);
 
         // Every value in secrets.toml, plus env-provided secrets the config
@@ -375,6 +381,7 @@ impl Runtime {
             auth_targets: targets,
             mock,
             deny,
+            admin,
         };
         if let Err(e) = rt.ensure_default_workspace() {
             tracing::warn!(error = %e, "couldn't set up the default workspace");
@@ -382,6 +389,13 @@ impl Runtime {
         rt.seed_starter_agents();
         rt.refresh_agent_chains();
         Ok(rt)
+    }
+
+    /// Let the agent- and channel-management tools act through this
+    /// runtime. Call once it is shared; without it they say they aren't
+    /// available.
+    pub fn bind_admin(self: &Arc<Self>) {
+        let _ = self.admin.set(Arc::downgrade(self));
     }
 
     /// On a brand-new home, create the default set of agents from starters

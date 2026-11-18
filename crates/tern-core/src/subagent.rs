@@ -78,6 +78,12 @@ pub const CHILD_EXCLUDED_TOOLS: &[&str] = &[
     "connector_activate",
     "profile_edit",
     "role_set",
+    "agent_create",
+    "agent_edit",
+    "agent_delete",
+    "channel_create",
+    "channel_edit",
+    "channel_delete",
     "brief_team",
 ];
 
