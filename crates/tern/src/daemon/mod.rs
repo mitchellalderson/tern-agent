@@ -31,6 +31,7 @@ pub mod hooks;
 pub mod listen;
 pub mod manager;
 pub mod outbox;
+pub mod proactive;
 pub mod scheduler;
 pub mod suggestions;
 pub mod tls;

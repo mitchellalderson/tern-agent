@@ -31,6 +31,7 @@ mod mcp_cli;
 mod memory_class;
 mod new_defaults;
 mod proactive_delegation;
+mod proactive_help;
 mod providers;
 mod py0;
 mod reset;

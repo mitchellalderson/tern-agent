@@ -29,6 +29,7 @@ fn req(id: &str, run: &str, session: &str, target: &str, n: u32, grant: bool) ->
             key: format!("draft {target}.t#1"),
             label: format!("draft {target}.t"),
             run_only: false,
+            always: true,
         }),
         notice: None,
     }
@@ -46,6 +47,7 @@ fn read_card(id: &str, tool: &str, session: &str, parent: bool, dir: &str) -> Ap
         key: format!("readscope:{dir}"),
         label: dir.into(),
         run_only: true,
+        always: true,
     });
     r
 }

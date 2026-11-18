@@ -81,8 +81,10 @@ class _HomeState extends State<Home> {
     super.initState();
     // Desktop windows report `resumed` while focused and `inactive` when not.
     _lifecycle = AppLifecycleListener(
-      onStateChange: (s) =>
-          widget.store.appActive = s == AppLifecycleState.resumed,
+      onStateChange: (s) {
+        widget.store.appActive = s == AppLifecycleState.resumed;
+        if (widget.store.appActive) unawaited(widget.store.reportPresence());
+      },
       onExitRequested: _onExit,
     );
     _touches = widget.store.documentTouches.listen(_onTouch);

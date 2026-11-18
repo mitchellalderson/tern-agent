@@ -76,6 +76,8 @@ same list and a new config field appears in both without UI changes.
 | `home.day_starts` | text | 04:00 | config, desktop | no | no | general | user |
 | `skills.capture` | bool | true | config, desktop | yes | no | general | user |
 | `skills.capture_min_tool_calls` | int | 8 | config, desktop | yes | no | general | adv |
+| `proactive.heartbeat` / `fix_routines` / `suggest_routines` / `away_brief` | bool | true | config, desktop | yes | no | general | user |
+| `proactive.learn_approvals` | bool | true | config, desktop | no | no | general | user |
 | `outbox.wait_secs` / `expire_hours` | int | 120 / 72 | config, desktop | yes | no | permissions | adv |
 | `taint.egress` | choice ask/allow | ask | config, desktop | no | no | permissions | user |
 | `taint.workspace_writes` | bool | true | config, desktop | yes | no | permissions | user |

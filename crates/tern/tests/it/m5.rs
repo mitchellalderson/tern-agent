@@ -228,9 +228,9 @@ async fn telegram_pairing_streaming_and_button_approvals() {
         .iter()
         .map(|b| b["text"].as_str().unwrap())
         .collect();
-    // "Always" needs a shell the sandbox bounds (`approval::check`), hence
-    // the home outside the temp dirs in `Env::new`.
-    assert_eq!(labels, ["Allow once", "Always (echo *)", "Deny"]);
+    // "Always" is learned (three "Allow once" answers to the same command):
+    // the first card doesn't offer it.
+    assert_eq!(labels, ["Allow once", "Deny"]);
     let once = buttons[0]["callback_data"].as_str().unwrap();
     tg.tap(prompt["message_id"].as_i64().unwrap(), once).await;
 

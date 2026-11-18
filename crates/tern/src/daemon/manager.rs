@@ -823,6 +823,9 @@ pub struct Manager {
     /// Held while a delegation post is read from the store and written, so
     /// two children ending together can't leave the older status behind.
     pub(super) delegation_lock: Mutex<()>,
+    /// P1's hook for a decision-model check on "these asks are one
+    /// repeatable job". Unset: the host's own similarity stands.
+    pub similar_asks: std::sync::OnceLock<Arc<dyn tern_core::proactive::SimilarAsks>>,
 }
 
 impl Manager {
@@ -833,6 +836,7 @@ impl Manager {
             active: Mutex::new(HashMap::new()),
             stale_batch: Mutex::new(Vec::new()),
             delegation_lock: Mutex::new(()),
+            similar_asks: std::sync::OnceLock::new(),
         })
     }
 
@@ -1079,6 +1083,11 @@ impl Manager {
                 && let Err(e) = me.maybe_offer_skill(&run_id)
             {
                 tracing::warn!(run = %run_id, error = %e, "offering the run as a skill failed");
+            }
+            if result.is_ok()
+                && let Err(e) = me.after_run(&run_id)
+            {
+                tracing::warn!(run = %run_id, error = %e, "proactive follow-up failed");
             }
             if let Ok(mut a) = me.active.lock()
                 && a.get(&session_id).is_some_and(|x| x.run_id == run_id)

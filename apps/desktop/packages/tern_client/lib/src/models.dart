@@ -592,13 +592,20 @@ class GrantOffer {
     required this.key,
     required this.label,
     this.runOnly = false,
+    this.always = true,
   });
 
   factory GrantOffer.fromJson(Json j) => GrantOffer(
     key: j['key'] as String,
     label: j['label'] as String,
     runOnly: j['run_only'] as bool? ?? false,
+    always: j['always'] as bool? ?? true,
   );
+
+  /// "Always allow this" may be offered. False until the user has said
+  /// "Allow once" to exactly this three times in two weeks; the other
+  /// choices still show.
+  final bool always;
 
   /// Only "for this run" may be offered: a tainted run's read scope (the
   /// read-only file tools under a folder, for the run and its sub-agents).

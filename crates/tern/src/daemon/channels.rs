@@ -62,7 +62,9 @@ pub fn view(store: &Store, row: tern_store::PostRow) -> Post {
         None => (None, None),
     };
     let suggestion = tern_core::channels::suggestion_of(store, &row).map(Box::new);
+    let card = tern_core::channels::card_of(store, &row).map(Box::new);
     Post {
+        card,
         points_to_channel,
         outbox_id,
         approval_id,
@@ -175,6 +177,18 @@ impl Manager {
             text.to_owned()
         };
         self.send_home(channel, &input, false, model, None).await
+    }
+
+    /// A message from the user into `channel`'s main thread: how accepting a
+    /// proactive card hands the agent its next step.
+    pub async fn send_to_main(
+        self: &Arc<Self>,
+        channel: &ChannelRow,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        self.send_home(channel, text, false, None, None)
+            .await
+            .map(|_| ())
     }
 
     /// A send into Home (§2.6, §4).

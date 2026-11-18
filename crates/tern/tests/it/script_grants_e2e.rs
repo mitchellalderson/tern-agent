@@ -16,6 +16,9 @@ fn shell(cmd: &str) -> Value {
     json!({ "name": "shell", "input": { "command": cmd } })
 }
 
+/// "Always" on every card, as before it was learned (`[proactive] learn_approvals`).
+const LEGACY_ALWAYS: &str = "[subagents]\nenabled = true\n[proactive]\nlearn_approvals = false\n";
+
 fn script() -> Value {
     json!({ "turns": [
         { "tool_calls": [shell("python3 a.py x")] },
@@ -57,7 +60,7 @@ async fn an_identical_script_runs_on_the_run_grant_and_an_edited_one_asks_again(
     {
         return;
     }
-    let env = Env::new(&script());
+    let env = Env::with_config(&script(), LEGACY_ALWAYS);
     let ws = env.home.join("tern-workspace");
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::write(ws.join("a.py"), "import sys; print('v1', sys.argv[1:])").unwrap();
@@ -181,7 +184,7 @@ async fn an_always_grant_is_stored_readably_and_revoked_with_tern_grants() {
     {
         return;
     }
-    let env = Env::new(&script());
+    let env = Env::with_config(&script(), LEGACY_ALWAYS);
     let ws = env.home.join("tern-workspace");
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::write(ws.join("a.py"), "print('v1')").unwrap();

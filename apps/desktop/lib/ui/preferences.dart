@@ -9,6 +9,7 @@ import '../state/store.dart';
 import '../state/version.dart';
 import '../theme.dart';
 import 'config_editor.dart';
+import 'grants.dart';
 import 'providers.dart';
 import 'secrets.dart';
 import 'security.dart';
@@ -575,6 +576,10 @@ class _PreferencesDialogState extends State<PreferencesDialog> {
       case PrefSection.permissions:
         return [
           ..._rows('permissions'),
+          if (store != null) ...[
+            heading('Always allowed'),
+            GrantsSection(store: store),
+          ],
           if (store != null && store.hasSecurityAudit) ...[
             heading('Security'),
             SecurityAuditRow(store: store),
