@@ -35,8 +35,9 @@ manual runs, the nightly and release checks always run everything. No branch pro
 checks are added, require only jobs that always run (`secrets`, `changes`).
 
 Other rules: every job has `timeout-minutes` (macOS 30; the dist build on dispatch and nightly needs more); `CARGO_INCREMENTAL=0`; rust-cache only saves from main;
-a newer push to the same ref cancels the older run (bursts to main test only the tip), except tag runs, which are
-never cancelled; unrelated PR labels do not re-trigger CI.
+a newer push to a pull request cancels its older run; runs on main and tags are never cancelled, so every merge gets a
+complete result and main saves the caches the next runs restore; unrelated PR labels do not re-trigger CI. The
+macOS job's live Dart tests drive the debug binary it already builds (no separate optimized build).
 
 ## Expected cost per event (estimates, not yet averaged over many runs)
 
@@ -73,7 +74,7 @@ the repo's 10 GB Actions cache; if eviction shows up as cold builds, share a key
   line-ending behaviour, would not show). The macOS job still covers the crates with cfg(macos) code; if one more
   crate turns out macOS-sensitive, add it to the `cargo test -p` line in `check-macos`.
 - Flutter tests other than the four platform files run only on Linux.
-- Intermediate commits in a burst to main are cancelled and never tested individually.
+- A burst of merges to main runs CI once per merge (more runner minutes, but each one finishes and saves the cache).
 - PRs without `ci-macos` merge with no macOS signal until the push to main; label PRs that touch sandbox,
   service, tray, paths or desktop packaging.
 - The x86_64 macOS binary is built (and run through `lipo`) only for DMGs and releases; it is never executed in CI.

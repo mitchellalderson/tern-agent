@@ -35,7 +35,10 @@ permissions:
 # pushes to main test only the tip). Tag runs (releases) are never cancelled.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual-' || '' }}${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  # Only pull requests cancel an older run: main's runs finish, so they save
+  # the Rust caches (save-if: main) the next runs restore, and every merge
+  # gets a complete result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -297,15 +300,14 @@ jobs:
         # 19 min with the dist profile: only for the runs that make a DMG.
         if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
         run: cargo build --profile dist --locked -p tern --target aarch64-apple-darwin
-      - name: Build the optimized binary the live Dart tests drive
-        # The debug binary is too slow for their 10 s waits on a macOS runner.
-        run: cargo build --release --locked -p tern
       - name: Desktop tests that branch on the platform
+        # They drive the debug binary built above (their waits allow for it),
+        # so there's no second, optimized build of tern here.
         working-directory: apps/desktop
         run: |
           (cd packages/tern_client && dart pub get)
           flutter pub get
-          TERN_BIN="$GITHUB_WORKSPACE/target/release/tern" \
+          TERN_BIN="$GITHUB_WORKSPACE/target/debug/tern" \
             flutter test --concurrency=1 test/quit_test.dart test/daemon_test.dart test/store_live_test.dart
       - uses: actions/upload-artifact@v4
         if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}

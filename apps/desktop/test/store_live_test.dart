@@ -9,8 +9,10 @@ import 'package:tern_desktop/state/notifier.dart';
 import 'package:tern_desktop/state/store.dart';
 import 'package:tern_desktop/state/transcript.dart';
 
+/// Polls, so a passing test returns as soon as [ok] holds. The limit is
+/// generous because CI drives a debug build of tern.
 Future<void> until(bool Function() ok, String what) async {
-  final end = DateTime.now().add(const Duration(seconds: 10));
+  final end = DateTime.now().add(const Duration(seconds: 30));
   while (!ok()) {
     if (DateTime.now().isAfter(end)) fail('timed out waiting for $what');
     await Future<void>.delayed(const Duration(milliseconds: 20));
