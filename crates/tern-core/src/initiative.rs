@@ -7,7 +7,7 @@
 //! |---|---|
 //! | `silent` | none |
 //! | `digest` | batched into one message at the next digest time |
-//! | `notify` | if the gate model says it is worth interrupting; else `digest` |
+//! | `notify` | if the decision model says it is worth interrupting; else `digest` |
 //! | `interrupt` | always (quiet hours still hold it unless `urgent`) |
 
 use std::fmt;
@@ -174,15 +174,17 @@ impl DigestTimes {
     }
 }
 
-/// The gate model's instructions (spec §4.1): one cheap call that only
-/// decides whether a `notify` result is worth a push now.
-pub const GATE_SYSTEM: &str = "You decide whether a background task's result is worth interrupting the user for right \
-now. Interrupt only for something time-sensitive or that needs them soon; routine updates can wait for the next \
-digest. Answer with JSON only, no other text: {\"interrupt\": true or false, \"headline\": \"at most 80 characters \
-saying what happened\"}.";
+/// The notification gate's yes/no question (spec §4.1), asked of a routine's
+/// result through `decide()`: is it worth a push now? Anything unclear goes
+/// to the digest.
+pub const GATE_QUESTION: &str = "Is this background task's result worth interrupting the user for right now? \
+Yes only for something time-sensitive or that needs them soon; routine updates can wait for the next digest.";
 
-/// The gate model's question: what the routine is for, and what it found.
-pub fn gate_prompt(purpose: &str, result: &str) -> String {
+/// Interrupt at or above this probability of yes.
+pub const GATE_THRESHOLD: f64 = 0.5;
+
+/// What the gate reads: what the routine is for, and what it found.
+pub fn gate_state(purpose: &str, result: &str) -> String {
     let cut = |s: &str, n: usize| -> String {
         match s.char_indices().nth(n) {
             Some((i, _)) => format!("{}…", &s[..i]),
@@ -190,26 +192,10 @@ pub fn gate_prompt(purpose: &str, result: &str) -> String {
         }
     };
     format!(
-        "Is this worth interrupting the user for?\n\nThe task:\n{}\n\nIts result:\n{}",
+        "The task:\n{}\n\nIts result:\n{}",
         cut(purpose.trim(), 1500),
         cut(result.trim(), 4000)
     )
-}
-
-/// What the gate model answered.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct GateAnswer {
-    pub interrupt: bool,
-    #[serde(default)]
-    pub headline: String,
-}
-
-/// The JSON object in the gate model's answer, tolerating text around it.
-pub fn parse_gate_answer(text: &str) -> Option<GateAnswer> {
-    let (start, end) = (text.find('{')?, text.rfind('}')?);
-    let mut a: GateAnswer = serde_json::from_str(text.get(start..=end)?).ok()?;
-    a.headline = a.headline.trim().chars().take(120).collect();
-    Some(a)
 }
 
 #[cfg(test)]
@@ -262,22 +248,8 @@ mod tests {
     }
 
     #[test]
-    fn gate_answers_are_read_leniently() {
-        assert_eq!(
-            parse_gate_answer(
-                "```json\n{\"interrupt\": true, \"headline\": \" Build broke \"}\n```"
-            ),
-            Some(GateAnswer {
-                interrupt: true,
-                headline: "Build broke".into()
-            })
-        );
-        assert_eq!(
-            parse_gate_answer("{\"interrupt\": false}").map(|a| a.interrupt),
-            Some(false)
-        );
-        assert_eq!(parse_gate_answer("yes, interrupt"), None);
-        let p = gate_prompt("Watch the build", &"x".repeat(5000));
+    fn gate_state_cuts_long_results() {
+        let p = gate_state("Watch the build", &"x".repeat(5000));
         assert!(p.contains("Watch the build") && p.ends_with('…'));
     }
 }

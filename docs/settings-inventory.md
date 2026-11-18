@@ -42,6 +42,8 @@ same list and a new config field appears in both without UI changes.
 | `show_reasoning` | bool | true | config, desktop | yes | no | general | user |
 | `secret_request_timeout_secs` | int | 900 | config, desktop | yes | no | advanced | adv |
 | `autonomy` | choice readonly/supervised/autonomous/yolo | autonomous (new installs; a config file with no line stays supervised) | config, desktop (shown as text) | yes | no | permissions | user |
+| `fast_model` | model chain | unset | config, desktop | no | no | models | user |
+| `decision_model` | model chain | unset | config, desktop | no | no | models | user |
 | `default_model` | model chain | unset | `/model`, `/setup`, desktop providers + config | no (live) | no | models | user |
 | `context_window` | int | unset (per model; 200000 fallback, 32768 local) | config, desktop | yes | no | models | adv |
 | `max_tokens` | int | unset (32000, cut to the model's max) | config, desktop | yes | no | models | adv |
@@ -69,7 +71,6 @@ same list and a new config field appears in both without UI changes.
 | `schedules.initiative` | choice silent/digest/notify/interrupt | digest | config, desktop | no | no | general | user |
 | `schedules.initiative_dial` | choice vacation/quieter/normal/louder | normal | config, desktop | no | no | general | user |
 | `schedules.digest_times` | list | 08:30, 17:30 | config, desktop | no | no | general | user |
-| `schedules.gate_model` | model chain | unset | config, desktop | no | no | models | adv |
 | `memory.user_md_tokens` / `memory_md_tokens` | int | 1500 | config, desktop | yes | no | general | adv |
 | `memory.flush` | bool | true | config, desktop | yes | no | general | user |
 | `home.idle_hours` | float | 6 | config, desktop | no | no | general | user |

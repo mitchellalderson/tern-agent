@@ -251,46 +251,36 @@ impl AgentTelegram {
     }
 }
 
-/// The routing call's instructions ("Let agents decide", agent profiles
-/// §5.2): one cheap call that only picks who answers.
-pub const ROUTER_SYSTEM: &str = "You route a user's message in a group chat to the agents best placed to answer it. \
-You are given the agents, one per line as `slug · Name · what it is for`. Pick the one agent whose job fits best; pick \
-a second or third only when the message clearly has separate parts for them. If none fits or you are unsure, pick the \
-first agent listed (the lead). Answer with JSON only, no other text: {\"agents\": [\"slug\", ...]}.";
+/// The routing question ("Let agents decide", agent profiles §5.2), asked
+/// through `decide()`: who answers this message? `agents` are
+/// `(slug, name, one-line description)`, the lead first. "none" is allowed:
+/// the caller then gives the message to the lead.
+pub const ROUTER_QUESTION: &str = "Which agent in this group chat is best placed to answer the message? Pick the one \
+whose job fits best; \"none\" if no agent fits.";
 
 /// At most this many agents answer one routed message.
 pub const ROUTER_MAX_AGENTS: usize = 3;
 
-/// The routing question: the message and the candidates, the lead first.
-/// `agents` are `(slug, name, persona line)`.
-pub fn router_prompt(message: &str, agents: &[(String, String, String)]) -> String {
-    let message: String = message.chars().take(4000).collect();
-    let mut out = String::from("Agents:\n");
-    for (slug, name, line) in agents {
-        out.push_str(&format!("{slug} · {name} · {line}\n"));
-    }
-    out.push_str("\nMessage to route:\n");
-    out.push_str(&message);
-    out
+/// The routing question for `agents`.
+pub fn router_question(agents: &[(String, String, String)]) -> crate::decide::Question {
+    crate::decide::Question::choice(
+        ROUTER_QUESTION,
+        agents
+            .iter()
+            .map(|(slug, name, line)| {
+                crate::decide::Option_::new(slug.to_lowercase(), format!("{name}: {line}"))
+            })
+            .collect(),
+        true,
+    )
 }
 
-/// The slugs the routing call chose, leniently read: the first JSON object
-/// in `text`, its `agents` list, `@` and case ignored. Only `valid` slugs
-/// count, each once, at most [`ROUTER_MAX_AGENTS`]. `None` when nothing
-/// usable was chosen (the caller falls back to the lead).
-pub fn parse_router_answer(text: &str, valid: &[String]) -> Option<Vec<String>> {
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    let v: serde_json::Value = serde_json::from_str(text.get(start..=end)?).ok()?;
-    let mut out: Vec<String> = Vec::new();
-    for a in v.get("agents")?.as_array()? {
-        let slug = a.as_str()?.trim().trim_start_matches('@').to_lowercase();
-        if valid.contains(&slug) && !out.contains(&slug) {
-            out.push(slug);
-        }
-    }
-    out.truncate(ROUTER_MAX_AGENTS);
-    (!out.is_empty()).then_some(out)
+/// What the router reads: the message (capped).
+pub fn router_state(message: &str) -> String {
+    format!(
+        "Message:\n{}",
+        message.chars().take(4000).collect::<String>()
+    )
 }
 
 /// A starting point for a new agent (§7.2). It only fills the sheet. The
@@ -619,43 +609,16 @@ mod tests {
     }
 
     #[test]
-    fn router_answers_are_read_leniently_and_only_name_valid_agents() {
-        let valid: Vec<String> = ["tern", "research", "ops"].map(String::from).to_vec();
-        let pick = |t: &str| parse_router_answer(t, &valid);
+    fn the_routing_question_lists_the_candidates_and_allows_none() {
+        let q = router_question(&[("tern".into(), "Tern".into(), "the lead".into())]);
+        let body =
+            crate::decide::decisions_body("m", &router_state("hello"), &vec![("who".into(), q)]);
         assert_eq!(
-            pick(r#"{"agents": ["research"]}"#),
-            Some(vec!["research".into()])
+            body["questions"]["who"]["criteria"]["tern"],
+            "Tern: the lead"
         );
-        // Text around it, an @, case and repeats.
-        assert_eq!(
-            pick("Sure! {\"agents\": [\"@Ops\", \"ops\", \"research\"]} done"),
-            Some(vec!["ops".into(), "research".into()])
-        );
-        // Unknown agents are dropped; nothing valid means no answer.
-        assert_eq!(
-            pick(r#"{"agents": ["ghost", "tern"]}"#),
-            Some(vec!["tern".into()])
-        );
-        assert_eq!(pick(r#"{"agents": ["ghost"]}"#), None);
-        assert_eq!(pick(r#"{"agents": []}"#), None);
-        assert_eq!(pick("research"), None);
-        assert_eq!(pick(r#"{"agents": "research"}"#), None);
-        // At most three.
-        let many: Vec<String> = (0..6).map(|i| format!("a{i}")).collect();
-        let all = serde_json::json!({ "agents": many }).to_string();
-        assert_eq!(
-            parse_router_answer(&all, &many).unwrap().len(),
-            ROUTER_MAX_AGENTS
-        );
-    }
-
-    #[test]
-    fn the_routing_prompt_lists_the_candidates_and_the_message() {
-        let p = router_prompt(
-            "hello",
-            &[("tern".into(), "tern".into(), "the lead".into())],
-        );
-        assert!(p.contains("tern · tern · the lead") && p.ends_with("Message to route:\nhello"));
+        assert!(body["questions"]["who"]["criteria"]["none"].is_string());
+        assert_eq!(body["state"], "Message:\nhello");
     }
 
     #[test]

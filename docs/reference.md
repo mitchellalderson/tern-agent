@@ -484,6 +484,8 @@ It prints what is left for you to remove by hand: the `tern` binary, `~/.tern` (
 
 | Key | Default | |
 |---|---|---|
+| `fast_model` | none | The fast model: background writing (role lines) and the fallback for quick decisions. Unset: Haiku if Anthropic is set up, else the cheapest priced model. |
+| `decision_model` | none | The decision model: quick choices (who answers in a channel, whether a `notify` result is worth a push). An OpenRouter decision model answers in one call to its Decisions API; any other model is asked for JSON. Unset: an OpenRouter decision model if a key is set, else the fast model. Replaces `schedules.gate_model`, which is still read and moved here. |
 | `default_model` | none | `provider:model` used when `--model` / `/model` isn't given, or a [fallback chain](#fallback-chains) `["anthropic:…", "openrouter:…"]`. |
 | `workspace` | `~/tern-workspace` | The default workspace: the folder file tools and commands work in unless a conversation, channel or agent has its own ([Workspaces](#workspaces)). |
 | `max_iterations` | `40` | Model calls per run before it stops. |
@@ -503,7 +505,6 @@ It prints what is left for you to remove by hand: the `tern` binary, `~/.tern` (
 | `schedules.initiative` | `"digest"` | How a routine's result reaches its chat unless the routine sets its own: `silent`, `digest`, `notify` or `interrupt`. See [Routines](#routines-triggers-watches-gates-initiative). |
 | `schedules.initiative_dial` | `"normal"` | Every routine one level `quieter` or `louder`, or `vacation` (nothing pushed). Also `PUT /v1/initiative`. |
 | `schedules.digest_times` | `["08:30", "17:30"]` | Local times when digest results are sent, one message per chat. |
-| `schedules.gate_model` | none | The model that decides whether a `notify` result is worth a push; unset = the cheapest configured model with a known price. |
 | `schedules.max_events_per_poll` | `20` | New watch events that each start a run; the rest of one poll share one run. |
 | `schedules.max_waits` | `5` | Waits (`wait_until`) one agent may have at once. |
 | `memory.user_md_tokens` | `1500` | Cap on `user.md` as injected into the prompt (tokens ≈ chars / 4). |
