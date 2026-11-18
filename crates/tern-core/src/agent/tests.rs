@@ -1073,6 +1073,11 @@ async fn cancellation_interrupts_a_streaming_call() {
     // back to work, and the store refuses to flip it.
     let steps = h.store.steps(&run).unwrap();
     assert_eq!(steps[0].status, "interrupted");
+    // (A top-level stop stays resumable by the owner; a sub-agent's or the
+    // daemon's cancel carries the `cancelled…` marker.)
+    h.store
+        .set_run_status(&run, "interrupted", Some("cancelled by the user"))
+        .unwrap();
     assert!(matches!(
         agent.resume(&run, CancellationToken::new()).await,
         Err(AgentError::NotResumable(..))
