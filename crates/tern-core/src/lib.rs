@@ -18,6 +18,7 @@ pub mod limits;
 pub mod mcp;
 pub mod memory;
 pub mod models;
+pub mod narrow;
 pub mod net;
 pub mod outbox;
 pub mod presets;
