@@ -218,6 +218,13 @@ impl Runtime {
             secret_uses(home, live.clone(), &secrets, &store)?,
             Duration::from_secs(config.secret_request_timeout_secs),
         )));
+        // Composio: one key, hundreds of apps (docs/recipes/composio.md).
+        let composio = tern_tools::composio::Composio::new(secrets.clone(), approvals.clone())
+            .map_err(|e| anyhow::anyhow!("composio client: {e}"))?;
+        tern_tools::composio::register(&mut tools, &composio);
+        tools.register(Arc::new(
+            tern_tools::offer_connection::OfferConnection::new(approvals.clone()),
+        ));
         // Connecting accounts (tooling spec §6.7.4).
         // One host for the three, so a plan found by auth_discover is the
         // one auth_propose shows and connection_add uses.

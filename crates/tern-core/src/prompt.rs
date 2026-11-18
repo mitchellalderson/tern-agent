@@ -194,6 +194,8 @@ pub fn system_prompt(inp: &PromptInputs<'_>) -> String {
          one service (work and personal Gmail), its tools take a `connection` argument: reads \
          without one use the default account; writes must name one.",
     );
+    out.push_str("\n\n");
+    out.push_str(CONNECT_ORDER);
     out.push_str("\n\n## Untrusted content\n\n");
     out.push_str(crate::agent::taint::PROMPT_NOTE);
 
@@ -249,6 +251,20 @@ pub fn split_volatile(system: &str) -> (&str, &str) {
 
 /// Under the integrations list: a script calling the API directly would
 /// skip the connector's host allowlist, its effect, taint and the journal.
+/// How to connect an app that has no tools yet (innbot learnings K6).
+const CONNECT_ORDER: &str = "## Connecting apps
+
+When the user needs an app tern isn't connected to, don't say you can't. Try these in order:
+1. Composio (`composio_search_tools`, `composio_connect_app`): one sign-in, hundreds of apps.
+2. The app's official MCP server, with OAuth sign-in.
+3. A connector with OAuth sign-in.
+4. App-only OAuth (client credentials), when no user signs in.
+5. An API key, entered with `secret_request`.
+
+Never ask the user to paste a short-lived access token: it expires. Use sign-in, or a key that lasts. \
+Building your own connector is the fallback, not the first move. \
+Where you would say \"I can't\", call `offer_connection` so the user picks how (once per app per conversation).";
+
 const INTEGRATIONS_RULE: &str = "Always get data an integration provides through its tools, even when \
      `shell`, `curl`, `http_fetch` or a script would be quicker: those skip its allowlist, approvals and \
      record. For many lookups, call the tool once per item. Compute tools (such as `python`) may process \
