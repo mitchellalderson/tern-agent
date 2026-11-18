@@ -131,6 +131,8 @@ pub struct Runtime {
     pub mock: bool,
     /// What file tools must never touch (tern's data directory).
     pub deny: Arc<tern_core::workspace::DenySet>,
+    /// Models on this computer: the engine (Ollama) and its installer.
+    pub local: Arc<crate::local::Local>,
 }
 
 impl Runtime {
@@ -369,6 +371,7 @@ impl Runtime {
         {
             tracing::warn!(error = %e, "reconciling sub-agent reports failed");
         }
+        let local = Arc::new(crate::local::Local::system(changes.clone()));
         let rt = Self {
             home: home.clone(),
             config,
@@ -387,6 +390,7 @@ impl Runtime {
             auth_targets: targets,
             mock,
             deny,
+            local,
         };
         if let Err(e) = rt.ensure_default_workspace() {
             tracing::warn!(error = %e, "couldn't set up the default workspace");

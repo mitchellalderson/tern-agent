@@ -12,6 +12,7 @@ import 'documents.dart';
 import 'endpoint.dart';
 import 'ledger.dart';
 import 'lifecycle.dart';
+import 'local.dart';
 import 'mcp.dart';
 import 'outbox.dart';
 import 'models.dart';
@@ -180,6 +181,31 @@ class TernClient {
     for (final p in await _json('GET', '/v1/providers') as List)
       ProviderStatus.fromJson(p as Json),
   ];
+
+  /// The local engine (Ollama): installed, running, context, disk.
+  Future<LocalStatus> localStatus() async =>
+      LocalStatus.fromJson(await _json('GET', '/v1/local/status') as Json);
+
+  /// Models installed in the local engine.
+  Future<List<LocalModel>> localModels() async => [
+    for (final m in await _json('GET', '/v1/local/models') as List)
+      LocalModel.fromJson(m as Json),
+  ];
+
+  /// Start the engine unless one already answers.
+  Future<LocalStatus> localStart() async =>
+      LocalStatus.fromJson(await _json('POST', '/v1/local/start') as Json);
+
+  /// Stop an engine tern started; one the user runs is left alone.
+  Future<LocalStatus> localStop() async =>
+      LocalStatus.fromJson(await _json('POST', '/v1/local/stop') as Json);
+
+  /// Download, verify and install Ollama in the background. Only after the
+  /// person agreed: the daemon refuses without `consent`.
+  Future<LocalStatus> localInstall({required bool consent}) async =>
+      LocalStatus.fromJson(
+        await _json('POST', '/v1/local/install', {'consent': consent}) as Json,
+      );
 
   /// The friendly presets ("Connect a provider"), in display order.
   Future<List<ProviderPreset>> providerPresets() async => [

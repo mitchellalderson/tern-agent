@@ -127,6 +127,10 @@ pub enum Change {
     /// A connection (account) was added, removed, renamed, signed in again
     /// or changed status; re-read `/v1/connections`.
     ConnectionsChanged {},
+    /// Local models changed: the engine started or stopped, the installer
+    /// moved on, a download progressed or finished. Re-read `/v1/local/status`
+    /// (and `/v1/local/models`).
+    LocalChanged {},
     /// A routine was created, changed or deleted, by a tool or the API;
     /// re-read `/v1/schedules`.
     SchedulesChanged {

@@ -20,6 +20,7 @@ mod edit_delete;
 mod g2;
 mod grants_e2e;
 mod in_place;
+mod local;
 mod m0;
 mod m1;
 mod m2;

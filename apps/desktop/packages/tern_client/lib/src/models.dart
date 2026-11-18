@@ -666,6 +666,7 @@ sealed class TernEvent {
     if (j['post_created'] case final Json p) {
       return PostCreated(Post.fromJson(p['post'] as Json));
     }
+    if (j.containsKey('local_changed')) return const LocalChanged();
     if (j.containsKey('channels_changed')) return const ChannelsChanged();
     if (j.containsKey('agents_changed')) return const AgentsChanged();
     if (j['events_dropped'] case final Json d) {
@@ -1075,6 +1076,12 @@ class PostCreated extends TernEvent {
 class PostUpdated extends TernEvent {
   const PostUpdated(this.post);
   final Post post;
+}
+
+/// The local engine, its install or its models changed: re-read
+/// `/v1/local/status`.
+class LocalChanged extends TernEvent {
+  const LocalChanged();
 }
 
 /// A channel was created, changed, archived, or got a new main thread

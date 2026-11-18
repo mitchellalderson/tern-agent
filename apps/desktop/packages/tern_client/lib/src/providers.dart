@@ -16,12 +16,20 @@ enum ProviderKind {
 
 /// One model a provider lists.
 class ModelInfo {
-  const ModelInfo({required this.id, this.name, this.contextWindow});
+  const ModelInfo({
+    required this.id,
+    this.name,
+    this.contextWindow,
+    this.maxContext,
+    this.tools,
+  });
 
   factory ModelInfo.fromJson(Json j) => ModelInfo(
     id: j['id'] as String,
     name: j['name'] as String?,
     contextWindow: j['context_window'] as int?,
+    maxContext: j['max_context'] as int?,
+    tools: j['tools'] as bool?,
   );
 
   /// What goes after `provider:`.
@@ -29,7 +37,16 @@ class ModelInfo {
 
   /// Display name, when the provider gives one.
   final String? name;
+
+  /// The window the model gets here. For Ollama, what the server loads it
+  /// with, often far below [maxContext].
   final int? contextWindow;
+
+  /// What the model supports at most, when the server says (Ollama).
+  final int? maxContext;
+
+  /// Can call tools; null when the server didn't say (not "no").
+  final bool? tools;
 }
 
 /// Why listing a provider's models failed: `unauthorized`, `unreachable`, …

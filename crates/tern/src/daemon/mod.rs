@@ -11,6 +11,7 @@ mod api_connections;
 mod api_documents;
 mod api_ledger;
 pub mod api_lifecycle;
+mod api_local;
 mod api_mcp;
 pub mod api_mcp_serve;
 mod api_outbox;

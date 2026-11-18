@@ -16,6 +16,7 @@ export 'src/documents.dart';
 export 'src/endpoint.dart';
 export 'src/ledger.dart';
 export 'src/lifecycle.dart';
+export 'src/local.dart';
 export 'src/mcp.dart';
 export 'src/models.dart';
 export 'src/outbox.dart';
