@@ -139,6 +139,9 @@ async fn socket_api_runs_streams_and_approves() {
         { "tool_calls": [{ "name": "shell", "input": { "command": "echo via-api" } }] },
         { "text": "API run finished." }
     ]}));
+    // A new install is autonomous, which runs a sandboxed `echo` without
+    // asking. This test answers an approval, so it pins the supervised level.
+    std::fs::write(env.tern_home.join("config.toml"), "autonomy = \"supervised\"\n").unwrap();
     let _daemon = env.daemon();
     #[cfg(unix)]
     {
@@ -181,7 +184,14 @@ async fn socket_api_runs_streams_and_approves() {
 
     // The shell call needs approval: answer it from the event stream.
     let mut buf = String::new();
+    // Keep-alives arrive every 15s, so the per-chunk timeout alone never
+    // ends a stream that has no approval in it: give the whole wait a limit.
+    let deadline = Instant::now() + Duration::from_secs(180);
     let approval_id = loop {
+        assert!(
+            Instant::now() < deadline,
+            "no approval_requested within 180s; so far: {buf:?}"
+        );
         // Slower than the 15s keep-alive, so a loaded runner can't beat it.
         let chunk = tokio::time::timeout(Duration::from_secs(60), events.chunk())
             .await
