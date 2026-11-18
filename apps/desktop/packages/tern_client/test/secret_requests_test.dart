@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:tern_client/tern_client.dart';
 import 'package:test/test.dart';
+import 'support/unix_server.dart';
 
 const _event =
     '{"secret_requested":{"id":"q1","run_id":"r","session_id":"s",'
@@ -52,7 +53,8 @@ void main() {
     setUp(() async {
       seen.clear();
       answerStatus = 200;
-      server = await HttpServer.bind('127.0.0.1', 0);
+      final (srv, endpoint) = await bindUnixServer();
+      server = srv;
       server.listen((req) async {
         final body = await utf8.decoder.bind(req).join();
         seen.add('${req.method} ${req.uri.path} $body');
@@ -70,12 +72,7 @@ void main() {
         }
         await req.response.close();
       });
-      client = TernClient(
-        Endpoint.remote(
-          Uri.parse('http://127.0.0.1:${server.port}'),
-          token: 't',
-        ),
-      );
+      client = TernClient(endpoint);
     });
     tearDown(() async {
       client.close();

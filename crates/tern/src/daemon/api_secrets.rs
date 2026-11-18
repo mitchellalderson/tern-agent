@@ -14,7 +14,7 @@
 //! the owner scope, like writing a secret.
 //!
 //! Changes apply to providers, connectors and newly started MCP servers
-//! without a restart; the Telegram gateway reads its token at startup.
+//! without a restart.
 
 use axum::extract::{Path as UrlPath, State};
 use axum::routing::get;

@@ -141,6 +141,9 @@ class _Fake extends TernClient {
     int? maxHops,
     int? wakesPerHour,
     bool? letAgentsDecide,
+    String? routeMode,
+    String? replyRule,
+    bool clearReplyRule = false,
   }) async {
     channelPatches.add((id: id, slug: slug, title: title));
     if (archived == false) {

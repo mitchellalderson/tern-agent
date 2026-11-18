@@ -132,6 +132,18 @@ pub enum Change {
     SchedulesChanged {
         id: String,
     },
+    /// Something worth a desktop notification: a routine's result that
+    /// `notify` or `interrupt` pushed, a digest, a held delivery coming
+    /// due. The text is already posted in `channel_id`.
+    Notification {
+        title: String,
+        body: String,
+        /// Where a click opens: the conversation it was posted in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        channel_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
+    },
 }
 
 /// What a client fills in to add or change a provider.

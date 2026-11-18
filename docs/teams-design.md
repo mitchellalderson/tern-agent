@@ -1,5 +1,7 @@
 # Teams design: several people, one core, shared channels and agents
 
+> **Superseded (2026-11).** tern is single-player ([DECISIONS.md](../DECISIONS.md#tern-is-local-only-single-player)). Members, accounts and shared cores are not planned. Kept as history.
+
 Status: draft for owner review, 2026-11-10. Design only; no feature code. Builds on:
 
 - [deployment-spec.md](deployment-spec.md) §10.4a (Clerk accounts, built in v0.1.0-alpha.4) and §10.2 (one core per tenant).

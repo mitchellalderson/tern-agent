@@ -3,9 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod account;
 mod ap0;
-mod ap1;
 mod ap2;
 mod ap3;
 mod bundles;
@@ -13,7 +11,6 @@ mod c5;
 mod code_auto;
 mod config_api;
 mod connections;
-mod d1;
 mod delegation;
 mod documents;
 mod edit_delete;
@@ -30,12 +27,14 @@ mod mcp_api;
 mod mcp_cli;
 mod memory_class;
 mod new_defaults;
+mod notes;
 mod proactive_delegation;
 mod providers;
 mod py0;
 mod reset;
 mod role_infer;
 mod routines_visible;
+mod run_reliability;
 mod s1;
 mod s2;
 mod s3;
@@ -48,11 +47,9 @@ mod starters;
 mod subagents_env;
 mod t1a;
 mod t1b;
-mod t1c;
 mod t2;
 mod t3;
 mod t3a;
-mod t4b_gateways;
 mod t4c;
 mod t5b;
 mod t6a;
@@ -61,3 +58,22 @@ mod t6d;
 mod t8a;
 mod wait_until;
 mod workspaces;
+
+/// The secrets in `home` as `NAME = "value"` lines. The file itself holds
+/// them encrypted, so tests read them through tern's own loader.
+pub fn read_secrets(home: &std::path::Path) -> String {
+    let Ok(s) = tern_core::Secrets::load(&home.join("secrets.toml")) else {
+        return String::new();
+    };
+    s.file_names()
+        .iter()
+        .filter_map(|n| {
+            let key = if n.contains('/') {
+                format!("{n:?}")
+            } else {
+                n.clone()
+            };
+            Some(format!("{key} = {:?}\n", s.get(n)?))
+        })
+        .collect()
+}

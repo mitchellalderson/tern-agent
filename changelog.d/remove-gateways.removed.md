@@ -1,0 +1,1 @@
+- **Messaging gateways.** tern is local-only: Telegram, ntfy and Slack gateways are gone, with `tern gateway`, `tern agents telegram`, per-agent bots, pairing codes and the `[gateway]` config (ignored with a warning). Approvals happen in the desktop app and the TUI.
