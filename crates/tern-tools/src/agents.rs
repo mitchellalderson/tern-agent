@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tern_core::subagent::{
     AskRequest, CancelRequest, HostSlot, ResultRequest, SendRequest, SpawnRequest, SubagentHost,
-    WaitRequest,
+    TeamRequest, WaitRequest,
 };
 use tern_core::tool::{
     Effect, Tool, ToolCtx, ToolPolicy, ToolRegistry, ToolResult, current_call_id,
@@ -21,7 +21,15 @@ use crate::{args, spec};
 pub fn register(registry: &mut ToolRegistry, slot: HostSlot) {
     registry.register(std::sync::Arc::new(AgentSpawn(slot.clone())));
     registry.register(std::sync::Arc::new(AgentWait(slot.clone())));
-    registry.register(std::sync::Arc::new(AgentResult(slot.clone())));
+    registry.register(std::sync::Arc::new(AgentResult::new(
+        slot.clone(),
+        "agent_result",
+    )));
+    registry.register(std::sync::Arc::new(AgentResult::new(
+        slot.clone(),
+        "read_report",
+    )));
+    registry.register(std::sync::Arc::new(DelegateTeam(slot.clone())));
     registry.register(std::sync::Arc::new(AgentSend(slot.clone())));
     registry.register(std::sync::Arc::new(AgentCancel(slot.clone())));
     registry.register(std::sync::Arc::new(AgentStatus(slot.clone())));
@@ -184,7 +192,17 @@ impl Tool for AgentWait {
 
 // ---- agent_result ----
 
-pub struct AgentResult(pub HostSlot);
+/// `read_report`, and `agent_result` as its older name.
+pub struct AgentResult {
+    slot: HostSlot,
+    name: &'static str,
+}
+
+impl AgentResult {
+    pub fn new(slot: HostSlot, name: &'static str) -> Self {
+        Self { slot, name }
+    }
+}
 
 #[async_trait]
 impl Tool for AgentResult {
@@ -194,8 +212,8 @@ impl Tool for AgentResult {
 
     fn spec(&self) -> ToolSpec {
         spec(
-            "agent_result",
-            "Read more of a finished sub-agent's report. Reports reach you cut to a limit, with a marker saying how much there is; call this with the marker's `offset` to read on. Returns a slice and the next offset. Only fetch what you need.",
+            self.name,
+            "Read more of a finished teammate's or sub-agent's report. Reports reach you cut to a limit (and, when several arrive together, to a share of 24,000 characters), with a marker saying how much there is; call this with the marker's `offset` to read on. Returns a slice and the next offset. Only fetch what you need. You get their report, never their tool output.",
             json!({
                 "type": "object",
                 "required": ["agent"],
@@ -214,7 +232,7 @@ impl Tool for AgentResult {
 
     fn summary(&self, args: &Value) -> Option<String> {
         let label = args.get("agent").and_then(Value::as_str).unwrap_or("?");
-        Some(format!("agent_result {label}"))
+        Some(format!("{} {label}", self.name))
     }
 
     async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
@@ -222,10 +240,83 @@ impl Tool for AgentResult {
             Ok(a) => a,
             Err(e) => return e,
         };
-        match host(&self.0) {
+        match host(&self.slot) {
             Ok(h) => result(h.result(ctx, req).await),
             Err(e) => e,
         }
+    }
+}
+
+// ---- delegate_team ----
+
+pub struct DelegateTeam(pub HostSlot);
+
+/// "Scout", "Scout and Researcher", "Scout, Researcher and Inbox".
+pub fn names_list(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+#[async_trait]
+impl Tool for DelegateTeam {
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
+    fn spec(&self) -> ToolSpec {
+        spec(
+            "delegate_team",
+            "Split a question across two or three teammates' lanes. They work at the same time; you get all their reports back together, then answer once, crediting each by name. Each lane's `task` is a complete brief for that teammate alone: the goal, what you know, and the shape of the report you want. Use `agent_spawn` with `agent` for a single teammate.",
+            json!({
+                "type": "object",
+                "required": ["lanes"],
+                "properties": {
+                    "lanes": { "type": "array", "minItems": 2, "maxItems": 3,
+                        "description": "One entry per teammate; each teammate at most once.",
+                        "items": {
+                            "type": "object",
+                            "required": ["agent", "task"],
+                            "properties": {
+                                "agent": { "type": "string", "description": "The teammate's name, e.g. 'scout'." },
+                                "task": { "type": "string", "description": "That teammate's complete brief." }
+                            }
+                        } },
+                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 900 }
+                }
+            }),
+        )
+    }
+
+    fn policy(&self, _: &ToolCtx, _: &Value) -> ToolPolicy {
+        policy(self.effect())
+    }
+
+    fn summary(&self, args: &Value) -> Option<String> {
+        let names: Vec<String> = args
+            .get("lanes")?
+            .as_array()?
+            .iter()
+            .filter_map(|l| l.get("agent")?.as_str().map(str::to_owned))
+            .collect();
+        Some(format!("Handed to {}", names_list(&names)))
+    }
+
+    async fn call(&self, ctx: &ToolCtx, raw: Value) -> ToolResult {
+        let req: TeamRequest = match args(raw) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        let host = match host(&self.0) {
+            Ok(h) => h,
+            Err(e) => return e,
+        };
+        let Some(call_id) = current_call_id() else {
+            return ToolResult::error("delegate_team must be called by the agent loop");
+        };
+        result(host.delegate_team(ctx, &call_id, req).await)
     }
 }
 
@@ -412,6 +503,13 @@ impl Tool for AgentAskParent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn team_names_read_as_a_list() {
+        let n = |v: &[&str]| names_list(&v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+        assert_eq!(n(&["Scout", "Researcher"]), "Scout and Researcher");
+        assert_eq!(n(&["A", "B", "C"]), "A, B and C");
+    }
 
     #[test]
     fn a_tainted_reply_is_untrusted_text_for_the_reader() {
