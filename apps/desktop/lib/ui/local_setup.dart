@@ -86,7 +86,10 @@ class _LocalSetupState extends State<LocalSetup> {
     );
     Widget note(String text, {Color? color}) => Padding(
       padding: const EdgeInsets.only(top: 6),
-      child: Text(text, style: TextStyle(fontSize: 12.5, color: color ?? c.muted)),
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 12.5, color: color ?? c.muted),
+      ),
     );
     final children = <Widget>[
       const Text(
@@ -130,7 +133,8 @@ class _LocalSetupState extends State<LocalSetup> {
                 style: style,
                 onPressed: _busy
                     ? null
-                    : () => _do(() => widget.client.localInstall(consent: true)),
+                    : () =>
+                          _do(() => widget.client.localInstall(consent: true)),
                 child: const Text('Download and install'),
               ),
             TextButton(
@@ -140,7 +144,8 @@ class _LocalSetupState extends State<LocalSetup> {
             ),
           ],
         ),
-        if (s.installing.failed) note(s.installing.message ?? 'The install failed.', color: c.error),
+        if (s.installing.failed)
+          note(s.installing.message ?? 'The install failed.', color: c.error),
       ]);
     } else if (!s.running) {
       children.addAll([

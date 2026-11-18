@@ -14,13 +14,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde_json::{Value, json};
 use tern_providers::ollama as api;
+use tokio_util::sync::CancellationToken;
 
-use super::{ContextSource, Detection, Engine, Error, LocalModel, OLLAMA_URL, Status};
+use super::{ContextSource, Detection, Engine, Error, LocalModel, OLLAMA_URL, Progress, Status};
 
 const GIB: u64 = 1 << 30;
 const NAME: &str = "Ollama";
+
+/// Free bytes on the volume holding a path.
+pub type DiskFree = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
 
 /// Everything that depends on this computer, so tests can replace it.
 pub struct Config {
@@ -31,7 +36,7 @@ pub struct Config {
     pub bin_dirs: Vec<PathBuf>,
     pub models_dir: PathBuf,
     pub ram_bytes: Option<u64>,
-    pub disk_free: fn(&Path) -> Option<u64>,
+    pub disk_free: DiskFree,
     pub spawner: Arc<dyn Spawner>,
     /// How long to wait for a server tern started to answer.
     pub ready_within: Duration,
@@ -55,7 +60,14 @@ impl Config {
             models_dir: std::env::var_os("OLLAMA_MODELS")
                 .map_or_else(|| home.join(".ollama/models"), PathBuf::from),
             ram_bytes: tern_core::limits::total_memory_bytes(),
-            disk_free,
+            // `TERN_LOCAL_DISK_FREE` (bytes) stands in for the disk, for tests.
+            disk_free: match std::env::var("TERN_LOCAL_DISK_FREE")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                Some(n) => Arc::new(move |_| Some(n)),
+                None => Arc::new(disk_free),
+            },
             spawner: Arc::new(RealSpawner),
             ready_within: Duration::from_secs(30),
         }
@@ -164,6 +176,8 @@ pub fn managed_env(url: &str, ram: Option<u64>) -> Vec<(String, String)> {
 pub struct Ollama {
     cfg: Config,
     quick: reqwest::Client,
+    /// No overall timeout: a download takes as long as it takes.
+    stream: reqwest::Client,
     child: tokio::sync::Mutex<Option<Box<dyn Child>>>,
     /// The context a server tern started was given.
     managed_ctx: Mutex<Option<u64>>,
@@ -176,8 +190,13 @@ impl Ollama {
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default();
+        let stream = tern_core::net::http_client()
+            .connect_timeout(Duration::from_secs(3))
+            .build()
+            .unwrap_or_default();
         Self {
             quick,
+            stream,
             cfg,
             child: tokio::sync::Mutex::new(None),
             managed_ctx: Mutex::new(None),
@@ -361,6 +380,88 @@ impl Engine for Ollama {
             .collect())
     }
 
+    async fn pull(
+        &self,
+        model: &str,
+        progress: &mut (dyn FnMut(Progress) + Send),
+        cancel: CancellationToken,
+    ) -> Result<(), Error> {
+        let resp = tokio::select! {
+            r = self.stream.post(format!("{}/api/pull", self.cfg.url))
+                .json(&json!({ "model": model, "stream": true })).send() => {
+                r.map_err(|e| Error::Unavailable(format!("couldn't reach Ollama: {e}")))?
+            }
+            () = cancel.cancelled() => return Err(Error::Cancelled),
+        };
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            let msg = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(str::to_owned))
+                .unwrap_or(body);
+            return Err(Error::Failed(format!(
+                "Ollama said no ({status}): {}",
+                msg.trim()
+            )));
+        }
+        // One JSON object per line; a line can span chunks.
+        let mut stream = resp.bytes_stream();
+        let mut buf = Vec::<u8>::new();
+        let mut finished = false;
+        loop {
+            let chunk = tokio::select! {
+                c = stream.next() => c,
+                () = cancel.cancelled() => return Err(Error::Cancelled),
+            };
+            let Some(chunk) = chunk else { break };
+            buf.extend_from_slice(
+                &chunk.map_err(|e| Error::Failed(format!("download interrupted: {e}")))?,
+            );
+            while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
+                let line: Vec<u8> = buf.drain(..=nl).collect();
+                let Ok(v) = serde_json::from_slice::<Value>(&line) else {
+                    continue;
+                };
+                if let Some(e) = v["error"].as_str() {
+                    return Err(Error::Failed(e.to_owned()));
+                }
+                let status = v["status"].as_str().unwrap_or_default().to_owned();
+                if status == "success" {
+                    finished = true;
+                }
+                progress(Progress {
+                    digest: v["digest"].as_str().map(str::to_owned),
+                    status,
+                    completed: v["completed"].as_u64().unwrap_or(0),
+                    total: v["total"].as_u64().unwrap_or(0),
+                });
+            }
+        }
+        if finished {
+            Ok(())
+        } else {
+            Err(Error::Failed(
+                "the download stopped before it finished".into(),
+            ))
+        }
+    }
+
+    async fn delete(&self, model: &str) -> Result<(), Error> {
+        let r = self
+            .quick
+            .delete(format!("{}/api/delete", self.cfg.url))
+            .json(&json!({ "model": model }))
+            .send()
+            .await
+            .map_err(|e| Error::Unavailable(format!("couldn't reach Ollama: {e}")))?;
+        match r.status().as_u16() {
+            200..=299 => Ok(()),
+            404 => Err(Error::Failed(format!("{model} isn't installed"))),
+            s => Err(Error::Failed(format!("Ollama said no ({s})"))),
+        }
+    }
+
     async fn start(&self) -> Result<(), Error> {
         // Always reuse what answers.
         if self.detect().await.running {
@@ -463,7 +564,7 @@ mod tests {
             bin_dirs: vec![dir.join("bin")],
             models_dir: dir.join("models"),
             ram_bytes: Some(16 * GIB),
-            disk_free: |_| Some(50 * GIB),
+            disk_free: Arc::new(|_| Some(50 * GIB)),
             spawner,
             ready_within: Duration::from_millis(600),
         }
@@ -689,5 +790,121 @@ mod tests {
         assert!(m[0].loaded && !m[1].loaded);
         assert_eq!(m[0].tools, Some(true));
         assert_eq!(m[0].max_context, Some(40_960));
+    }
+
+    #[tokio::test]
+    async fn pull_reports_progress_and_needs_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = MockServer::start().await;
+        let lines = [
+            json!({ "status": "pulling manifest" }),
+            json!({ "status": "downloading", "digest": "x", "total": 100, "completed": 40 }),
+            json!({ "status": "downloading", "digest": "x", "total": 100, "completed": 100 }),
+            json!({ "status": "success" }),
+        ]
+        .iter()
+        .map(|l| format!("{l}\n"))
+        .collect::<String>();
+        Mock::given(method("POST"))
+            .and(path("/api/pull"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(lines))
+            .mount(&server)
+            .await;
+        let e = Ollama::new(cfg(
+            &server.uri(),
+            tmp.path(),
+            Arc::new(FakeSpawner::default()),
+        ));
+        let mut seen = Vec::new();
+        e.pull("qwen3:8b", &mut |p| seen.push(p), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(seen.len(), 4);
+        assert_eq!((seen[1].completed, seen[1].total), (40, 100));
+        assert_eq!(seen[3].status, "success");
+    }
+
+    #[tokio::test]
+    async fn pull_errors_and_cancel_and_truncation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/pull"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("{\"status\":\"downloading\",\"total\":10,\"completed\":1}\n"),
+            )
+            .mount(&server)
+            .await;
+        let e = Ollama::new(cfg(
+            &server.uri(),
+            tmp.path(),
+            Arc::new(FakeSpawner::default()),
+        ));
+        // The stream ends without `success`: not a finished download.
+        let err = e
+            .pull("m", &mut |_| {}, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("stopped before"), "{err}");
+        let token = CancellationToken::new();
+        token.cancel();
+        assert!(matches!(
+            e.pull("m", &mut |_| {}, token).await,
+            Err(Error::Cancelled)
+        ));
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/pull"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "{\"status\":\"pulling manifest\"}\n{\"error\":\"pull model manifest: file does not exist\"}\n",
+            ))
+            .mount(&server)
+            .await;
+        let e = Ollama::new(cfg(
+            &server.uri(),
+            tmp.path(),
+            Arc::new(FakeSpawner::default()),
+        ));
+        let err = e
+            .pull("nope", &mut |_| {}, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("does not exist"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn delete_maps_the_answers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/delete"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let e = Ollama::new(cfg(
+            &server.uri(),
+            tmp.path(),
+            Arc::new(FakeSpawner::default()),
+        ));
+        e.delete("m").await.unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let e = Ollama::new(cfg(
+            &server.uri(),
+            tmp.path(),
+            Arc::new(FakeSpawner::default()),
+        ));
+        assert!(
+            e.delete("m")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("isn't installed")
+        );
     }
 }

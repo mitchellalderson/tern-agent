@@ -5,6 +5,7 @@
 
 import 'channels.dart';
 import 'connections.dart';
+import 'local.dart';
 import 'mcp.dart';
 import 'secret_requests.dart';
 
@@ -571,6 +572,9 @@ sealed class TernEvent {
       return PostCreated(Post.fromJson(p['post'] as Json));
     }
     if (j.containsKey('local_changed')) return const LocalChanged();
+    if (j['local_pull'] case final Json p) {
+      return LocalPullEvent(LocalPull.fromJson(p));
+    }
     if (j.containsKey('channels_changed')) return const ChannelsChanged();
     if (j.containsKey('agents_changed')) return const AgentsChanged();
     if (j['events_dropped'] case final Json d) {
@@ -994,6 +998,13 @@ class PostUpdated extends TernEvent {
 /// `/v1/local/status`.
 class LocalChanged extends TernEvent {
   const LocalChanged();
+}
+
+/// A model download started, moved on or ended.
+class LocalPullEvent extends TernEvent {
+  const LocalPullEvent(this.pull);
+
+  final LocalPull pull;
 }
 
 /// A channel was created, changed, archived, or got a new main thread

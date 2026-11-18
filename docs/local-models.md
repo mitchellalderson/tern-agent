@@ -34,17 +34,42 @@ Only after you press the button, under a sentence saying what it does. The daemo
 |---|---|---|
 | GET | `/v1/local/status` | `{engine, installed, running, version, too_old, managed, url, models_dir, disk_free, ram_bytes, context, context_source, warnings, install_page, install: {source, destination, summary, available}, installing: {state: idle｜working｜done｜failed, phase, completed, total, signer, message}}` |
 | GET | `/v1/local/models` | installed models: `{name, size, digest, family, parameter_size, quantization, tools, thinking, max_context, loaded}` |
+| DELETE | `/v1/local/models/{name}` | remove an installed model (the name may contain `/` and `:`) |
+| GET | `/v1/local/pulls` | downloads, running and recent: `{id, model, phase: starting｜downloading｜verifying｜done｜failed｜cancelled, completed, total, error}` |
+| POST | `/v1/local/pull` | `{model}`: start a download; answers the download |
+| POST | `/v1/local/pulls/{id}/cancel` | stop a download (pulling it again resumes) |
 | POST | `/v1/local/start` | start the engine unless one already answers |
 | POST | `/v1/local/stop` | stop an engine tern started |
 | POST | `/v1/local/install` | `{consent: true}`: install in the background; progress in `status.installing` |
 
 Every change sends `local_changed` on `/v1/events`; re-read the status. `health.features` has `local_models`.
 
-For tests and unusual setups, `TERN_LOCAL_URL` points tern at another Ollama address and `TERN_LOCAL_APPS` (a
+Every change sends `local_changed`; a download also sends `local_pull` (`{id, model, phase, completed, total, error}`)
+as it goes. When one ends, the `ollama` provider's model list is refreshed (`models_changed`).
+
+## Downloads
+
+The daemon owns them, so they go on when a window closes. One at a time. Before starting, Ollama must be running and the
+disk must have at least 10 GB to spare. Once the layers' sizes are known, a model that won't fit stops with a plain
+message instead of filling the disk. Progress sums all layers into one bar. Cancel stops it; pulling the same model again
+resumes the part already there.
+
+## CLI
+
+```
+tern local status [--json]
+tern local list [--json]
+tern local pull MODEL [--json]     # progress bar; Ctrl-C cancels
+tern local rm MODEL
+tern local start | stop            # needs the daemon, so tern can stop what it started
+```
+
+Through the running daemon when there is one (a window sees the download), else straight to Ollama.
+
+For tests and unusual setups, `TERN_LOCAL_URL` points tern at another Ollama address, `TERN_LOCAL_DISK_FREE` (bytes) stands in for the disk, and `TERN_LOCAL_APPS` (a
 `:`-separated list) replaces the folders searched for `Ollama.app`.
 
 ## The engine trait
 
-`crates/tern/src/local/mod.rs` defines `Engine`: detect, status, list, start, stop (pull and delete arrive with the model
-browser). `local/ollama.rs` is the first implementation. MLX or `llama-server` would be a second one, not a change to
+`crates/tern/src/local/mod.rs` defines `Engine`: detect, status, list, pull, delete, start, stop. `local/ollama.rs` is the first implementation. MLX or `llama-server` would be a second one, not a change to
 the daemon.

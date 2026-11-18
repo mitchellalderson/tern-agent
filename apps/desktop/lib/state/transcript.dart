@@ -868,6 +868,7 @@ class Transcript {
           AuthPromptClosed() ||
           ConnectionsChanged() ||
           LocalChanged() ||
+          LocalPullEvent() ||
           NotificationRequested():
         return false;
     }

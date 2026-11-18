@@ -16,6 +16,7 @@ mod inspect;
 mod ledger_cmd;
 mod lifecycle;
 mod local;
+mod local_cmd;
 mod logging;
 mod manage;
 mod mcp;
@@ -118,6 +119,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Setup) => {
             home.ensure_layout()?;
             tui_backend::run(&home, Some("/setup"))
+        }
+        Some(Command::Local { command }) => {
+            home.ensure_layout()?;
+            local_cmd::run(&home, command)
         }
         Some(Command::Providers { command }) => {
             home.ensure_layout()?;

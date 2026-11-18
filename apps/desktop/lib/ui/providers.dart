@@ -6,6 +6,7 @@ import 'package:tern_client/tern_client.dart';
 
 import '../state/store.dart';
 import '../theme.dart';
+import 'local_models.dart';
 import 'local_setup.dart';
 import 'model_chain_editor.dart';
 import 'model_picker.dart';
@@ -253,6 +254,14 @@ class _ProvidersDialogState extends State<ProvidersDialog> {
               : WrapAlignment.end,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
+            if (setup == null &&
+                (widget.store.health?.features.contains('local_models') ??
+                    false))
+              TextButton.icon(
+                onPressed: () => showLocalModelsDialog(context, widget.store),
+                icon: Icon(Icons.laptop_mac, size: 16, color: c.muted),
+                label: Text('Local models…', style: TextStyle(color: c.muted)),
+              ),
             if (setup == null)
               TextButton.icon(
                 onPressed: providers == null

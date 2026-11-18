@@ -149,6 +149,13 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<McpCommand>,
     },
+    /// Models on this Mac, through Ollama: status, installed models,
+    /// download and remove. Goes through the running daemon when there is
+    /// one.
+    Local {
+        #[command(subcommand)]
+        command: Option<LocalCommand>,
+    },
     /// List the models each provider offers.
     Models {
         /// Only this provider.
@@ -212,6 +219,35 @@ pub enum ServiceCommand {
     /// Print the daemon plist bundled in `tern Tray.app` (for packaging).
     #[command(hide = true)]
     BundlePlist,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum LocalCommand {
+    /// Is Ollama installed and running, its context, free disk.
+    Status {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Installed models, and which can use tools.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Download a model, with progress (for example `qwen3:8b`).
+    Pull {
+        model: String,
+        /// Print JSON lines instead of a progress bar.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove an installed model.
+    Rm { model: String },
+    /// Start Ollama (needs the tern daemon; one already running is reused).
+    Start,
+    /// Stop an Ollama that tern started.
+    Stop,
 }
 
 #[derive(Debug, Subcommand)]
