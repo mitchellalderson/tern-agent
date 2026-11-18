@@ -80,8 +80,57 @@ pub struct Post {
     /// accept or decline it, which closes the post.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<Box<Suggestion>>,
+    /// A `needs_you` post (or its pointer) for a proactive card (heartbeat,
+    /// routine fix, routine suggestion, away brief): accept or dismiss it,
+    /// which closes the post.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<Box<Card>>,
     /// Unix ms.
     pub created_at: i64,
+}
+
+/// A proactive card ([`tern_store::CardRow`], docs/innbot-learnings.md).
+/// Always dismissible; `accept_label` is set when it can also be acted on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Card {
+    pub id: i64,
+    pub kind: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept_label: Option<String>,
+    /// `pending`, `accepted` or `dismissed`.
+    pub state: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_id: Option<i64>,
+    pub created_at: i64,
+}
+
+impl From<tern_store::CardRow> for Card {
+    fn from(c: tern_store::CardRow) -> Self {
+        Self {
+            id: c.id,
+            kind: c.kind,
+            title: c.title,
+            body: c.body,
+            accept_label: c.accept_label,
+            state: c.state,
+            agent_id: c.agent_id,
+            post_id: c.post_id,
+            created_at: c.created_at,
+        }
+    }
+}
+
+/// The card a post (or its Home pointer) stands for.
+pub fn card_of(store: &tern_store::Store, row: &tern_store::PostRow) -> Option<Card> {
+    let post = match (row.kind.as_str(), row.points_to) {
+        ("pointer", Some(to)) => to,
+        _ => row.id,
+    };
+    store.card_of_post(post).ok().flatten().map(Card::from)
 }
 
 /// A channel an agent suggested (`channel_suggest`, channels-design C5).
@@ -137,6 +186,7 @@ impl From<tern_store::PostRow> for Post {
             approval_id: None,
             secret_request_id: None,
             suggestion: None,
+            card: None,
             created_at: p.created_at,
         }
     }

@@ -461,6 +461,44 @@ class TernStore extends ChangeNotifier {
     }
   }
 
+  /// Act on a proactive card: its agent is told what it proposed. The post
+  /// closes through the daemon's update. Returns the reason on failure.
+  Future<String?> acceptCard(ProactiveCard card) async {
+    try {
+      await client.acceptCard(card.id);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  /// Close a proactive card without acting on it.
+  Future<String?> dismissCard(ProactiveCard card) async {
+    try {
+      await client.dismissCard(card.id);
+      return null;
+    } on TernException catch (e) {
+      return e.message;
+    }
+  }
+
+  DateTime? _presenceAt;
+
+  /// Tell the core the app is open (at most once a minute): the first open
+  /// of the day after a long absence gets "While you were away". Best effort.
+  Future<void> reportPresence() async {
+    final now = DateTime.now();
+    if (_presenceAt case final at? when now.difference(at).inSeconds < 60) {
+      return;
+    }
+    _presenceAt = now;
+    try {
+      await client.reportPresence();
+    } on TernException {
+      // An older daemon has no presence; nothing to do.
+    }
+  }
+
   /// Mark a needs-you post (or its pointer in Home) done.
   Future<void> resolvePost(Post post) async {
     try {
@@ -764,6 +802,7 @@ class TernStore extends ChangeNotifier {
       link = Link.online;
       linkError = null;
       _backoff = const Duration(milliseconds: 500);
+      unawaited(reportPresence());
     } on TernException catch (e) {
       _lost(e);
       return;

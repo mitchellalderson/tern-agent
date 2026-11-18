@@ -13,6 +13,7 @@ mod members_repo;
 mod memory_repo;
 mod migrations;
 mod outbox_repo;
+mod proactive_repo;
 mod repo;
 mod skill_offers_repo;
 mod subagents_repo;
@@ -38,6 +39,7 @@ pub use memory_repo::{
     Forgot, MemoryLimits, MemoryRefusal, NewMemory, SOURCE_AGENT, SOURCE_UNVERIFIED, SOURCE_USER,
 };
 pub use outbox_repo::{NewOutbox, OutboxRow};
+pub use proactive_repo::{CardRow, NewCard};
 pub use skill_offers_repo::SkillOfferRow;
 pub use subagents_repo::{MailRow, NewMail};
 pub use suggestions_repo::{NewSuggestion, SuggestionRow};

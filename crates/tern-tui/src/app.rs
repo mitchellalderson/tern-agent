@@ -443,7 +443,10 @@ impl App {
                 KeyCode::Char('a' | 'A')
                     if self.approval.as_ref().is_some_and(|p| {
                         p.request.pattern.is_some()
-                            || p.request.grant.as_ref().is_some_and(|g| !g.run_only)
+                            || p.request
+                                .grant
+                                .as_ref()
+                                .is_some_and(|g| !g.run_only && g.always)
                     }) =>
                 {
                     Decision::AlwaysAllow

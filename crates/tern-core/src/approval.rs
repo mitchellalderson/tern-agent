@@ -589,6 +589,20 @@ pub struct GrantOffer {
     /// Only "for this run" may be offered (a tainted run's read scope).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub run_only: bool,
+    /// "Always" may be offered. False until the user has said "Allow once" to
+    /// exactly this three times in 14 days ([`crate::proactive::always_learned`]);
+    /// front ends then leave "always" out, and an "always" answer counts as
+    /// "once".
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub always: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl ApprovalRequest {
@@ -910,6 +924,28 @@ pub fn pattern_for(call: &ToolCall) -> Option<String> {
         return None;
     }
     Some(format!("{first} *"))
+}
+
+/// Commands that remove, overwrite or reach out of the folder: a standing
+/// "always" is never learned for them (P7), whatever the user answered.
+const DESTROYERS: &[&str] = &[
+    "rm", "rmdir", "mv", "dd", "mkfs", "shred", "truncate", "chmod", "chown", "kill", "killall",
+    "pkill", "sudo", "su", "doas", "eval", "exec", "xargs", "find", "curl", "wget", "ssh", "scp",
+];
+
+/// A `shell` call whose command is one of the [`DESTROYERS`].
+pub fn shell_destroys(call: &ToolCall) -> bool {
+    if call.name != "shell" {
+        return false;
+    }
+    let subject = subject(call);
+    let first = subject.split_whitespace().next().unwrap_or_default();
+    let base = first
+        .trim_start_matches('\\')
+        .rsplit('/')
+        .next()
+        .unwrap_or(first);
+    DESTROYERS.contains(&base)
 }
 
 /// A `shell` call asking for network (docs/sandbox-design.md): it asks

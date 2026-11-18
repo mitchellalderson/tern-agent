@@ -631,6 +631,31 @@ autonomy or taint, and bounds them instead:
 
 A routine's own history is separate: see [A routine's previous report](#a-routines-previous-report).
 
+### Proactive help
+
+tern speaks first in five ways, each a **card** in the agent's DM you can dismiss, each with a switch under `[proactive]`
+(all default on) and a hard cap. The host decides, not the model: none of them calls a model unless something changed,
+and none changes anything by itself. `GET /v1/proactive/cards[?state=]`, `POST /v1/proactive/cards/{id}/accept` and
+`.../dismiss`; accepting a card tells its agent, as you, what it proposed.
+
+- **Daily check** (`heartbeat`). Once a day per agent, outside quiet hours: routines paused or failing, connections that
+  need signing in again, waits that are overdue. Nothing wrong: no card and no model call. The same news is not
+  repeated within a week.
+- **Routine fixes** (`fix_routines`). A routine that failed twice or reported nothing three times in a row: its agent
+  reads the last runs (read-only, in a session of its own) and proposes a fix on a card with **Apply fix**. One per
+  routine per week, three a day. Never applied silently.
+- **Learned "Always allow this"** (`learn_approvals`). An approval card no longer offers "Always" every time. After you
+  chose **Allow once** three times in 14 days for the same agent, tool and target, the card offers it and says why.
+  Never for a destructive call, a tainted run or a routine's run, nor for shell commands that remove, move, escalate or
+  reach the network. An "always" answer to a card that didn't offer it counts as once. Desktop **Settings ›
+  Permissions › Always allowed** lists the grants and revokes them (`GET /v1/grants`, `POST /v1/grants/revoke`;
+  `tern grants` does the same). Off: "Always" is on every card, as before.
+- **Routine suggestions** (`suggest_routines`). The same kind of ask three times in 14 days (word overlap, then one yes/no to the decision model):
+  a card with **Set up routine**. One a day, and one per kind of ask; not if a routine for it already exists.
+- **While you were away** (`away_brief`). The desktop reports it is open (`POST /v1/proactive/presence`). On the first
+  open of the day after 8 hours or more, Home gets one brief: held digest results, the outbox, what is open, routine
+  reports that came in. Nothing to say: no card.
+
 ### Skill capture
 
 After a long, clean run tern offers, once, to save it as a skill. A run qualifies when it is yours (not a routine, an outbox run, an MCP caller or a sub-agent), finished, made at least `[skills].capture_min_tool_calls` tool calls (default 8), at most a quarter of them failed or were refused, and it never read untrusted content (a tainted run could carry someone else's instructions into a skill). A conversation with an offer waiting isn't offered again, a dismissed run never is, and an offer lapses after 7 days. Offers need the daemon (`tern start`): runs made with `tern run` or the TUI without it aren't watched.

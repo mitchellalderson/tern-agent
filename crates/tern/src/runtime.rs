@@ -306,6 +306,7 @@ impl Runtime {
                     .filter_map(|(name, p)| p.context_window.map(|w| (name.clone(), w)))
                     .collect(),
                 memory_flush: config.memory.flush,
+                learn_approvals: config.proactive.learn_approvals,
                 show_reasoning: config.show_reasoning,
                 approval_wait: std::time::Duration::from_secs(config.outbox.wait_secs),
                 outbox_expiry: std::time::Duration::from_secs(

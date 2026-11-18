@@ -206,6 +206,7 @@ pub fn router(manager: Shared) -> Router {
         .route("/v1/approvals/{id}", post(approve))
         .merge(super::api_channels::routes())
         .merge(super::suggestions::routes())
+        .merge(super::proactive::routes())
         .merge(super::api_agents::routes())
         .merge(super::api_workspaces::routes())
         .merge(super::api_config::routes())

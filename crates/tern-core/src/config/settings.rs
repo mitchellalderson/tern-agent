@@ -315,6 +315,9 @@ fn meta(key: &str) -> Meta {
         },
         "memory.user_md_tokens" | "memory.memory_md_tokens" => at_least(0.0),
         "skills.capture_min_tool_calls" => at_least(1.0),
+        // Read when the agent loop is built.
+        "proactive.learn_approvals" => m,
+        k if k.starts_with("proactive.") => Meta { live: true, ..m },
         "home.idle_hours" => Meta {
             live: true,
             ..at_least(0.0)
@@ -385,7 +388,12 @@ fn placement(key: &str) -> (&'static str, bool) {
         | "schedules.initiative_dial"
         | "schedules.digest_times"
         | "memory.flush"
-        | "skills.capture" => ("general", false),
+        | "skills.capture"
+        | "proactive.heartbeat"
+        | "proactive.fix_routines"
+        | "proactive.learn_approvals"
+        | "proactive.suggest_routines"
+        | "proactive.away_brief" => ("general", false),
         "memory.user_md_tokens" | "memory.memory_md_tokens" | "skills.capture_min_tool_calls" => {
             ("general", true)
         }
@@ -880,6 +888,7 @@ mod tests {
                 "memory",
                 "home",
                 "skills",
+                "proactive",
                 "outbox",
                 "taint",
                 "fetch",

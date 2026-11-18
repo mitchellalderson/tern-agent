@@ -400,8 +400,10 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             if !grant.run_only {
                 options.push(Span::styled("[c]", warn));
                 options.push(Span::raw(" this conversation   "));
-                options.push(Span::styled("[a]", warn));
-                options.push(Span::raw(" always   "));
+                if grant.always {
+                    options.push(Span::styled("[a]", warn));
+                    options.push(Span::raw(" always   "));
+                }
             }
         }
         if let Some((n, tools)) = app.bulk_summary() {

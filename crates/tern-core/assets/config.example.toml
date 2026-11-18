@@ -131,6 +131,15 @@ docker_pids = 512          # 0 for no limit
 # capture = true               # false: never offer
 # capture_min_tool_calls = 8   # tool calls a run needs before it is offered
 
+# Proactive help: tern speaks first only through a card you can dismiss, never
+# more than a hard cap, and without a model call when nothing changed.
+# [proactive]
+# heartbeat = true           # a daily check of routines, sign-ins and waits; one card if something needs you
+# fix_routines = true        # 2 failed runs or 3 empty reports in a row: the agent proposes a fix (max 1 a week per routine)
+# learn_approvals = true     # offer "Always allow this" only after you chose "Allow once" 3 times in 14 days
+# suggest_routines = true    # suggest a routine after you ask for the same kind of work 3 times in 14 days
+# away_brief = true          # "While you were away" on the first open of the day after 8 hours or more
+
 # A write nobody approves in time waits in the outbox (`tern outbox`) instead
 # of being denied.
 # [outbox]
