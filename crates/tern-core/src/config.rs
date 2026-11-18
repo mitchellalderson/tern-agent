@@ -41,6 +41,15 @@ pub enum ConfigError {
 pub struct Config {
     /// `provider:model`, or a fallback chain `["a:x", "b:y"]` (T6a).
     pub default_model: Option<ModelChain>,
+    /// The fast model: background writing (summaries, role lines, carry-over)
+    /// and the fallback for quick decisions. Unset: Claude Haiku when the
+    /// Anthropic provider is set up, else the cheapest priced model.
+    pub fast_model: Option<ModelChain>,
+    /// The decision model: quick choices (who answers, is this worth a push).
+    /// An OpenRouter decision model answers in one call; any other model is
+    /// asked for structured JSON. Unset: an OpenRouter decision model when a
+    /// key is set, else the fast model.
+    pub decision_model: Option<ModelChain>,
     pub workspace: String,
     pub max_iterations: u32,
     /// Show the model's reasoning (Anthropic thinking, `reasoning_content`
@@ -59,12 +68,7 @@ pub struct Config {
     pub secret_request_timeout_secs: u64,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub sandbox: SandboxConfig,
-    pub gateway: GatewayConfig,
     pub mcp: McpConfig,
-    pub api: ApiConfig,
-    pub webhooks: WebhooksConfig,
-    /// Hosted tern account sign-in (deployment spec §10.4a). Off by default.
-    pub account: AccountConfig,
     pub subagents: SubagentsConfig,
     pub schedules: SchedulesConfig,
     pub memory: crate::memory::MemoryConfig,
@@ -377,6 +381,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             default_model: None,
+            fast_model: None,
+            decision_model: None,
             workspace: "~/tern-workspace".into(),
             max_iterations: 40,
             show_reasoning: true,
@@ -385,11 +391,7 @@ impl Default for Config {
             secret_request_timeout_secs: 900,
             providers: BTreeMap::new(),
             sandbox: SandboxConfig::default(),
-            gateway: GatewayConfig::default(),
             mcp: McpConfig::default(),
-            api: ApiConfig::default(),
-            webhooks: WebhooksConfig::default(),
-            account: AccountConfig::default(),
             subagents: SubagentsConfig::default(),
             schedules: SchedulesConfig::default(),
             memory: crate::memory::MemoryConfig::default(),
@@ -408,6 +410,42 @@ impl Default for Config {
     }
 }
 
+/// Settings from features tern no longer has (it is local-only and
+/// single-player). A config that still has them loads, with one warning,
+/// instead of failing on an unknown key. Dotted paths; a table name drops
+/// the whole table.
+const REMOVED: &[&str] = &["webhooks", "api", "account", "gateway"];
+
+/// Remove the dotted `path` from `table`; whether it was there.
+fn remove_path(table: &mut toml::Table, path: &str) -> bool {
+    match path.split_once('.') {
+        Some((head, rest)) => table
+            .get_mut(head)
+            .and_then(toml::Value::as_table_mut)
+            .is_some_and(|t| remove_path(t, rest)),
+        None => table.remove(path).is_some(),
+    }
+}
+
+/// `text` as a table without the [`REMOVED`] settings, or `None` if it had
+/// none (or isn't valid TOML, which the caller reports).
+fn strip_removed(text: &str) -> Option<toml::Table> {
+    let mut table: toml::Table = text.parse().ok()?;
+    let found: Vec<&str> = REMOVED
+        .iter()
+        .copied()
+        .filter(|path| remove_path(&mut table, path))
+        .collect();
+    if found.is_empty() {
+        return None;
+    }
+    tracing::warn!(
+        "config.toml: ignoring {} (tern is local-only now; remove it to silence this)",
+        found.join(", ")
+    );
+    Some(table)
+}
+
 impl Config {
     /// Load `path`. A missing file yields the defaults and `false`.
     pub fn load(path: &Path) -> Result<(Self, bool), ConfigError> {
@@ -422,10 +460,14 @@ impl Config {
     }
 
     pub fn parse(text: &str, path: &Path) -> Result<Self, ConfigError> {
-        let c: Self = toml::from_str(text).map_err(|e| ConfigError::Parse {
+        let parse_err = |e: toml::de::Error| ConfigError::Parse {
             path: path.to_path_buf(),
             source: Box::new(e),
-        })?;
+        };
+        let c: Self = match strip_removed(text) {
+            Some(cleaned) => cleaned.try_into().map_err(parse_err)?,
+            None => toml::from_str(text).map_err(parse_err)?,
+        };
         // Existing files without the line keep the old default: only a new
         // install (no file, or one written with `autonomy = "autonomous"`)
         // starts autonomous.
@@ -435,6 +477,12 @@ impl Config {
             .unwrap_or(true);
         if !has_autonomy {
             c.autonomy = crate::approval::Autonomy::Supervised;
+        }
+        // `schedules.gate_model` became `decision_model`.
+        if let Some(g) = c.schedules.gate_model.take()
+            && c.decision_model.is_none()
+        {
+            c.decision_model = Some(g);
         }
         // Code auto mode is a per-agent opt-in, never a global default.
         if c.autonomy == crate::approval::Autonomy::Code {
@@ -466,9 +514,6 @@ impl Config {
                 Some((secret, format!("provider {name}")))
             })
             .collect();
-        if let Some(t) = &self.gateway.telegram {
-            uses.push((t.bot_token_secret.clone(), "telegram".into()));
-        }
         for (name, s) in &self.mcp.servers {
             uses.extend(
                 s.secret_names()
@@ -493,6 +538,12 @@ impl Config {
         let mut out = Vec::new();
         if let Some(c) = &self.default_model {
             out.push(("default_model".to_owned(), c));
+        }
+        if let Some(c) = &self.fast_model {
+            out.push(("fast_model".to_owned(), c));
+        }
+        if let Some(c) = &self.decision_model {
+            out.push(("decision_model".to_owned(), c));
         }
         if let Some(c) = &self.subagents.default_model {
             out.push(("subagents.default_model".to_owned(), c));
@@ -837,210 +888,6 @@ pub enum SandboxBackendKind {
     Docker,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GatewayConfig {
-    pub telegram: Option<TelegramConfig>,
-    /// Gateway connectors by connector name (tooling spec §6.4): Luau
-    /// connectors with a `gateway` table, such as ntfy or Slack.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub connectors: BTreeMap<String, GatewayConnectorConfig>,
-}
-
-/// `[gateway.connectors.<name>]`: run active connector `<name>` as a chat
-/// transport. Delivery targets are `<name>:<chat>`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GatewayConnectorConfig {
-    pub enabled: bool,
-    /// How often to poll for messages, in seconds (when the connector can
-    /// receive).
-    pub poll_secs: u64,
-    /// Messages from senders who haven't paired (`tern gateway pair`):
-    /// `reply` with a fixed note, `ignore` them, or start a `taint`ed run
-    /// that can't write without an approval.
-    pub strangers: Strangers,
-    /// Handed to the connector (`opts.settings` on send, the third argument
-    /// of `poll`): topics, channel ids. Never secret values; those go in
-    /// `capabilities.auth`.
-    pub settings: BTreeMap<String, toml::Value>,
-}
-
-impl Default for GatewayConnectorConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            poll_secs: 30,
-            strangers: Strangers::Reply,
-            settings: BTreeMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Strangers {
-    #[default]
-    Reply,
-    Ignore,
-    Taint,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TelegramConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    pub bot_token_secret: String,
-    /// Bot API base URL; only changed for tests or self-hosted API servers.
-    pub api_url: Option<String>,
-}
-
-/// `[account]`: sign-in with a hosted tern account (Clerk), deployment spec
-/// §10.4a. Off unless `issuer` is set; local use never reads it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct AccountConfig {
-    /// Clerk's Frontend API URL, e.g. `https://clerk.example.com`. JWTs must
-    /// name it as `iss`. Setting it turns accounts on.
-    pub issuer: Option<String>,
-    /// The Clerk publishable key (public; the desktop app reads it).
-    pub publishable_key: Option<String>,
-    /// The `aud` JWTs must carry: the OAuth application's client id.
-    pub audience: Option<String>,
-    /// The Clerk user id (`user_…`) that owns this core. Only that account's
-    /// tokens are accepted; unset means none are.
-    pub owner: Option<String>,
-    /// Where the signing keys are; default `<issuer>/.well-known/jwks.json`.
-    pub jwks_url: Option<String>,
-}
-
-impl AccountConfig {
-    pub fn enabled(&self) -> bool {
-        self.issuer.is_some()
-    }
-
-    pub fn jwks_url(&self) -> Option<String> {
-        let issuer = self.issuer.as_deref()?;
-        Some(
-            self.jwks_url.clone().unwrap_or_else(|| {
-                format!("{}/.well-known/jwks.json", issuer.trim_end_matches('/'))
-            }),
-        )
-    }
-
-    /// Why this section can't work, if it can't.
-    pub fn check(&self) -> Result<(), String> {
-        let Some(issuer) = self.issuer.as_deref() else {
-            return Ok(());
-        };
-        let local =
-            issuer.starts_with("http://127.0.0.1") || issuer.starts_with("http://localhost");
-        if !issuer.starts_with("https://") && !local {
-            return Err("account.issuer must be an https:// URL".into());
-        }
-        if self.audience.as_deref().is_none_or(str::is_empty) {
-            return Err("account.audience is required when account.issuer is set".into());
-        }
-        Ok(())
-    }
-}
-
-/// `[api]`: where the daemon's API listens (deployment spec §6.1).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ApiConfig {
-    /// `"unix"` (always on) plus any `"tcp://host:port"` listeners.
-    pub listen: Vec<String>,
-    pub tls: TlsMode,
-    /// Certificate chain and key (PEM) for `tls = "files"`.
-    pub tls_cert: Option<String>,
-    pub tls_key: Option<String>,
-    /// Honour `X-Forwarded-For` from a reverse proxy on loopback.
-    pub trust_proxy: bool,
-    /// The URL devices use to reach this core, put in pairing links.
-    /// Defaults to the first TCP listener (with this host's name for
-    /// `0.0.0.0`).
-    pub public_url: Option<String>,
-    /// Let paired devices add or test `stdio` MCP servers, which run
-    /// commands on this host outside the sandbox.
-    pub remote_mcp_stdio: bool,
-}
-
-impl Default for ApiConfig {
-    fn default() -> Self {
-        Self {
-            listen: vec!["unix".into()],
-            tls: TlsMode::Auto,
-            tls_cert: None,
-            tls_key: None,
-            trust_proxy: false,
-            public_url: None,
-            remote_mcp_stdio: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TlsMode {
-    /// A self-signed certificate in `$TERN_HOME/tls/`, pinned by clients.
-    Auto,
-    /// `tls_cert` and `tls_key`, verified against the usual roots.
-    Files,
-    /// Plain HTTP: only behind a TLS-terminating proxy on loopback.
-    Off,
-}
-
-/// `[webhooks]`: the listener webhook routines are reached on (tooling
-/// spec §3.1, T1c). Its own port, never the device API's: the two take
-/// different credentials and are exposed to different networks.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct WebhooksConfig {
-    /// `"tcp://host:port"` listeners. Empty (the default): no webhook can
-    /// reach this core; `tern hooks fire` still works locally.
-    pub listen: Vec<String>,
-    /// TLS on those listeners; unset = `[api] tls`, with its certificate
-    /// files. `off` needs loopback listeners and `[api] trust_proxy`.
-    pub tls: Option<TlsMode>,
-    /// The URL senders use, shown with each hook's path. Defaults to the
-    /// first listener (this host's name for `0.0.0.0`).
-    pub public_url: Option<String>,
-    /// Largest body accepted, in KB.
-    pub max_body_kb: u64,
-    /// Deliveries one routine accepts per minute; more get 429.
-    pub per_minute: u32,
-    /// How far a signed timestamp (`X-Tern-Signature: t=`) may be from now.
-    pub tolerance_secs: u64,
-    /// How long a sender has to send a request's headers (and the TLS
-    /// handshake before them), timed from when the connection is waiting
-    /// for them: a client that dribbles or idles longer is cut off.
-    pub header_timeout_secs: u64,
-    /// How long a sender has to send a body once its headers are in; a
-    /// slower one gets 408.
-    pub body_timeout_secs: u64,
-    /// Open connections the listener holds at once, handshakes included;
-    /// more are refused (503 without TLS, closed with it).
-    pub max_connections: u32,
-}
-
-impl Default for WebhooksConfig {
-    fn default() -> Self {
-        Self {
-            listen: Vec::new(),
-            tls: None,
-            public_url: None,
-            max_body_kb: 256,
-            per_minute: 30,
-            tolerance_secs: 300,
-            header_timeout_secs: 10,
-            body_timeout_secs: 30,
-            max_connections: 64,
-        }
-    }
-}
-
 /// `[subagents]`: delegation to child runs (docs/subagents-design.md §1.6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -1125,6 +972,9 @@ pub struct SchedulesConfig {
     pub digest_times: crate::initiative::DigestTimes,
     /// The model that decides whether a `notify` result is worth a push;
     /// unset = the cheapest configured model with a known price.
+    /// Legacy name of `decision_model`: read once and moved there on load,
+    /// never written back.
+    #[serde(skip_serializing)]
     pub gate_model: Option<ModelChain>,
     /// Waits (`wait_until`) one agent may have at once.
     pub max_waits: usize,
@@ -1353,15 +1203,6 @@ backend = "host"
 shell_timeout_secs = 120
 docker_image = "debian:stable-slim"
 
-[gateway.telegram]
-enabled = true
-bot_token_secret = "TELEGRAM_BOT_TOKEN"
-
-[gateway.connectors.ntfy]
-poll_secs = 15
-strangers = "taint"
-settings = { topic = "tern-abc", reply_topic = "tern-abc-reply" }
-
 [mcp.servers.github]
 transport = "stdio"
 command = "github-mcp-server"
@@ -1378,11 +1219,6 @@ env_secrets = ["GITHUB_TOKEN"]
             c.providers["anthropic"].effective_base_url(),
             Some(ProviderConfig::ANTHROPIC_BASE_URL)
         );
-        assert!(c.gateway.telegram.as_ref().unwrap().enabled);
-        let ntfy = &c.gateway.connectors["ntfy"];
-        assert!(ntfy.enabled);
-        assert_eq!((ntfy.poll_secs, ntfy.strangers), (15, Strangers::Taint));
-        assert_eq!(ntfy.settings["topic"].as_str(), Some("tern-abc"));
         assert_eq!(c.mcp.servers["github"].env_secrets, ["GITHUB_TOKEN"]);
         let m = c.default_model_ref().unwrap().unwrap();
         assert_eq!(m.provider, "anthropic");
@@ -1493,6 +1329,25 @@ docker_cpus = 1.5
     }
 
     #[test]
+    fn gate_model_moves_to_decision_model() {
+        let c = Config::parse(
+            "[schedules]\ngate_model = \"openrouter:cheap\"\n",
+            Path::new("c.toml"),
+        )
+        .unwrap();
+        assert_eq!(c.decision_model.as_deref(), Some("openrouter:cheap"));
+        assert!(c.schedules.gate_model.is_none());
+        // The new key wins, and the old one is never written back.
+        let c = Config::parse(
+            "decision_model = \"a:b\"\n[schedules]\ngate_model = \"c:d\"\n",
+            Path::new("c.toml"),
+        )
+        .unwrap();
+        assert_eq!(c.decision_model.as_deref(), Some("a:b"));
+        assert!(!toml::to_string(&c).unwrap().contains("gate_model"));
+    }
+
+    #[test]
     fn subagents_table_parses_and_defaults_on() {
         assert!(Config::default().subagents.enabled);
         let c = Config::parse(
@@ -1541,6 +1396,24 @@ ask_parent_timeout_secs = 900
         assert_eq!(m.model, "qwen/qwen3-coder:free");
         assert!("nocolon".parse::<ModelRef>().is_err());
         assert!(":m".parse::<ModelRef>().is_err());
+    }
+
+    #[test]
+    fn settings_from_removed_features_are_ignored_not_errors() {
+        let c = Config::parse(
+            "max_iterations = 7\n[webhooks]\nlisten = [\"tcp://127.0.0.1:8712\"]\n",
+            Path::new("c.toml"),
+        )
+        .unwrap();
+        assert_eq!(c.max_iterations, 7);
+        // Typos elsewhere are still errors.
+        assert!(Config::parse("max_iteratons = 3\n[webhooks]\nx = 1", Path::new("c")).is_err());
+        let mut t: toml::Table = "[a]\nb = 1\nc = 2".parse().unwrap();
+        assert!(
+            remove_path(&mut t, "a.b")
+                && !remove_path(&mut t, "a.b")
+                && !remove_path(&mut t, "x.y")
+        );
     }
 
     #[test]

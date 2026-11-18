@@ -228,6 +228,7 @@ void main() {
       jsonDecode(File('test/fixtures/schedule.json').readAsStringSync())
           as Json,
     );
+    expect(t1a.deliverTo, 'dm');
     expect(t1a.lastQuiet, isTrue);
     expect(t1a.limits.quietHours, '23:00-06:30');
     expect(t1a.limits.urgent, isFalse);
@@ -380,19 +381,41 @@ void main() {
     ]);
   });
 
+  test('decodes a notification event', () {
+    final n = TernEvent.fromJson({
+      'notification': {
+        'title': 'Inbox sweep',
+        'body': 'Three need you',
+        'channel_id': 'dm:ops',
+        'run_id': 'r1',
+      },
+    });
+    n as NotificationRequested;
+    expect((n.title, n.body, n.channelId, n.runId), (
+      'Inbox sweep',
+      'Three need you',
+      'dm:ops',
+      'r1',
+    ));
+    final bare = TernEvent.fromJson({
+      'notification': {'title': 't', 'body': 'b'},
+    });
+    expect((bare as NotificationRequested).channelId, isNull);
+    expect(bare.runId, isNull);
+  });
+
   test('decodes status and shutdown replies', () {
     final s = DaemonStatus.fromJson(
       jsonDecode(
             '{"version":"0.1.0","pid":42,"uptime_secs":90,'
             '"managed_by":"launchd","running_runs":1,"pending_approvals":2,'
-            '"active_schedules":3,"gateways":[{"name":"telegram","ok":true}]}',
+            '"active_schedules":3}',
           )
           as Json,
     );
     expect(s.uptime, const Duration(seconds: 90));
     expect(s.managedBy, 'launchd');
     expect((s.runningRuns, s.pendingApprovals, s.activeSchedules), (1, 2, 3));
-    expect(s.gateways.single.ok, isTrue);
     final r = ShutdownReply.fromJson(
       jsonDecode(
             '{"stopping":false,"runs":[{"run_id":"r","session_id":"s",'
@@ -402,19 +425,5 @@ void main() {
     );
     expect(r.stopping, isFalse);
     expect(r.runs.single.title, 'Summarize the Q3 report');
-  });
-
-  test('a webhook decodes as the daemon sends it (T1c)', () {
-    // Checked against the Rust API in api_webhooks.rs.
-    final w = Webhook.fromJson(
-      jsonDecode(File('test/fixtures/webhook.json').readAsStringSync()) as Json,
-    );
-    expect(w.routineId, 'sch_7c1e9a3f0b2d4e5');
-    expect(w.url, 'https://hooks.example.com/v1/hooks/sch_7c1e9a3f0b2d4e5');
-    expect(w.active, isTrue);
-    expect(w.secret, startsWith('tern_whk_'));
-    expect(w.rotatedAt, isNull);
-    expect(w.lastDeliveryAt, isNotNull);
-    expect(w.howToSign, contains('X-Hub-Signature-256'));
   });
 }

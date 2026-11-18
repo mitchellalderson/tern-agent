@@ -131,7 +131,7 @@ async fn the_lead_answers_and_each_mention_wakes_its_agent_in_its_own_thread() {
         json!({
             "members": [{ "agent_id": "tern", "lead": true, "added_at": c["agents"]["members"][0]["added_at"] }],
             "agent_wakes": false, "max_hops": 2, "wakes_per_hour": 6,
-            "let_agents_decide": false
+            "let_agents_decide": false, "route_mode": "one"
         })
     );
     // Research leads it.

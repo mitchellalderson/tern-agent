@@ -4,7 +4,7 @@
 mod allow;
 pub mod evidence;
 pub mod fixtures;
-pub mod gateway;
+mod hints;
 mod host;
 mod limit;
 pub mod link;

@@ -220,8 +220,9 @@ impl Vm {
             conn,
             connections: self.host.connections.clone(),
             tape,
+            failure: Mutex::new(None),
         });
-        let ctx = make_ctx(&self.lua, &self.host, net, &self.spec)
+        let ctx = make_ctx(&self.lua, &self.host, net.clone(), &self.spec)
             .map_err(|e| format!("building ctx: {e}"))?;
         let lua_args = self
             .lua
@@ -240,7 +241,7 @@ impl Vm {
                     self.host.timeout.as_secs_f64()
                 ));
             }
-            Ok(Err(e)) => return Err(clean_error(&e)),
+            Ok(Err(e)) => return Err(net.with_hint(clean_error(&e))),
             Ok(Ok(v)) => v,
         };
         match value {
@@ -346,9 +347,47 @@ struct Net {
     connections: Option<Arc<Connections>>,
     /// Recording, or replaying instead of the network.
     tape: Option<Arc<Tape>>,
+    /// The last rejected or rate-limited response, for the error hint.
+    failure: Mutex<Option<Failure>>,
+}
+
+/// A response the agent should be told what to do about.
+struct Failure {
+    status: u16,
+    /// API-key secrets that request sent (OAuth tokens are refreshed instead).
+    keys: Vec<String>,
+    retry_after: Option<u64>,
 }
 
 impl Net {
+    /// `error` plus what to do about the last rejected or rate-limited
+    /// response, if there was one.
+    fn with_hint(&self, error: String) -> String {
+        let Ok(guard) = self.failure.lock() else {
+            return error;
+        };
+        let Some(f) = guard.as_ref() else {
+            return error;
+        };
+        let conn = self
+            .conn
+            .as_ref()
+            .filter(|c| c.conn.slug != tern_auth::DEFAULT_SLUG)
+            .map(|c| (c.conn.target.as_str(), c.conn.slug.as_str()));
+        let keys: Vec<crate::hints::KeyHome<'_>> = f
+            .keys
+            .iter()
+            .map(|name| crate::hints::KeyHome {
+                name,
+                connection: conn,
+            })
+            .collect();
+        match crate::hints::call_hint(f.status, &keys, f.retry_after) {
+            Some(h) if !error.contains(&h) => format!("{error}. {h}"),
+            _ => error,
+        }
+    }
+
     /// A credential's value, for the host to send: the call's account's
     /// secret (`conn/connector:<target>/<slug>/<NAME>`, the plain name for the
     /// default), or its OAuth access token. `rejected` is a token the
@@ -1047,15 +1086,33 @@ async fn http_request_inner(lua: &Lua, net: &Net, opts: Table) -> mlua::Result<T
         }
     };
     let status = resp.status().as_u16();
+    let retry_after = resp
+        .headers()
+        .get(header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
     if matches!(status, 429 | 503)
-        && let Some(secs) = resp
-            .headers()
-            .get(header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<u64>().ok())
+        && let Some(secs) = retry_after
     {
         net.limiter
             .retry_after(&net.connector, Duration::from_secs(secs));
+    }
+    if matches!(status, 401 | 403 | 429) {
+        let mut keys: Vec<String> = Vec::new();
+        for (i, _) in &sent_by {
+            for name in net.caps.auth[*i].secrets() {
+                if !is_oauth_secret(name) && !keys.iter().any(|k| k == name) {
+                    keys.push(name.to_owned());
+                }
+            }
+        }
+        if let Ok(mut f) = net.failure.lock() {
+            *f = Some(Failure {
+                status,
+                keys,
+                retry_after,
+            });
+        }
     }
     let resp_headers: Vec<(String, String)> = resp
         .headers()

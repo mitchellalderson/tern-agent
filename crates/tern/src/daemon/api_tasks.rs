@@ -331,7 +331,6 @@ pub fn collect(m: &Manager) -> anyhow::Result<Tasks> {
                 None,
                 Some(format!("checks every {}s", r.every_secs.unwrap_or(300))),
             ),
-            "webhook" => (None, Some("on each delivery".into())),
             _ => (Some(r.next_run_at), Some(r.cron.clone())),
         };
         items.push(Task {

@@ -22,11 +22,14 @@ class Agent {
     this.isDefault = false,
     this.delegates,
     this.autonomy,
-    this.telegramSecret,
     this.codeAuto = false,
+    this.description,
+    this.replyWhenRelevant = true,
   });
 
   factory Agent.fromJson(Json j) => Agent(
+    description: j['description'] as String?,
+    replyWhenRelevant: j['reply_when_relevant'] as bool? ?? true,
     codeAuto: j['code_auto'] as bool? ?? false,
     id: j['id'] as String,
     slug: j['slug'] as String,
@@ -58,9 +61,6 @@ class Agent {
       final String s => s,
       _ => null,
     },
-    telegramSecret: j['telegram'] is Json
-        ? (j['telegram'] as Json)['bot_token_secret'] as String?
-        : null,
   );
 
   /// The default agent: today's setup, whose DM is Home.
@@ -113,16 +113,19 @@ class Agent {
   /// configured autonomy. A ceiling, never a grant. Null: no ceiling.
   final String? autonomy;
 
-  /// The NAME of the secret holding its own Telegram bot's token (never the
-  /// token). Null: no bot of its own. A change applies when the daemon
-  /// restarts.
-  final String? telegramSecret;
-
   /// The user opted this agent in to code auto mode (not fully sandboxed):
   /// it edits files and runs build and test commands in its workspace
   /// without asking. Needs a ceiling of `code` or above (or none); only an
   /// explicit, confirmed PATCH sets it, never a starter or a bundle.
   final bool codeAuto;
+
+  /// One line on what it is for: what channel routing reads (never the
+  /// persona). Null until written, once, from its role.
+  final String? description;
+
+  /// "Reply when relevant": a channel may pick it to answer. Off: it answers
+  /// only when @mentioned.
+  final bool replyWhenRelevant;
 
   /// The ceiling as a level, when it is one this client knows.
   AutonomyLevel? get autonomyLevel => AutonomyLevel.parse(autonomy);
@@ -482,7 +485,6 @@ class AgentImpact {
     this.memories = 0,
     this.runningRuns = 0,
     this.pendingOutbox = 0,
-    this.telegramBot,
     this.bundles = const [],
     this.blockers = const [],
   });
@@ -498,7 +500,6 @@ class AgentImpact {
     memories: j['memories'] as int? ?? 0,
     runningRuns: j['running_runs'] as int? ?? 0,
     pendingOutbox: j['pending_outbox'] as int? ?? 0,
-    telegramBot: j['telegram_bot'] as String?,
     bundles: [
       for (final b in j['bundles'] as List<dynamic>? ?? []) b as String,
     ],
@@ -525,10 +526,6 @@ class AgentImpact {
   final int memories;
   final int runningRuns;
   final int pendingOutbox;
-
-  /// The secret naming its own Telegram bot's token: the bot stops, the
-  /// secret stays.
-  final String? telegramBot;
 
   /// Bundles that installed it and stop tracking it.
   final List<String> bundles;

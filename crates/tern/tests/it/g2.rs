@@ -124,7 +124,8 @@ async fn routines_crud_preview_and_run_now() {
     let id = created["id"].as_str().unwrap().to_owned();
     assert_eq!(created["prompt"], "summarize my inbox");
     assert!(created["next_run_at"].as_i64().unwrap() > 0);
-    assert!(created["deliver_to"].is_null());
+    // No target given: pushes stay on this computer, in Home.
+    assert_eq!(created["deliver_to"], "home");
     let (status, _) = api
         .call(
             Method::POST,

@@ -369,14 +369,19 @@ impl Provider for OpenAiCompat {
         req: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<EventStream, ProviderError> {
+        let mut body = request_body_for(
+            &req,
+            self.attribution && is_anthropic_on_openrouter(&req.model),
+            self.cache_key,
+        );
+        // Quick calls (decisions, short summaries) don't think first.
+        if req.cache.quick && self.attribution {
+            body["reasoning"] = json!({ "enabled": false });
+        }
         let mut builder = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
-            .json(&request_body_for(
-                &req,
-                self.attribution && is_anthropic_on_openrouter(&req.model),
-                self.cache_key,
-            ));
+            .json(&body);
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
         }

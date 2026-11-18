@@ -1,5 +1,7 @@
 # tern personal-agent tooling: routines, channels, connector platform, safety
 
+> **Superseded in part (2026-11).** tern is local-only and single-player ([DECISIONS.md](../DECISIONS.md#tern-is-local-only-single-player)). Webhook triggers (T1c, W6), messaging gateways (Telegram, ntfy, Slack: T4b, §6.4) and anything about remote devices or teams described here were removed. Sections that cover them are kept as history.
+
 Status: draft, 2026-11-03; most of it is built since (items marked done in §12.1 and the status notes in each section; [ROADMAP.md](../ROADMAP.md) lists what is still open: recipes and goals (T6c), a native browser (T7b), multiplayer). This is the next set of tooling after S0–S1, D1 and P0. It was derived from a
 survey of Claude Duet, Grok Bot, Meta Muse, ChatGPT, Google CC, Poke, OpenClaw and its forks
 ([research/personal-agents-2026.md](research/personal-agents-2026.md)). Phases are T0–T8 by area (§12.2), built in five stages from quick wins to the hardest integrations (§12.1).

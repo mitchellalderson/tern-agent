@@ -1,23 +1,11 @@
-// Workspace models and client methods against a fake core (HTTPS with the
-// self-signed fixture, as in remote_test.dart).
+// Workspace models and client methods against a fake daemon on a Unix socket.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:tern_client/tern_client.dart';
 import 'package:test/test.dart';
-
-const _fixtures = 'test/fixtures';
-
-List<int> _der(String pem) {
-  final body = pem
-      .split('\n')
-      .skipWhile((l) => !l.startsWith('-----BEGIN CERTIFICATE'))
-      .skip(1)
-      .takeWhile((l) => !l.startsWith('-----END'))
-      .join();
-  return base64.decode(body);
-}
+import 'support/unix_server.dart';
 
 class _Seen {
   _Seen(this.method, this.path, this.body);
@@ -27,17 +15,16 @@ class _Seen {
 }
 
 class _Core {
-  _Core(this.server);
+  _Core(this.server, this.endpoint);
   final HttpServer server;
+  final Endpoint endpoint;
   final seen = <_Seen>[];
   int status = 200;
   Object reply = <String, Object?>{};
 
   static Future<_Core> start() async {
-    final ctx = SecurityContext()
-      ..useCertificateChain('$_fixtures/cert.pem')
-      ..usePrivateKey('$_fixtures/key.pem');
-    final core = _Core(await HttpServer.bindSecure('127.0.0.1', 0, ctx));
+    final (server, endpoint) = await bindUnixServer();
+    final core = _Core(server, endpoint);
     core.server.listen((req) async {
       final text = await utf8.decoder.bind(req).join();
       core.seen.add(
@@ -86,16 +73,7 @@ void main() {
 
   setUp(() async {
     core = await _Core.start();
-    final pin = fingerprint(
-      _der(File('$_fixtures/cert.pem').readAsStringSync()),
-    );
-    client = TernClient(
-      RemoteEndpoint(
-        Uri.parse('https://127.0.0.1:${core.server.port}'),
-        token: 't',
-        pin: pin,
-      ),
-    );
+    client = TernClient(core.endpoint);
   });
   tearDown(() async {
     client.close();
