@@ -138,6 +138,9 @@ pub struct AgentConfig {
     /// The window a provider's model list reported for a model, when the
     /// host has one cached.
     pub reported_window: Option<ReportedWindow>,
+    /// The fast model, read when a run compacts; `None` (or no model from
+    /// it): compaction uses the run's model.
+    pub fast_model: Option<FastModel>,
     /// Flush durable facts to memory before compacting (`[memory].flush`).
     pub memory_flush: bool,
     /// P7: offer "always" only after repeated "Allow once"
@@ -171,6 +174,7 @@ impl Default for AgentConfig {
             default_context_window: None,
             local_providers: std::collections::BTreeSet::new(),
             reported_window: None,
+            fast_model: None,
             memory_flush: false,
             learn_approvals: false,
             show_reasoning: true,
@@ -194,6 +198,19 @@ pub type WindowLookup = dyn Fn(&ModelRef) -> Option<u64> + Send + Sync;
 
 #[derive(Clone)]
 pub struct ReportedWindow(pub Arc<WindowLookup>);
+
+pub type FastLookup = dyn Fn() -> Option<ModelRef> + Send + Sync;
+
+/// The configured fast model as it is now, so a settings change applies to
+/// the next compaction.
+#[derive(Clone)]
+pub struct FastModel(pub Arc<FastLookup>);
+
+impl std::fmt::Debug for FastModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FastModel")
+    }
+}
 
 impl std::fmt::Debug for ReportedWindow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1814,8 +1831,10 @@ impl Agent {
             transcript_digest: blake3::hash(transcript.as_bytes()).to_hex().to_string(),
         };
         tracing::info!(run = %run.id, idx, cover_through = plan.cover_through, "compacting context");
+        let (sum_model, sum_provider) = self.summary_model(model, provider, &transcript);
+        let fork = fork.filter(|_| sum_model == *model);
         let req = ChatRequest {
-            model: model.model.clone(),
+            model: sum_model.model.clone(),
             system: compaction::SYSTEM_PROMPT.into(),
             messages: vec![compaction::summary_request(&transcript)],
             tools: vec![],
@@ -1842,7 +1861,7 @@ impl Agent {
                 InFlight::Retry,
                 || async {
                     let turn = self
-                        .call_forked(&run.id, provider, forked, req, cancel, |t| {
+                        .call_forked(&run.id, &sum_provider, forked, req, cancel, |t| {
                             !t.message.text().trim().is_empty()
                         })
                         .await?;
@@ -1861,6 +1880,35 @@ impl Agent {
             cover_through: plan.cover_through,
         });
         Ok(1 + u32::from(flushed))
+    }
+
+    /// The model that writes a compaction summary: the fast model when one
+    /// is set, can be reached and has room for the span; else the run's.
+    fn summary_model(
+        &self,
+        model: &ModelRef,
+        provider: &Arc<dyn Provider>,
+        transcript: &str,
+    ) -> (ModelRef, Arc<dyn Provider>) {
+        let keep = || (model.clone(), provider.clone());
+        let Some(fast) = self.cfg.fast_model.as_ref().and_then(|f| (f.0)()) else {
+            return keep();
+        };
+        if fast == *model {
+            return keep();
+        }
+        let need = compaction::estimate_tokens(
+            compaction::SYSTEM_PROMPT,
+            &[compaction::summary_request(transcript)],
+            &[],
+        );
+        if need as f64 > self.cfg.context_window(&fast) as f64 * compaction::THRESHOLD {
+            return keep();
+        }
+        match (self.providers)(&fast) {
+            Ok(p) => (fast, p),
+            Err(_) => keep(),
+        }
     }
 
     /// Give the model one silent turn, with only `memory_save`, to keep

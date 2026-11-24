@@ -14,7 +14,7 @@ use tern_core::types::Usage;
 use crate::history;
 use crate::input::Input;
 use crate::mcp::{McpAction, McpPanel};
-use crate::models::{ModelPicker, PickerAction};
+use crate::models::{ModelPicker, PickerAction, Tier};
 use crate::outbox::OutboxPanel;
 use crate::secret_prompt::{Done, SecretPrompt};
 use crate::secrets::SecretsPanel;
@@ -217,6 +217,7 @@ const HELP: &str = "\
 Commands:
   /new              start a new session
   /model [model]    pick a model, or set one (the provider may be left off)
+  /model fast|decision [model]  the model for background writing, or for quick choices
   /settings [section|text]  every platform setting in one place: general,
                     models, secrets, permissions, limits, servers, advanced,
                     about (agent settings stay in /agents)
@@ -394,6 +395,10 @@ impl App {
                 })],
                 PickerAction::Choose { model, default } => {
                     self.use_model(&model, default);
+                    vec![]
+                }
+                PickerAction::SetTier { tier, model } => {
+                    self.use_tier_model(tier, &model);
                     vec![]
                 }
             };
@@ -940,7 +945,20 @@ impl App {
                     refresh: false,
                 })];
             }
-            "model" => self.use_model(arg, false),
+            "model" => {
+                let (word, rest) = arg.split_once(char::is_whitespace).unwrap_or((arg, ""));
+                match Tier::parse(word).filter(|t| *t != Tier::Agent) {
+                    Some(tier) if rest.trim().is_empty() => {
+                        self.picker = Some(ModelPicker::for_tier(tier, self.tier_model(tier)));
+                        return vec![Effect::Task(Task::Models {
+                            provider: None,
+                            refresh: false,
+                        })];
+                    }
+                    Some(tier) => self.use_tier_model(tier, rest.trim()),
+                    None => self.use_model(arg, false),
+                }
+            }
             "setup" | "providers" => match SetupPanel::open(self.backend.as_ref()) {
                 Ok(panel) => {
                     let first = panel.first_task();
@@ -2245,6 +2263,55 @@ impl App {
         } else {
             format!("model set to {}", resolved.model)
         };
+        if let Some(w) = resolved.warning {
+            msg.push_str(&format!("\n{w}"));
+        }
+        self.notice(msg);
+    }
+
+    /// The model saved for the fast or decision tier, if any.
+    fn tier_model(&self, tier: Tier) -> Option<String> {
+        let key = tier.setting()?;
+        let view = self.backend.config_view().ok()?;
+        let setting = view
+            .sections
+            .iter()
+            .flat_map(|s| s.settings.iter())
+            .find(|s| s.key == key)?;
+        match &setting.value {
+            serde_json::Value::String(m) => Some(m.clone()),
+            serde_json::Value::Array(a) => a.first()?.as_str().map(str::to_owned),
+            _ => None,
+        }
+    }
+
+    /// Save `model` as the fast or decision model.
+    fn use_tier_model(&mut self, tier: Tier, model: &str) {
+        let Some(key) = tier.setting() else {
+            return;
+        };
+        let resolved = match self.backend.resolve_model(model) {
+            Ok(r) => r,
+            Err(e) => {
+                match &mut self.picker {
+                    Some(p) => p.message = Some((true, e)),
+                    None => self.error(e),
+                }
+                return;
+            }
+        };
+        if let Err(e) = self
+            .backend
+            .change_setting(key, Some(serde_json::Value::String(resolved.model.clone())))
+        {
+            match &mut self.picker {
+                Some(p) => p.message = Some((true, e)),
+                None => self.error(e),
+            }
+            return;
+        }
+        self.picker = None;
+        let mut msg = format!("{} model set to {}", tier.label(), resolved.model);
         if let Some(w) = resolved.warning {
             msg.push_str(&format!("\n{w}"));
         }

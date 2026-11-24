@@ -226,8 +226,49 @@ fn subsequence(needle: &str, hay: &str) -> bool {
         .all(|c| hay.any(|h| h == c))
 }
 
+/// Which of the three models a picker sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tier {
+    /// The model runs use (`default_model`, and this session).
+    #[default]
+    Agent,
+    /// Background writing (`fast_model`).
+    Fast,
+    /// Quick choices (`decision_model`).
+    Decision,
+}
+
+impl Tier {
+    pub fn parse(word: &str) -> Option<Self> {
+        match word {
+            "agent" => Some(Self::Agent),
+            "fast" => Some(Self::Fast),
+            "decision" => Some(Self::Decision),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Fast => "fast",
+            Self::Decision => "decision",
+        }
+    }
+
+    /// The setting a fast or decision pick is saved to.
+    pub fn setting(self) -> Option<&'static str> {
+        match self {
+            Self::Agent => None,
+            Self::Fast => Some("fast_model"),
+            Self::Decision => Some("decision_model"),
+        }
+    }
+}
+
 /// The `/model` picker.
 pub struct ModelPicker {
+    pub tier: Tier,
     pub list: ModelList,
     /// Feedback for the last action: `(is_error, text)`.
     pub message: Option<(bool, String)>,
@@ -242,14 +283,31 @@ pub enum PickerAction {
         model: String,
         default: bool,
     },
+    /// Save `model` as the fast or decision model.
+    SetTier {
+        tier: Tier,
+        model: String,
+    },
     Refresh,
 }
 
 impl ModelPicker {
     pub fn new(current: Option<String>) -> Self {
+        Self::for_tier(Tier::Agent, current)
+    }
+
+    pub fn for_tier(tier: Tier, current: Option<String>) -> Self {
         Self {
+            tier,
             list: ModelList::new(current),
             message: None,
+        }
+    }
+
+    fn picked(&self, model: String, default: bool) -> PickerAction {
+        match self.tier {
+            Tier::Agent => PickerAction::Choose { model, default },
+            tier => PickerAction::SetTier { tier, model },
         }
     }
 
@@ -261,12 +319,9 @@ impl ModelPicker {
                 self.list.loading = true;
                 return PickerAction::Refresh;
             }
-            KeyCode::Char('d') if ctrl => {
+            KeyCode::Char('d') if ctrl && self.tier == Tier::Agent => {
                 return match self.list.chosen() {
-                    Some(model) => PickerAction::Choose {
-                        model,
-                        default: true,
-                    },
+                    Some(model) => self.picked(model, true),
                     None => PickerAction::None,
                 };
             }
@@ -274,10 +329,7 @@ impl ModelPicker {
         }
         self.message = None;
         match self.list.on_key(key) {
-            ListKey::Chosen(model) => PickerAction::Choose {
-                model,
-                default: false,
-            },
+            ListKey::Chosen(model) => self.picked(model, false),
             ListKey::Empty => {
                 self.message = Some((true, "type a model id, or /setup to add a provider".into()));
                 PickerAction::None

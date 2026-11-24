@@ -335,6 +335,13 @@ impl Runtime {
                     .iter()
                     .filter_map(|(name, p)| p.context_window.map(|w| (name.clone(), w)))
                     .collect(),
+                fast_model: Some(tern_core::agent::FastModel({
+                    let live = live.clone();
+                    Arc::new(move || {
+                        let g = live.read().ok()?;
+                        g.fast_model.as_ref()?.primary().parse().ok()
+                    })
+                })),
                 memory_flush: config.memory.flush,
                 learn_approvals: config.proactive.learn_approvals,
                 show_reasoning: config.show_reasoning,
@@ -1122,7 +1129,7 @@ pub(crate) fn agent_frame(
     let others: Vec<String> = ranked
         .iter()
         .take(cap)
-        .map(|a| format!("@{} · {} · {}", a.slug, a.name, persona_line(home, &a.id)))
+        .map(|a| format!("@{} · {} · {}", a.slug, a.name, lane_line(home, a)))
         .collect();
     let others_more = ranked.len().saturating_sub(cap);
     let can: Vec<&&tern_store::AgentRow> =

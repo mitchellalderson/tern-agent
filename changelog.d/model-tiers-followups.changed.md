@@ -1,0 +1,1 @@
+- **Model tiers:** `/model fast` and `/model decision` pick those models in the terminal UI. Compaction uses the fast model (the run's model when none is set). Agent rosters and bundle export/import use each agent's one-line description.

@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tern_core::config::ProviderKind;
 
-use crate::models::{ModelList, ModelPicker, Row};
+use crate::models::{ModelList, ModelPicker, Row, Tier};
 use crate::setup::{Form, MANAGE, SetupPanel, Step};
 use crate::theme;
 use tern_core::presets::PRESETS;
@@ -189,13 +189,22 @@ pub fn draw_picker(frame: &mut Frame<'_>, picker: &ModelPicker, area: Rect) {
     body.extend(model_rows(&picker.list, room));
     body.push(Line::default());
     body.push(message(&picker.message));
-    body.push(help(&[
-        ("Enter", "use"),
-        ("Ctrl+D", "use and make default"),
-        ("Ctrl+R", "refresh"),
-        ("Esc", "close"),
-    ]));
-    popup(frame, area, "model", body);
+    let keys: &[(&str, &str)] = if picker.tier == Tier::Agent {
+        &[
+            ("Enter", "use"),
+            ("Ctrl+D", "use and make default"),
+            ("Ctrl+R", "refresh"),
+            ("Esc", "close"),
+        ]
+    } else {
+        &[("Enter", "save"), ("Ctrl+R", "refresh"), ("Esc", "close")]
+    };
+    body.push(help(keys));
+    let title = match picker.tier {
+        Tier::Agent => "model".to_owned(),
+        t => format!("{} model", t.label()),
+    };
+    popup(frame, area, &title, body);
 }
 
 fn key_source(p: &tern_core::models::ProviderStatus) -> String {
