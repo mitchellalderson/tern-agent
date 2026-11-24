@@ -1197,6 +1197,67 @@ async fn compaction_summarizes_old_context_and_keeps_going() {
     assert!(saw);
 }
 
+/// An agent whose `script:` provider is the run's and whose `fast:` model
+/// (when `fast` is set) is served by `fast_script`, or unreachable.
+fn two_model_agent(
+    h: &Harness,
+    main: Arc<Script>,
+    fast_script: Option<Arc<Script>>,
+    fast: Option<&str>,
+) -> Agent {
+    let mut reg = ToolRegistry::new();
+    reg.register(Arc::new(Counter::new("count", true, false)));
+    let (m, f): (Arc<dyn Provider>, Option<Arc<dyn Provider>>) =
+        (main, fast_script.map(|s| -> Arc<dyn Provider> { s }));
+    let fast: Option<ModelRef> = fast.map(|f| f.parse().unwrap());
+    Agent::new(
+        Journal::new(h.store.clone()),
+        Arc::new(move |model| match (model.provider.as_str(), &f) {
+            ("fast", Some(f)) => Ok(f.clone()),
+            ("fast", None) => Err(ProviderError::Network("unreachable".into())),
+            _ => Ok(m.clone()),
+        }),
+        Arc::new(reg),
+        Arc::new(AutoApprove),
+        AgentConfig {
+            retry_base: Duration::from_millis(1),
+            max_iterations: 10,
+            default_context_window: Some(TINY_WINDOW),
+            context_windows: [("fast".to_owned(), 200_000)].into(),
+            fast_model: Some(FastModel(Arc::new(move || fast.clone()))),
+            ..AgentConfig::default()
+        },
+    )
+}
+
+#[tokio::test]
+async fn compaction_uses_the_fast_model_when_one_is_set() {
+    let h = Harness::new();
+    let main = Arc::new(Script::new(eight_tool_turns()));
+    let fast = Arc::new(Script::new(vec![]));
+    let agent = two_model_agent(&h, main.clone(), Some(fast.clone()), Some("fast:small"));
+    let run = h.start(&agent, "go");
+    let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+    assert_eq!(out.status, RunStatus::Completed);
+    assert!(fast.summaries.load(Ordering::SeqCst) >= 1);
+    assert_eq!(main.summaries.load(Ordering::SeqCst), 0);
+    let seen = fast.seen.lock().unwrap();
+    assert!(seen.iter().all(|r| r.model == "small"), "{seen:?}");
+}
+
+#[tokio::test]
+async fn compaction_keeps_the_runs_model_without_a_fast_model_or_when_it_is_unreachable() {
+    for fast in [None, Some("fast:small")] {
+        let h = Harness::new();
+        let main = Arc::new(Script::new(eight_tool_turns()));
+        let agent = two_model_agent(&h, main.clone(), None, fast);
+        let run = h.start(&agent, "go");
+        let out = agent.drive(&run, CancellationToken::new()).await.unwrap();
+        assert_eq!(out.status, RunStatus::Completed, "{fast:?}");
+        assert!(main.summaries.load(Ordering::SeqCst) >= 1, "{fast:?}");
+    }
+}
+
 #[tokio::test]
 async fn compaction_replays_after_resume() {
     struct FailAt(Arc<Script>, AtomicU32, u32);

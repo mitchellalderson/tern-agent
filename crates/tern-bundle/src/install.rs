@@ -473,6 +473,13 @@ impl Installer {
             ),
             memory: t.memory.clone().unwrap_or_else(|| "private".into()),
             autonomy: t.autonomy.clone(),
+            // One line of at most 100 characters, like a description set by hand.
+            description: t
+                .description
+                .lines()
+                .next()
+                .map(|l| l.trim().chars().take(100).collect::<String>())
+                .filter(|l| !l.is_empty()),
             ..tern_store::AgentRow::default()
         };
         if let Err(e) = store.create_agent(&row) {

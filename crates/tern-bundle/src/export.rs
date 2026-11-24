@@ -188,7 +188,7 @@ pub fn export(
                 .map_err(|e| BundleError::Invalid(format!("@{}'s tools: {e}", a.slug)))?;
             let t = AgentTemplate {
                 name: a.name.clone(),
-                description: String::new(),
+                description: a.description.clone().unwrap_or_default(),
                 avatar: a
                     .avatar
                     .as_deref()

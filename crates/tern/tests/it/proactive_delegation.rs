@@ -329,3 +329,49 @@ async fn the_roster_is_bounded_ordered_by_slug_the_same_every_run_and_never_stal
         "archived: {sys}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_roster_describes_agents_by_description_else_the_first_persona_line() {
+    let env = Env::new(&json!({ "turns": [{ "text": "ok" }] }));
+    let _d = env.daemon_with(None);
+    let s = env.socket();
+    for (name, persona) in [
+        ("Alpha", "You are Alpha, the persona line."),
+        ("Beta", "You are Beta, the other persona line."),
+    ] {
+        let (code, a) = post(
+            &s,
+            "/v1/agents",
+            json!({ "name": name, "persona": persona }),
+        )
+        .await;
+        assert_eq!(code, 201, "{a}");
+    }
+    patch(
+        &s,
+        "/v1/agents/alpha",
+        json!({ "description": "Writes release notes" }),
+    )
+    .await;
+    let run = say(&s, "home", "hello").await;
+    let sys = system_prompt(&env, &run);
+    let others = sys.split("Other agents:").nth(1).unwrap();
+    let line = |slug: &str| {
+        others
+            .lines()
+            .find(|l| l.starts_with(&format!("- @{slug} ·")))
+            .unwrap_or_else(|| panic!("no @{slug}: {others}"))
+            .to_owned()
+    };
+    assert!(
+        line("alpha").ends_with("Writes release notes"),
+        "{}",
+        line("alpha")
+    );
+    assert!(!line("alpha").contains("persona line"));
+    assert!(
+        line("beta").ends_with("You are Beta, the other persona line."),
+        "{}",
+        line("beta")
+    );
+}

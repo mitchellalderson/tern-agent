@@ -359,6 +359,7 @@ async fn an_agent_exports_and_installs_elsewhere_without_its_private_settings() 
             tools: Some(r#"{"builtins":"read_only","connectors":[],"mcp":[]}"#.into()),
             autonomy: Some("supervised".into()),
             avatar: Some(r#"{"glyph":"●","color":"green"}"#.into()),
+            description: Some("Finds leads and checks them".into()),
             ..tern_store::AgentRow::default()
         })
         .unwrap();
@@ -374,6 +375,7 @@ async fn an_agent_exports_and_installs_elsewhere_without_its_private_settings() 
     let toml = String::from_utf8(ex.files["agents/scout/agent.toml"].clone()).unwrap();
     assert!(toml.contains("Scout") && toml.contains("shared"), "{toml}");
     assert!(!toml.contains("secret-model"), "{toml}");
+    assert!(toml.contains("Finds leads and checks them"), "{toml}");
     assert!(ex.files.contains_key("agents/scout/persona.md"));
 
     // The default agent is never exported.
@@ -397,6 +399,10 @@ async fn an_agent_exports_and_installs_elsewhere_without_its_private_settings() 
     assert_eq!(got.memory, "shared");
     assert_eq!(got.autonomy.as_deref(), Some("supervised"));
     assert_eq!(got.model, None);
+    assert_eq!(
+        got.description.as_deref(),
+        Some("Finds leads and checks them")
+    );
 }
 
 #[tokio::test]

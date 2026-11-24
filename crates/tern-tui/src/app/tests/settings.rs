@@ -281,3 +281,38 @@ fn about_lists_where_things_are_and_a_backend_without_settings_says_so() {
     assert!(app.settings.is_none());
     assert!(screen(&mut app, 100, 20).contains("can't edit settings"));
 }
+
+#[test]
+fn model_fast_and_decision_save_their_own_settings() {
+    let (mut app, fake) = new_app();
+    // Typed: no picker, saved at once.
+    submit(&mut app, "/model fast mock:small");
+    assert_eq!(
+        setting_calls(&fake),
+        vec![("fast_model".into(), Some(json!("mock:small")))]
+    );
+    assert!(notices(&app).contains("fast model set to mock:small"));
+    // The run's model is untouched.
+    assert_eq!(app.model.as_deref(), Some("mock:default"));
+
+    // Picked: opens the tier's picker, and Enter on a typed model saves it.
+    submit(&mut app, "/model decision");
+    assert_eq!(
+        app.picker.as_ref().map(|p| p.tier),
+        Some(crate::models::Tier::Decision)
+    );
+    type_text(&mut app, "mock:tiny");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.picker.is_none());
+    assert_eq!(
+        setting_calls(&fake).last().unwrap(),
+        &("decision_model".to_owned(), Some(json!("mock:tiny")))
+    );
+    assert_eq!(app.model.as_deref(), Some("mock:default"));
+
+    // A model the backend refuses is an error, and saves nothing.
+    let before = setting_calls(&fake).len();
+    submit(&mut app, "/model fast openai:gpt");
+    assert!(notices(&app).contains("unknown provider"));
+    assert_eq!(setting_calls(&fake).len(), before);
+}
